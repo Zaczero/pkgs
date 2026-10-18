@@ -36,16 +36,16 @@ struct RowProductChunk {
 }
 
 impl RowProductChunk {
-    fn new() -> Self {
-        let mut cells = Vec::with_capacity(ROWS_PER_CHUNK);
-        cells.resize_with(ROWS_PER_CHUNK, RowProductCell::default);
+    fn new(cell_count: usize) -> Self {
+        let mut cells = Vec::with_capacity(cell_count);
+        cells.resize_with(cell_count, RowProductCell::default);
         Self { cells }
     }
 
     fn cell(&self, offset: usize) -> &RowProductCell {
         self.cells
             .get(offset)
-            .expect("row product offset belongs to its fixed-size chunk")
+            .expect("row product offset belongs to its physical chunk")
     }
 
     fn heap_bytes_for_cell(&self, offset: usize) -> usize {
@@ -136,6 +136,8 @@ impl RowProductOwner {
 
     fn cell(&self, physical: usize) -> Arc<RowProductChunk> {
         let chunk_index = physical / ROWS_PER_CHUNK;
+        let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+        let cell_count = ROWS_PER_CHUNK.min(self.physical_len.saturating_sub(chunk_start));
         #[cfg(test)]
         DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get().saturating_add(1)));
         let mut chunks = self
@@ -145,7 +147,7 @@ impl RowProductOwner {
         let chunk = Arc::clone(
             chunks
                 .entry(chunk_index)
-                .or_insert_with(|| Arc::new(RowProductChunk::new())),
+                .or_insert_with(|| Arc::new(RowProductChunk::new(cell_count))),
         );
         drop(chunks);
         chunk
@@ -1083,6 +1085,120 @@ mod frame_cache_row_tests {
         let row_64 = (Arc::as_ptr(chunk), offset);
         assert_eq!(products.owner.chunks.lock().unwrap().len(), 2);
         assert_ne!(row_63.0, row_64.0);
+    }
+
+    #[test]
+    fn row_product_chunks_stop_at_the_physical_end() {
+        for physical_len in [1, 63, 64, 65] {
+            let products = RowProducts::fresh(physical_len);
+            let mut operation = products.operation();
+            for physical in 0..physical_len {
+                drop(operation.frame_cache(physical));
+            }
+
+            let chunks = products
+                .owner
+                .chunks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let expected_chunks = physical_len.div_ceil(ROWS_PER_CHUNK);
+            assert_eq!(chunks.len(), expected_chunks);
+            for chunk_index in 0..expected_chunks {
+                let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+                let chunk = chunks
+                    .get(&chunk_index)
+                    .expect("each admitted chunk has a directory entry");
+                assert_eq!(
+                    chunk.cells.len(),
+                    ROWS_PER_CHUNK.min(physical_len.saturating_sub(chunk_start)),
+                    "physical length {physical_len}, chunk {chunk_index}"
+                );
+            }
+            drop(chunks);
+        }
+
+        let empty = RowProducts::fresh(0);
+        let _operation = empty.operation();
+        assert!(
+            empty
+                .owner
+                .chunks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "an empty owner has no valid row-product request"
+        );
+    }
+
+    #[test]
+    fn sequential_and_gathered_tail_aliases_keep_products_after_source_drop() {
+        let source = RowProducts::fresh(65);
+        let source_tail = source.frame_cache(64);
+        let source_tail_plan = source
+            .prepared_plan::<std::convert::Infallible>(64, || {
+                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                    9.0, 11.0,
+                )))))
+            })
+            .unwrap();
+        let source_owner = source.owner_weak();
+        let sequential = source.selected(64..65);
+        let selected = source.selected([64, 0, 64]);
+        drop(source);
+
+        let sequential_tail = sequential.frame_cache(0);
+        assert!(Arc::ptr_eq(&sequential_tail, &source_tail));
+        let sequential_plan = sequential
+            .prepared_plan::<std::convert::Infallible>(0, || panic!("warm source plan"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&sequential_plan, &source_tail_plan));
+        let mut operation = selected.operation();
+        let first_tail = operation.frame_cache(0);
+        let head = operation.frame_cache(1);
+        let second_tail = operation.frame_cache(2);
+        assert!(Arc::ptr_eq(&first_tail, &source_tail));
+        assert!(Arc::ptr_eq(&first_tail, &second_tail));
+        assert!(!Arc::ptr_eq(&first_tail, &head));
+        let first_plan = operation
+            .prepared_plan::<std::convert::Infallible>(0, || panic!("warm source plan"))
+            .unwrap();
+        let second_plan = operation
+            .prepared_plan::<std::convert::Infallible>(2, || panic!("warm source plan"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&first_plan, &source_tail_plan));
+        assert!(Arc::ptr_eq(&first_plan, &second_plan));
+
+        let chunks = selected
+            .owner
+            .chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            chunks
+                .get(&0)
+                .expect("head chunk remains allocated")
+                .cells
+                .len(),
+            64
+        );
+        assert_eq!(
+            chunks
+                .get(&1)
+                .expect("tail chunk remains allocated")
+                .cells
+                .len(),
+            1
+        );
+        drop(chunks);
+        assert!(source_owner.upgrade().is_some());
+
+        drop(operation);
+        drop(sequential);
+        drop(selected);
+        drop(sequential_tail);
+        drop(source_tail);
+        drop(source_tail_plan);
+        assert!(source_owner.upgrade().is_none());
     }
 
     #[test]

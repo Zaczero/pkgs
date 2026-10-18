@@ -88,8 +88,8 @@ pub struct PyGeometryArray {
     /// and the frame is the same.
     pub(crate) total_bounds_cache: TotalBoundsCache,
     /// Lazy products keyed by stable physical source row. The owner allocates
-    /// fixed-size chunks only when a row first needs a product; the selection
-    /// maps this array's logical rows back to that source.
+    /// chunks only when a row first needs a product; the selection maps this
+    /// array's logical rows back to that source.
     pub(crate) row_products: prepared::RowProducts,
 }
 
