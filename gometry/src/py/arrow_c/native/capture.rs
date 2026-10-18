@@ -1,5 +1,5 @@
 use super::buffers::snapshot_native_buffers;
-use super::decode::{NativeArrowDecodeError, NativeDecodedBatch};
+use super::decode::NativeDecodedBatch;
 use super::layout::ArrowFormat;
 use super::node::{build_owned_node_admitted, merge_owned_row_missing, project_ancestor_missing};
 use super::*;
@@ -38,7 +38,7 @@ unsafe fn capture_selected_node(
 }
 
 impl NativeArrowBatch {
-    pub(crate) fn decode(self) -> Result<NativeDecodedBatch, NativeArrowDecodeError> {
+    pub(crate) fn decode(self) -> Result<NativeDecodedBatch, NativeArrowImportError> {
         decode::decode_batch(self)
     }
 }

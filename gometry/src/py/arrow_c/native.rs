@@ -29,6 +29,32 @@ pub(super) mod decode;
 mod layout;
 mod node;
 
+/// Errors from decoding and assembling owned Arrow import batches. Python
+/// exception construction stays in the attached import bindings.
+#[derive(Debug)]
+pub(crate) enum NativeArrowImportError {
+    GeoArrow(String),
+    Core(crate::error::Error),
+}
+
+impl From<crate::error::Error> for NativeArrowImportError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Core(error)
+    }
+}
+
+impl From<crate::error::ResourceError> for NativeArrowImportError {
+    fn from(error: crate::error::ResourceError) -> Self {
+        Self::Core(error.into())
+    }
+}
+
+impl NativeArrowImportError {
+    pub(crate) fn geoarrow(message: impl Into<String>) -> Self {
+        Self::GeoArrow(message.into())
+    }
+}
+
 /// Capture-window layout over a live producer array. **Not Send/Sync.** Holds
 /// raw buffer/children pointer tables only for the duration of snapshot while a
 /// [`MovedArrowShell`] pins the array; never stored on `NativeNode`.

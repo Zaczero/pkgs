@@ -9,13 +9,11 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
 
-use crate::crs::frame::{
-    Frame, epochs_equal, optional_crs_labels_operationally_equal, optional_epochs_equal,
-};
+use crate::crs::frame::{Frame, epochs_equal};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder, storage};
 use crate::py::arrow_c::{
-    NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
+    NativeArrowBatch, NativeArrowClassification, NativeArrowImportError, NativeDecodedBatch,
     NativeDecodedStorage,
 };
 use crate::py::geoarrow::GeometryEncoding;
@@ -126,21 +124,6 @@ pub(crate) fn reject_requested_schema(
     Ok(false)
 }
 
-pub(crate) fn reconcile_arrow_crs(
-    embedded: Option<&str>,
-    crs: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<String>> {
-    let explicit = crate::parse_crs(crs)?;
-    wire_crs::guard_embedded_crs_conflict(
-        embedded,
-        explicit.as_ref().map(crate::Crs::as_str),
-        "GeoArrow CRS",
-    )?;
-    Ok(embedded
-        .map(str::to_owned)
-        .or_else(|| explicit.map(|value| value.as_str().to_owned())))
-}
-
 pub(crate) fn reconcile_arrow_epoch(
     embedded: Option<f64>,
     epoch: Option<&Bound<'_, PyAny>>,
@@ -166,8 +149,7 @@ pub(crate) fn reconcile_arrow_epoch(
 /// remain packed until the final canonical array is published; unsupported or
 /// structurally non-packable batches use the explicit mixed lane.
 pub(crate) struct NativeArrowAccumulator {
-    encoding: Option<GeometryEncoding>,
-    wkb_offset_width: Option<WkbOffsetWidth>,
+    encoding: GeometryEncoding,
     #[expect(
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
@@ -181,12 +163,17 @@ pub(crate) struct NativeArrowAccumulator {
 }
 
 impl NativeArrowAccumulator {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new(classification: NativeArrowClassification) -> Self {
+        let NativeArrowClassification {
+            encoding,
+            crs,
+            epoch,
+            ..
+        } = classification;
         Self {
-            encoding: None,
-            wkb_offset_width: None,
-            crs: None,
-            epoch: None,
+            encoding,
+            crs,
+            epoch,
             storage: Vec::new(),
             srids: Vec::new(),
             missing: Vec::new(),
@@ -194,43 +181,15 @@ impl NativeArrowAccumulator {
         }
     }
 
-    pub(crate) fn admit_classification(
+    pub(crate) fn push_decoded(
         &mut self,
-        classification: &NativeArrowClassification,
-    ) -> PyResult<()> {
-        if let Some(encoding) = self.encoding
-            && (encoding != classification.encoding
-                || self.wkb_offset_width != Some(classification.wkb_offset_width))
-        {
-            return Err(geoarrow_parse_error(
-                "Arrow batches have conflicting geometry storage classifications",
-            ));
-        }
-        if let Some(existing) = self.crs.as_deref().map(String::as_str)
-            && (!optional_crs_labels_operationally_equal(
-                Some(existing),
-                classification.crs.as_deref().map(String::as_str),
-            )? || !optional_epochs_equal(self.epoch, classification.epoch))
-        {
-            return Err(geoarrow_parse_error(
-                "Arrow chunks have mixed CRS/epoch metadata",
-            ));
-        }
-        if self.encoding.is_none() {
-            self.encoding = Some(classification.encoding);
-            self.wkb_offset_width = Some(classification.wkb_offset_width);
-            self.crs.clone_from(&classification.crs);
-            self.epoch = classification.epoch;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn push_decoded(&mut self, decoded: NativeDecodedBatch) -> PyResult<()> {
+        decoded: NativeDecodedBatch,
+    ) -> Result<(), NativeArrowImportError> {
         let payload_len = decoded.storage.len();
         if (!decoded.srids.is_empty() && payload_len != decoded.srids.len())
             || payload_len.checked_add(decoded.missing.len()) != Some(decoded.length)
         {
-            return Err(geoarrow_parse_error(
+            return Err(NativeArrowImportError::geoarrow(
                 "native Arrow decoder returned inconsistent row counts",
             ));
         }
@@ -243,9 +202,9 @@ impl NativeArrowAccumulator {
             return Ok(());
         }
         let row_base = self.length;
-        let new_length = row_base
-            .checked_add(decoded.length)
-            .ok_or_else(|| PyTypeError::new_err("Arrow row count overflows"))?;
+        let new_length = row_base.checked_add(decoded.length).ok_or(
+            crate::error::ResourceError::SizeOverflowContext("Arrow row count overflows"),
+        )?;
         let NativeDecodedBatch {
             storage,
             mut srids,
@@ -254,9 +213,7 @@ impl NativeArrowAccumulator {
         } = decoded;
         for &local in &missing {
             if local >= decoded_length {
-                self.release_owned_rows();
-                drop((storage, srids, missing));
-                return Err(geoarrow_parse_error(
+                return Err(NativeArrowImportError::geoarrow(
                     "native Arrow decoder returned an out-of-range missing row",
                 ));
             }
@@ -264,6 +221,8 @@ impl NativeArrowAccumulator {
         self.storage.reserve(1);
         self.srids.reserve(srids.len());
         self.missing.reserve(missing.len());
+        // `new_length` checked the row-base addition, and every local row was
+        // checked above, so wrapping addition here is exact.
         for local in missing {
             self.missing.push(row_base.wrapping_add(local));
         }
@@ -271,12 +230,6 @@ impl NativeArrowAccumulator {
         self.srids.append(&mut srids);
         self.length = new_length;
         Ok(())
-    }
-
-    fn release_owned_rows(&mut self) {
-        self.storage = Vec::new();
-        self.srids = Vec::new();
-        self.missing = Vec::new();
     }
 
     pub(crate) fn finish(
@@ -296,56 +249,70 @@ impl NativeArrowAccumulator {
             ..
         } = self;
         let explicit = parse_crs(crs)?;
-        // Resolve explicit-vs-metadata precedence before row-level EWKB SRIDs.
-        let _resolved_metadata_crs =
-            reconcile_arrow_crs(metadata_crs.as_deref().map(String::as_str), crs)?;
-        let mut frame = SridFrameAdmission::new(
-            explicit,
-            metadata_crs.as_deref().map(String::as_str).map(crs_arc),
-        );
-        let mut present = 0_usize;
-        let has_srids = encoding == Some(GeometryEncoding::Wkb);
-        let mut missing = missing_rows.iter().copied().peekable();
-        for row in 0..length {
-            if missing.peek() == Some(&row) {
-                missing.next();
-                continue;
-            }
-            let srid = if has_srids {
-                srids.get(present).copied().ok_or_else(|| {
-                    geoarrow_parse_error("native Arrow decoder returned inconsistent row counts")
-                })?
-            } else {
-                None
-            };
-            present = present.wrapping_add(1);
-            frame
-                .admit_srid(srid, row, "Arrow import", "EWKB SRID")
-                .map_err(PyErr::from)?;
-            if let Some(storage_crs) = metadata_crs.as_deref().map(String::as_str) {
-                frame
-                    .guard_storage_srid(srid, Some(storage_crs), row)
-                    .map_err(PyErr::from)?;
-            }
-        }
-        if missing.peek().is_some() || (has_srids && present != srids.len()) {
-            return Err(geoarrow_parse_error(
-                "native Arrow decoder returned inconsistent row counts",
-            ));
-        }
-        let crs = frame.finish().map_err(PyErr::from)?;
+        let crs = py
+            .detach(|| -> Result<_, NativeArrowImportError> {
+                // Check metadata compatibility before row-level EWKB SRIDs.
+                wire_crs::guard_embedded_crs_conflict(
+                    metadata_crs.as_deref().map(String::as_str),
+                    explicit.as_ref().map(crate::Crs::as_str),
+                    "GeoArrow CRS",
+                )?;
+                let mut frame = SridFrameAdmission::new(
+                    explicit,
+                    metadata_crs.as_deref().map(String::as_str).map(crs_arc),
+                );
+                let has_srids = encoding == GeometryEncoding::Wkb;
+                let mut missing = missing_rows.iter().copied().peekable();
+                let mut srids = srids.into_iter();
+                for row in 0..length {
+                    if missing.peek() == Some(&row) {
+                        missing.next();
+                        continue;
+                    }
+                    let srid = if has_srids {
+                        srids.next().ok_or_else(|| {
+                            NativeArrowImportError::geoarrow(
+                                "native Arrow decoder returned inconsistent row counts",
+                            )
+                        })?
+                    } else {
+                        None
+                    };
+                    frame.admit_srid(srid, row, "Arrow import", "EWKB SRID")?;
+                    if let Some(storage_crs) = metadata_crs.as_deref().map(String::as_str) {
+                        frame.guard_storage_srid(srid, Some(storage_crs), row)?;
+                    }
+                }
+                if missing.peek().is_some() || (has_srids && srids.next().is_some()) {
+                    return Err(NativeArrowImportError::geoarrow(
+                        "native Arrow decoder returned inconsistent row counts",
+                    ));
+                }
+                Ok(frame.finish()?)
+            })
+            .map_err(arrow_import_error)?;
         let epoch = reconcile_arrow_epoch(metadata_epoch, epoch)?;
-        let frame = Frame::new(crs, epoch)?;
-        let storage = combine_native_storage(storage)?;
-        let missing = storage::ValidityMask::from_sparse(length, &missing_rows);
-        let output = PyGeometryArray::from_result_storage(
-            Arc::new(storage),
-            frame,
-            missing,
-            crate::array::StorageLayout::PresentOnly,
-            crate::array::ComputedCaches::fresh(),
-        )?;
+        let output = py.detach(|| -> crate::error::Result<_> {
+            let frame = Frame::new(crs, epoch)?;
+            let storage = combine_native_storage(storage)?;
+            let missing = storage::ValidityMask::from_sparse(length, &missing_rows);
+            PyGeometryArray::from_result_storage(
+                Arc::new(storage),
+                frame,
+                missing,
+                crate::array::StorageLayout::PresentOnly,
+                crate::array::ComputedCaches::fresh(),
+            )
+        })?;
         Ok(output.into_pyobject(py)?.into_any().unbind())
+    }
+}
+
+/// Convert native Arrow-import failures while attached to the Python boundary.
+pub(crate) fn arrow_import_error(error: NativeArrowImportError) -> PyErr {
+    match error {
+        NativeArrowImportError::GeoArrow(message) => geoarrow_parse_error(message),
+        NativeArrowImportError::Core(error) => error.into(),
     }
 }
 
@@ -409,12 +376,7 @@ fn combine_native_storage(
     })?;
     let mut shapes = Vec::with_capacity(total);
     for part in parts {
-        let mut part = part.into_shapes().map_err(|error| match error {
-            NativeArrowDecodeError::Core(error) => error,
-            NativeArrowDecodeError::GeoArrow(message) => {
-                crate::geometry::GeometryErrorKind::message(message)
-            },
-        })?;
+        let mut part = part.into_shapes()?;
         shapes.append(&mut part);
     }
     Ok(GeometryArrayStorage::Mixed(shapes))
@@ -704,25 +666,20 @@ fn decode_pyarrow_selected(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let mut accumulator = NativeArrowAccumulator::new();
-    accumulator.admit_classification(&classification)?;
+    let mut accumulator = NativeArrowAccumulator::new(classification.clone());
 
     if let Some(chunks) = selected.getattr_opt(pyo3::intern!(py, "chunks"))? {
         for (index, chunk) in chunks.try_iter()?.enumerate() {
             let chunk = chunk?;
             crate::check_python_signals(py, index)?;
             let batch = pyarrow_batch(py, &chunk, classification.clone())?;
-            let decoded = py
-                .detach(move || batch.decode())
-                .map_err(NativeArrowDecodeError::into_py_err)?;
-            accumulator.push_decoded(decoded)?;
+            py.detach(|| accumulator.push_decoded(batch.decode()?))
+                .map_err(arrow_import_error)?;
         }
     } else {
         let batch = pyarrow_batch(py, selected, classification)?;
-        let decoded = py
-            .detach(move || batch.decode())
-            .map_err(NativeArrowDecodeError::into_py_err)?;
-        accumulator.push_decoded(decoded)?;
+        py.detach(|| accumulator.push_decoded(batch.decode()?))
+            .map_err(arrow_import_error)?;
     }
     accumulator.finish(py, crs, epoch)
 }
@@ -848,7 +805,8 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 ///     exhaustion is process-fatal and is not translated into a Python error.
 /// OverflowError
 ///     If a nonnegative Arrow buffer byte span cannot fit ``usize`` or the
-///     maximum size of a Rust slice.
+///     maximum size of a Rust slice, or accumulated row counts overflow
+///     ``usize``.
 ///
 /// See Also
 /// --------
@@ -918,7 +876,12 @@ mod tests {
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
-    use super::{NativeArrowAccumulator, NativeDecodedBatch, NativeDecodedStorage, pyarrow_module};
+    use super::{
+        NativeArrowAccumulator, NativeDecodedBatch, NativeDecodedStorage, WkbOffsetWidth,
+        pyarrow_module,
+    };
+    use crate::py::arrow_c::NativeArrowClassification;
+    use crate::py::geoarrow::GeometryEncoding;
 
     #[test]
     fn empty_decoded_batch_is_not_retained() {
@@ -928,7 +891,12 @@ mod tests {
             srids: Vec::new(),
             missing: Vec::new(),
         };
-        let mut accumulator = NativeArrowAccumulator::new();
+        let mut accumulator = NativeArrowAccumulator::new(NativeArrowClassification {
+            encoding: GeometryEncoding::Point,
+            wkb_offset_width: WkbOffsetWidth::Int32,
+            crs: None,
+            epoch: None,
+        });
         let ((), allocations) = crate::test_support::allocation_count(|| {
             accumulator
                 .push_decoded(decoded)

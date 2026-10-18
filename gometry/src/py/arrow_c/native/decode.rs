@@ -1,14 +1,14 @@
 //! Decode one fully-owned Arrow batch without Python-shaped array objects.
 //!
 //! Admission in `native.rs` owns every selected buffer before this module is
-//! entered.  The decoder therefore works only with `NativeNode` accessors and
-//! can run entirely inside `Python::detach`.
+//! entered. The decoder works only with `NativeNode` accessors; no producer
+//! pointers or Python values enter its native operation.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::layout::ArrowFormat;
-use super::{NativeArrowBatch, NativeNode};
+use super::{NativeArrowBatch, NativeArrowImportError, NativeNode};
 use crate::geometry::storage::builder::PackedColumnBuilder;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
 use crate::geometry::{
@@ -17,43 +17,8 @@ use crate::geometry::{
     SharedSlice, column_all_finite, storage,
 };
 use crate::io;
-use crate::py::arrow;
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::geoarrow::GeometryEncoding;
-
-/// Errors that can be produced after the Arrow producer has been released.
-/// Arrow structure errors retain the GeoArrow parse boundary; geometry and WKB
-/// errors retain the crate's ordinary domain classification.
-#[derive(Debug)]
-pub(crate) enum NativeArrowDecodeError {
-    GeoArrow(String),
-    Core(crate::error::Error),
-}
-
-impl From<crate::error::Error> for NativeArrowDecodeError {
-    fn from(error: crate::error::Error) -> Self {
-        Self::Core(error)
-    }
-}
-
-impl From<crate::error::ResourceError> for NativeArrowDecodeError {
-    fn from(error: crate::error::ResourceError) -> Self {
-        Self::Core(error.into())
-    }
-}
-
-impl NativeArrowDecodeError {
-    pub(crate) fn geoarrow(message: impl Into<String>) -> Self {
-        Self::GeoArrow(message.into())
-    }
-
-    pub(crate) fn into_py_err(self) -> pyo3::PyErr {
-        match self {
-            Self::GeoArrow(message) => arrow::geoarrow_parse_error(message),
-            Self::Core(error) => error.into(),
-        }
-    }
-}
 
 /// Native batch payload after Arrow admission. Packed payloads already use
 /// canonical columnar storage; mixed payloads are retained only for geometry
@@ -75,7 +40,7 @@ impl NativeDecodedStorage {
     /// Materialize a packed payload only when an explicit mixed fallback is
     /// required. Packed rows are already canonical and normally never take
     /// this route.
-    pub(crate) fn into_shapes(self) -> DecodeResult<Vec<Shape>> {
+    pub(crate) fn into_shapes(self) -> crate::error::Result<Vec<Shape>> {
         match self {
             Self::Mixed(shapes) => Ok(shapes),
             Self::Packed(storage) => {
@@ -98,7 +63,7 @@ pub(crate) struct NativeDecodedBatch {
     pub(crate) missing: Vec<usize>,
 }
 
-type DecodeResult<T> = Result<T, NativeArrowDecodeError>;
+type DecodeResult<T> = Result<T, NativeArrowImportError>;
 
 pub(crate) fn decode_batch(batch: NativeArrowBatch) -> DecodeResult<NativeDecodedBatch> {
     let NativeArrowBatch {
@@ -201,7 +166,7 @@ fn decode_multipoints(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
 fn decode_linestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let values = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow geometry list child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow geometry list child is missing"))?;
     let coordinates = NativeCoordinates::new(values)?;
     let missing = missing_rows(node);
     let mut total_vertices = 0_usize;
@@ -242,7 +207,7 @@ fn decode_coordseq_rows(
 ) -> DecodeResult<NativeDecodedBatch> {
     let values = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow geometry list child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow geometry list child is missing"))?;
     let coordinates = NativeCoordinates::new(values)?;
     let mut shapes = Vec::with_capacity(node.present_count());
     let mut missing = Vec::with_capacity(node.missing_count());
@@ -272,7 +237,7 @@ fn decode_coordseq_rows(
             match encoding {
                 GeometryEncoding::MultiPoint => Shape::multi_point(coords.axes(), coords),
                 GeometryEncoding::LineString => Shape::LineString(
-                    LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
+                    LineSeq::try_new(coords).map_err(NativeArrowImportError::from)?,
                 ),
                 GeometryEncoding::Point
                 | GeometryEncoding::MultiLineString
@@ -295,10 +260,10 @@ fn decode_coordseq_rows(
 
 fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let lines = node.child(0).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow multilinestring child is missing")
+        NativeArrowImportError::geoarrow("Arrow multilinestring child is missing")
     })?;
     let values = lines.child(0).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow line coordinate child is missing")
+        NativeArrowImportError::geoarrow("Arrow line coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
     let mut shapes = Vec::with_capacity(node.present_count());
@@ -312,7 +277,7 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
         let mut members = Vec::with_capacity(line_range.len());
         for line_index in line_range {
             if lines.missing_at(line_index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
+                return Err(NativeArrowImportError::geoarrow(format!(
                     "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {line_index}"
                 )));
             }
@@ -322,7 +287,7 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
             } else {
                 let coords = coordinates.coordseq(vertex_range.start, vertex_range.end, row)?;
                 members.push(MultiMember::Value(
-                    LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
+                    LineSeq::try_new(coords).map_err(NativeArrowImportError::from)?,
                 ));
             }
         }
@@ -331,7 +296,7 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
         } else {
             Shape::MultiLineString(
                 MultiLineString::try_new(coordinates.axes(), members)
-                    .map_err(NativeArrowDecodeError::from)?,
+                    .map_err(NativeArrowImportError::from)?,
             )
         };
         shapes.push(shape);
@@ -347,9 +312,9 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
 fn decode_polygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let rings = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow polygon ring child is missing"))?;
     let values = rings.child(0).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
+        NativeArrowImportError::geoarrow("Arrow ring coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
     let missing = missing_rows(node);
@@ -366,7 +331,7 @@ fn decode_polygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         }
         for ring_index in range {
             if rings.missing_at(ring_index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
+                return Err(NativeArrowImportError::geoarrow(format!(
                     "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {ring_index}"
                 )));
             }
@@ -407,9 +372,9 @@ fn decode_polygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
 fn decode_polygons_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let rings = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow polygon ring child is missing"))?;
     let values = rings.child(0).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
+        NativeArrowImportError::geoarrow("Arrow ring coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
     let mut shapes = Vec::with_capacity(node.present_count());
@@ -499,7 +464,7 @@ fn packed_polygon_storage(
 
     let rings_node = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow polygon ring child is missing"))?;
     let mut builder = CoordSeqBuilder::with_capacity(coordinates.axes(), total_vertices);
     let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count);
     let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows);
@@ -534,12 +499,12 @@ fn packed_polygon_storage(
 fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let polygons = node
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow multipolygon child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow multipolygon child is missing"))?;
     let rings = polygons
         .child(0)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow polygon ring child is missing"))?;
     let values = rings.child(0).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
+        NativeArrowImportError::geoarrow("Arrow ring coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
     let mut shapes = Vec::with_capacity(node.present_count());
@@ -553,7 +518,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         let mut items = Vec::with_capacity(polygon_range.len());
         for polygon_index in polygon_range {
             if polygons.missing_at(polygon_index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
+                return Err(NativeArrowImportError::geoarrow(format!(
                     "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {polygon_index}"
                 )));
             }
@@ -564,7 +529,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             }
             for ring_index in ring_range.clone() {
                 if rings.missing_at(ring_index) {
-                    return Err(NativeArrowDecodeError::geoarrow(format!(
+                    return Err(NativeArrowImportError::geoarrow(format!(
                         "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {ring_index}"
                     )));
                 }
@@ -579,7 +544,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
                 | Shape::MultiPolygon(_)
                 | Shape::GeometryCollection(_)
                 | Shape::Empty(..) => {
-                    return Err(NativeArrowDecodeError::geoarrow(
+                    return Err(NativeArrowImportError::geoarrow(
                         "Arrow multipolygon member decoded as an unexpected shape",
                     ));
                 },
@@ -590,7 +555,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         } else {
             Shape::MultiPolygon(
                 MultiPolygon::try_new(coordinates.axes(), items)
-                    .map_err(NativeArrowDecodeError::from)?,
+                    .map_err(NativeArrowImportError::from)?,
             )
         };
         shapes.push(shape);
@@ -618,7 +583,7 @@ fn polygon_shape(
     let mut shell_and_holes = Vec::with_capacity(range.len());
     for ring_index in range {
         if rings.missing_at(ring_index) {
-            return Err(NativeArrowDecodeError::geoarrow(format!(
+            return Err(NativeArrowImportError::geoarrow(format!(
                 "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {ring_index}"
             )));
         }
@@ -639,7 +604,7 @@ fn polygon_shape(
 fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let data = node
         .bytes_at(2)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow WKB data buffer is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow WKB data buffer is missing"))?;
     let mut shapes = Vec::with_capacity(node.present_count());
     let mut srids = Vec::with_capacity(node.present_count());
     let mut missing = Vec::with_capacity(node.missing_count());
@@ -651,9 +616,9 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         let start = offset(node, row)?;
         let end = offset(node, row.wrapping_add(1))?;
         let bytes = data.get(start..end).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow WKB offsets are out of bounds")
+            NativeArrowImportError::geoarrow("Arrow WKB offsets are out of bounds")
         })?;
-        let parsed = io::parse_wkb(bytes).map_err(NativeArrowDecodeError::from)?;
+        let parsed = io::parse_wkb(bytes).map_err(NativeArrowImportError::from)?;
         shapes.push(parsed.shape);
         srids.push(parsed.srid);
     }
@@ -668,7 +633,7 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
 fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let views = node
         .bytes_at(1)
-        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow binary-view buffer is missing"))?;
+        .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow binary-view buffer is missing"))?;
     let mut shapes = Vec::with_capacity(node.present_count());
     let mut srids = Vec::with_capacity(node.present_count());
     let mut missing = Vec::with_capacity(node.missing_count());
@@ -684,41 +649,41 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
             .get(start..)
             .and_then(<[u8]>::first_chunk::<16>)
             .ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow(
+                NativeArrowImportError::geoarrow(
                     "Arrow binary-view buffer is shorter than declared",
                 )
             })?;
         let length = i32::from_le_bytes([view[0], view[1], view[2], view[3]]);
         let length = usize::try_from(length).map_err(|_| {
-            NativeArrowDecodeError::geoarrow("Arrow binary-view length is negative")
+            NativeArrowImportError::geoarrow("Arrow binary-view length is negative")
         })?;
         let bytes = if length <= 12 {
             view.get(4..4_usize.wrapping_add(length)).ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view inline value is truncated")
+                NativeArrowImportError::geoarrow("Arrow binary-view inline value is truncated")
             })?
         } else {
             let buffer_index = i32::from_le_bytes([view[8], view[9], view[10], view[11]]);
             let buffer_index = usize::try_from(buffer_index).map_err(|_| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view buffer index is negative")
+                NativeArrowImportError::geoarrow("Arrow binary-view buffer index is negative")
             })?;
             let byte_offset = i32::from_le_bytes([view[12], view[13], view[14], view[15]]);
             let byte_offset = usize::try_from(byte_offset).map_err(|_| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view byte offset is negative")
+                NativeArrowImportError::geoarrow("Arrow binary-view byte offset is negative")
             })?;
             let buffer_slot = buffer_index.checked_add(2).ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view buffer index overflows")
+                NativeArrowImportError::geoarrow("Arrow binary-view buffer index overflows")
             })?;
             let data = node.bytes_at(buffer_slot).ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view data buffer is missing")
+                NativeArrowImportError::geoarrow("Arrow binary-view data buffer is missing")
             })?;
             let end = byte_offset.checked_add(length).ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view byte range overflows")
+                NativeArrowImportError::geoarrow("Arrow binary-view byte range overflows")
             })?;
             data.get(byte_offset..end).ok_or_else(|| {
-                NativeArrowDecodeError::geoarrow("Arrow binary-view byte range is out of bounds")
+                NativeArrowImportError::geoarrow("Arrow binary-view byte range is out of bounds")
             })?
         };
-        let parsed = io::parse_wkb(bytes).map_err(NativeArrowDecodeError::from)?;
+        let parsed = io::parse_wkb(bytes).map_err(NativeArrowImportError::from)?;
         shapes.push(parsed.shape);
         srids.push(parsed.srid);
     }
@@ -732,13 +697,13 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
 
 fn offset(node: &NativeNode, index: usize) -> DecodeResult<usize> {
     node.offset_at(index).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow offsets buffer is shorter than declared")
+        NativeArrowImportError::geoarrow("Arrow offsets buffer is shorter than declared")
     })
 }
 
 fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<usize>> {
     node.list_range(index).ok_or_else(|| {
-        NativeArrowDecodeError::geoarrow("Arrow offsets are malformed or exceed the selected child")
+        NativeArrowImportError::geoarrow("Arrow offsets are malformed or exceed the selected child")
     })
 }
 
@@ -759,7 +724,7 @@ impl NativeCoordinates {
             | ArrowFormat::LargeBinary
             | ArrowFormat::BinaryView
             | ArrowFormat::List
-            | ArrowFormat::LargeList => Err(NativeArrowDecodeError::geoarrow(
+            | ArrowFormat::LargeList => Err(NativeArrowImportError::geoarrow(
                 "Arrow geometry coordinates must be a struct or fixed-size list",
             )),
         }
@@ -770,26 +735,26 @@ impl NativeCoordinates {
             .field_names
             .iter()
             .position(|name| name == "x")
-            .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow point coordinates require x"))?;
+            .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow point coordinates require x"))?;
         let y_index = node
             .field_names
             .iter()
             .position(|name| name == "y")
-            .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow point coordinates require y"))?;
+            .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow point coordinates require y"))?;
         let x_node = node.child(x_index).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow x coordinate child is missing")
+            NativeArrowImportError::geoarrow("Arrow x coordinate child is missing")
         })?;
         let y_node = node.child(y_index).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow y coordinate child is missing")
+            NativeArrowImportError::geoarrow("Arrow y coordinate child is missing")
         })?;
         let x = x_node
             .f64_values()
-            .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow x values buffer is missing"))?;
+            .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow x values buffer is missing"))?;
         let y = y_node
             .f64_values()
-            .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow y values buffer is missing"))?;
+            .ok_or_else(|| NativeArrowImportError::geoarrow("Arrow y values buffer is missing"))?;
         if x.len() != node.length || y.len() != node.length {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "Arrow coordinate columns have mismatched lengths",
             ));
         }
@@ -800,7 +765,7 @@ impl NativeCoordinates {
                 node.child(index)
                     .and_then(NativeNode::f64_values)
                     .ok_or_else(|| {
-                        NativeArrowDecodeError::geoarrow("Arrow z values buffer is missing")
+                        NativeArrowImportError::geoarrow("Arrow z values buffer is missing")
                     })
             })
             .transpose()?;
@@ -809,14 +774,14 @@ impl NativeCoordinates {
                 node.child(index)
                     .and_then(NativeNode::f64_values)
                     .ok_or_else(|| {
-                        NativeArrowDecodeError::geoarrow("Arrow m values buffer is missing")
+                        NativeArrowImportError::geoarrow("Arrow m values buffer is missing")
                     })
             })
             .transpose()?;
         if z.as_ref().is_some_and(|values| values.len() != node.length)
             || m.as_ref().is_some_and(|values| values.len() != node.length)
         {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "Arrow coordinate columns have mismatched lengths",
             ));
         }
@@ -828,7 +793,7 @@ impl NativeCoordinates {
             m.as_ref()
                 .map(|values| MColumn::Shared(SharedSlice::from_arc_vec(Arc::clone(values)))),
         )
-        .map_err(NativeArrowDecodeError::from)?;
+        .map_err(NativeArrowImportError::from)?;
         let validity = combined_validity(node.length, |row| {
             node.missing_at(row)
                 || x_node.missing_at(row)
@@ -890,21 +855,21 @@ impl NativeCoordinates {
 
     fn interleaved(node: &NativeNode, size: usize) -> DecodeResult<Self> {
         if !(2..=4).contains(&size) {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "geoarrow interleaved coordinates require fixed_size_list of length 2, 3, or 4",
             ));
         }
         let values_node = node.child(0).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow interleaved values child is missing")
+            NativeArrowImportError::geoarrow("Arrow interleaved values child is missing")
         })?;
         let values = values_node.f64_values().ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow interleaved values buffer is missing")
+            NativeArrowImportError::geoarrow("Arrow interleaved values buffer is missing")
         })?;
         let expected = node.length.checked_mul(size).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow interleaved coordinate span overflows")
+            NativeArrowImportError::geoarrow("Arrow interleaved coordinate span overflows")
         })?;
         if values.len() != expected {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "Arrow interleaved coordinate buffer is shorter than declared",
             ));
         }
@@ -931,7 +896,7 @@ impl NativeCoordinates {
             zs.map(SharedSlice::from_vec),
             ms.map(|values| MColumn::Shared(SharedSlice::from_vec(values))),
         )
-        .map_err(NativeArrowDecodeError::from)?;
+        .map_err(NativeArrowImportError::from)?;
         Ok(Self { coords, validity })
     }
 
@@ -953,12 +918,12 @@ impl NativeCoordinates {
         // This runs once per fallback row; keep admission inline instead of
         // bouncing each Point through the error-bearing `admitted_point` result.
         if index >= self.coords.len() {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
             ));
         }
         if !self.is_valid(index) {
-            return Err(NativeArrowDecodeError::geoarrow(format!(
+            return Err(NativeArrowImportError::geoarrow(format!(
                 "Arrow geometry arrays require non-null geometry values; found null at index {row}"
             )));
         }
@@ -981,12 +946,12 @@ impl NativeCoordinates {
 
     fn admitted_point(&self, index: usize, row: usize) -> DecodeResult<Point> {
         if index >= self.coords.len() {
-            return Err(NativeArrowDecodeError::geoarrow(
+            return Err(NativeArrowImportError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
             ));
         }
         if !self.is_valid(index) {
-            return Err(NativeArrowDecodeError::geoarrow(format!(
+            return Err(NativeArrowImportError::geoarrow(format!(
                 "Arrow geometry arrays require non-null geometry values; found null at index {row}"
             )));
         }
@@ -1008,7 +973,7 @@ impl NativeCoordinates {
         if finite {
             Ok(())
         } else {
-            Err(NativeArrowDecodeError::geoarrow(
+            Err(NativeArrowImportError::geoarrow(
                 "Arrow coordinates must be finite",
             ))
         }
@@ -1026,13 +991,13 @@ impl NativeCoordinates {
         row: usize,
     ) -> DecodeResult<CoordWindow> {
         let window = CoordWindow::checked(start..end, self.coords.len()).map_err(|_| {
-            NativeArrowDecodeError::geoarrow(
+            NativeArrowImportError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
             )
         })?;
         for index in window.start()..window.end() {
             if !self.is_valid(index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
+                return Err(NativeArrowImportError::geoarrow(format!(
                     "Arrow geometry arrays require non-null geometry values; found null at index {row}"
                 )));
             }
@@ -1063,7 +1028,7 @@ fn ensure_range_finite(coords: &CoordSeq, window: CoordWindow) -> DecodeResult<(
     {
         Ok(())
     } else {
-        Err(NativeArrowDecodeError::geoarrow(
+        Err(NativeArrowImportError::geoarrow(
             "Arrow coordinates must be finite",
         ))
     }
@@ -1075,20 +1040,20 @@ fn admitted_column_window(values: &[f64], start: usize, end: usize) -> &[f64] {
         .expect("CoordSeq ordinate columns share their admitted row range")
 }
 
-fn arrow_ring_error(error: &crate::error::Error) -> NativeArrowDecodeError {
+fn arrow_ring_error(error: &crate::error::Error) -> NativeArrowImportError {
     let message = error.to_string();
     if let crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::RingTooShort(n)) =
         error.kind()
     {
-        NativeArrowDecodeError::geoarrow(format!(
+        NativeArrowImportError::geoarrow(format!(
             "Arrow polygon rings require at least three coordinates, got {n}"
         ))
     } else if message.contains("closed on all active ordinates") {
-        NativeArrowDecodeError::geoarrow(
+        NativeArrowImportError::geoarrow(
             "Arrow polygon ring must be closed on all active ordinates",
         )
     } else {
-        NativeArrowDecodeError::geoarrow(format!("Arrow polygon ring: {message}"))
+        NativeArrowImportError::geoarrow(format!("Arrow polygon ring: {message}"))
     }
 }
 

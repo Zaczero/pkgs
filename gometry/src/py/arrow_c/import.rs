@@ -6,11 +6,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyString, PyTuple};
 
 use crate::check_python_signals;
-use crate::py::arrow::NativeArrowAccumulator;
+use crate::py::arrow::{NativeArrowAccumulator, arrow_import_error};
 use crate::py::arrow_c::{
     ArrowArrayStream, ArrowReleaseGuard, ArrowSchema, MovedArrowShell, NativeArrowClassification,
-    NativeArrowDecodeError, admit_and_classify_raw_schema, empty_array, ffi,
-    native_arrow_batch_from_capsules, native_arrow_batch_from_raw_array, stream_capsule_name,
+    admit_and_classify_raw_schema, empty_array, ffi, native_arrow_batch_from_capsules,
+    native_arrow_batch_from_raw_array, stream_capsule_name,
 };
 use crate::py::errors::ParseError;
 
@@ -60,12 +60,9 @@ pub(crate) fn geometries_from_native_capsules_classified(
 ) -> PyResult<Py<PyAny>> {
     let (batch, classified) = native_arrow_batch_from_capsules(schema_capsule, array_capsule)?;
     let (classification, _) = NativeArrowClassification::from_schema(&classified);
-    let mut accumulator = NativeArrowAccumulator::new();
-    accumulator.admit_classification(&classification)?;
-    let decoded = py
-        .detach(move || batch.decode())
-        .map_err(NativeArrowDecodeError::into_py_err)?;
-    accumulator.push_decoded(decoded)?;
+    let mut accumulator = NativeArrowAccumulator::new(classification);
+    py.detach(|| accumulator.push_decoded(batch.decode()?))
+        .map_err(arrow_import_error)?;
     accumulator.finish(py, crs, epoch)
 }
 
@@ -187,8 +184,7 @@ pub(crate) unsafe fn import_stream(
         }
         let (admitted_schema, classified) = admit_and_classify_raw_schema(schema_guard.as_ptr())?;
         let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
-        let mut accumulator = NativeArrowAccumulator::new();
-        accumulator.admit_classification(&classification)?;
+        let mut accumulator = NativeArrowAccumulator::new(classification.clone());
         let mut batch_index: usize = 0;
 
         loop {
@@ -218,10 +214,8 @@ pub(crate) unsafe fn import_stream(
                 classification.clone(),
                 struct_child,
             )?;
-            let decoded = py
-                .detach(move || batch.decode())
-                .map_err(NativeArrowDecodeError::into_py_err)?;
-            accumulator.push_decoded(decoded)?;
+            py.detach(|| accumulator.push_decoded(batch.decode()?))
+                .map_err(arrow_import_error)?;
             batch_index = batch_index.wrapping_add(1);
         }
         accumulator.finish(py, crs, epoch).map(Some)
