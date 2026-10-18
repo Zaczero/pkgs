@@ -469,11 +469,14 @@ async def test_validator_exceptions_propagate_without_poisoning_admission(
     server_factory, error_type
 ):
     calls = []
+    errors = []
 
     async def validate(host, ip, port):
         calls.append(port)
         if len(calls) <= 2:
-            raise error_type('Custom policy provider failed')
+            error = error_type('Custom policy provider failed')
+            errors.append(error)
+            raise error
         return True
 
     async with server_factory() as server:
@@ -483,9 +486,38 @@ async def test_validator_exceptions_propagate_without_poisoning_admission(
             custom_validator=validate,
         ) as client:
             url = f'http://127.0.0.1:{server.port}/'
-            with pytest.raises(error_type):
+            with pytest.raises(error_type) as first:
                 await client.get(url)
-            with pytest.raises(error_type):
+            with pytest.raises(error_type) as second:
                 await client.get(url)
+            assert first.value is errors[0]
+            assert second.value is errors[1]
             assert (await client.get(url)).content == b'OK'
         assert calls == [server.port, server.port, server.port]
+
+
+async def test_falsey_async_validator_still_runs(server_factory):
+    calls = []
+
+    class FalseyValidator:
+        def __bool__(self):
+            return False
+
+        async def __call__(self, hostname, address, port):
+            calls.append((hostname, address, port))
+            return True
+
+    validator = FalseyValidator()
+
+    async with (
+        server_factory() as server,
+        httpx_ssrf_protection(
+            httpx.AsyncClient(trust_env=False),
+            check_globally_reachable=False,
+            custom_validator=validator,
+        ) as client,
+    ):
+        response = await client.get(f'http://127.0.0.1:{server.port}/')
+
+    assert response.content == b'OK'
+    assert calls == [('127.0.0.1', ip_address('127.0.0.1'), server.port)]

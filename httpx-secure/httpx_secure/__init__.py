@@ -10,7 +10,7 @@ from weakref import WeakValueDictionary
 from anyio import CancelScope, Lock, connect_tcp
 from anyio.abc import SocketAttribute
 from httpcore import ConnectError
-from httpx import RequestError
+from httpx import AsyncClient, RequestError
 
 from httpx_secure._network import protect_client as _protect_client
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import TypeVar
 
-    from httpx import AsyncClient, Request
+    from httpx import Request
 
     _IPAddress = IPv4Address | IPv6Address
 
@@ -58,7 +58,7 @@ class SSRFProtectionError(RequestError):
         port: int,
     ) -> SSRFProtectionError:
         return cls(
-            f'Invalid IP address format: {ip_str!r}',
+            f'ip_str must be a valid IP address, got {ip_str!r}',
             hostname=hostname,
             ip_addr=None,
             port=port,
@@ -74,7 +74,7 @@ class SSRFProtectionError(RequestError):
         port: int,
     ) -> SSRFProtectionError:
         return cls(
-            f'Access denied: IP address {ip_str!r} is not globally reachable',
+            f'access denied: IP address {ip_str!r} is not globally reachable',
             hostname=hostname,
             ip_addr=ip_addr,
             port=port,
@@ -90,7 +90,7 @@ class SSRFProtectionError(RequestError):
         port: int,
     ) -> SSRFProtectionError:
         return cls(
-            f'Access denied: IP address {ip_str!r} failed custom validation',
+            f'access denied: IP address {ip_str!r} failed custom validation',
             hostname=hostname,
             ip_addr=ip_addr,
             port=port,
@@ -256,7 +256,7 @@ class _AddressPolicy:
                 port=port,
             )
 
-        if self.custom_validator:
+        if self.custom_validator is not None:
             result = self.custom_validator(hostname, ip_addr, port)
             if isawaitable(result):
                 result = await result
@@ -351,6 +351,8 @@ def httpx_ssrf_protection(
         The same client instance with SSRF protection configured.
 
     Raises:
+        TypeError: The client is not an HTTPX ``AsyncClient`` or
+            ``custom_validator`` is neither callable nor ``None``.
         ValueError: No policy is enabled, or a proxy, Unix socket, custom routing,
             custom transport/backend, or unsupported transport layout is present.
         RuntimeError: The client is closed, already protected, or has active or
@@ -360,10 +362,18 @@ def httpx_ssrf_protection(
     selected IP and port. DNS/connect failures and connect deadlines retain HTTPX's
     ConnectError/ConnectTimeout behavior. Custom-validator exceptions propagate.
     """
+    if not isinstance(client, AsyncClient):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(
+            f'client must be an HTTPX AsyncClient, got {type(client).__name__}'
+        )
+    if custom_validator is not None and not callable(custom_validator):
+        raise TypeError(
+            'custom_validator must be callable or None, '
+            f'got {type(custom_validator).__name__}'
+        )
     if not check_globally_reachable and custom_validator is None:
         raise ValueError(
-            'When check_globally_reachable is False, custom_validator must be provided '
-            'to ensure SSRF protection is not completely disabled',
+            'custom_validator must be provided when check_globally_reachable is False'
         )
 
     _protect_client(

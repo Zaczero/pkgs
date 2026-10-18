@@ -47,10 +47,23 @@ async def test_blocks_non_global_literals(address):
     async with httpx_ssrf_protection(httpx.AsyncClient(trust_env=False)) as client:
         with pytest.raises(SSRFProtectionError) as caught:
             await client.get(f'http://{host}/blocked')
+    assert str(caught.value) == (
+        f'access denied: IP address {address!r} is not globally reachable'
+    )
     assert caught.value.ip_addr == ip_address(address)
     assert caught.value.hostname == address
     assert caught.value.port == 80
     assert caught.value.request.url.path == '/blocked'
+
+
+def test_invalid_ip_error_names_its_parameter_and_value():
+    error = SSRFProtectionError.invalid_ip(
+        'bad address',
+        hostname='bad address',
+        port=80,
+    )
+
+    assert str(error) == "ip_str must be a valid IP address, got 'bad address'"
 
 
 @pytest.mark.parametrize(
@@ -81,6 +94,9 @@ async def test_cached_denials_are_fresh_and_bound_to_current_request():
             await client.get('https://8.8.8.8/first')
         with pytest.raises(SSRFProtectionError) as second:
             await client.get('https://8.8.8.8/second')
+    assert str(first.value) == (
+        "access denied: IP address '8.8.8.8' failed custom validation"
+    )
     assert calls == [('8.8.8.8', ip_address('8.8.8.8'), 443)]
     assert first.value is not second.value
     assert first.value.request.url.path == '/first'
@@ -105,7 +121,7 @@ async def test_global_check_can_be_disabled_with_custom_policy(server_factory):
         assert seen == [('127.0.0.1', ip_address('127.0.0.1'), server.port)]
 
 
-def test_disabling_global_check_requires_custom_validator():
-    client = httpx.AsyncClient(trust_env=False)
-    with pytest.raises(ValueError, match='custom_validator must be provided'):
-        httpx_ssrf_protection(client, check_globally_reachable=False)
+async def test_disabling_global_check_requires_custom_validator():
+    async with httpx.AsyncClient(trust_env=False) as client:
+        with pytest.raises(ValueError, match='custom_validator must be provided'):
+            httpx_ssrf_protection(client, check_globally_reachable=False)

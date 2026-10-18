@@ -151,3 +151,54 @@ async def test_closed_client_and_duplicate_installation_are_rejected():
             httpx_ssrf_protection(client)
     with pytest.raises(RuntimeError):
         httpx_ssrf_protection(client)
+
+
+@pytest.mark.parametrize(
+    ('client', 'client_type'),
+    [
+        pytest.param(None, 'NoneType', id='none'),
+        pytest.param(object(), 'object', id='other-object'),
+    ],
+)
+def test_non_async_client_is_rejected_before_transport_inspection(client, client_type):
+    with pytest.raises(
+        TypeError,
+        match=f'client must be an HTTPX AsyncClient, got {client_type}',
+    ):
+        httpx_ssrf_protection(client)
+
+
+def test_sync_httpx_client_is_rejected_before_transport_inspection():
+    with (
+        httpx.Client(trust_env=False) as client,
+        pytest.raises(
+            TypeError,
+            match='client must be an HTTPX AsyncClient, got Client',
+        ),
+    ):
+        httpx_ssrf_protection(client)
+
+
+@pytest.mark.parametrize(
+    ('validator', 'validator_type'),
+    [
+        pytest.param(False, 'bool', id='false'),
+        pytest.param(0, 'int', id='zero'),
+        pytest.param(object(), 'object', id='object'),
+    ],
+)
+async def test_noncallable_validator_is_rejected_before_transport_inspection(
+    validator, validator_type
+):
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200))
+    async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
+        with pytest.raises(
+            TypeError,
+            match=(f'custom_validator must be callable or None, got {validator_type}'),
+        ):
+            httpx_ssrf_protection(
+                client,
+                check_globally_reachable=False,
+                custom_validator=validator,
+            )
+        assert client._transport is transport

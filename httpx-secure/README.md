@@ -147,9 +147,10 @@ write timeouts retain HTTPX/HTTPcore's separate phase semantics. Custom-validato
 exceptions propagate; temporary connection failures and cancellation are not
 cached as denials.
 
-`ValueError` reports unsupported routing/configuration or a completely disabled
-policy. `RuntimeError` reports a closed/already-protected client or setup attempted
-during active use. Finish or close outstanding responses before retrying setup.
+`TypeError` reports a non-`AsyncClient` or non-callable validator. `ValueError`
+reports unsupported routing/configuration or a completely disabled policy.
+`RuntimeError` reports a closed/already-protected client or setup attempted during
+active use. Finish or close outstanding responses before retrying setup.
 
 ### SSRFProtectionError
 
