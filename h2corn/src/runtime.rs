@@ -1081,7 +1081,11 @@ mod tests {
                     .expect("scope-cache worker does not panic")
                     .expect("scope-cache lookup succeeds")
             });
-            assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
+            assert!(
+                pointers
+                    .array_windows::<2>()
+                    .all(|[left, right]| left == right)
+            );
         }
     }
 
