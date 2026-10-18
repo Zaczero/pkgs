@@ -310,7 +310,11 @@ impl<'py> PyConfig<'py> {
     /// `Config.__post_init__` owns every "these settings go together" rule,
     /// so nothing is re-checked here: this turns bytes into an acceptor.
     fn tls(&self, material: &TlsMaterial, http1: bool) -> PyResult<TlsConfig> {
-        build_tls_config(material, self.cert_reqs()?, http1).map_err(Into::into)
+        let cert_reqs = self.cert_reqs()?;
+        self.0
+            .py()
+            .detach(|| build_tls_config(material, cert_reqs, http1))
+            .map_err(Into::into)
     }
 
     fn server_config(&self, tls: Option<TlsConfig>) -> PyResult<ServerConfig> {
@@ -483,8 +487,9 @@ pub(crate) fn prepare_tls(
 /// Returns:
 ///     None: The banner has been emitted.
 pub(crate) fn emit_banner(config: &Bound<'_, PyAny>, tls: &PreparedTls) -> PyResult<()> {
+    let py = config.py();
     let config = PyConfig(config).server_config(None)?;
-    emit_access_banner(&config, tls.0.is_some());
+    py.detach(|| emit_access_banner(&config, tls.0.is_some()));
     Ok(())
 }
 
@@ -940,7 +945,7 @@ pub(crate) fn serve_fds<'py>(
     })?;
     let py_config = PyConfig(config);
     let config = py_config.server_config(prepared_tls.0.clone())?;
-    init_tokio_runtime(config.runtime_threads)?;
+    py.detach(|| init_tokio_runtime(config.runtime_threads))?;
     let config = Arc::new(config);
 
     let (main_shard, loop_factory) = ShardHandle::from_running_loop(py)?;
@@ -976,11 +981,11 @@ pub(crate) fn serve_fds<'py>(
     };
     let mut shard_threads: Vec<ShardThread> = Vec::new();
     for index in 1..loop_count {
-        let thread = match spawn_shard_thread(index, loop_factory) {
+        let thread = match py.detach(|| spawn_shard_thread(index, loop_factory)) {
             Ok(thread) => thread,
             Err(err) => {
                 for thread in shard_threads {
-                    if let Err(detail) = thread.shutdown() {
+                    if let Err(detail) = py.detach(|| thread.shutdown()) {
                         crate::server::report_failure(
                             "shard thread startup cleanup",
                             Err(H2CornError::from(PyRuntimeError::new_err(format!(
@@ -1021,7 +1026,7 @@ pub(crate) fn serve_fds<'py>(
         Ok(future) => future,
         Err(err) => {
             drop(app);
-            drop(shard_threads);
+            py.detach(move || drop(shard_threads));
             main_shard.detach(py);
             return Err(err);
         },

@@ -122,10 +122,18 @@ mod dict_api {
 
     pub(super) type CachedKey = Py<PyString>;
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "portable helpers share the fallible CPython dictionary interface"
+    )]
     pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
         Ok(PyString::intern(py, text).unbind())
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "portable helpers share the fallible CPython dictionary interface"
+    )]
     pub(super) fn new_dict(py: Python<'_>, _capacity: usize) -> PyResult<Bound<'_, PyDict>> {
         Ok(PyDict::new(py))
     }

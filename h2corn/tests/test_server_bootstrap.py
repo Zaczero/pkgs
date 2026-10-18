@@ -77,6 +77,158 @@ def _run_with_eager_task_factory(
         runner.run(scenario())
 
 
+@_posix_fd_bind
+@pytest.mark.parametrize('log_format', ['text', 'json'])
+def test_startup_banner_allows_python_to_drain_full_stderr(log_format: str) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import json
+import os
+import sys
+import threading
+
+from h2corn import Config, _lib
+
+config = Config(port=0, log_format=sys.argv[1], access_log=False)
+tls = _lib.prepare_tls(config)
+read_fd, write_fd = os.pipe()
+saved_stderr = os.dup(2)
+captured = bytearray()
+go = threading.Event()
+
+def drain():
+    go.wait()
+    while chunk := os.read(read_fd, 65536):
+        captured.extend(chunk)
+
+thread = threading.Thread(target=drain)
+thread.start()
+try:
+    os.set_blocking(write_fd, False)
+    filled = 0
+    try:
+        while True:
+            filled += os.write(write_fd, b'x' * 4096)
+    except BlockingIOError:
+        pass
+    os.set_blocking(write_fd, True)
+    os.dup2(write_fd, 2)
+    os.close(write_fd)
+    # The waiting Python thread must run during the native write, rather than
+    # being scheduled between opening its gate and entering emit_banner.
+    sys.setswitchinterval(1000)
+    go.set()
+    _lib.emit_banner(config, tls)
+finally:
+    os.dup2(saved_stderr, 2)
+    os.close(saved_stderr)
+    thread.join()
+    os.close(read_fd)
+
+banner = captured[filled:].decode()
+if sys.argv[1] == 'json':
+    assert [json.loads(line)['event'] for line in banner.splitlines()] == [
+        'starting', 'listening', 'http1_enabled',
+    ]
+else:
+    assert 'h2corn' in banner
+assert len(captured) > filled
+print('banner drained')
+""",
+            log_format,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=HANG_BOUND,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == 'banner drained\n'
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    reason='requires a free-threaded interpreter with the GIL disabled',
+)
+@pytest.mark.parametrize('fail_startup', [False, True])
+def test_secondary_loop_collection_during_startup_and_rollback(
+    fail_startup: bool,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import asyncio
+import gc
+import sys
+import threading
+
+from h2corn import Config, Server
+
+assert not sys._is_gil_enabled()
+fail_startup = sys.argv[1] == 'True'
+create_loop = asyncio.new_event_loop
+loops = []
+thread_ids = []
+
+def collecting_loop():
+    gc.collect()
+    thread_ids.append(threading.get_ident())
+    if fail_startup and len(thread_ids) == 2:
+        raise RuntimeError('secondary initialization failed')
+    loop = create_loop()
+    loops.append(loop)
+    return loop
+
+async def app(scope, receive, send):
+    assert scope['type'] == 'lifespan'
+    assert (await receive())['type'] == 'lifespan.startup'
+    await send({'type': 'lifespan.startup.complete'})
+    assert (await receive())['type'] == 'lifespan.shutdown'
+    await send({'type': 'lifespan.shutdown.complete'})
+
+async def run():
+    asyncio.new_event_loop = collecting_loop
+    server = Server(
+        app, Config(port=0, loop_threads=3, lifespan='on', access_log=False),
+    )
+    if fail_startup:
+        try:
+            await server.serve()
+        except RuntimeError as error:
+            assert str(error) == 'secondary initialization failed'
+        else:
+            raise AssertionError('secondary initialization must fail')
+    else:
+        task = asyncio.create_task(server.serve())
+        await server.wait_started()
+        server.shutdown()
+        await task
+    assert server.addresses == ()
+
+asyncio.run(run())
+assert len(thread_ids) == 2
+assert not set(thread_ids).intersection(sys._current_frames())
+assert len(loops) == (1 if fail_startup else 2)
+assert all(loop.is_closed() for loop in loops)
+assert not sys._is_gil_enabled()
+print('secondary loops released')
+""",
+            str(fail_startup),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=HANG_BOUND,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == 'secondary loops released\n'
+
+
 def test_server_starts_and_stops_with_eager_task_factory() -> None:
     async def scenario() -> None:
         lifecycle: list[str] = []

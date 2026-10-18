@@ -579,25 +579,29 @@ impl<'py> AsgiMessage<'py> {
             duplicated => unsafe { OwnedFd::from_raw_fd(duplicated) },
         };
 
-        let metadata = fstat(&duplicated).map_err(|err| H2CornError::from(io::Error::from(err)))?;
-        // sendfile requires a regular file as its input, and a directory or
-        // socket here is an application bug rather than a transport condition.
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
-            return HttpResponseError::ZeroCopySendNotRegularFile.err();
-        }
-        // Readability is checked here rather than discovered by the first read:
-        // an `O_WRONLY` or `O_PATH` descriptor fails only once the response
-        // head is already committed, where the application can no longer
-        // substitute a fallback.
-        // SAFETY: the descriptor is one we own and have not closed.
-        let flags = match unsafe { libc::fcntl(duplicated.as_raw_fd(), libc::F_GETFL) } {
-            -1 => return Err(H2CornError::from(io::Error::last_os_error())),
-            flags => flags,
-        };
-        if flags & libc::O_ACCMODE == libc::O_WRONLY {
-            return HttpResponseError::ZeroCopySendNotReadable.err();
-        }
-        let file = File::from(duplicated);
+        let (file, size) = value.py().detach(move || {
+            let metadata =
+                fstat(&duplicated).map_err(|err| H2CornError::from(io::Error::from(err)))?;
+            // sendfile requires a regular file as its input, and a directory or
+            // socket here is an application bug rather than a transport condition.
+            if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+                return HttpResponseError::ZeroCopySendNotRegularFile.err();
+            }
+            // Readability is checked here rather than discovered by the first read:
+            // an `O_WRONLY` or `O_PATH` descriptor fails only once the response
+            // head is already committed, where the application can no longer
+            // substitute a fallback.
+            // SAFETY: the descriptor is one we own and have not closed.
+            let flags = match unsafe { libc::fcntl(duplicated.as_raw_fd(), libc::F_GETFL) } {
+                -1 => return Err(H2CornError::from(io::Error::last_os_error())),
+                flags => flags,
+            };
+            if flags & libc::O_ACCMODE == libc::O_WRONLY {
+                return HttpResponseError::ZeroCopySendNotReadable.err();
+            }
+            let file = File::from(duplicated);
+            Ok((file, u64::try_from(metadata.st_size).unwrap_or(0)))
+        })?;
 
         let offset = Self::optional_item(self.offset_item()?)
             .map(|value| extract_unsigned(container, "offset", &value))
@@ -606,39 +610,39 @@ impl<'py> AsgiMessage<'py> {
             .map(|value| extract_unsigned(container, "count", &value))
             .transpose()?;
 
-        // "Defaults to current position if absent". Read once, here, and never
-        // advanced: the duplicate shares its file *description* -- and so its
-        // position -- with the object the application still holds.
-        let start = match offset {
-            Some(offset) => offset,
-            None => rustix::fs::seek(&file, rustix::fs::SeekFrom::Current(0))
-                .map_err(|err| H2CornError::from(io::Error::from(err)))?,
-        };
-        let size = u64::try_from(metadata.st_size).unwrap_or(0);
-        let available = size.saturating_sub(start);
-        let len = usize::try_from(count.map_or(available, |count| count.min(available))).map_err(
-            |_| {
-                H2CornError::from(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "zerocopysend length does not fit usize",
-                ))
-            },
-        )?;
+        value.py().detach(move || {
+            // "Defaults to current position if absent". Read once, here, and never
+            // advanced: the duplicate shares its file *description* -- and so its
+            // position -- with the object the application still holds.
+            let start = match offset {
+                Some(offset) => offset,
+                None => rustix::fs::seek(&file, rustix::fs::SeekFrom::Current(0))
+                    .map_err(|err| H2CornError::from(io::Error::from(err)))?,
+            };
+            let available = size.saturating_sub(start);
+            let len = usize::try_from(count.map_or(available, |count| count.min(available)))
+                .map_err(|_| {
+                    H2CornError::from(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zerocopysend length does not fit usize",
+                    ))
+                })?;
 
-        // "Until its end" is an I/O condition; `st_size` is only a snapshot of
-        // it. They disagree on the synthetic filesystems: `/proc/version` is a
-        // regular, seekable file reporting `st_size == 0` that nonetheless
-        // reads its contents. Believing the metadata there would answer an
-        // empty body and call it a complete response, so the disagreement is
-        // detected and reported instead of served.
-        if len == 0 && count.is_none() {
-            let mut probe = [0_u8; 1];
-            if read_at(&file, &mut probe, start).map_err(H2CornError::from)? != 0 {
-                return HttpResponseError::ZeroCopySendLengthUnknown.err();
+            // "Until its end" is an I/O condition; `st_size` is only a snapshot of
+            // it. They disagree on the synthetic filesystems: `/proc/version` is a
+            // regular, seekable file reporting `st_size == 0` that nonetheless
+            // reads its contents. Believing the metadata there would answer an
+            // empty body and call it a complete response, so the disagreement is
+            // detected and reported instead of served.
+            if len == 0 && count.is_none() {
+                let mut probe = [0_u8; 1];
+                if read_at(&file, &mut probe, start).map_err(H2CornError::from)? != 0 {
+                    return HttpResponseError::ZeroCopySendLengthUnknown.err();
+                }
             }
-        }
 
-        Ok((file, start, len))
+            Ok((file, start, len))
+        })
     }
 
     fn optional_backed_str(
