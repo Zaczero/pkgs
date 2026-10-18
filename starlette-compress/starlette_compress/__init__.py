@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from operator import index
 
 from starlette.datastructures import MutableHeaders
 
@@ -16,6 +17,19 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+def _validate_level(name: str, value: int, maximum: int) -> int:
+    try:
+        level = index(value)
+    except TypeError as error:
+        raise TypeError(
+            f'{name} must be an integer, got {type(value).__name__}'
+        ) from error
+    if not 0 <= level <= maximum:
+        raise ValueError(f'{name} must be between 0 and {maximum}, got {level}')
+    return level
+
 
 __version__ = '1.8.0'
 
@@ -59,11 +73,19 @@ class CompressMiddleware:
         :param zstd: Enable Zstandard compression.
         :param zstd_level: Zstandard compression level. Valid values are all negative integers (faster) to 22 (best).
         :param brotli: Enable Brotli compression.
-        :param brotli_quality: Brotli quality level, 0 (fastest) to 11 (best).
+        :param brotli_quality: Brotli quality level, 0 (fastest) to 11 (best). Checked when enabled.
         :param gzip: Enable Gzip compression.
-        :param gzip_level: Gzip compression level, 0 (fastest) to 9 (best).
+        :param gzip_level: Gzip compression level, 0 (fastest) to 9 (best). Checked when enabled.
         :param remove_accept_encoding: Remove request Accept-Encoding after reading it.
+
+        :raises TypeError: An enabled Brotli quality or Gzip level is not an integer.
+        :raises ValueError: An enabled Brotli quality or Gzip level is outside its valid range.
         """
+        if brotli:
+            brotli_quality = _validate_level('brotli_quality', brotli_quality, 11)
+        if gzip:
+            gzip_level = _validate_level('gzip_level', gzip_level, 9)
+
         self.app = app
         self._identity = IdentityResponder(app, minimum_size)
         self._remove_accept_encoding = remove_accept_encoding

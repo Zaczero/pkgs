@@ -79,9 +79,7 @@ class CompressionResponder:
 
             if message_type == 'http.response.start':
                 if started:
-                    raise AssertionError(
-                        'Unexpected repeated http.response.start message'
-                    )
+                    raise RuntimeError('http.response.start has already been received')
 
                 verdict = classify_start_message(message)
                 if verdict == 'skip':

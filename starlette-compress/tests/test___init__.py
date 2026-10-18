@@ -1254,22 +1254,151 @@ def test_trailers_after_body_no_duplicate_start():
     )
 
 
-def test_repeated_start_raises():
+@pytest.mark.parametrize('accept_encoding', ['identity', 'gzip'])
+def test_repeated_start_raises_runtime_error_and_preserves_response(
+    accept_encoding,
+):
+    errors: list[RuntimeError] = []
+    original_start: Message = {
+        'type': 'http.response.start',
+        'status': 201,
+        'headers': [(b'content-type', b'text/plain'), (b'x-original', b'retained')],
+    }
+
+    async def app(scope, receive, send):
+        await send(original_start)
+        with pytest.raises(
+            RuntimeError,
+            match=r'http\.response\.start has already been received',
+        ) as caught:
+            await send({
+                'type': 'http.response.start',
+                'status': 500,
+                'headers': [(b'content-type', b'text/plain')],
+            })
+        errors.append(caught.value)
+        await send({'type': 'http.response.body', 'body': b'original'})
+
+    middleware = CompressMiddleware(app)
+    sent = asyncio.run(run_asgi(middleware, accept_encoding=accept_encoding))
+
+    starts = [message for message in sent if message['type'] == 'http.response.start']
+    bodies = [message for message in sent if message['type'] == 'http.response.body']
+    assert len(errors) == 1
+    assert len(starts) == 1
+    assert starts[0]['status'] == 201
+    assert starts[0]['headers'] == original_start['headers']
+    assert bodies == [{'type': 'http.response.body', 'body': b'original'}]
+
+
+@pytest.mark.parametrize(
+    ('setting', 'value', 'error_type', 'message'),
+    [
+        pytest.param(
+            'brotli_quality',
+            -1,
+            ValueError,
+            'brotli_quality must be between 0 and 11, got -1',
+            id='brotli-too-low',
+        ),
+        pytest.param(
+            'brotli_quality',
+            12,
+            ValueError,
+            'brotli_quality must be between 0 and 11, got 12',
+            id='brotli-too-high',
+        ),
+        pytest.param(
+            'brotli_quality',
+            1.5,
+            TypeError,
+            'brotli_quality must be an integer, got float',
+            id='brotli-wrong-type',
+        ),
+        pytest.param(
+            'gzip_level',
+            -1,
+            ValueError,
+            'gzip_level must be between 0 and 9, got -1',
+            id='gzip-too-low',
+        ),
+        pytest.param(
+            'gzip_level',
+            10,
+            ValueError,
+            'gzip_level must be between 0 and 9, got 10',
+            id='gzip-too-high',
+        ),
+        pytest.param(
+            'gzip_level',
+            '4',
+            TypeError,
+            'gzip_level must be an integer, got str',
+            id='gzip-wrong-type',
+        ),
+    ],
+)
+def test_enabled_codec_levels_are_validated_at_setup(
+    setting, value, error_type, message
+):
+    async def app(scope, receive, send):
+        return None
+
+    options = {'zstd': False, 'brotli': False, 'gzip': False, setting: value}
+    options['brotli' if setting == 'brotli_quality' else 'gzip'] = True
+
+    with pytest.raises(error_type) as caught:
+        CompressMiddleware(app, **options)
+
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(
+    ('setting', 'value', 'encoding'),
+    [
+        pytest.param('brotli_quality', 0, 'br', id='brotli-fastest'),
+        pytest.param('brotli_quality', 11, 'br', id='brotli-best'),
+        pytest.param('gzip_level', 0, 'gzip', id='gzip-fastest'),
+        pytest.param('gzip_level', 9, 'gzip', id='gzip-best'),
+    ],
+)
+def test_enabled_codec_level_boundaries_reach_the_provider(setting, value, encoding):
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
             'status': 200,
             'headers': [(b'content-type', b'text/plain')],
         })
-        await send({
-            'type': 'http.response.start',
-            'status': 200,
-            'headers': [(b'content-type', b'text/plain')],
-        })
+        await send({'type': 'http.response.body', 'body': b'x' * 1000})
 
-    middleware = CompressMiddleware(app)
-    with pytest.raises(AssertionError, match=r'repeated http\.response\.start'):
-        asyncio.run(run_asgi(middleware, accept_encoding='gzip'))
+    options = {'zstd': False, 'brotli': False, 'gzip': False, setting: value}
+    options['brotli' if setting == 'brotli_quality' else 'gzip'] = True
+    sent = asyncio.run(
+        run_asgi(
+            CompressMiddleware(app, minimum_size=1, **options),
+            accept_encoding=encoding,
+        )
+    )
+
+    headers = {name.lower(): value for name, value in sent[0]['headers']}
+    assert headers[b'content-encoding'] == encoding.encode()
+    assert any(message['type'] == 'http.response.body' for message in sent)
+
+
+def test_disabled_codec_levels_are_not_validated():
+    async def app(scope, receive, send):
+        return None
+
+    middleware = CompressMiddleware(
+        app,
+        zstd=False,
+        brotli=False,
+        brotli_quality=12,
+        gzip=False,
+        gzip_level=-1,
+    )
+
+    assert middleware.app is app
 
 
 def test_case_insensitive_event_stream_content_type():

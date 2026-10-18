@@ -81,6 +81,8 @@ app = Starlette(middleware=middleware)
 
 Adjust compression levels to trade compression work for output size. Supported
 levels and defaults are in the [constructor reference](starlette_compress/__init__.py).
+Enabled Brotli qualities and Gzip levels outside their documented ranges raise
+`ValueError` when the middleware is constructed.
 
 ```py
 from starlette.applications import Starlette
