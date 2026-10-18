@@ -130,7 +130,7 @@ pub(crate) fn replace_shape_coordinates(
     )?;
     if cursor.get() != replacement.len {
         return Err(GeometryErrorKind::message(format!(
-            "coordinates must have length {}; got length {}",
+            "coordinates must have length {}, got length {}",
             replacement.len,
             cursor.get(),
         )));

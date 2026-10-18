@@ -118,7 +118,7 @@ impl PyGeometryArray {
         if replacement_index != replacement.len {
             return Err(BatchError::Batch(
                 crate::geometry::GeometryErrorKind::message(format!(
-                    "coordinates must have length {}; got length {replacement_index}",
+                    "coordinates must have length {}, got length {replacement_index}",
                     replacement.len
                 )),
             ));

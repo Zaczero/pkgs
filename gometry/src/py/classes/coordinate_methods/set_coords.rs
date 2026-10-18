@@ -13,7 +13,7 @@ use crate::py::numpy::numpy_module;
 
 fn replacement_len_error(expected: usize, got: usize) -> PyErr {
     InvalidGeometryError::new_err(format!(
-        "coordinates must have length {expected}; got length {got}"
+        "coordinates must have length {expected}, got length {got}"
     ))
 }
 
