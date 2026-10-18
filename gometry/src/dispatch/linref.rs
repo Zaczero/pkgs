@@ -126,13 +126,13 @@ pub(crate) fn line_locate_input(
             let query = locate_query(point.shape.shape())?;
             let plan = line.prepared_plan();
             let cache = line.frame_cache();
-            let result = (|| {
+            let result = py.detach(move || {
                 locate.admit_query(&plan, &cache, query)?;
-                let metric = crate::crs::ResolvedMetric::from_model(&model)?;
+                let metric = crate::crs::ResolvedMetric::from_model(locate.model)?;
                 locate
                     .prepare(&metric, &plan, &cache, query)
                     .map(|(_, located)| located)
-            })();
+            });
             let located = degrade_linref_float(result, Lane::Scalar)?;
             Ok(located.into_pyobject(py)?.unbind().into())
         },
