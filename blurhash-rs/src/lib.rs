@@ -99,6 +99,7 @@ impl RgbDimensions {
 
 #[pyfunction]
 fn encode_rgb(
+    py: Python<'_>,
     rgb: &[u8],
     width: usize,
     height: usize,
@@ -106,7 +107,7 @@ fn encode_rgb(
     y_components: u8,
 ) -> PyResult<String> {
     let dimensions = RgbDimensions::new(width, height).map_err(BlurhashError::into_pyerr)?;
-    encode::encode_rgb(rgb, &dimensions, x_components, y_components)
+    py.detach(|| encode::encode_rgb(rgb, &dimensions, x_components, y_components))
         .map_err(BlurhashError::into_pyerr)
 }
 
@@ -126,7 +127,7 @@ fn decode_rgb(
         .validate_working_storage(layout.num_x, layout.num_y)
         .map_err(BlurhashError::into_pyerr)?;
     let out = PyBytes::new_with(py, dimensions.rgb_len(), |buf| {
-        decode::decode_rgb_into(blurhash, &dimensions, &layout, buf)
+        py.detach(|| decode::decode_rgb_into(blurhash, &dimensions, &layout, buf))
             .map_err(BlurhashError::into_pyerr)
     })?;
     Ok(out.unbind())
