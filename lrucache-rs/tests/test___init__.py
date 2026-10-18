@@ -1,5 +1,6 @@
 import gc
 import sys
+import weakref
 
 import pytest
 from lrucache_rs import LRUCache
@@ -296,21 +297,24 @@ def test_repr():
     assert repr(cache) == 'LRUCache(maxsize=5, currsize=2)'
 
 
-@pytest.mark.skipif(
-    not hasattr(sys, 'getrefcount'), reason='requires CPython reference counts'
-)
 def test_drop_releases_python_objects():
-    """When the cache is dropped, references to stored values must be released."""
-    cache = LRUCache[int, object](16)
-    obj = object()
+    """One value remains live until its final cache key is removed."""
 
-    base_refs = sys.getrefcount(obj)
-    cache[1] = obj
-    cache[2] = obj
-    assert sys.getrefcount(obj) == base_refs + 2
+    class Value:
+        pass
+
+    cache = LRUCache[int, Value](2)
+    value = Value()
+    observed = weakref.ref(value)
+    cache[1] = value
+    cache[2] = value
+    del value
+    del cache[1]
+    assert observed() is not None
     del cache
-    gc.collect()
-    assert sys.getrefcount(obj) == base_refs
+    if not getattr(sys, '_is_gil_enabled', lambda: True)():
+        gc.collect()
+    assert observed() is None
 
 
 def test_setitem_updates_value():

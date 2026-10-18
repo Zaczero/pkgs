@@ -22,6 +22,7 @@ def run_child(source: str) -> None:
 def test_clear_retires_outside_lock(owner):
     run_child(f"""
         import gc
+        import sys
         from lrucache_rs import LRUCache
 
         cache = LRUCache(4)
@@ -39,7 +40,8 @@ def test_clear_retires_outside_lock(owner):
         else:
             cache['owned'] = Finalizer()
         cache.clear()
-        gc.collect()
+        if not getattr(sys, '_is_gil_enabled', lambda: True)():
+            gc.collect()
         assert finalized == [0], finalized
         assert list(cache) == ['reentered']
         assert cache['reentered'] == 73
@@ -170,8 +172,7 @@ def test_cycles_are_collectible(owner):
             return observed
 
         observed = cycle()
-        for _ in range(5):
-            gc.collect()
+        gc.collect()
         assert observed() is None
     """)
 
@@ -196,8 +197,7 @@ def test_gc_resurrection_preserves_cache():
             cache['value'] = value
 
         cycle()
-        for _ in range(5):
-            gc.collect()
+        gc.collect()
         assert len(resurrected) == 1
         cache = resurrected.pop()
         assert cache['new'] == 47
@@ -378,8 +378,7 @@ def test_provider_exception_identity_and_tuple_cycles(provider):
             return observed
 
         observed = cycle()
-        for _ in range(5):
-            gc.collect()
+        gc.collect()
         assert observed() is None
     """)
 
@@ -407,15 +406,13 @@ def test_tuple_comparison_result_is_collectible():
             return weakref.ref(value)
 
         observed = cycle()
-        for _ in range(5):
-            gc.collect()
+        gc.collect()
         assert observed() is None
     """)
 
 
 def test_replacement_preserves_canonical_key_without_retaining_old_payload():
     run_child("""
-        import gc
         import weakref
         from lrucache_rs import LRUCache
 
@@ -439,17 +436,11 @@ def test_replacement_preserves_canonical_key_without_retaining_old_payload():
         assert next(iter(cache)) is original
         assert cache[original] is new
         del old, second, equivalent
-        for _ in range(5):
-            gc.collect()
         assert old_ref() is None
         assert unused_key_ref() is None
     """)
 
 
-@pytest.mark.skipif(
-    sys.implementation.name != 'cpython',
-    reason='requires CPython native-call profiling events',
-)
 def test_native_completion_finalizer_observes_atomic_replacement():
     run_child("""
         import gc
@@ -524,6 +515,7 @@ def test_concurrent_setdefault_keeps_one_value_identity():
 def test_removed_value_finalizers_observe_committed_state(operation):
     run_child(f"""
         import gc
+        import sys
         from lrucache_rs import LRUCache
 
         cache = LRUCache(1)
@@ -545,7 +537,7 @@ def test_removed_value_finalizers_observe_committed_state(operation):
             cache.pop('old')
         else:
             cache.popitem()
-        for _ in range(5):
+        if not getattr(sys, '_is_gil_enabled', lambda: True)():
             gc.collect()
         expected = 1 if {operation!r} in ('replace', 'evict') else 0
         assert finalized == [expected], finalized
@@ -556,6 +548,7 @@ def test_removed_value_finalizers_observe_committed_state(operation):
 def test_evicted_key_and_value_finalize_after_commit():
     run_child("""
         import gc
+        import sys
         from lrucache_rs import LRUCache
 
         cache = LRUCache(1)
@@ -570,7 +563,8 @@ def test_evicted_key_and_value_finalize_after_commit():
 
         cache[Key()] = Value()
         cache['new'] = 103
-        gc.collect()
+        if not getattr(sys, '_is_gil_enabled', lambda: True)():
+            gc.collect()
         assert sorted(finalized) == [('key', 1), ('value', 1)]
         assert cache['new'] == 103
     """)
@@ -601,6 +595,8 @@ def test_failed_insertion_retires_input_after_comparison():
             pass
         else:
             raise AssertionError('comparison error swallowed')
+        # The raised exception keeps its comparison traceback alive in a cycle
+        # with the Python request until cyclic collection clears it.
         gc.collect()
         assert finalized == [1]
         assert cache[key] == 107
