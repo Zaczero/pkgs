@@ -22,6 +22,8 @@ build = "build.rs"
 exclude = [
     ".github/*",
     ".gitignore",
+    ".cargo_vcs_info.json",
+    "Cargo.toml.orig",
     "codecov.yml",
     "x.py",
 ]

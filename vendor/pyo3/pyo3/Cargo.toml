@@ -18,6 +18,8 @@ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
 build = "build.rs"
 links = "pyo3-python"
 exclude = [
+    ".cargo_vcs_info.json",
+    "Cargo.toml.orig",
     "/.gitignore",
     ".cargo/config",
     "/codecov.yml",

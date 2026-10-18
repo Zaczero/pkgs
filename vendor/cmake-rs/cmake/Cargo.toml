@@ -14,6 +14,7 @@ edition = "2021"
 rust-version = "1.65"
 name = "cmake"
 version = "0.1.58"
+exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 build = false
 autolib = false
