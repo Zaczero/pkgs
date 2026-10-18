@@ -113,7 +113,7 @@ def test_extension_assignment_views_and_copies(points: gm.GeometryArray) -> None
     assert view[0] == replacement
     assert copied[0] == points[0]
 
-    array[[1, 2]] = [None, gm.Point(8, 8, crs=4326)]
+    array[1:3] = [None, gm.Point(8, 8, crs=4326)]
     assert view[1] is None
     assert view[2] == gm.Point(8, 8, crs=4326)
     assert copied.geometry_array.to_wkt() == points.to_wkt()
@@ -152,6 +152,8 @@ def test_extension_array_pickle_preserves_readonly(points: gm.GeometryArray) -> 
     restored = pickle.loads(pickle.dumps(values))
     with pytest.raises(ValueError, match='read-only'):
         restored[0] = gm.Point(9, 8, crs=4326)
+    with pytest.raises(ValueError, match='read-only'):
+        restored[0:1] = [gm.Point(9, 8, crs=4326)]
 
 
 def test_geometry_array_to_pandas_series_and_frame(points: gm.GeometryArray) -> None:
@@ -632,3 +634,76 @@ def test_pandas_setitem_identity() -> None:
     for position, expected in zip(positions, values, strict=True):
         assert ext[int(position)] == expected
     assert ext._geoms.crs == arr.crs
+
+
+@pytest.mark.parametrize(
+    ('key', 'selected_rows'),
+    [
+        pytest.param(slice(1, 6, 2), [1, 3, 5], id='positive-step'),
+        pytest.param(slice(-5, -1, 2), [1, 3], id='negative-bounds'),
+        pytest.param(slice(None, None, -2), [5, 3, 1], id='negative-step'),
+        pytest.param(slice(None, None, 10**100), [0], id='oversized-positive-step'),
+        pytest.param(slice(None, None, -(10**100)), [5], id='oversized-negative-step'),
+        pytest.param(slice(2, 2, 1), [], id='empty-positive-slice'),
+        pytest.param(slice(0, 0, -1), [], id='empty-negative-slice'),
+    ],
+)
+def test_extension_array_slice_setitem_preserves_slice_positions(
+    key: slice, selected_rows: list[int]
+) -> None:
+    original = gm.GeometryArray([
+        gm.Point(float(i), float(i), crs=4326) for i in range(6)
+    ])
+    data = GeometryExtensionArray(original)
+    values = [
+        gm.Point(10.0 + offset, -10.0 - offset, crs=4326)
+        for offset in range(len(selected_rows))
+    ]
+    expected = original.to_wkt()
+    for row, value in zip(selected_rows, values, strict=True):
+        expected[row] = value.to_wkt()
+
+    data[key] = values
+
+    assert data.geometry_array.to_wkt() == expected
+    assert data.geometry_array.crs == original.crs
+
+
+def test_extension_array_slice_setitem_preserves_crs_errors() -> None:
+    original = gm.GeometryArray([gm.Point(1.0, 2.0, crs=4326)])
+    data = GeometryExtensionArray(original)
+
+    with pytest.raises(gm.CRSMismatchError):
+        data[0:1] = [gm.Point(3.0, 4.0, crs=3857)]
+
+    assert canon(data.geometry_array) == canon(original)
+    assert data.geometry_array.crs == original.crs
+
+
+def test_extension_array_empty_slice_setitem_does_not_consume_values() -> None:
+    original = gm.GeometryArray([gm.Point(float(i), float(i)) for i in range(4)])
+    data = GeometryExtensionArray(original)
+
+    def unexpected_values():
+        raise AssertionError('empty slice consumed assignment values')
+        yield gm.Point(9.0, 9.0)
+
+    data[2:2] = unexpected_values()
+
+    assert canon(data.geometry_array) == canon(original)
+
+
+def test_pandas_series_slice_setitem_updates_selected_rows() -> None:
+    series = pd.Series(
+        GeometryExtensionArray(
+            gm.GeometryArray([gm.Point(float(i), float(i)) for i in range(4)])
+        )
+    )
+    replacements = [gm.Point(9.0, -9.0), gm.Point(8.0, -8.0)]
+
+    series.iloc[1:3] = replacements
+
+    assert series.array[1] == replacements[0]
+    assert series.array[2] == replacements[1]
+    assert series.array[0] == gm.Point(0.0, 0.0)
+    assert series.array[3] == gm.Point(3.0, 3.0)

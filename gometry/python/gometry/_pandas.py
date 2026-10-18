@@ -254,7 +254,17 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         else:
             key = check_array_indexer(self, key)
             if isinstance(key, slice):
-                positions = np.arange(size, dtype=np.intp)[key]
+                start, stop, step = key.indices(size)
+                selected = range(start, stop, step)
+                selected_count = len(selected)
+                if selected_count == 0:
+                    return
+                if selected_count == 1:
+                    positions = np.array([start], dtype=np.intp)
+                else:
+                    # More than one selected row bounds the step by the
+                    # admitted array length, so it fits the native index dtype.
+                    positions = np.arange(start, stop, step, dtype=np.intp)
             else:
                 key_arr = np.asarray(key)
                 if key_arr.dtype == np.bool_:
