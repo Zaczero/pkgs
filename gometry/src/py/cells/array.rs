@@ -2,7 +2,7 @@
 use std::ops::Range;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyOverflowError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -10,7 +10,6 @@ use pyo3::types::{
 use pyo3::{Bound, Py, PyErr};
 
 use crate::HeapSize;
-use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::storage::validity::ValidityMask;
 use crate::geometry::storage::{
@@ -25,16 +24,16 @@ use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::arrow_c;
 use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
-    membership_id,
+    membership_id, uncompact_floor_message,
 };
 use crate::py::cells::{
-    FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
-    PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth, py_i64_required,
-    pyfunction, rect_cells_to_polygon, sort_value_counts, uncompact_floor_error,
+    CellArrayError, FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION,
+    IntoPyObject as _, PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth,
+    py_i64_required, pyfunction, rect_cells_to_polygon, sort_value_counts,
 };
 use crate::py::numpy::{
-    astype_readonly, bool_array, float64_array, int64_array, numpy_module, uint64_array,
-    uint64_slice_array,
+    astype_readonly, bool_array, false_bool_array, float64_array, int64_array, numpy_module,
+    uint64_array, uint64_slice_array,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 use crate::py::sizeof::python_sizeof;
@@ -130,6 +129,14 @@ impl PyCellArray {
     /// factories that degrade missing geometry rows instead of rejecting them.
     pub(crate) fn from_ids_with_missing(kind: GridKind, ids: Vec<u64>, missing: Vec<bool>) -> Self {
         let missing = storage::ValidityMask::from_vec(ids.len(), missing);
+        Self::from_ids_with_mask(kind, ids, missing)
+    }
+
+    pub(crate) fn from_ids_with_mask(
+        kind: GridKind,
+        ids: Vec<u64>,
+        missing: Option<storage::ValidityMask>,
+    ) -> Self {
         Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
@@ -273,6 +280,9 @@ impl PyCellArray {
     }
 
     fn missing_mask_and_present_count(&self) -> (Option<ValidityMask>, usize) {
+        if self.storage.missing.is_none() {
+            return (None, self.len());
+        }
         let missing = if matches!(self.selection_ref(), RowSelectionRef::Identity) {
             self.storage.missing.clone()
         } else {
@@ -285,6 +295,23 @@ impl PyCellArray {
             .as_ref()
             .map_or(self.len(), ValidityMask::present_count);
         (missing, present_count)
+    }
+
+    fn contains_missing(&self) -> bool {
+        match self.selection_ref() {
+            RowSelectionRef::Identity => {
+                self.storage.missing.as_ref().is_some_and(ValidityMask::any)
+            },
+            RowSelectionRef::Window { start, len } => {
+                self.storage.missing.as_ref().is_some_and(|missing| {
+                    let end = start
+                        .checked_add(len)
+                        .expect("selected rows are bounded by the admitted storage");
+                    missing.present_in_range(start..end) != len
+                })
+            },
+            RowSelectionRef::Gather(_) => (0..self.len()).any(|row| self.is_row_missing(row)),
+        }
     }
 
     fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> Vec<T>

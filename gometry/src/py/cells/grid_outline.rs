@@ -1,10 +1,8 @@
-use pyo3::prelude::PyResult;
-
 use crate::geographic::GeographicFrame;
 use crate::geometry::{CoordSeq, LineSeq, Shape};
 use crate::py::cells::Typed;
 
-pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
+pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> crate::error::Result<Option<Typed>> {
     if outline.is_empty() {
         return Ok(None);
     }
@@ -36,7 +34,10 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     Ok(Some(publish_grid_outline(&shape, "grid dissolve")?))
 }
 
-pub(super) fn publish_grid_outline(shape: &Shape, operation: &'static str) -> PyResult<Typed> {
+pub(super) fn publish_grid_outline(
+    shape: &Shape,
+    operation: &'static str,
+) -> crate::error::Result<Typed> {
     let frame = GeographicFrame::crs84();
     let mut published = crate::geometry::publish_raw_computed_shape(shape, frame, operation)?;
     if matches!(published, Shape::MultiPolygon(_))

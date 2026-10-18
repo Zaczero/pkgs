@@ -326,7 +326,7 @@ macro_rules! h3_index_array_common {
                 {
                     (Arc::clone(&self.ids), rows.start)
                 } else {
-                    (Arc::from(self.logical_ids_vec()), 0)
+                    py.detach(|| (Arc::from(self.logical_ids_vec()), 0))
                 };
                 let array = arrow_c::primitive_u64_arc_array_windowed(ids, start, length)?;
                 arrow_c::array_capsules_with_schema(
@@ -419,20 +419,26 @@ macro_rules! h3_index_array_common {
 
             fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
                 py_bool_or_not_implemented(py, other.extract::<PyRef<Self>>().ok(), |other| {
-                    self.len() == other.len()
-                        && (0..self.len()).all(|row| self.id_at(row) == other.id_at(row))
+                    let this = self;
+                    let other = &*other;
+                    py.detach(|| {
+                        this.len() == other.len()
+                            && (0..this.len()).all(|row| this.id_at(row) == other.id_at(row))
+                    })
                 })
             }
 
-            fn __hash__(&self) -> u64 {
+            fn __hash__(&self, py: Python<'_>) -> u64 {
                 use std::hash::{Hash, Hasher};
-                let mut hasher = crate::collections::python_hasher();
-                $class_name.hash(&mut hasher);
-                self.len().hash(&mut hasher);
-                for row in 0..self.len() {
-                    self.id_at(row).hash(&mut hasher);
-                }
-                hasher.finish()
+                py.detach(|| {
+                    let mut hasher = crate::collections::python_hasher();
+                    $class_name.hash(&mut hasher);
+                    self.len().hash(&mut hasher);
+                    for row in 0..self.len() {
+                        self.id_at(row).hash(&mut hasher);
+                    }
+                    hasher.finish()
+                })
             }
 
             /// Whether an edge/vertex id appears in the array.
@@ -495,10 +501,10 @@ macro_rules! h3_index_array_common {
                 let start = clamp(start);
                 let stop = stop.map_or(len, clamp);
                 if start < stop {
-                    for row in start..stop {
-                        if self.id_at(row) == needle {
-                            return Ok(row);
-                        }
+                    if let Some(row) =
+                        value.py().detach(|| (start..stop).find(|&row| self.id_at(row) == needle))
+                    {
+                        return Ok(row);
                     }
                 }
                 let value = value
@@ -522,9 +528,11 @@ macro_rules! h3_index_array_common {
                 let Some(needle) = membership_id(value, $parse)?.map(u64::from) else {
                     return Ok(0);
                 };
-                Ok((0..self.len())
-                    .filter(|&row| self.id_at(row) == needle)
-                    .count())
+                Ok(value.py().detach(|| {
+                    (0..self.len())
+                        .filter(|&row| self.id_at(row) == needle)
+                        .count()
+                }))
             }
 
             /// Unique values and counts, ordered by descending count, with
@@ -545,7 +553,10 @@ macro_rules! h3_index_array_common {
     /// >>> counts.tolist()
     /// [1, 1, 1, 1, 1, 1]
             fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let (values, sorted_counts) = match self.value_count_entries() {
+                let (values, sorted_counts) = match py.detach(|| {
+                    self.value_count_entries()
+                        .map(|(values, counts)| (Self::from_ids(values), counts))
+                }) {
                     Ok(values) => values,
                     Err(error) => {
                         return Err(error.into_py_err(
@@ -554,7 +565,7 @@ macro_rules! h3_index_array_common {
                         ));
                     },
                 };
-                let values = match Self::from_ids(values).into_pyobject(py) {
+                let values = match values.into_pyobject(py) {
                     Ok(values) => values.into_any().unbind(),
                     Err(error) => {
                         drop(sorted_counts);
@@ -588,7 +599,10 @@ macro_rules! h3_index_array_common {
     /// >>> len(codes) == len(edges)
     /// True
             fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let (uniques, codes) = match self.factorize_entries() {
+                let (uniques, codes) = match py.detach(|| {
+                    self.factorize_entries()
+                        .map(|(uniques, codes)| (Self::from_ids(uniques), codes))
+                }) {
                     Ok(values) => values,
                     Err(error) => {
                         return Err(error.into_py_err(
@@ -604,7 +618,7 @@ macro_rules! h3_index_array_common {
                         return Err(error);
                     },
                 };
-                let values = match Self::from_ids(uniques).into_pyobject(py) {
+                let values = match uniques.into_pyobject(py) {
                     Ok(values) => values.into_any().unbind(),
                     Err(error) => {
                         drop(codes);
@@ -618,7 +632,7 @@ macro_rules! h3_index_array_common {
                 let callable = crate::gometry_lib_module(py)?
                     .getattr(pyo3::intern!(py, $unpickle))?
                     .unbind();
-                Ok((callable, (self.logical_ids_vec(),)))
+                Ok((callable, (py.detach(|| self.logical_ids_vec()),)))
             }
 
             fn __repr__(&self) -> String {
@@ -633,10 +647,13 @@ macro_rules! h3_index_array_common {
             #[getter]
             fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 use pyo3::IntoPyObjectExt;
-                let mut tokens = Vec::with_capacity(self.len());
-                for id in self.logical_ids_vec() {
-                    tokens.push(hex_token(id));
-                }
+                let tokens = py.detach(|| {
+                    let mut tokens = Vec::with_capacity(self.len());
+                    for id in self.logical_ids_vec() {
+                        tokens.push(hex_token(id));
+                    }
+                    tokens
+                });
                 tokens.into_py_any(py)
             }
 
@@ -657,7 +674,7 @@ macro_rules! h3_index_array_common {
     /// >>> edges = cell.edges
     /// >>> type(edges.to_numpy()).__name__
     /// 'ndarray'
-fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+            fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 let owner = slf.clone().into_any();
                 let borrowed = slf.borrow();
                 if let Some(values) = borrowed.logical_contiguous_ids() {
@@ -665,7 +682,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     // the array base.
                     return unsafe { crate::py::numpy::uint64_slice_array(owner, values) };
                 }
-                crate::py::numpy::uint64_array(owner.py(), borrowed.logical_ids_vec())
+                let array = &*borrowed;
+                let py = owner.py();
+                crate::py::numpy::uint64_array(py, py.detach(|| array.logical_ids_vec()))
             }
 
             /// NumPy array protocol.
@@ -740,7 +759,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     ));
                 }
                 let array = if copy == Some(true) {
-                    let ids = slf.borrow().logical_ids_vec();
+                    let borrowed = slf.borrow();
+                    let array = &*borrowed;
+                    let ids = py.detach(|| array.logical_ids_vec());
                     crate::py::numpy::uint64_array(py, ids)?
                 } else {
                     if copy == Some(false) {
@@ -870,28 +891,19 @@ impl PyH3VertexArray {
     ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per vertex.
     #[getter]
     fn point(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
-        let ids = self.logical_ids_vec();
-        let points = py.detach(move || {
-            ids.into_iter()
-                .map(|id| {
-                    let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
-                    let latlng = LatLng::from(vertex);
-                    crate::geometry::XY {
-                        x: latlng.lng(),
-                        y: latlng.lat(),
-                    }
-                })
-                .collect::<Vec<_>>()
-        });
-        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, points.len());
-        for point in points {
-            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y));
-        }
-        let coords = builder.finish()?;
-        Ok(crate::PyGeometryArray::packed_points(
-            coords,
-            crate::Frame::Crs(crate::wgs84_crs()),
-        )?)
+        Ok(py.detach(|| {
+            let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, self.len());
+            for id in self.logical_ids_vec() {
+                let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
+                let latlng = LatLng::from(vertex);
+                builder.push(crate::geometry::Point::new_raw_xy(
+                    latlng.lng(),
+                    latlng.lat(),
+                ));
+            }
+            let coords = builder.finish()?;
+            crate::PyGeometryArray::packed_points(coords, crate::Frame::Crs(crate::wgs84_crs()))
+        })?)
     }
 }
 
@@ -916,16 +928,19 @@ impl PyH3EdgeArray {
     /// CellArray
     ///     One origin H3Cell per edge.
     #[getter]
-    fn origin(&self) -> PyCellArray {
-        let ids = self
-            .logical_ids_vec()
-            .into_iter()
-            .map(|id| {
-                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-                u64::from(edge.origin())
-            })
-            .collect();
-        PyCellArray::from_ids(GridKind::H3Cell, ids)
+    fn origin(&self, py: Python<'_>) -> PyCellArray {
+        py.detach(|| {
+            let ids = self
+                .logical_ids_vec()
+                .into_iter()
+                .map(|id| {
+                    let edge =
+                        DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                    u64::from(edge.origin())
+                })
+                .collect();
+            PyCellArray::from_ids(GridKind::H3Cell, ids)
+        })
     }
 
     /// The cells these directed edges enter.
@@ -935,16 +950,19 @@ impl PyH3EdgeArray {
     /// CellArray
     ///     One destination H3Cell per edge.
     #[getter]
-    fn destination(&self) -> PyCellArray {
-        let ids = self
-            .logical_ids_vec()
-            .into_iter()
-            .map(|id| {
-                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-                u64::from(edge.destination())
-            })
-            .collect();
-        PyCellArray::from_ids(GridKind::H3Cell, ids)
+    fn destination(&self, py: Python<'_>) -> PyCellArray {
+        py.detach(|| {
+            let ids = self
+                .logical_ids_vec()
+                .into_iter()
+                .map(|id| {
+                    let edge =
+                        DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                    u64::from(edge.destination())
+                })
+                .collect();
+            PyCellArray::from_ids(GridKind::H3Cell, ids)
+        })
     }
 
     /// Reverse every directed edge from its destination back to its origin.
@@ -961,16 +979,19 @@ impl PyH3EdgeArray {
     /// >>> edges = cell.edges
     /// >>> edges.reverse()[0].token
     /// '1672830829ffffff'
-    fn reverse(&self) -> Self {
-        let ids = self
-            .logical_ids_vec()
-            .into_iter()
-            .map(|id| {
-                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-                u64::from(edge.reverse())
-            })
-            .collect();
-        Self::from_ids(ids)
+    fn reverse(&self, py: Python<'_>) -> Self {
+        py.detach(|| {
+            let ids = self
+                .logical_ids_vec()
+                .into_iter()
+                .map(|id| {
+                    let edge =
+                        DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                    u64::from(edge.reverse())
+                })
+                .collect();
+            Self::from_ids(ids)
+        })
     }
 
     /// Edge linework along each shared cell boundary.
@@ -981,10 +1002,9 @@ impl PyH3EdgeArray {
     ///     One ``LineString`` (lon/lat, ``OGC:CRS84``) per edge.
     #[getter]
     fn line(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
-        let ids = self.logical_ids_vec();
-        let shapes = py.detach(move || {
-            let mut shapes = Vec::with_capacity(ids.len());
-            for id in ids {
+        py.detach(|| {
+            let mut shapes = Vec::with_capacity(self.len());
+            for id in self.logical_ids_vec() {
                 let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
                 let boundary = edge.boundary();
                 let points: Vec<_> = boundary
@@ -999,12 +1019,9 @@ impl PyH3EdgeArray {
                     "H3 edge",
                 )?);
             }
-            Ok::<_, PyErr>(shapes)
-        })?;
-        Ok(crate::PyGeometryArray::from_shapes(
-            shapes,
-            crate::Frame::Crs(crate::wgs84_crs()),
-        )?)
+            crate::PyGeometryArray::from_shapes(shapes, crate::Frame::Crs(crate::wgs84_crs()))
+        })
+        .map_err(PyErr::from)
     }
 
     /// Length of every edge in meters (spherical, like `H3Cell.area`).
@@ -1015,9 +1032,9 @@ impl PyH3EdgeArray {
     ///     One ``float64`` length per edge.
     #[getter]
     fn length(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let ids = self.logical_ids_vec();
-        let values = py.detach(move || {
-            ids.into_iter()
+        let values = py.detach(|| {
+            self.logical_ids_vec()
+                .into_iter()
                 .map(|id| {
                     DirectedEdgeIndex::try_from(id)
                         .expect("ids validated at construction")

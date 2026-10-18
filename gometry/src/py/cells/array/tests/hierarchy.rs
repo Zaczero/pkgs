@@ -19,7 +19,7 @@
                 PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![0, 0], vec![true, true]),
             ] {
                 cells
-                    .parent(Some(&depth))
+                    .parent(py, Some(&depth))
                     .expect("empty parent does not inspect depth");
                 cells
                     .children_count(py, Some(&depth))
@@ -57,7 +57,7 @@
             ]);
 
             let parent = cells
-                .parent(Some(&depth))
+                .parent(py, Some(&depth))
                 .expect("parent resolves one shared explicit depth");
             let expected_parent = h3o::CellIndex::try_from(cells.id_at(0))
                 .expect("valid H3 id")

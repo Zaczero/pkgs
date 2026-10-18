@@ -5,8 +5,7 @@ use pyo3::basic::CompareOp;
 use pyo3::prelude::*;
 
 use crate::grid::cell::{CellPickleArg, GridCell};
-use crate::py::cells::{GridKind, PyCellArray, lonlat_point_geometry};
-use crate::py::errors::GeometryError;
+use crate::py::cells::{CellArrayError, GridKind, PyCellArray, lonlat_point_geometry};
 use crate::{PyGeometry, Typed};
 
 pub(crate) fn cell_center<G: GridCell>(cell: G) -> Typed {
@@ -31,14 +30,14 @@ where
 }
 
 /// Resolve the target depth for parent walks (explicit depth, or one coarser).
-fn parent_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<u8> {
+fn parent_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> Result<u8, CellArrayError> {
     depth.map_or_else(
         || {
             cell.depth()
                 .checked_sub(1)
                 .filter(|target| (G::MIN_DEPTH..=G::MAX_DEPTH).contains(target))
                 .ok_or_else(|| {
-                    GeometryError::new_err(format!(
+                    CellArrayError::Geometry(format!(
                         "a minimum-{} cell has no parent",
                         G::DEPTH_NAME
                     ))
@@ -51,12 +50,15 @@ fn parent_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<u8> 
 /// Resolve the target depth for children / descendant walks.
 ///
 /// Returns `None` when the default walk is requested at max depth (empty / zero).
-fn children_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<Option<u8>> {
+fn children_target_depth<G: GridCell>(
+    cell: G,
+    depth: Option<u8>,
+) -> Result<Option<u8>, CellArrayError> {
     let current = cell.depth();
     match depth {
         Some(target) => {
             if target < current {
-                return Err(GeometryError::new_err(format!(
+                return Err(CellArrayError::Geometry(format!(
                     "children {} must be >= cell {}",
                     G::DEPTH_NAME,
                     G::DEPTH_NAME
@@ -79,13 +81,16 @@ where
     P: FnOnce(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
     let depth = parse_explicit_depth(depth, parse_depth)?;
-    cell_parent_at_depth(cell, depth)
+    Ok(cell_parent_at_depth(cell, depth)?)
 }
 
-pub(crate) fn cell_parent_at_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<G> {
+pub(crate) fn cell_parent_at_depth<G: GridCell>(
+    cell: G,
+    depth: Option<u8>,
+) -> Result<G, CellArrayError> {
     let target = parent_target_depth(cell, depth)?;
     cell.parent_at(target).ok_or_else(|| {
-        GeometryError::new_err(format!(
+        CellArrayError::Geometry(format!(
             "parent {} must be <= cell {}",
             G::DEPTH_NAME,
             G::DEPTH_NAME
@@ -107,13 +112,13 @@ where
     P: FnOnce(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
     let depth = parse_explicit_depth(depth, parse_depth)?;
-    cell_descendant_count_at_depth(cell, depth)
+    Ok(cell_descendant_count_at_depth(cell, depth)?)
 }
 
 pub(crate) fn cell_descendant_count_at_depth<G: GridCell>(
     cell: G,
     depth: Option<u8>,
-) -> PyResult<u64> {
+) -> Result<u64, CellArrayError> {
     let Some(target) = children_target_depth(cell, depth)? else {
         return Ok(0);
     };

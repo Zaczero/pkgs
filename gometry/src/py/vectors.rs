@@ -12,7 +12,7 @@ use std::ffi::c_int;
 use std::ops::Range;
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PySequence};
 use pyo3::{IntoPyObjectExt as _, ffi};
@@ -24,7 +24,7 @@ use crate::geometry::storage::ValidityMask;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::numpy::{
-    ImmutableI64Owner, bool_array, frozen_i64_owner, frozen_i64_view, int64_array,
+    ImmutableI64Owner, bool_array, false_bool_array, frozen_i64_owner, frozen_i64_view, int64_array,
 };
 use crate::py::row::{
     RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices,
@@ -49,6 +49,17 @@ fn preview(
         body.join(", "),
         ellipsis
     ))
+}
+
+fn rows_to_list(
+    py: Python<'_>,
+    rows: impl ExactSizeIterator<Item = PyResult<Py<PyAny>>>,
+) -> PyResult<Py<PyAny>> {
+    let mut output = Vec::with_capacity(rows.len());
+    for row in rows {
+        output.push(row?);
+    }
+    PyList::new(py, output)?.into_py_any(py)
 }
 
 #[cfg(test)]
@@ -83,7 +94,10 @@ const fn contiguous_positive_window(
     Some(start as usize..stop as usize)
 }
 
-fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyResult<bool> {
+fn geometry_arrays_equal(
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+) -> crate::error::Result<bool> {
     if left.frame != right.frame || left.missing() != right.missing() || left.len() != right.len() {
         return Ok(false);
     }
@@ -138,9 +152,15 @@ pub struct Groups {
     missing: Option<ValidityMask>,
 }
 
-enum GroupsContainsNeedle {
+enum GroupsNeedle {
     NoMatch,
     Missing,
+    Int64(Vec<i64>),
+    Geometry(PyGeometryArray),
+    Cells(PyCellArray),
+}
+
+enum GroupsPicklePayload {
     Int64(Vec<i64>),
     Geometry(PyGeometryArray),
     Cells(PyCellArray),
@@ -208,13 +228,11 @@ impl Groups {
             .expect("Groups row values are bounded by admitted offsets")
     }
 
-    fn geometry_row_view(&self, row: usize) -> PyResult<PyGeometryArray> {
+    fn geometry_row_view(&self, row: usize) -> crate::error::Result<PyGeometryArray> {
         let GroupsValues::Geometry(values) = &self.values else {
             unreachable!("geometry_row_view requires Geometry backing");
         };
-        values
-            .gather_logical_row_range(self.row_values_window(row))
-            .map_err(PyErr::from)
+        values.gather_logical_row_range(self.row_values_window(row))
     }
 
     fn cell_row_view(&self, row: usize) -> PyCellArray {
@@ -230,6 +248,78 @@ impl Groups {
             offsets: Arc::clone(&self.offsets),
             rows,
             missing: self.missing.clone(),
+        }
+    }
+
+    fn gather_rows(
+        &self,
+        rows: impl ExactSizeIterator<Item = usize> + Clone,
+        count: usize,
+    ) -> crate::error::Result<Self> {
+        let offsets = self.visible_offsets();
+        let missing = ValidityMask::from_missing_iter(
+            count,
+            rows.clone().map(|row| self.row_is_missing(row)),
+        );
+        let value_count = rows.clone().try_fold(0_usize, |total, row| {
+            total
+                .checked_add(Self::row_values_window_at(offsets, row).len())
+                .ok_or_else(|| {
+                    crate::error::Error::from(crate::error::ResourceError::SizeOverflowContext(
+                        "Groups values size overflows usize",
+                    ))
+                })
+        })?;
+
+        match &self.values {
+            GroupsValues::Int64(values) => {
+                let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count);
+                for row in rows {
+                    let row_values = values
+                        .get(Self::row_values_window_at(offsets, row))
+                        .expect("Groups row values are bounded by admitted offsets");
+                    builder.values_mut().extend_from_slice(row_values);
+                    let end = builder.len();
+                    builder.push_end(end)?;
+                }
+                let (ids, offsets) = builder.finish();
+                Ok(Self {
+                    values: GroupsValues::Int64(ids.into()),
+                    offsets: offsets.into(),
+                    rows: 0..count,
+                    missing,
+                })
+            },
+            GroupsValues::Geometry(values) => {
+                debug_assert!(
+                    !values.has_missing(),
+                    "Groups geometry values are compact present rows, never masked"
+                );
+                let mut builder = CsrBuilder::<Shape>::with_capacity(value_count, count);
+                for row in rows {
+                    let row_values = values
+                        .gather_logical_row_range(Self::row_values_window_at(offsets, row))?;
+                    for shape in row_values.storage().iter_shapes() {
+                        builder.values_mut().push(shape?.into_owned());
+                    }
+                    let end = builder.len();
+                    builder.push_end(end)?;
+                }
+                let (shapes, offsets) = builder.finish();
+                let flat = PyGeometryArray::from_shapes(shapes, values.frame.clone())?;
+                Ok(Self::from_geometry_csr(flat, offsets)?.with_row_missing(missing))
+            },
+            GroupsValues::Cells(values) => {
+                let kind = values.kind();
+                let mut builder = CsrBuilder::<u64>::with_capacity(value_count, count);
+                for row in rows {
+                    let row_values =
+                        values.logical_row_range(Self::row_values_window_at(offsets, row));
+                    builder.push_row(row_values.logical_ids())?;
+                }
+                let (ids, offsets) = builder.finish();
+                Self::from_cell_flat(kind, ids, offsets, missing)
+            },
         }
     }
 
@@ -255,15 +345,11 @@ impl Groups {
             .wrapping_mul(std::mem::size_of::<i64>())
     }
 
-    pub(crate) fn geometry_values_view(&self) -> PyResult<Option<PyGeometryArray>> {
+    pub(crate) fn geometry_values_view(&self) -> crate::error::Result<Option<PyGeometryArray>> {
         let GroupsValues::Geometry(values) = &self.values else {
             return Ok(None);
         };
-        Ok(Some(
-            values
-                .gather_logical_row_range(self.values_window())
-                .map_err(PyErr::from)?,
-        ))
+        Ok(Some(values.gather_logical_row_range(self.values_window())?))
     }
 
     fn logical_payload_pyint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
@@ -334,7 +420,7 @@ impl Groups {
         }
     }
 
-    fn groups_equal(&self, other: &Self) -> PyResult<bool> {
+    fn groups_equal(&self, other: &Self) -> crate::error::Result<bool> {
         if self.rows.len() != other.rows.len()
             || (0..self.rows.len()).any(|row| {
                 self.row_is_missing(row) != other.row_is_missing(row)
@@ -433,7 +519,10 @@ impl Groups {
                 let Ok(other) = item.cast::<PyGeometryArray>() else {
                     return Ok(false);
                 };
-                geometry_arrays_equal(&self.geometry_row_view(row)?, other.get())
+                Ok(geometry_arrays_equal(
+                    &self.geometry_row_view(row)?,
+                    other.get(),
+                )?)
             },
             GroupsValues::Cells(_) => {
                 let Ok(other) = item.cast::<PyCellArray>() else {
@@ -444,60 +533,68 @@ impl Groups {
         }
     }
 
-    fn admit_contains_needle(&self, item: &Bound<'_, PyAny>) -> PyResult<GroupsContainsNeedle> {
+    fn admit_needle(&self, item: &Bound<'_, PyAny>) -> PyResult<GroupsNeedle> {
         if item.is_none() {
-            return Ok(GroupsContainsNeedle::Missing);
+            return Ok(GroupsNeedle::Missing);
         }
         match &self.values {
             GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
-                .map_or(GroupsContainsNeedle::NoMatch, GroupsContainsNeedle::Int64)),
+                .map_or(GroupsNeedle::NoMatch, GroupsNeedle::Int64)),
             GroupsValues::Geometry(_) => Ok(item
                 .cast::<PyGeometryArray>()
                 .ok()
-                .map_or(GroupsContainsNeedle::NoMatch, |other| {
-                    GroupsContainsNeedle::Geometry(other.get().clone())
+                .map_or(GroupsNeedle::NoMatch, |other| {
+                    GroupsNeedle::Geometry(other.get().clone())
                 })),
             GroupsValues::Cells(_) => Ok(item
                 .cast::<PyCellArray>()
                 .ok()
-                .map_or(GroupsContainsNeedle::NoMatch, |other| {
-                    GroupsContainsNeedle::Cells(other.get().clone())
+                .map_or(GroupsNeedle::NoMatch, |other| {
+                    GroupsNeedle::Cells(other.get().clone())
                 })),
         }
     }
 
-    fn contains_needle(&self, needle: GroupsContainsNeedle) -> PyResult<bool> {
+    fn row_matches_needle(&self, row: usize, needle: &GroupsNeedle) -> crate::error::Result<bool> {
         match needle {
-            GroupsContainsNeedle::NoMatch => Ok(false),
-            GroupsContainsNeedle::Missing => {
-                Ok((0..self.rows.len()).any(|row| self.row_is_missing(row)))
-            },
-            GroupsContainsNeedle::Int64(expected) => {
-                Ok((0..self.rows.len()).any(|row| self.int64_row_matches(row, &expected)))
-            },
-            GroupsContainsNeedle::Geometry(expected) => {
-                for row in 0..self.rows.len() {
-                    if self.row_is_missing(row) {
-                        continue;
-                    }
-                    if geometry_arrays_equal(&self.geometry_row_view(row)?, &expected)? {
-                        return Ok(true);
-                    }
+            GroupsNeedle::NoMatch => Ok(false),
+            GroupsNeedle::Missing => Ok(self.row_is_missing(row)),
+            GroupsNeedle::Int64(expected) => Ok(self.int64_row_matches(row, expected)),
+            GroupsNeedle::Geometry(expected) => {
+                if self.row_is_missing(row) {
+                    return Ok(false);
                 }
-                Ok(false)
+                geometry_arrays_equal(&self.geometry_row_view(row)?, expected)
             },
-            GroupsContainsNeedle::Cells(expected) => {
-                for row in 0..self.rows.len() {
-                    if self.row_is_missing(row) {
-                        continue;
-                    }
-                    if self.cell_row_view(row).logical_eq(&expected) {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+            GroupsNeedle::Cells(expected) => {
+                Ok(!self.row_is_missing(row) && self.cell_row_view(row).logical_eq(expected))
             },
         }
+    }
+
+    fn find_needle(
+        &self,
+        range: Range<usize>,
+        needle: &GroupsNeedle,
+    ) -> crate::error::Result<Option<usize>> {
+        for row in range {
+            if self.row_matches_needle(row, needle)? {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+
+    fn count_needle(&self, needle: &GroupsNeedle) -> crate::error::Result<usize> {
+        let mut count = 0_usize;
+        for row in 0..self.rows.len() {
+            count = count.wrapping_add(usize::from(self.row_matches_needle(row, needle)?));
+        }
+        Ok(count)
+    }
+
+    fn contains_needle(&self, needle: &GroupsNeedle) -> crate::error::Result<bool> {
+        Ok(self.find_needle(0..self.rows.len(), needle)?.is_some())
     }
 }
 
@@ -678,18 +775,22 @@ impl Groups {
             });
         }
         let this = slf.borrow();
-        let source_offsets = this
-            .offsets
-            .get(this.rows.start..=this.rows.end)
-            .expect("Groups rows are bounded by their admitted offsets");
-        let base = *source_offsets
-            .first()
-            .expect("Groups rows include their starting offset");
-        let mut offsets = Vec::with_capacity(this.rows.len().saturating_add(1));
-        for &offset in source_offsets {
-            offsets.push(offset.wrapping_sub(base));
-        }
-        int64_array(slf.py(), offsets)
+        let this = &*this;
+        let py = slf.py();
+        let offsets = py.detach(|| {
+            let source_offsets = this
+                .offsets
+                .get(this.rows.start..=this.rows.end)
+                .expect("Groups rows are bounded by their admitted offsets");
+            let base = *source_offsets
+                .first()
+                .expect("Groups rows include their starting offset");
+            source_offsets
+                .iter()
+                .map(|&offset| offset.wrapping_sub(base))
+                .collect()
+        });
+        int64_array(py, offsets)
     }
 
     /// Per-group element counts (`offsets[i + 1] - offsets[i]`). Missing
@@ -702,18 +803,26 @@ impl Groups {
     ///     A materialized, read-only int64 count for each group in row order.
     #[getter]
     fn counts(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let this = slf.borrow();
-        let mut counts = Vec::with_capacity(this.rows.len());
-        let offsets = this
-            .offsets
-            .get(this.rows.start..=this.rows.end)
-            .expect("Groups rows are bounded by their admitted offsets");
-        for pair in offsets.windows(2) {
-            let [start, end] = pair else {
-                unreachable!("two-offset windows contain two values");
-            };
-            counts.push(end.wrapping_sub(*start));
+        if slf.borrow().rows.is_empty() {
+            return int64_array(slf.py(), Vec::new());
         }
+        let this = slf.borrow();
+        let this = &*this;
+        let counts = slf.py().detach(|| {
+            let offsets = this
+                .offsets
+                .get(this.rows.start..=this.rows.end)
+                .expect("Groups rows are bounded by their admitted offsets");
+            offsets
+                .windows(2)
+                .map(|pair| {
+                    let [start, end] = pair else {
+                        unreachable!("two-offset windows contain two values");
+                    };
+                    end.wrapping_sub(*start)
+                })
+                .collect()
+        });
         int64_array(slf.py(), counts)
     }
 
@@ -726,12 +835,17 @@ impl Groups {
     #[getter]
     fn is_missing(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();
-        bool_array(
-            slf.py(),
+        if this.missing.is_none() {
+            return false_bool_array(slf.py(), this.rows.len());
+        }
+        let this = &*this;
+        let py = slf.py();
+        let missing = py.detach(|| {
             (0..this.rows.len())
                 .map(|row| this.row_is_missing(row))
-                .collect(),
-        )
+                .collect()
+        });
+        bool_array(py, missing)
     }
 
     /// Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
@@ -769,17 +883,24 @@ impl Groups {
         let py = slf.py();
         let row_ids = {
             let this = slf.borrow();
-            let offsets = this.visible_offsets();
-            let values_window = Self::values_window_in(offsets);
-            let mut row_ids = Vec::with_capacity(values_window.len());
-            for (logical_row, pair) in offsets.windows(2).enumerate() {
-                let [start, end] = pair else {
-                    unreachable!("two-offset windows contain two values");
-                };
-                let count = end.wrapping_sub(*start) as usize;
-                row_ids.extend(std::iter::repeat_n(logical_row as i64, count));
+            let this = &*this;
+            if this.values_window().is_empty() {
+                Vec::new()
+            } else {
+                py.detach(|| {
+                    let offsets = this.visible_offsets();
+                    let values_window = Self::values_window_in(offsets);
+                    let mut row_ids = Vec::with_capacity(values_window.len());
+                    for (logical_row, pair) in offsets.windows(2).enumerate() {
+                        let [start, end] = pair else {
+                            unreachable!("two-offset windows contain two values");
+                        };
+                        let count = end.wrapping_sub(*start) as usize;
+                        row_ids.extend(std::iter::repeat_n(logical_row as i64, count));
+                    }
+                    row_ids
+                })
             }
-            row_ids
         };
         let row_ids = int64_array(py, row_ids)?;
         let values = frozen_i64_view(slf, |this| {
@@ -852,6 +973,7 @@ impl Groups {
                 count,
             } => {
                 let this = slf.borrow();
+                let py = slf.py();
                 let groups = if let Some(window) = contiguous_positive_window(start, stop, step) {
                     // The normalized window is bounded by this admitted row range.
                     this.slice_rows(
@@ -860,86 +982,10 @@ impl Groups {
                     )
                 } else {
                     let rows = slice_row_indices(start, step, count);
-                    let offsets = this.visible_offsets();
-                    let missing = ValidityMask::from_missing_iter(
-                        count,
-                        rows.clone().map(|row| this.row_is_missing(row)),
-                    );
-                    match &this.values {
-                        GroupsValues::Int64(values) => {
-                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
-                                total
-                                    .checked_add(Self::row_values_window_at(offsets, row).len())
-                                    .ok_or_else(|| {
-                                        PyOverflowError::new_err(
-                                            "Groups values size overflows usize",
-                                        )
-                                    })
-                            })?;
-                            let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count);
-                            for row in rows {
-                                let row_values = values
-                                    .get(Self::row_values_window_at(offsets, row))
-                                    .expect("Groups row values are bounded by admitted offsets");
-                                builder.values_mut().extend_from_slice(row_values);
-                                let end = builder.len();
-                                builder.push_end(end).map_err(PyErr::from)?;
-                            }
-                            let (ids, offsets) = builder.finish();
-                            Self {
-                                values: GroupsValues::Int64(ids.into()),
-                                offsets: offsets.into(),
-                                rows: 0..count,
-                                missing,
-                            }
-                        },
-                        GroupsValues::Geometry(values) => {
-                            debug_assert!(
-                                !values.has_missing(),
-                                "Groups geometry values are compact present rows, never masked"
-                            );
-                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
-                                total
-                                    .checked_add(Self::row_values_window_at(offsets, row).len())
-                                    .ok_or_else(|| {
-                                        PyOverflowError::new_err(
-                                            "Groups values size overflows usize",
-                                        )
-                                    })
-                            })?;
-                            let mut builder =
-                                CsrBuilder::<Shape>::with_capacity(value_count, count);
-                            for row in rows {
-                                let row_values = values.gather_logical_row_range(
-                                    Self::row_values_window_at(offsets, row),
-                                )?;
-                                for shape in row_values.storage().iter_shapes() {
-                                    let shape = shape.map_err(PyErr::from)?.into_owned();
-                                    builder.values_mut().push(shape);
-                                }
-                                let end = builder.len();
-                                builder.push_end(end).map_err(PyErr::from)?;
-                            }
-                            let (shapes, offsets) = builder.finish();
-                            let flat = PyGeometryArray::from_shapes(shapes, values.frame.clone())?;
-                            Self::from_geometry_csr(flat, offsets)?.with_row_missing(missing)
-                        },
-                        GroupsValues::Cells(values) => {
-                            let kind = values.kind();
-                            let mut builder = CsrBuilder::<u64>::with_capacity(0, count);
-                            for row in rows {
-                                let row_values = values
-                                    .logical_row_range(Self::row_values_window_at(offsets, row));
-                                builder
-                                    .push_row(row_values.logical_ids())
-                                    .map_err(PyErr::from)?;
-                            }
-                            let (ids, offsets) = builder.finish();
-                            Self::from_cell_flat(kind, ids, offsets, missing)?
-                        },
-                    }
+                    let this = &*this;
+                    py.detach(|| this.gather_rows(rows, count))?
                 };
-                groups.into_py_any(slf.py())
+                groups.into_py_any(py)
             },
         }
     }
@@ -950,9 +996,17 @@ impl Groups {
     /// -------
     /// bool
     fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let needle = self.admit_contains_needle(item)?;
+        let needle = self.admit_needle(item)?;
+        if matches!(&needle, GroupsNeedle::NoMatch) {
+            return Ok(false);
+        }
+        if self.rows.is_empty()
+            || (matches!(&needle, GroupsNeedle::Missing) && self.missing.is_none())
+        {
+            return Ok(false);
+        }
         let groups = self.clone();
-        py.detach(move || groups.contains_needle(needle))
+        Ok(py.detach(move || groups.contains_needle(&needle))?)
     }
 
     /// First index of an equal row in ``[start, stop)``.
@@ -978,6 +1032,7 @@ impl Groups {
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
     fn index(
         &self,
+        py: Python<'_>,
         value: &Bound<'_, PyAny>,
         #[pyo3(from_py_with = crate::strict_i64)] start: i64,
         #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
@@ -996,22 +1051,23 @@ impl Groups {
         let stop = stop.map_or(row_len, clamp);
         if start < stop {
             if value.is_none() {
-                if let Some(row) = (start..stop).find(|&row| self.row_is_missing(row)) {
+                if self.missing.is_some()
+                    && let Some(row) =
+                        py.detach(|| (start..stop).find(|&row| self.row_is_missing(row)))
+                {
                     return Ok(row);
                 }
             } else if matches!(&self.values, GroupsValues::Int64(_)) {
                 if let Some(expected) = Self::parse_int64_row_item(value)? {
-                    for row in start..stop {
-                        if self.int64_row_matches(row, &expected) {
-                            return Ok(row);
-                        }
+                    let needle = GroupsNeedle::Int64(expected);
+                    if let Some(row) = py.detach(|| self.find_needle(start..stop, &needle))? {
+                        return Ok(row);
                     }
                 }
             } else {
-                for row in start..stop {
-                    if self.row_matches(row, value)? {
-                        return Ok(row);
-                    }
+                let needle = self.admit_needle(value)?;
+                if let Some(row) = py.detach(|| self.find_needle(start..stop, &needle))? {
+                    return Ok(row);
                 }
             }
         }
@@ -1032,31 +1088,33 @@ impl Groups {
     /// Returns
     /// -------
     /// int
-    fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
         if value.is_none() {
-            return Ok((0..self.rows.len())
-                .filter(|&row| self.row_is_missing(row))
-                .count());
+            if self.rows.is_empty() || self.missing.is_none() {
+                return Ok(0);
+            }
+            return Ok(py.detach(|| self.count_needle(&GroupsNeedle::Missing))?);
         }
         if matches!(&self.values, GroupsValues::Int64(_)) {
             let Some(expected) = Self::parse_int64_row_item(value)? else {
                 return Ok(0);
             };
-            return Ok((0..self.rows.len())
-                .filter(|&row| self.int64_row_matches(row, &expected))
-                .count());
+            return Ok(py.detach(|| self.count_needle(&GroupsNeedle::Int64(expected)))?);
         }
-        let mut count = 0_usize;
-        for row in 0..self.rows.len() {
-            count = count.wrapping_add(usize::from(self.row_matches(row, value)?));
+        if self.rows.is_empty() {
+            return Ok(0);
         }
-        Ok(count)
+        let needle = self.admit_needle(value)?;
+        if matches!(&needle, GroupsNeedle::NoMatch) {
+            return Ok(0);
+        }
+        Ok(py.detach(|| self.count_needle(&needle))?)
     }
 
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(groups) = other.cast::<Self>() {
             let groups = groups.get();
-            return self.groups_equal(groups)?.into_py_any(py);
+            return py.detach(|| self.groups_equal(groups))?.into_py_any(py);
         }
         let Ok(sequence) = other.cast::<PySequence>() else {
             return Ok(py.NotImplemented());
@@ -1136,64 +1194,103 @@ impl Groups {
     /// >>> [g.to_wkt() for g in groups.to_list()[0]]
     /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let mut rows = Vec::with_capacity(self.rows.len());
-        for row in 0..self.rows.len() {
-            if self.row_is_missing(row) {
-                rows.push(py.None());
-                continue;
-            }
-            let value = match &self.values {
-                GroupsValues::Int64(_) => {
-                    let source = self.int64_row_slice(row);
-                    let values = source.to_vec();
-                    values.into_py_any(py)?
-                },
-                GroupsValues::Geometry(_) => {
+        match &self.values {
+            GroupsValues::Int64(_) => {
+                let rows = py.detach(|| {
+                    (0..self.rows.len())
+                        .map(|row| {
+                            if self.row_is_missing(row) {
+                                None
+                            } else {
+                                Some(self.int64_row_slice(row).to_vec())
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                });
+                rows_to_list(
+                    py,
+                    rows.into_iter().map(|row| {
+                        row.map_or_else(|| Ok(py.None()), |values| values.into_py_any(py))
+                    }),
+                )
+            },
+            GroupsValues::Geometry(_) => rows_to_list(
+                py,
+                (0..self.rows.len()).map(|row| {
+                    if self.row_is_missing(row) {
+                        return Ok(py.None());
+                    }
                     let items = self.geometry_row_view(row)?.materialized_objects(py)?;
-                    PyList::new(py, items)?.into_py_any(py)?
-                },
-                GroupsValues::Cells(_) => {
+                    PyList::new(py, items)?.into_py_any(py)
+                }),
+            ),
+            GroupsValues::Cells(_) => rows_to_list(
+                py,
+                (0..self.rows.len()).map(|row| {
+                    if self.row_is_missing(row) {
+                        return Ok(py.None());
+                    }
                     let items = self.cell_row_view(row).to_cell_list(py)?;
-                    PyList::new(py, items)?.into_py_any(py)?
-                },
-            };
-            rows.push(value);
+                    PyList::new(py, items)?.into_py_any(py)
+                }),
+            ),
         }
-        PyList::new(py, rows)?.into_py_any(py)
     }
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let module = crate::gometry_lib_module(py)?;
-        // Pickle the LOGICAL groups: rebase offsets to start at 0 and slice the
-        // backing to the window, so a sliced Groups round-trips (the
-        // `_unpickle_*` validators require offsets[0]==0 and last==values_len).
-        let source_offsets = self
-            .offsets
-            .get(self.rows.start..=self.rows.end)
-            .expect("Groups rows are bounded by their admitted offsets");
-        let base = *source_offsets
-            .first()
-            .expect("Groups rows include their starting offset");
-        let start = base as usize;
-        let end = *source_offsets
-            .last()
-            .expect("Groups rows include their terminal offset") as usize;
-        let mut rebased = Vec::with_capacity(self.rows.len().saturating_add(1));
-        for &offset in source_offsets {
-            rebased.push(offset.wrapping_sub(base));
-        }
-        let missing = self.missing.as_ref().map(|_| {
-            (0..self.rows.len())
-                .map(|row| self.row_is_missing(row))
-                .collect::<Vec<_>>()
-        });
-        match &self.values {
-            GroupsValues::Int64(values) => {
-                let copied = values
-                    .get(start..end)
-                    .expect("Groups offsets are bounded by their int64 values")
-                    .to_vec();
-                let args = (copied, rebased, missing).into_py_any(py)?;
+        let (payload, rebased, missing) = py.detach(|| {
+            // Pickle the logical rows: rebase offsets to zero and select only
+            // the backing window so the unpickler receives a valid CSR range.
+            let source_offsets = self
+                .offsets
+                .get(self.rows.start..=self.rows.end)
+                .expect("Groups rows are bounded by their admitted offsets");
+            let base = *source_offsets
+                .first()
+                .expect("Groups rows include their starting offset");
+            let start = base as usize;
+            let end = *source_offsets
+                .last()
+                .expect("Groups rows include their terminal offset") as usize;
+            let rebased: Vec<i64> = source_offsets
+                .iter()
+                .map(|&offset| offset.wrapping_sub(base))
+                .collect();
+            let missing = self.missing.as_ref().map(|_| {
+                (0..self.rows.len())
+                    .map(|row| self.row_is_missing(row))
+                    .collect::<Vec<_>>()
+            });
+            let payload = match &self.values {
+                GroupsValues::Int64(values) => GroupsPicklePayload::Int64(
+                    values
+                        .get(start..end)
+                        .expect("Groups offsets are bounded by their int64 values")
+                        .to_vec(),
+                ),
+                GroupsValues::Geometry(values) => {
+                    let windowed = if start == 0 && end == values.len() {
+                        values.as_ref().clone()
+                    } else {
+                        values.gather_logical_row_range(start..end)?
+                    };
+                    GroupsPicklePayload::Geometry(windowed)
+                },
+                GroupsValues::Cells(values) => {
+                    let windowed = if start == 0 && end == values.len() {
+                        values.as_ref().clone()
+                    } else {
+                        values.logical_row_range(start..end)
+                    };
+                    GroupsPicklePayload::Cells(windowed)
+                },
+            };
+            Ok::<_, crate::error::Error>((payload, rebased, missing))
+        })?;
+        match payload {
+            GroupsPicklePayload::Int64(values) => {
+                let args = (values, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_int64_groups_v1"))?
@@ -1201,13 +1298,8 @@ impl Groups {
                     args,
                 ))
             },
-            GroupsValues::Geometry(values) => {
-                let windowed = if start == 0 && end == values.len() {
-                    values.as_ref().clone()
-                } else {
-                    values.gather_logical_row_range(start..end)?
-                };
-                let args = (Py::new(py, windowed)?, rebased, missing).into_py_any(py)?;
+            GroupsPicklePayload::Geometry(values) => {
+                let args = (Py::new(py, values)?, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_geometry_groups_v1"))?
@@ -1215,13 +1307,8 @@ impl Groups {
                     args,
                 ))
             },
-            GroupsValues::Cells(values) => {
-                let windowed = if start == 0 && end == values.len() {
-                    values.as_ref().clone()
-                } else {
-                    values.logical_row_range(start..end)
-                };
-                let args = (Py::new(py, windowed)?, rebased, missing).into_py_any(py)?;
+            GroupsPicklePayload::Cells(values) => {
+                let args = (Py::new(py, values)?, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_cell_groups_v1"))?

@@ -6,7 +6,7 @@ use crate::grid::tile::{TILE_MAX_LATITUDE, TILE_MAX_ZOOM, Tile, root as tile_roo
 use crate::py::cells::tiles::cell::{PyTile, tile_arg};
 use crate::py::cells::tiles::coverage::tile_cell_array;
 use crate::py::cells::{
-    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
+    Bound, CellArrayError, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
     dispatch_grid_cell_array, pyfunction,
 };
 use crate::py::errors::InvalidGeometryError;
@@ -77,10 +77,10 @@ pub(super) fn tile_cells(
         GridKind::Tile,
         "Tile",
         "zoom",
-        super::cell::parse_tile_zoom_value,
+        |value| CellArrayError::depth(value, "tile zoom", "zoom", 0, i64::from(TILE_MAX_ZOOM)),
         |lon, lat, zoom| {
             let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
-                InvalidGeometryError::new_err(format!(
+                CellArrayError::InvalidGeometry(format!(
                     "latitude {lat} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees"
                 ))
             })?;

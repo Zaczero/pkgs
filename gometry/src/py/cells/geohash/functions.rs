@@ -6,7 +6,7 @@ use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::py::cells::geohash::cell::{PyGeohashCell, geohash_cell_arg};
 use crate::py::cells::geohash::coverage::geohash_cell_array;
 use crate::py::cells::{
-    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
+    Bound, CellArrayError, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
     dispatch_grid_cell_array, pyfunction,
 };
 use crate::py::errors::GeometryError;
@@ -70,9 +70,17 @@ pub(super) fn geohash_cells(
         GridKind::GeohashCell,
         "GeohashCell",
         "precision",
-        super::cell::parse_geohash_precision_value,
+        |value| {
+            CellArrayError::depth(
+                value,
+                "geohash precision",
+                "precision",
+                1,
+                i64::from(GEOHASH_MAX_PRECISION),
+            )
+        },
         |lon, lat, precision| {
-            Ok(PyGeohashCell {
+            Ok::<_, CellArrayError>(PyGeohashCell {
                 cell: Geohash::from_lonlat(lon, lat, precision),
             })
         },

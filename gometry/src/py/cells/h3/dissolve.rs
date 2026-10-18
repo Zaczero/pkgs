@@ -3,9 +3,9 @@ use crate::grid::cell_set;
 use crate::py::cells::coverage_ops::{GridDissolver, SortedCells, dissolve_grid_cells};
 use crate::py::cells::grid_outline::coordseq_crosses_lon_seam;
 use crate::py::cells::h3::{CellIndex, h3_cell_shape};
-use crate::py::cells::{GeometryError, Point, PyResult, Shape, Typed};
+use crate::py::cells::{CellArrayError, Point, Shape, Typed};
 
-pub(super) fn h3_dissolve(cells: Vec<CellIndex>) -> PyResult<Typed> {
+pub(crate) fn h3_dissolve(cells: Vec<CellIndex>) -> Result<Typed, CellArrayError> {
     // A cell SET dissolves to the same outline regardless of order or repeats,
     // so canonicalize to a set — the user shouldn't have to pre-deduplicate
     // (matching the set semantics of the cell-algebra ops).
@@ -19,13 +19,15 @@ impl GridDissolver for H3Dissolver {
 
     fn fast_path_cells(
         cells: &SortedCells<Self::Cell>,
-    ) -> PyResult<Option<SortedCells<Self::Cell>>> {
+    ) -> Result<Option<SortedCells<Self::Cell>>, CellArrayError> {
         let resolution = cells
             .as_slice()
             .iter()
             .map(|cell| cell.resolution())
             .max()
-            .ok_or_else(|| GeometryError::new_err("to_polygon requires at least one cell"))?;
+            .ok_or_else(|| {
+                CellArrayError::Geometry("to_polygon requires at least one cell".to_owned())
+            })?;
         // Mixed-resolution sets dissolve as their finest-resolution descendants:
         // an H3 cell's boundary does NOT geometrically equal the union of its
         // children's boundaries, so coarse cells expand before edge cancellation.
@@ -52,7 +54,7 @@ impl GridDissolver for H3Dissolver {
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> PyResult<Vec<CoordSeq>> {
+    ) -> Result<Vec<CoordSeq>, CellArrayError> {
         let mut segments = Vec::with_capacity(6);
         for edge in cell.edges() {
             if is_member(edge.destination()) {
@@ -63,7 +65,7 @@ impl GridDissolver for H3Dissolver {
                 .iter()
                 .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
                 .collect();
-            segments.push(CoordSeq::try_from_points(&points).map_err(pyo3::PyErr::from)?);
+            segments.push(CoordSeq::try_from_points(&points)?);
         }
         Ok(segments)
     }
@@ -72,8 +74,8 @@ impl GridDissolver for H3Dissolver {
         coordseq_crosses_lon_seam(segment)
     }
 
-    fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape> {
+    fn fallback_shape(cell: Self::Cell) -> Result<Shape, CellArrayError> {
         let boundary = h3_cell_shape(cell)?;
-        boundary.split_antimeridian()
+        Ok(boundary.split_antimeridian()?)
     }
 }

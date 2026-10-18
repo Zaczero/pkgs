@@ -85,7 +85,7 @@ impl PyCellArray {
     fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         if item.is_none() {
             let array = self.clone();
-            return Ok(py.detach(move || (0..array.len()).any(|row| array.is_row_missing(row))));
+            return Ok(array.has_missing(py));
         }
         let kind = self.kind();
         let Some(needle) = membership_id(item, |item| kind.id_from_value(item))? else {
@@ -109,17 +109,24 @@ impl PyCellArray {
     /// int
     fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
         if value.is_none() {
-            return Ok((0..self.len())
-                .filter(|&row| self.is_row_missing(row))
-                .count());
+            if self.storage.missing.is_none() {
+                return Ok(0);
+            }
+            return Ok(value.py().detach(|| {
+                (0..self.len())
+                    .filter(|&row| self.is_row_missing(row))
+                    .count()
+            }));
         }
         let kind = self.kind();
         let Some(needle) = membership_id(value, |value| kind.id_from_value(value))? else {
             return Ok(0);
         };
-        Ok((0..self.len())
-            .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)
-            .count())
+        Ok(value.py().detach(|| {
+            (0..self.len())
+                .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)
+                .count()
+        }))
     }
 
     /// Factorize cells into dense integer codes and first-seen uniques
@@ -143,7 +150,10 @@ impl PyCellArray {
     /// >>> codes.tolist()
     /// [0, 1]
     fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (uniques, codes) = match self.factorize_entries() {
+        let (uniques, codes) = match py.detach(|| {
+            self.factorize_entries()
+                .map(|(uniques, codes)| (Self::from_ids(self.kind(), uniques), codes))
+        }) {
             Ok(values) => values,
             Err(error) => {
                 return Err(error.into_py_err(
@@ -159,7 +169,7 @@ impl PyCellArray {
                 return Err(error);
             },
         };
-        let cells = match Self::from_ids(self.kind(), uniques).into_pyobject(py) {
+        let cells = match uniques.into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(codes);
@@ -223,14 +233,16 @@ impl PyCellArray {
         };
         let start = clamp(start);
         let stop = stop.map_or(len, clamp);
-        if start < stop {
-            for row in start..stop {
-                if needle.is_none() == self.is_row_missing(row)
-                    && needle.is_none_or(|needle| self.id_at(row) == needle)
-                {
-                    return Ok(row);
-                }
-            }
+        if start < stop
+            && (needle.is_some() || self.storage.missing.is_some())
+            && let Some(row) = value.py().detach(|| {
+                (start..stop).find(|&row| {
+                    needle.is_none() == self.is_row_missing(row)
+                        && needle.is_none_or(|needle| self.id_at(row) == needle)
+                })
+            })
+        {
+            return Ok(row);
         }
         let value = value
             .repr()
@@ -258,7 +270,10 @@ impl PyCellArray {
     /// >>> counts.tolist()
     /// [2]
     fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (sorted_uniques, sorted_counts) = match self.value_count_entries() {
+        let (sorted_uniques, sorted_counts) = match py.detach(|| {
+            self.value_count_entries()
+                .map(|(uniques, counts)| (Self::from_ids(self.kind(), uniques), counts))
+        }) {
             Ok(values) => values,
             Err(error) => {
                 return Err(error.into_py_err(
@@ -267,7 +282,7 @@ impl PyCellArray {
                 ));
             },
         };
-        let cells = match Self::from_ids(self.kind(), sorted_uniques).into_pyobject(py) {
+        let cells = match sorted_uniques.into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(sorted_counts);

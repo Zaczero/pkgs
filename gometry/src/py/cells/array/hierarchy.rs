@@ -18,18 +18,71 @@ pub(super) trait CellArrayGrid: GridCell {
     fn from_validated_id(id: u64) -> Self;
     fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn parse_compact_floor(depth: Option<&Bound<'_, PyAny>>) -> PyResult<u8>;
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(cell_set::compact_with_floor(cells, floor).into_public_vec())
+    fn compact_cells(cells: Vec<Self>, floor: u8) -> Vec<Self> {
+        cell_set::compact_with_floor(cells, floor).into_public_vec()
     }
-    fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
+    fn compact_ids(ids: Vec<u64>, floor: u8) -> Vec<u64> {
         let cells: Vec<_> = ids.into_iter().map(Self::from_validated_id).collect();
-        let cells = Self::compact_cells(cells, floor)?;
-        Ok(cells.into_iter().map(Self::hash_key).collect())
+        Self::compact_cells(cells, floor)
+            .into_iter()
+            .map(GridCell::hash_key)
+            .collect()
     }
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
+    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> crate::error::Result<Vec<Self>> {
         Ok(cell_set::uncompact(&cells, depth)?.into_public_vec())
     }
     fn uncompact_floor_token(cell: &Self) -> String;
+}
+
+enum ChildrenAdmission {
+    AllMissing(Groups),
+    Present(Option<ValidityMask>),
+}
+
+enum ParentAdmission {
+    AllMissing(PyCellArray),
+    Present,
+}
+
+fn cell_children_groups<G: CellArrayGrid>(
+    cells: &PyCellArray,
+    depth: Option<u8>,
+    missing: Option<ValidityMask>,
+) -> Result<Groups, CellArrayError> {
+    if let Some(target) = depth
+        && cells.logical_cells::<G>().any(|cell| target < cell.depth())
+    {
+        return Err(CellArrayError::Geometry(format!(
+            "children {} must be >= cell {}",
+            G::DEPTH_NAME,
+            G::DEPTH_NAME
+        )));
+    }
+
+    let mut builder = crate::CsrBuilder::<u64>::with_capacity(0, cells.len());
+    for row in 0..cells.len() {
+        if cells.is_row_missing(row) {
+            builder.push_row(std::iter::empty::<u64>())?;
+            continue;
+        }
+        let cell = G::from_validated_id(cells.id_at(row));
+        let target = depth.or_else(|| {
+            cell.depth()
+                .checked_add(1)
+                .filter(|target| *target <= G::MAX_DEPTH)
+        });
+        let Some(target) = target else {
+            builder.push_row(std::iter::empty::<u64>())?;
+            continue;
+        };
+        builder.push_row(
+            cell.children_to(target)?
+                .into_iter()
+                .map(GridCell::hash_key),
+        )?;
+    }
+    let (ids, offsets) = builder.finish();
+    Ok(Groups::from_cell_flat(cells.kind(), ids, offsets, missing)?)
 }
 
 impl CellArrayGrid for h3o::CellIndex {
@@ -139,9 +192,7 @@ impl PyCellArray {
         // Omitted dtype and explicit None both mean the grid default.
         if dtype.is_none_or(pyo3::types::PyAnyMethods::is_none) {
             return Ok(
-                if self.kind() == GridKind::GeohashCell
-                    || (0..self.len()).any(|row| self.is_row_missing(row))
-                {
+                if self.kind() == GridKind::GeohashCell || self.has_missing(py) {
                     CellNumpyArrayKind::Objects
                 } else {
                     CellNumpyArrayKind::Ids {
@@ -164,7 +215,7 @@ impl PyCellArray {
                     "geohash CellArray has string tokens, not public uint64 ids; use dtype=object or .token",
                 ));
             }
-            if (0..self.len()).any(|row| self.is_row_missing(row)) {
+            if self.has_missing(py) {
                 return Err(GeometryError::new_err(
                     "masked CellArray cannot be exported as uint64",
                 ));
@@ -211,19 +262,23 @@ impl PyCellArray {
                     other.len()
                 )));
             }
-            dispatch_cell_grid!(self, G, {
-                let mut values = Vec::with_capacity(self.len());
-                for row in 0..self.len() {
-                    let value = if self.is_row_missing(row) || other.is_row_missing(row) {
-                        false
-                    } else {
-                        let left = G::from_validated_id(self.id_at(row));
-                        let right = G::from_validated_id(other.id_at(row));
-                        left.contains_cell(right) || (intersects && right.contains_cell(left))
-                    };
-                    values.push(value);
-                }
-                values
+            let left = self;
+            let right = &*other;
+            py.detach(|| {
+                dispatch_cell_grid!(left, G, {
+                    let mut values = Vec::with_capacity(left.len());
+                    for row in 0..left.len() {
+                        let value = if left.is_row_missing(row) || right.is_row_missing(row) {
+                            false
+                        } else {
+                            let left = G::from_validated_id(left.id_at(row));
+                            let right = G::from_validated_id(right.id_at(row));
+                            left.contains_cell(right) || (intersects && right.contains_cell(left))
+                        };
+                        values.push(value);
+                    }
+                    values
+                })
             })
         } else {
             if let Some(other_kind) = grid_kind_from_value(other) {
@@ -240,19 +295,21 @@ impl PyCellArray {
                 ));
             }
             let other_id = kind.id_from_value(other)?;
-            dispatch_cell_grid!(self, G, {
-                let right = G::from_validated_id(other_id);
-                let mut values = Vec::with_capacity(self.len());
-                for row in 0..self.len() {
-                    let value = if self.is_row_missing(row) {
-                        false
-                    } else {
-                        let left = G::from_validated_id(self.id_at(row));
-                        left.contains_cell(right) || (intersects && right.contains_cell(left))
-                    };
-                    values.push(value);
-                }
-                values
+            py.detach(|| {
+                dispatch_cell_grid!(self, G, {
+                    let right = G::from_validated_id(other_id);
+                    let mut values = Vec::with_capacity(self.len());
+                    for row in 0..self.len() {
+                        let value = if self.is_row_missing(row) {
+                            false
+                        } else {
+                            let left = G::from_validated_id(self.id_at(row));
+                            left.contains_cell(right) || (intersects && right.contains_cell(left))
+                        };
+                        values.push(value);
+                    }
+                    values
+                })
             })
         };
         bool_array(py, values)
@@ -291,58 +348,45 @@ impl PyCellArray {
         py: Python<'_>,
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Groups> {
-        let kind = self.kind();
-        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let depth = dispatch_cell_grid!(self, G, {
-            match cells.logical_cells::<G>().next() {
-                Some(_) => {
-                    let depth = depth
-                        .filter(|value| !value.is_none())
-                        .map(G::parse_depth)
-                        .transpose()?;
-                    if let Some(target) = depth
-                        && cells.logical_cells::<G>().any(|cell| target < cell.depth())
-                    {
-                        return Err(GeometryError::new_err(format!(
-                            "children {} must be >= cell {}",
-                            G::DEPTH_NAME,
-                            G::DEPTH_NAME
-                        )));
-                    }
-                    depth
-                },
-                None => None,
-            }
-        });
-        let (ids, offsets) = py.detach(move || {
+        let depth = depth.filter(|value| !value.is_none());
+        if depth.is_none() {
+            return py
+                .detach(|| {
+                    let (missing, _) = cells.missing_mask_and_present_count();
+                    dispatch_cell_grid!(&cells, G, {
+                        cell_children_groups::<G>(&cells, None, missing)
+                    })
+                })
+                .map_err(PyErr::from);
+        }
+
+        let admission = py.detach(|| {
             dispatch_cell_grid!(&cells, G, {
-                let mut builder = crate::CsrBuilder::<u64>::with_capacity(0, cells.len());
-                for row in 0..cells.len() {
-                    if cells.is_row_missing(row) {
-                        builder.push_row(std::iter::empty::<u64>())?;
-                        continue;
-                    }
-                    let cell = G::from_validated_id(cells.id_at(row));
-                    let target = depth.or_else(|| {
-                        cell.depth()
-                            .checked_add(1)
-                            .filter(|target| *target <= G::MAX_DEPTH)
-                    });
-                    let Some(target) = target else {
-                        builder.push_row(std::iter::empty::<u64>())?;
-                        continue;
-                    };
-                    builder.push_row(
-                        cell.children_to(target)?
-                            .into_iter()
-                            .map(GridCell::hash_key),
-                    )?;
+                let (missing, present_count) = cells.missing_mask_and_present_count();
+                if present_count == 0 {
+                    Ok::<_, CellArrayError>(ChildrenAdmission::AllMissing(
+                        cell_children_groups::<G>(&cells, None, missing)?,
+                    ))
+                } else {
+                    Ok(ChildrenAdmission::Present(missing))
                 }
-                Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Ok(Groups::from_cell_flat(kind, ids, offsets, missing)?)
+        match admission {
+            ChildrenAdmission::AllMissing(groups) => Ok(groups),
+            ChildrenAdmission::Present(missing) => {
+                let depth = dispatch_cell_grid!(&cells, G, {
+                    G::parse_depth(depth.expect("an explicit cell depth was admitted"))?
+                });
+                py.detach(|| {
+                    dispatch_cell_grid!(&cells, G, {
+                        cell_children_groups::<G>(&cells, Some(depth), missing)
+                    })
+                })
+                .map_err(PyErr::from)
+            },
+        }
     }
 
     /// Number of descendant cells each cell has at ``depth``.
@@ -391,28 +435,29 @@ impl PyCellArray {
         py: Python<'_>,
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let values = dispatch_cell_grid!(self, G, {
-            let mut present = self.logical_cells::<G>();
-            let first = present.next();
-            let target_depth = first
-                .as_ref()
-                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
-                .transpose()?;
-            let mut present = first.into_iter().chain(present);
-            let mut values = Vec::with_capacity(self.len());
-            for row in 0..self.len() {
-                let value = if self.is_row_missing(row) {
-                    f64::NAN
-                } else {
-                    let cell = present.next().expect("present cell count matches");
-                    cell_ops::cell_descendant_count_at_depth(
-                        cell,
-                        target_depth.expect("a present cell admitted the depth"),
-                    )? as f64
-                };
-                values.push(value);
+        let depth = depth.filter(|value| !value.is_none());
+        let target_depth = dispatch_cell_grid!(self, G, {
+            match depth {
+                Some(depth) if self.has_present(py) => Some(G::parse_depth(depth)?),
+                _ => None,
             }
-            Ok::<_, PyErr>(values)
+        });
+        let values = py.detach(|| {
+            dispatch_cell_grid!(self, G, {
+                let mut present = self.logical_cells::<G>();
+                let mut values = Vec::with_capacity(self.len());
+                for row in 0..self.len() {
+                    let value = if self.is_row_missing(row) {
+                        f64::NAN
+                    } else {
+                        let cell = present.next().expect("present cell count matches");
+                        cell_ops::cell_descendant_count_at_depth(cell, target_depth)
+                            .map(|count| count as f64)?
+                    };
+                    values.push(value);
+                }
+                Ok::<_, CellArrayError>(values)
+            })
         })?;
         float64_array(py, values)
     }
@@ -450,15 +495,18 @@ impl PyCellArray {
     ) -> PyResult<Self> {
         let kind = self.kind();
         let cells = self.clone();
-        let compacted = dispatch_cell_grid!(self, G, {
-            let ids = (0..cells.len())
+        let ids = py.detach(|| {
+            (0..cells.len())
                 .filter(|&logical| !cells.is_row_missing(logical))
                 .map(|logical| cells.id_at(logical))
-                .collect();
-            let floor = G::parse_compact_floor(depth)?;
-            py.detach(move || G::compact_ids(ids, floor))?
+                .collect::<Vec<_>>()
         });
-        Ok(Self::from_ids(kind, compacted))
+        let floor = dispatch_cell_grid!(self, G, { G::parse_compact_floor(depth)? });
+        Ok(py.detach(move || {
+            dispatch_cell_grid!(&cells, G, {
+                Self::from_ids(kind, G::compact_ids(ids, floor))
+            })
+        }))
     }
 
     /// Test whether every row hierarchically contains the paired cell.
@@ -526,9 +574,9 @@ impl PyCellArray {
     #[getter]
     pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<Groups> {
         let kind = self.kind();
-        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let (ids, offsets) = py.detach(move || {
+        py.detach(move || {
+            let (missing, _) = cells.missing_mask_and_present_count();
             dispatch_cell_grid!(&cells, G, {
                 let mut builder = crate::CsrBuilder::<u64>::with_capacity(0, cells.len());
                 for row in 0..cells.len() {
@@ -543,10 +591,11 @@ impl PyCellArray {
                             .map(GridCell::hash_key),
                     )?;
                 }
-                Ok::<_, PyErr>(builder.finish())
+                let (ids, offsets) = builder.finish();
+                Groups::from_cell_flat(kind, ids, offsets, missing)
             })
-        })?;
-        Ok(Groups::from_cell_flat(kind, ids, offsets, missing)?)
+        })
+        .map_err(PyErr::from)
     }
 
     /// Parent cell of every input cell.
@@ -574,35 +623,77 @@ impl PyCellArray {
     /// >>> parent.token
     /// '86283082fffffff'
     #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
-    pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+    pub(crate) fn parent(
+        &self,
+        py: Python<'_>,
+        depth: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
         let kind = self.kind();
-        let ids = dispatch_cell_grid!(self, G, {
-            let mut present = self.logical_cells::<G>();
-            let first = present.next();
-            let target_depth = first
-                .as_ref()
-                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
-                .transpose()?;
-            let mut present = first.into_iter().chain(present);
-            let mut ids = Vec::with_capacity(self.len());
-            for row in 0..self.len() {
-                ids.push(if self.is_row_missing(row) {
-                    0
+        let depth = depth.filter(|value| !value.is_none());
+        if depth.is_none() {
+            return py
+                .detach(|| {
+                    dispatch_cell_grid!(self, G, {
+                        let mut present = self.logical_cells::<G>();
+                        let mut ids = Vec::with_capacity(self.len());
+                        for row in 0..self.len() {
+                            ids.push(if self.is_row_missing(row) {
+                                0
+                            } else {
+                                cell_ops::cell_parent_at_depth(
+                                    present.next().expect("present cell count matches"),
+                                    None,
+                                )?
+                                .hash_key()
+                            });
+                        }
+                        let (missing, _) = self.missing_mask_and_present_count();
+                        Ok::<_, CellArrayError>(Self::from_ids_with_mask(kind, ids, missing))
+                    })
+                })
+                .map_err(PyErr::from);
+        }
+
+        let admission = py.detach(|| {
+            dispatch_cell_grid!(self, G, {
+                if self.logical_cells::<G>().next().is_some() {
+                    ParentAdmission::Present
                 } else {
-                    cell_ops::cell_parent_at_depth(
-                        present.next().expect("present cell count matches"),
-                        target_depth.expect("a present cell admitted the depth"),
-                    )?
-                    .hash_key()
-                });
-            }
-            Ok::<_, PyErr>(ids)
-        })?;
-        let (missing, _) = self.missing_mask_and_present_count();
-        Ok(Self {
-            storage: CellStorage::new(kind, ids, missing),
-            selection: RowSelection::Identity,
+                    let (missing, _) = self.missing_mask_and_present_count();
+                    ParentAdmission::AllMissing(Self::from_ids_with_mask(
+                        kind,
+                        vec![0; self.len()],
+                        missing,
+                    ))
+                }
+            })
+        });
+        let target_depth = match admission {
+            ParentAdmission::AllMissing(cells) => return Ok(cells),
+            ParentAdmission::Present => dispatch_cell_grid!(self, G, {
+                cell_ops::parse_explicit_depth(depth, G::parse_depth)?
+            }),
+        };
+        py.detach(|| {
+            dispatch_cell_grid!(self, G, {
+                let mut present = self.logical_cells::<G>();
+                let mut ids = Vec::with_capacity(self.len());
+                for row in 0..self.len() {
+                    ids.push(if self.is_row_missing(row) {
+                        0
+                    } else {
+                        cell_ops::cell_parent_at_depth(
+                            present.next().expect("present cell count matches"),
+                            target_depth,
+                        )?
+                        .hash_key()
+                    });
+                }
+                let (missing, _) = self.missing_mask_and_present_count();
+                Ok::<_, CellArrayError>(Self::from_ids_with_mask(kind, ids, missing))
+            })
         })
+        .map_err(PyErr::from)
     }
 
     /// Expand this cell set to a uniform depth, returned in the grid's public
@@ -630,21 +721,21 @@ impl PyCellArray {
     #[pyo3(signature = (depth, /), text_signature = "($self, depth, /)")]
     pub(crate) fn uncompact(&self, py: Python<'_>, depth: &Bound<'_, PyAny>) -> PyResult<Self> {
         let kind = self.kind();
-        let cells = self.clone();
-        let expanded = dispatch_cell_grid!(self, G, {
-            let depth = G::parse_depth(depth)?;
-            if let Some(cell) = cells.logical_cells::<G>().find(|cell| cell.depth() > depth) {
-                return Err(uncompact_floor_error(
-                    kind,
-                    G::DEPTH_NAME,
-                    G::uncompact_floor_token(&cell),
-                ));
-            }
-            py.detach(move || {
-                let cells = cells.map_logical_cells::<G, _>(|cell| cell);
-                Ok::<_, PyErr>(Self::ids_from_cells(G::uncompact_cells(cells, depth)?))
-            })?
-        });
-        Ok(Self::from_ids(kind, expanded))
+        let depth = dispatch_cell_grid!(self, G, { G::parse_depth(depth)? });
+        py.detach(|| {
+            dispatch_cell_grid!(self, G, {
+                if let Some(cell) = self.logical_cells::<G>().find(|cell| cell.depth() > depth) {
+                    return Err(CellArrayError::Geometry(uncompact_floor_message(
+                        kind,
+                        G::DEPTH_NAME,
+                        G::uncompact_floor_token(&cell),
+                    )));
+                }
+                let cells = self.map_logical_cells::<G, _>(|cell| cell);
+                let ids = Self::ids_from_cells(G::uncompact_cells(cells, depth)?);
+                Ok::<_, CellArrayError>(Self::from_ids(kind, ids))
+            })
+        })
+        .map_err(PyErr::from)
     }
 }

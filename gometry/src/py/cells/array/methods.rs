@@ -149,23 +149,29 @@ impl PyCellArray {
     }
 
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
-        py_bool_or_not_implemented(py, other.extract::<PyRef<Self>>().ok(), |other| {
-            self.logical_eq(&other)
-        })
+        let Ok(other) = other.extract::<PyRef<Self>>() else {
+            return py.NotImplemented();
+        };
+        let this = self;
+        let other = &*other;
+        crate::broadcast::py_bool(py, py.detach(|| this.logical_eq(other)))
     }
 
-    fn __hash__(&self) -> u64 {
+    fn __hash__(&self, py: Python<'_>) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = crate::collections::python_hasher();
-        self.kind().token().hash(&mut hasher);
-        self.len().hash(&mut hasher);
-        for row in 0..self.len() {
-            self.is_row_missing(row).hash(&mut hasher);
-            if !self.is_row_missing(row) {
-                self.id_at(row).hash(&mut hasher);
+        py.detach(|| {
+            let mut hasher = crate::collections::python_hasher();
+            self.kind().token().hash(&mut hasher);
+            self.len().hash(&mut hasher);
+            for row in 0..self.len() {
+                let missing = self.is_row_missing(row);
+                missing.hash(&mut hasher);
+                if !missing {
+                    self.id_at(row).hash(&mut hasher);
+                }
             }
-        }
-        hasher.finish()
+            hasher.finish()
+        })
     }
 
     /// Per-row missing mask as a read-only boolean NumPy array.
@@ -177,14 +183,21 @@ impl PyCellArray {
     /// -------
     /// numpy.ndarray of bool
     #[getter]
-    fn is_missing<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray1<bool>>> {
-        let array = numpy::PyArray1::<bool>::zeros(py, self.len(), false);
-        let mut write = array.try_readwrite()?;
-        for (row, output) in write.as_slice_mut()?.iter_mut().enumerate() {
-            *output = self.is_row_missing(row);
+    fn is_missing<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<bool>>> {
+        if self.storage.missing.is_none() {
+            return Ok(false_bool_array(py, self.len())?
+                .into_bound(py)
+                .cast_into()?);
         }
-        write.make_nonwriteable();
-        Ok(array)
+        let missing = py.detach(|| {
+            (0..self.len())
+                .map(|row| self.is_row_missing(row))
+                .collect()
+        });
+        Ok(bool_array(py, missing)?.into_bound(py).cast_into()?)
     }
 
     pub(crate) fn __repr__(&self) -> String {

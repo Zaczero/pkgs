@@ -43,15 +43,15 @@ pub(crate) fn invalid_cell_id(kind: GridKind, id: impl std::fmt::Display) -> PyE
     parse_error(format!("invalid {} {id}", meta.label), meta.format)
 }
 
-pub(crate) fn uncompact_floor_error(
+pub(crate) fn uncompact_floor_message(
     kind: GridKind,
     depth_name: &str,
     token: impl std::fmt::Display,
-) -> PyErr {
+) -> String {
     let item = kind.meta().item_name;
-    GeometryError::new_err(format!(
+    format!(
         "uncompact {depth_name} must be >= every {item}'s {depth_name}; {item} {token} is finer"
-    ))
+    )
 }
 
 impl GridKind {

@@ -10,10 +10,8 @@ use crate::py::cells::coverage_ops::{
 };
 use crate::py::cells::input::geometry_iterable_array;
 use crate::py::cells::{
-    Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
-    Shape,
+    Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyResult, Python, Shape,
 };
-use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::vectors::Groups;
 use crate::{PyGeometry, Typed, exact_geometry, exact_geometry_array, expected_geometry_or_array};
@@ -195,9 +193,9 @@ pub(crate) fn grid_cover_dispatch<'py>(
             admission
                 .admit_geometry(&geometry)
                 .and_then(|admitted| build(&admitted, max_cells))
+                .map(|coverage| PyCellArray::from_ids(kind, coverage))
         });
-        let coverage = result?;
-        return PyCellArray::from_ids(kind, coverage).into_py_any(py);
+        return result?.into_py_any(py);
     }
     let array = match exact_geometry_array(geom) {
         Some(array) => Some(array.clone()),
@@ -207,22 +205,23 @@ pub(crate) fn grid_cover_dispatch<'py>(
         return Err(expected_geometry_or_array());
     };
     let missing = array.missing().cloned();
-    let result = py.detach(move || {
+    let groups = py.detach(move || {
         let admission = match GridSourceAdmission::new_for_array(&array) {
             Ok(admission) => admission,
             Err(error) => return Err(GridCoverError::Native(error)),
         };
-        admission.admit_array_shapes(&array).and_then(|shapes| {
+        let result = admission.admit_array_shapes(&array).and_then(|shapes| {
             let admitted = shapes.into_iter().map(|shape| match shape {
                 Err(error) => Err(error),
                 Ok(None) => Ok(None),
                 Ok(Some(shape)) => Ok(Some(PyGeometry::wgs84(shape))),
             });
             cover_array_rows(admitted, max_cells, build)
-        })
+        })?;
+        let (ids, offsets) = result.finish();
+        Groups::from_cell_flat(kind, ids, offsets, missing).map_err(GridCoverError::from)
     });
-    let (ids, offsets) = result?.finish();
-    Groups::from_cell_flat(kind, ids, offsets, missing)?.into_py_any(py)
+    groups?.into_py_any(py)
 }
 
 fn cover_array_rows(
@@ -289,10 +288,10 @@ pub(super) fn lonlat_point_geometry(point: Point) -> PyGeometry {
 /// Dissolve a coverage's per-cell boundary polygons into one outline geometry
 /// (shared cell edges removed), tagged OGC:CRS84. Single-part results collapse
 /// to a plain `Polygon` (the buffer output-seam convention).
-pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
+pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> Result<Typed, super::CellArrayError> {
     if shapes.is_empty() {
-        return Err(GeometryError::new_err(
-            "a coverage needs at least one cell to dissolve into a polygon",
+        return Err(super::CellArrayError::Geometry(
+            "a coverage needs at least one cell to dissolve into a polygon".to_owned(),
         ));
     }
     let dissolved = Shape::union_all(shapes, crate::geometry::Strictness::Lenient)?;
@@ -309,7 +308,10 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         | Shape::GeometryCollection(_)
         | Shape::Empty(..)) => shape,
     };
-    super::grid_outline::publish_grid_outline(&shape, "grid coverage")
+    Ok(super::grid_outline::publish_grid_outline(
+        &shape,
+        "grid coverage",
+    )?)
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /
@@ -322,7 +324,9 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
 /// boundary edges (`edge_neighbors` returns `None` there), so the planar
 /// polygonize splits the outline at ±180 / closes the lat=±90 edge without a
 /// special case.
-pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Option<Typed>> {
+pub(super) fn rect_dissolve<C: RectCell>(
+    cells: &SortedCells<C>,
+) -> Result<Option<Typed>, super::CellArrayError> {
     let Some(first) = cells.as_slice().first() else {
         return Ok(None);
     };
@@ -330,10 +334,9 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
     if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let capacity =
-        cells.as_slice().len().checked_mul(4).ok_or_else(|| {
-            errors::native_overflow_error("coverage outline size overflows usize")
-        })?;
+    let capacity = cells.as_slice().len().checked_mul(4).ok_or(
+        crate::error::ResourceError::SizeOverflowContext("coverage outline size overflows usize"),
+    )?;
     let mut outline = Vec::with_capacity(capacity);
     for cell in cells.as_slice() {
         let bounds = cell.bounds();
@@ -356,13 +359,11 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
             let interior =
                 neighbor.is_some_and(|across| cells.as_slice().binary_search(&across).is_ok());
             if !interior {
-                outline.push(
-                    crate::geometry::CoordSeq::try_from_points(endpoints).map_err(PyErr::from)?,
-                );
+                outline.push(crate::geometry::CoordSeq::try_from_points(endpoints)?);
             }
         }
     }
-    super::grid_outline::polygonize_outline(outline)
+    Ok(super::grid_outline::polygonize_outline(outline)?)
 }
 
 /// Dissolve present geohash or tile cells from `CellArray.to_polygon`.
@@ -373,7 +374,9 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
 /// empty-outline sets fall back to the antimeridian-aware boundary union.
 /// Empty input reaches `coverage_to_polygon`, which raises the documented
 /// `GeometryError`.
-pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Typed> {
+pub(super) fn rect_cells_to_polygon<C: RectCell>(
+    cells: Vec<C>,
+) -> Result<Typed, super::CellArrayError> {
     let cells = SortedCells::new(cells);
     if let Some(typed) = rect_dissolve(&cells)? {
         return Ok(typed);
@@ -385,11 +388,12 @@ pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Type
             let shape = crate::geometry::geographic_bounds_to_shape(
                 cell.bounds(),
                 crate::geographic::GeographicFrame::crs84(),
-            )
-            .map_err(PyErr::from)?;
-            shape.split_antimeridian().map_err(PyErr::from)
+            )?;
+            shape
+                .split_antimeridian()
+                .map_err(super::CellArrayError::from)
         })
-        .collect::<PyResult<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, super::CellArrayError>>()?;
     coverage_to_polygon(&shapes)
 }
 

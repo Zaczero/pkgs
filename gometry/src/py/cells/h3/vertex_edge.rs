@@ -3,11 +3,11 @@ use pyo3::{Bound, Py, PyResult, Python, pyfunction};
 
 use crate::geometry::LineSeq;
 use crate::py::cells::h3::{
-    DirectedEdgeIndex, LatLng, PyH3Cell, PyH3Edge, PyH3Vertex, Typed, VertexIndex, parse_h3_index,
+    DirectedEdgeIndex, LatLng, PyH3Cell, PyH3Edge, PyH3Vertex, VertexIndex, parse_h3_index,
     validate_h3_index_id,
 };
 use crate::py::sizeof::python_sizeof;
-use crate::{CoordSeq, Point, PyGeometry, Shape};
+use crate::{CoordSeq, Point, PyGeometry, Shape, Typed};
 
 frozen_pymethods! {
 impl PyH3Vertex {

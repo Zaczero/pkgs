@@ -1,22 +1,23 @@
 use crate::Typed;
+use crate::geographic::lonlat::validate_lonlat_xy;
 use crate::geometry::CoordSeq;
 use crate::grid::s2::bounding;
 use crate::grid::s2::cell::Cell as S2GeomCell;
-use crate::grid::s2::cellid::CellId;
+use crate::grid::s2::cellid::{CellId, S2Level};
+use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 use crate::py::cells::coverage_ops::{
     GridCoverError, GridDissolver, GridSourceAdmission, SortedCells, admit_grid_geometry,
     dissolve_grid_cells,
 };
 use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::s2::{
-    PyS2Cell, cell_pole_side, parse_s2_adaptive_budget, parse_s2_fixed_budget,
-    parse_s2_level_value, register, s2_boundary_geometry, s2_cell_array, s2_cell_from_xy,
-    s2_cell_id,
+    PyS2Cell, cell_pole_side, parse_s2_adaptive_budget, parse_s2_fixed_budget, register,
+    s2_boundary_geometry, s2_cell_array, s2_cell_id,
 };
 use crate::py::cells::{
-    Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyErr, PyResult, Python,
-    Shape, bounding_query_bounds, coverage_ops, dispatch_grid_cell_array, grid_cover_dispatch,
-    parse_error, pyfunction,
+    Bound, CellArrayError, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyResult,
+    Python, Shape, bounding_query_bounds, coverage_ops, dispatch_grid_cell_array,
+    grid_cover_dispatch, parse_error, pyfunction,
 };
 /// Build S2 cells from points, coordinate rows, or parallel lon/lat columns.
 ///
@@ -77,8 +78,17 @@ pub(crate) fn s2_cells(
         GridKind::S2Cell,
         "S2Cell",
         "level",
-        parse_s2_level_value,
-        s2_cell_from_xy,
+        |value| {
+            let depth =
+                CellArrayError::depth(value, "S2 level", "level", 0, i64::from(S2_MAX_LEVEL))?;
+            Ok(S2Level::try_new(depth).expect("validated S2 level fits its domain"))
+        },
+        |lon, lat, level| {
+            validate_lonlat_xy(lon, lat)?;
+            Ok(PyS2Cell {
+                cell: CellId::from_lonlat(lon, lat).leaf_parent(level),
+            })
+        },
     )
 }
 
@@ -227,7 +237,7 @@ grid_free_functions! {
 /// uniform-level sets cancel by id identity; mixed-level sets fall through to
 /// the general union, as do antimeridian-straddling edges (caught per edge).
 ///
-pub(crate) fn s2_dissolve(cells: &[CellId]) -> PyResult<Typed> {
+pub(crate) fn s2_dissolve(cells: &[CellId]) -> Result<Typed, CellArrayError> {
     let owned = cells.to_vec();
     dissolve_grid_cells::<S2Dissolver>(SortedCells::new(owned))
 }
@@ -239,7 +249,7 @@ impl GridDissolver for S2Dissolver {
 
     fn fast_path_cells(
         cells: &SortedCells<Self::Cell>,
-    ) -> PyResult<Option<SortedCells<Self::Cell>>> {
+    ) -> Result<Option<SortedCells<Self::Cell>>, CellArrayError> {
         let Some(first) = cells.as_slice().first() else {
             return Ok(None);
         };
@@ -258,7 +268,7 @@ impl GridDissolver for S2Dissolver {
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> PyResult<Vec<CoordSeq>> {
+    ) -> Result<Vec<CoordSeq>, CellArrayError> {
         let vertices = S2GeomCell::from_id(cell).vertices_lonlat();
         let [first, second, third, fourth] = vertices;
         let edges = [[first, second], [second, third], [third, fourth], [
@@ -269,7 +279,7 @@ impl GridDissolver for S2Dissolver {
             if is_member(neighbor) {
                 continue;
             }
-            segments.push(CoordSeq::try_from_points(&[start, end]).map_err(PyErr::from)?);
+            segments.push(CoordSeq::try_from_points(&[start, end])?);
         }
         Ok(segments)
     }
@@ -278,14 +288,14 @@ impl GridDissolver for S2Dissolver {
         (segment.point_at(0).x - segment.point_at(1).x).abs() > 180.0
     }
 
-    fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape> {
+    fn fallback_shape(cell: Self::Cell) -> Result<Shape, CellArrayError> {
         // S2 cells can straddle the antimeridian; polar cells need forced pole
         // closure so the seam split cannot choose the opposite cap.
         let boundary = s2_boundary_geometry(cell)?.shape.shape().clone();
-        cell_pole_side(&boundary).map_or_else(
+        Ok(cell_pole_side(&boundary).map_or_else(
             || boundary.split_antimeridian(),
             |north| boundary.split_antimeridian_over_pole(north),
-        )
+        )?)
     }
 }
 

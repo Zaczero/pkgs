@@ -57,9 +57,9 @@ impl PyCellArray {
     #[getter]
     pub(crate) fn center(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         use crate::grid::cell::GridCell as _;
-        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let coords = py.detach(move || {
+        py.detach(move || {
+            let (missing, present_count) = cells.missing_mask_and_present_count();
             dispatch_cell_grid!(&cells, G, {
                 let mut xs = Vec::with_capacity(present_count);
                 let mut ys = Vec::with_capacity(present_count);
@@ -68,15 +68,18 @@ impl PyCellArray {
                     xs.push(point.x);
                     ys.push(point.y);
                 }
-                CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)
+                let coords = CoordSeq::try_from_vecs(xs, ys, None, None)?;
+                let result = crate::PyGeometryArray::packed_points(
+                    coords,
+                    crate::Frame::Crs(crate::wgs84_crs()),
+                )?;
+                match missing {
+                    None => Ok(result),
+                    Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask),
+                }
             })
-        })?;
-        let result =
-            crate::PyGeometryArray::packed_points(coords, crate::Frame::Crs(crate::wgs84_crs()))?;
-        Ok(match missing {
-            None => result,
-            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
+        .map_err(PyErr::from)
     }
 
     /// Filled WGS84 polygon of every cell, as a geometry array.
@@ -88,22 +91,25 @@ impl PyCellArray {
     ///     ``CellArray`` remain ``None``.
     #[getter]
     pub(crate) fn polygon(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
-        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let shapes = py.detach(move || -> PyResult<Vec<_>> {
+        py.detach(move || -> crate::error::Result<crate::PyGeometryArray> {
+            let (missing, present_count) = cells.missing_mask_and_present_count();
             dispatch_cell_grid!(&cells, G, {
-                cells.try_map_logical_cells::<G, _, PyErr>(
+                let shapes = cells.try_map_logical_cells::<G, _, crate::error::Error>(
                     Vec::with_capacity(present_count),
-                    |cell| GridCell::boundary_shape(cell).map_err(PyErr::from),
-                )
+                    GridCell::boundary_shape,
+                )?;
+                let result = crate::PyGeometryArray::from_shapes(
+                    shapes,
+                    crate::Frame::Crs(crate::wgs84_crs()),
+                )?;
+                match missing {
+                    None => Ok(result),
+                    Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask),
+                }
             })
-        })?;
-        let result =
-            crate::PyGeometryArray::from_shapes(shapes, crate::Frame::Crs(crate::wgs84_crs()))?;
-        Ok(match missing {
-            None => result,
-            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
+        .map_err(PyErr::from)
     }
 
     /// Dissolve this cell set into one WGS 84 longitude/latitude outline.
@@ -129,7 +135,7 @@ impl PyCellArray {
         py.detach(move || match cells.kind() {
             GridKind::H3Cell => {
                 let cells = cells.map_logical_cells::<h3o::CellIndex, _>(|cell| cell);
-                super::h3::dissolve_cells(cells)
+                super::h3::h3_dissolve(cells)
             },
             GridKind::S2Cell => {
                 let cells = cells.map_logical_cells::<CellId, _>(|cell| cell);
@@ -144,5 +150,6 @@ impl PyCellArray {
                 rect_cells_to_polygon(cells)
             },
         })
+        .map_err(PyErr::from)
     }
 }

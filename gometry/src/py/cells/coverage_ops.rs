@@ -13,7 +13,7 @@ use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer::{self, RectCoverRule};
 use crate::grid::{CoverBudgetExceeded, CoverError};
 use crate::py::cells::cell_ops::cell_array_from_keys;
-use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
+use crate::py::cells::{CellArrayError, CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
 use crate::{Frame, GeometryTransformFrame, PyGeometry, PyGeometryArray, Typed, crs, crs_arc};
@@ -59,19 +59,19 @@ pub(crate) trait GridDissolver {
 
     fn fast_path_cells(
         cells: &SortedCells<Self::Cell>,
-    ) -> PyResult<Option<SortedCells<Self::Cell>>>;
+    ) -> Result<Option<SortedCells<Self::Cell>>, CellArrayError>;
     /// Cheap neighbor ids for adjacency pre-scan (no edge geometry).
     fn adjacency_neighbors(cell: Self::Cell) -> impl Iterator<Item = Self::Cell>;
     /// Exterior edge segments only (`neighbor` not in the prepared set).
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> PyResult<Vec<CoordSeq>>;
+    ) -> Result<Vec<CoordSeq>, CellArrayError>;
     fn crosses_seam(segment: &CoordSeq) -> bool;
-    fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape>;
+    fn fallback_shape(cell: Self::Cell) -> Result<Shape, CellArrayError>;
 }
 
-pub(crate) fn dissolve_grid_cells<D>(cells: SortedCells<D::Cell>) -> PyResult<Typed>
+pub(crate) fn dissolve_grid_cells<D>(cells: SortedCells<D::Cell>) -> Result<Typed, CellArrayError>
 where
     D: GridDissolver,
 {
@@ -89,17 +89,14 @@ where
                 .as_slice()
                 .iter()
                 .copied()
-                .map(|cell| D::fallback_shape(cell).map_err(PyErr::from))
-                .collect::<PyResult<Vec<_>>>()?;
+                .map(D::fallback_shape)
+                .collect::<Result<Vec<_>, CellArrayError>>()?;
             return multipolygon_from_cell_shapes(shapes);
         }
         let Some(capacity) = prepared.as_slice().len().checked_mul(2) else {
-            drop(prepared);
-            // A failed capacity calculation is a size error, not an
-            // allocation failure; retain its public overflow class.
-            return Err(errors::native_overflow_error(
+            return Err(CellArrayError::from(ResourceError::SizeOverflowContext(
                 "coverage outline size overflows usize",
-            ));
+            )));
         };
         let is_member = |neighbor: D::Cell| prepared.as_slice().binary_search(&neighbor).is_ok();
         let mut outline = Vec::with_capacity(capacity);
@@ -124,17 +121,17 @@ where
         .as_slice()
         .iter()
         .copied()
-        .map(|cell| D::fallback_shape(cell).map_err(PyErr::from))
-        .collect::<PyResult<Vec<_>>>()?;
+        .map(D::fallback_shape)
+        .collect::<Result<Vec<_>, CellArrayError>>()?;
     coverage_to_polygon(&shapes)
 }
 
 /// Assemble one MultiPolygon (or single Polygon) from already-disjoint cell
 /// shapes — used when the dissolve pre-scan finds zero shared edges.
-fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
+fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> Result<Typed, CellArrayError> {
     if shapes.is_empty() {
-        return Err(GeometryError::new_err(
-            "a coverage needs at least one cell to dissolve into a polygon",
+        return Err(CellArrayError::Geometry(
+            "a coverage needs at least one cell to dissolve into a polygon".to_owned(),
         ));
     }
     let mut polygons = Vec::with_capacity(shapes.len());
@@ -156,8 +153,8 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
         }
     }
     if polygons.is_empty() {
-        return Err(GeometryError::new_err(
-            "a coverage needs at least one cell to dissolve into a polygon",
+        return Err(CellArrayError::Geometry(
+            "a coverage needs at least one cell to dissolve into a polygon".to_owned(),
         ));
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);

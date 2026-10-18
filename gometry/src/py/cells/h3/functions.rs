@@ -3,11 +3,12 @@ use crate::grid::spherical_arc::h3_boundary::h3_cell_contains_windows;
 use crate::py::cells::coverage_ops::{SortedCells, collect_cover_ids};
 use crate::py::cells::h3::register::build_coverage;
 use crate::py::cells::h3::{
-    CellIndex, LatLng, PyH3Cell, Resolution, h3_resolution, h3_resolution_from_i64, parse_h3_index,
+    CellIndex, LatLng, PyH3Cell, Resolution, h3_resolution, parse_h3_index,
 };
 use crate::py::cells::{
-    Bound, CellRule, GeometryError, GridKind, H3_MAX_RESOLUTION, Py, PyAny, PyCellArray, PyResult,
-    Python, bounding_query_region, dispatch_grid_cell_array, grid_cover_dispatch, h3, pyfunction,
+    Bound, CellArrayError, CellRule, GeometryError, GridKind, H3_MAX_RESOLUTION, Py, PyAny,
+    PyCellArray, PyResult, Python, bounding_query_region, dispatch_grid_cell_array,
+    grid_cover_dispatch, h3, pyfunction,
 };
 use crate::py::errors::InvalidGeometryError;
 
@@ -83,8 +84,24 @@ pub(super) fn h3_cells(
         GridKind::H3Cell,
         "H3Cell",
         "resolution",
-        h3_resolution_from_i64,
-        h3_cell_from_xy,
+        |value| {
+            let depth = CellArrayError::depth(
+                value,
+                "H3 resolution",
+                "resolution",
+                0,
+                i64::from(H3_MAX_RESOLUTION),
+            )?;
+            Ok(Resolution::try_from(depth).expect("validated H3 resolution fits its domain"))
+        },
+        |lon, lat, resolution| {
+            let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
+            let latlng = LatLng::new(lat, lon)
+                .map_err(|error| CellArrayError::Geometry(error.to_string()))?;
+            Ok(PyH3Cell {
+                cell: latlng.to_cell(resolution),
+            })
+        },
     )
 }
 

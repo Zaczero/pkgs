@@ -54,6 +54,7 @@ pub(crate) use record_first_seen_count;
 
 mod array;
 mod array_iter;
+mod cell_array_error;
 mod cell_ops;
 mod construct;
 mod coverage_ops;
@@ -70,6 +71,7 @@ mod tiles;
 
 pub(crate) use array::PyCellArray;
 pub(crate) use array_iter::PyCellArrayIter;
+pub(crate) use cell_array_error::CellArrayError;
 pub(crate) use construct::{
     construct_geohash_cell, construct_h3_cell, construct_s2_cell, construct_tile,
     dispatch_grid_cell_array,
@@ -81,7 +83,7 @@ use engine::{
     bounding_query_bounds, bounding_query_region, cell_items, coverage_to_polygon,
     lonlat_point_geometry, rect_cells_to_polygon,
 };
-pub(crate) use grid_kind::{GridKind, uncompact_floor_error};
+pub(crate) use grid_kind::GridKind;
 pub(crate) use h3::{PyH3EdgeArray, PyH3VertexArray};
 
 #[derive(Debug)]

@@ -3,35 +3,92 @@ use pyo3::IntoPyObjectExt as _;
 use super::*;
 
 impl PyCellArray {
-    fn arrow_id_buffer(&self) -> (crate::geometry::SharedSlice<u64>, usize) {
-        self.selection_ref().csr_rows(0..self.len()).map_or_else(
-            || {
-                (
-                    crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
-                    0,
-                )
-            },
-            |rows| (self.storage.ids.clone(), rows.start),
-        )
+    pub(super) fn has_missing(&self, py: Python<'_>) -> bool {
+        if self.storage.missing.is_none() {
+            return false;
+        }
+        if matches!(self.selection_ref(), RowSelectionRef::Identity) {
+            return self.contains_missing();
+        }
+        py.detach(|| self.contains_missing())
     }
 
-    fn arrow_missing_mask(&self) -> Option<ValidityMask> {
-        match self.selection_ref() {
-            RowSelectionRef::Identity => self.storage.missing.clone(),
-            RowSelectionRef::Window { start, len } => {
-                self.storage.missing.as_ref().map(|missing| {
-                    missing
-                        .window(start, len)
-                        .expect("selected rows are admitted")
-                })
-            },
-            RowSelectionRef::Gather(_) => self.missing_mask_and_present_count().0,
+    pub(super) fn has_present(&self, py: Python<'_>) -> bool {
+        if self.len() == 0 {
+            return false;
         }
+        let Some(missing) = self.storage.missing.as_ref() else {
+            return true;
+        };
+        match self.selection_ref() {
+            RowSelectionRef::Identity => missing.present_count() != 0,
+            RowSelectionRef::Window { start, len } => {
+                let end = start
+                    .checked_add(len)
+                    .expect("selected rows are bounded by admitted storage");
+                py.detach(|| missing.present_in_range(start..end) != 0)
+            },
+            RowSelectionRef::Gather(_) => {
+                py.detach(|| (0..self.len()).any(|row| !self.is_row_missing(row)))
+            },
+        }
+    }
+
+    fn numeric_id_array(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let owner = slf.clone().into_any();
+        let borrowed = slf.borrow();
+        if let Some(values) = borrowed.logical_contiguous_ids() {
+            // SAFETY: values is tied to slf, and owner pins that object as
+            // the array base.
+            return unsafe { uint64_slice_array(owner, values) };
+        }
+        let array = &*borrowed;
+        let py = owner.py();
+        uint64_array(py, py.detach(|| array.logical_ids_vec()))
+    }
+
+    fn arrow_buffers(
+        &self,
+        py: Python<'_>,
+    ) -> (
+        crate::geometry::SharedSlice<u64>,
+        usize,
+        Option<ValidityMask>,
+    ) {
+        let length = self.len();
+        if let Some(rows) = self.selection_ref().csr_rows(0..length) {
+            let ids = self.storage.ids.clone();
+            let missing = match self.selection_ref() {
+                RowSelectionRef::Identity => self.storage.missing.clone(),
+                RowSelectionRef::Window { .. } | RowSelectionRef::Gather(_) => {
+                    if self.storage.missing.is_some() {
+                        py.detach(|| {
+                            self.storage
+                                .missing
+                                .as_ref()
+                                .and_then(|missing| missing.window(rows.start, length))
+                        })
+                    } else {
+                        None
+                    }
+                },
+            };
+            return (ids, rows.start, missing);
+        }
+
+        let (ids, missing) = py.detach(|| {
+            let missing = self.missing_mask_and_present_count().0;
+            (
+                crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
+                missing,
+            )
+        });
+        (ids, 0, missing)
     }
 
     fn geohash_arrow_buffers(
         &self,
-    ) -> PyResult<(
+    ) -> crate::error::Result<(
         crate::geometry::SharedSlice<i32>,
         crate::geometry::SharedSlice<u8>,
     )> {
@@ -42,18 +99,24 @@ impl PyCellArray {
             }
             let cell = Geohash::from_validated_id(self.id_at(row));
             let (_, length) = cell.token_bytes();
-            total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
-                PyOverflowError::new_err("geohash tokens exceed Arrow UTF-8 size")
-            })?;
+            total_bytes = total_bytes.checked_add(length).ok_or(
+                crate::error::ResourceError::SizeOverflowContext(
+                    "geohash tokens exceed Arrow UTF-8 size",
+                ),
+            )?;
         }
         if i32::try_from(total_bytes).is_err() {
-            return Err(PyOverflowError::new_err(
+            return Err(crate::error::ResourceError::SizeOverflowContext(
                 "geohash tokens exceed Arrow UTF-8 offset range",
-            ));
+            )
+            .into());
         }
-        let offset_count = self.len().checked_add(1).ok_or_else(|| {
-            PyOverflowError::new_err("geohash row count exceeds Arrow offset capacity")
-        })?;
+        let offset_count =
+            self.len()
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflowContext(
+                    "geohash row count exceeds Arrow offset capacity",
+                ))?;
         let mut offsets = Vec::with_capacity(offset_count);
         let mut values = Vec::with_capacity(total_bytes);
         offsets.push(0_i32);
@@ -117,6 +180,11 @@ pub(super) enum CellNumpyArrayKind {
     Objects,
 }
 
+enum CellArrayPicklePayload {
+    Ids(Vec<u64>),
+    Tokens(Vec<String>),
+}
+
 #[pyo3::pymethods]
 impl PyCellArray {
     /// NumPy array protocol.
@@ -161,10 +229,12 @@ impl PyCellArray {
                     }
                 }
                 let array = if copy == Some(true) {
-                    let ids = slf.borrow().logical_ids_vec();
+                    let borrowed = slf.borrow();
+                    let source = &*borrowed;
+                    let ids = py.detach(|| source.logical_ids_vec());
                     uint64_array(py, ids)?
                 } else {
-                    Self::to_numpy(slf)?
+                    Self::numeric_id_array(slf)?
                 };
                 if !native {
                     let dtype = dtype.expect("non-native ids require a requested dtype");
@@ -213,9 +283,13 @@ impl PyCellArray {
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         if self.kind() == GridKind::GeohashCell {
-            let (offsets, values) = self.geohash_arrow_buffers()?;
+            let (offsets, values, missing) = py.detach(|| {
+                let (offsets, values) = self.geohash_arrow_buffers()?;
+                let missing = self.missing_mask_and_present_count().0;
+                Ok::<_, crate::error::Error>((offsets, values, missing))
+            })?;
             let mut array = arrow_c::utf8_array(offsets, values)?;
-            if let Some(missing) = self.arrow_missing_mask() {
+            if let Some(missing) = missing {
                 arrow_c::apply_top_level_validity(&mut array, &missing)?;
             }
             return arrow_c::array_capsules_with_schema(
@@ -227,9 +301,9 @@ impl PyCellArray {
         }
 
         let length = self.len();
-        let (ids, start) = self.arrow_id_buffer();
+        let (ids, start, missing) = self.arrow_buffers(py);
         let mut array = arrow_c::primitive_u64_array_windowed(ids, start, length)?;
-        if let Some(missing) = self.arrow_missing_mask() {
+        if let Some(missing) = missing {
             arrow_c::apply_top_level_validity(&mut array, &missing)?;
         }
         arrow_c::array_capsules_with_schema(
@@ -248,34 +322,55 @@ impl PyCellArray {
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_cell_array_v1"))?
             .unbind();
-        let payload = if self.kind() == GridKind::GeohashCell {
-            let tokens = dispatch_cell_grid!(self, G, {
-                let mut tokens = Vec::with_capacity(self.len());
+        let (payload, missing) = py.detach(|| {
+            let mut missing_bytes = self
+                .storage
+                .missing
+                .as_ref()
+                .map(|_| Vec::with_capacity(self.len()));
+            let mut has_missing = false;
+            let payload = if self.kind() == GridKind::GeohashCell {
+                CellArrayPicklePayload::Tokens(dispatch_cell_grid!(self, G, {
+                    let mut tokens = Vec::with_capacity(self.len());
+                    for row in 0..self.len() {
+                        let is_missing = self.is_row_missing(row);
+                        has_missing |= is_missing;
+                        if let Some(bytes) = missing_bytes.as_mut() {
+                            bytes.push(u8::from(is_missing));
+                        }
+                        if !is_missing {
+                            tokens.push(G::from_validated_id(self.id_at(row)).token());
+                        }
+                    }
+                    tokens
+                }))
+            } else {
+                let mut ids = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
-                    if !self.is_row_missing(row) {
-                        tokens.push(G::from_validated_id(self.id_at(row)).token());
+                    let is_missing = self.is_row_missing(row);
+                    has_missing |= is_missing;
+                    if let Some(bytes) = missing_bytes.as_mut() {
+                        bytes.push(u8::from(is_missing));
+                    }
+                    if !is_missing {
+                        ids.push(self.id_at(row));
                     }
                 }
-                tokens
-            });
-            tokens.into_py_any(py)?
-        } else {
-            let mut ids = Vec::with_capacity(self.len());
-            for row in 0..self.len() {
-                if !self.is_row_missing(row) {
-                    ids.push(self.id_at(row));
-                }
-            }
-            ids.into_py_any(py)?
+                CellArrayPicklePayload::Ids(ids)
+            };
+            (
+                payload,
+                has_missing.then(|| missing_bytes.expect("missing rows require a bitmap")),
+            )
+        });
+        let payload = match payload {
+            CellArrayPicklePayload::Ids(ids) => ids.into_py_any(py)?,
+            CellArrayPicklePayload::Tokens(tokens) => tokens.into_py_any(py)?,
         };
-        let mask: Py<PyAny> = if (0..self.len()).any(|row| self.is_row_missing(row)) {
-            let bytes: Vec<_> = (0..self.len())
-                .map(|row| u8::from(self.is_row_missing(row)))
-                .collect();
-            PyBytes::new(py, &bytes).into_any().unbind()
-        } else {
-            py.None()
-        };
+        let mask = missing.map_or_else(
+            || py.None(),
+            |bytes| PyBytes::new(py, &bytes).into_any().unbind(),
+        );
         Ok((callable, (payload, self.kind().token().to_owned(), mask)))
     }
 
@@ -298,19 +393,16 @@ impl PyCellArray {
     /// >>> type(gm.CellArray([cell]).to_numpy()).__name__
     /// 'ndarray'
     fn to_numpy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let owner = (*slf).clone().into_any();
-        let borrowed = slf.borrow();
-        if borrowed.kind() == GridKind::GeohashCell
-            || (0..borrowed.len()).any(|row| borrowed.is_row_missing(row))
-        {
-            return borrowed.object_numpy_array(owner.py());
+        let py = slf.py();
+        let should_box = {
+            let borrowed = slf.borrow();
+            let array = &*borrowed;
+            array.kind() == GridKind::GeohashCell || array.has_missing(py)
+        };
+        if should_box {
+            return slf.borrow().object_numpy_array(py);
         }
-        if let Some(values) = borrowed.logical_contiguous_ids() {
-            // SAFETY: values is tied to slf, and owner pins that object as
-            // the array base.
-            return unsafe { uint64_slice_array(owner, values) };
-        }
-        uint64_array(owner.py(), borrowed.logical_ids_vec())
+        Self::numeric_id_array(slf)
     }
 
     /// Canonical string token of every cell, in order.
@@ -333,12 +425,17 @@ impl PyCellArray {
     #[getter]
     pub(crate) fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use pyo3::IntoPyObjectExt as _;
-        let tokens = match self.kind() {
+        if self.kind() == GridKind::GeohashCell {
+            return self.geohash_tokens(py);
+        }
+        let tokens = py.detach(|| match self.kind() {
             GridKind::H3Cell => self.tokens::<h3o::CellIndex>(),
             GridKind::S2Cell => self.tokens::<CellId>(),
             GridKind::Tile => self.tokens::<Tile>(),
-            GridKind::GeohashCell => return self.geohash_tokens(py),
-        };
+            GridKind::GeohashCell => {
+                unreachable!("geohash tokens use direct Python string publication")
+            },
+        });
         tokens.into_py_any(py)
     }
 }
