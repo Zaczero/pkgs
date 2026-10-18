@@ -69,27 +69,25 @@ impl PreparedPlan {
         flattening: f64,
         runtime_generation: u64,
         metric: &impl ChartMetric,
+        admission: GeographicPrepared<'_>,
     ) -> Result<Arc<ChartLineIndex>> {
+        debug_assert!(std::ptr::eq(admission.plan(), self));
+        debug_assert_eq!(admission.frame(), metric.chart_frame());
         let key =
             GeographicMetricKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
-        let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
+        let cached = frame_cache.cached_line_index(&key);
         if let Some(index) = cached {
             return Ok(index);
         }
-        if frame_cache.cached_chart_parts(&key).is_none() {
-            GeographicPrepared::try_new(self, frame_cache, metric.chart_frame())?;
-        }
-        self.shape().linework()?;
-        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
+        let plan = admission.plan();
+        plan.shape().linework()?;
+        let parts = admission.cached_chart_parts(frame_cache, &key, metric)?;
         let index = Arc::new(ChartLineIndex::from_chart_parts(
-            self.shape(),
+            plan.shape(),
             parts,
             metric,
         )?);
-        let entry = frame_cache.merge(key, |entry| {
-            entry.line_index.get_or_insert_with(|| Arc::clone(&index));
-        });
-        Ok(entry.and_then(|entry| entry.line_index).unwrap_or(index))
+        Ok(frame_cache.merge_line_index(&key, &index).unwrap_or(index))
     }
 
     pub(crate) fn measured_chart_parts(
@@ -100,24 +98,18 @@ impl PreparedPlan {
         flattening: f64,
         generation: u64,
         metric: &impl ChartMetric,
+        admission: GeographicPrepared<'_>,
     ) -> Result<Arc<ChartParts>> {
+        debug_assert!(std::ptr::eq(admission.plan(), self));
+        debug_assert_eq!(admission.frame(), metric.chart_frame());
         let key = GeographicMetricKey::new_at_generation(crs, semi_major, flattening, generation);
-        if let Some(parts) = frame_cache
-            .get(&key)
-            .and_then(|entry| entry.measured_chart_parts)
-        {
+        if let Some(parts) = frame_cache.cached_measured_chart_parts(&key) {
             return Ok(parts);
         }
-        GeographicPrepared::try_new(self, frame_cache, metric.chart_frame())?;
-        let index = self.measured_line_index()?;
+        let index = admission.plan().measured_line_index()?;
         let parts = Arc::new(ChartParts::measured_route(index.points(), metric)?);
-        let entry = frame_cache.merge(key, |entry| {
-            entry
-                .measured_chart_parts
-                .get_or_insert_with(|| Arc::clone(&parts));
-        });
-        Ok(entry
-            .and_then(|entry| entry.measured_chart_parts)
+        Ok(frame_cache
+            .merge_measured_chart_parts(&key, &parts)
             .unwrap_or(parts))
     }
 }

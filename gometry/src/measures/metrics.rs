@@ -275,7 +275,7 @@ fn snap_prepared(
     left: &crate::geometry::PreparedPlan,
     right: &crate::geometry::PreparedPlan,
     tolerance: f64,
-    context: &crate::dispatch::CachelessRowContext<'_>,
+    context: &crate::dispatch::MetricRowContext<'_>,
 ) -> crate::error::Result<crate::geometry::Shape> {
     let source = left.shape();
     match context.metric {
@@ -302,7 +302,7 @@ fn snap_output(
     left: &crate::geometry::PreparedPlan,
     right: &crate::geometry::PreparedPlan,
     tolerance: f64,
-    context: &crate::dispatch::CachelessRowContext<'_>,
+    context: &crate::dispatch::MetricRowContext<'_>,
 ) -> crate::error::Result<GeometryOutput> {
     let output = snap_prepared(left, right, tolerance, context)?;
     match context.domain {

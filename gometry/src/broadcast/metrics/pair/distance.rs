@@ -1,7 +1,7 @@
 use super::{
-    ComputedEdgeIntent, FrameDependentCaches, NonNegative, Point, PreparedPlan, Shape,
-    SourceArcCapture, SourceArcContext, TopologyDomain, crs, dispatch_resolved_metric,
-    ensure_geodesic_shape, prepare_geodesic_pair,
+    ComputedEdgeIntent, FrameDependentCachePair, FrameDependentCaches, NonNegative, Point,
+    PreparedPlan, Shape, SourceArcCapture, SourceArcContext, TopologyDomain, crs,
+    dispatch_resolved_metric, ensure_geodesic_shape, prepare_geodesic_pair,
 };
 
 pub(crate) fn pair_distance_planar(
@@ -97,6 +97,20 @@ pub(crate) fn pair_dwithin_geodesic(
     )
 }
 
+fn planar_nearest_points(
+    a: &PreparedPlan,
+    b: &PreparedPlan,
+    source_context: Option<&SourceArcContext<'_, '_, crs::GeodesicMetric>>,
+) -> crate::error::Result<Option<(Point, Point)>> {
+    if a.shape().is_empty() || b.shape().is_empty() {
+        return Ok(None);
+    }
+    source_context.map_or_else(
+        || a.nearest_points(b),
+        |source_context| a.nearest_points_with_source_context(b, source_context),
+    )
+}
+
 /// `metric_nearest_points` against an already-resolved metric. `None` when an
 /// operand is empty — the surfaces map it to the output-type EMPTY sentinel
 /// (`(POINT EMPTY, POINT EMPTY)` / `LINESTRING EMPTY`), mirroring distance's
@@ -109,18 +123,13 @@ pub(crate) fn metric_nearest_points_resolved(
     b_cache: &FrameDependentCaches,
     source_context: Option<&SourceArcContext<'_, '_, crs::GeodesicMetric>>,
 ) -> crate::error::Result<Option<(Point, Point)>> {
-    if a.shape().is_empty() || b.shape().is_empty() {
-        return Ok(None);
-    }
     dispatch_resolved_metric(
         metric,
-        |_| {
-            source_context.map_or_else(
-                || a.nearest_points(b),
-                |source_context| a.nearest_points_with_source_context(b, source_context),
-            )
-        },
+        |_| planar_nearest_points(a, b, source_context),
         |metric| {
+            if a.shape().is_empty() || b.shape().is_empty() {
+                return Ok(None);
+            }
             let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
                 &metric.geodesic,
                 a,
@@ -147,6 +156,7 @@ pub(crate) fn metric_nearest_points_resolved(
 pub(crate) fn metric_shortest_line_resolved(
     metric: &crs::ResolvedMetric,
     a: &PreparedPlan,
+    frame_caches: Option<FrameDependentCachePair<'_>>,
     b: &PreparedPlan,
     domain: TopologyDomain,
     source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
@@ -155,14 +165,7 @@ pub(crate) fn metric_shortest_line_resolved(
     let source_capture = SourceArcCapture::for_output_axes(common, source_context);
     match metric {
         crs::ResolvedMetric::Planar { .. } => {
-            let pair = metric_nearest_points_resolved(
-                metric,
-                a,
-                &FrameDependentCaches::default(),
-                b,
-                &FrameDependentCaches::default(),
-                source_capture.context(),
-            )?;
+            let pair = planar_nearest_points(a, b, source_capture.context())?;
             match (pair.as_ref(), domain) {
                 (Some((start, end)), TopologyDomain::Geographic(frame)) => {
                     crate::geometry::nearest_line_with_intent(
@@ -191,12 +194,12 @@ pub(crate) fn metric_shortest_line_resolved(
                 metric.frame,
                 metric.state.generation,
             )?;
-            let a_cache = FrameDependentCaches::default();
-            let b_cache = FrameDependentCaches::default();
+            let frame_caches = frame_caches
+                .expect("geodesic shortest-line dispatch provides operand frame caches");
             match a.geodesic_nearest_line_cached(
-                &a_cache,
+                frame_caches.left,
                 b,
-                &b_cache,
+                frame_caches.right,
                 &metric.crs,
                 semi_major,
                 flattening,
@@ -284,8 +287,9 @@ mod planar_nearest_source_ordinate_tests {
     use super::{metric_nearest_points_resolved, metric_shortest_line_resolved};
     use crate::crs::{GeodesicMetric, MetricModel, ResolvedMetric};
     use crate::geometry::{
-        ChartMetric as _, FrameDependentCaches, LineSeq, Point, PreparedPlan, RootWorkCounters,
-        Shape, SourceArcContext, TopologyDomain, reset_root_work_counters, root_work_counters,
+        ChartMetric as _, FrameDependentCachePair, FrameDependentCaches, LineSeq, Point,
+        PreparedPlan, RootWorkCounters, Shape, SourceArcContext, TopologyDomain,
+        reset_root_work_counters, root_work_counters,
     };
 
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
@@ -421,6 +425,12 @@ mod planar_nearest_source_ordinate_tests {
         .unwrap();
         let left = PreparedPlan::new(Shape::Point(half_turn_start));
         let right = PreparedPlan::new(Shape::Point(half_turn_end));
+        let left_cache = FrameDependentCaches::default();
+        let right_cache = FrameDependentCaches::default();
+        let frame_caches = Some(FrameDependentCachePair {
+            left: &left_cache,
+            right: &right_cache,
+        });
         let origin = Point::new_raw_xy(0.0, 0.0);
         let half_turn_total = segmented_length(&metric, origin, Point::new_raw_xy(180.0, 60.0));
         for resolved in [&planar, &geodesic] {
@@ -428,6 +438,7 @@ mod planar_nearest_source_ordinate_tests {
             let Shape::LineString(line) = metric_shortest_line_resolved(
                 resolved,
                 &left,
+                frame_caches,
                 &right,
                 TopologyDomain::Geographic(frame),
                 &source_context,
@@ -472,6 +483,7 @@ mod planar_nearest_source_ordinate_tests {
         let Shape::LineString(line) = metric_shortest_line_resolved(
             &planar,
             &left,
+            None,
             &right,
             TopologyDomain::Geographic(frame),
             &source_context,
@@ -544,12 +556,19 @@ mod planar_nearest_source_ordinate_tests {
         );
         let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, 0.0)));
         let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(180.0, 60.0)));
+        let left_cache = FrameDependentCaches::default();
+        let right_cache = FrameDependentCaches::default();
+        let frame_caches = Some(FrameDependentCachePair {
+            left: &left_cache,
+            right: &right_cache,
+        });
 
         for unit in [&planar, &geodesic] {
             reset_root_work_counters();
             let line = metric_shortest_line_resolved(
                 unit,
                 &left,
+                frame_caches,
                 &right,
                 TopologyDomain::Geographic(metric.frame),
                 &context,
@@ -576,9 +595,15 @@ mod shortest_line_tests {
         let source_context = SourceArcContext::cartesian();
         let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(179.8, 0.0)));
         let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(-179.8, 1.0)));
+        let left_cache = FrameDependentCaches::default();
+        let right_cache = FrameDependentCaches::default();
         let output = metric_shortest_line_resolved(
             &metric,
             &left,
+            Some(FrameDependentCachePair {
+                left: &left_cache,
+                right: &right_cache,
+            }),
             &right,
             TopologyDomain::Geographic(frame),
             &source_context,
@@ -617,9 +642,15 @@ mod shortest_line_tests {
             .unwrap(),
         );
         let right = PreparedPlan::new(line);
+        let left_cache = FrameDependentCaches::default();
+        let right_cache = FrameDependentCaches::default();
         let output = metric_shortest_line_resolved(
             &metric,
             &left,
+            Some(FrameDependentCachePair {
+                left: &left_cache,
+                right: &right_cache,
+            }),
             &right,
             TopologyDomain::Geographic(frame),
             &source_context,

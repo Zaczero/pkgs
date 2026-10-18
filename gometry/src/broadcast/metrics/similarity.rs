@@ -10,7 +10,7 @@ use crate::broadcast::metrics::{
     PyGeometryArray, PyResult, Python, Shape, crs, float64_array, resolve_metric, rows_err,
     same_storage_similarity_metric_zeros,
 };
-use crate::dispatch::{CachelessRowContext, MetricOp};
+use crate::dispatch::{MetricOp, MetricRowContext};
 use crate::geometry::storage::{GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
 use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan, storage};
 use crate::py::errors;
@@ -167,7 +167,7 @@ impl SimilarityOp {
         &self,
         left: &PreparedPlan,
         right: &PreparedPlan,
-        context: &CachelessRowContext<'_>,
+        context: &MetricRowContext<'_>,
     ) -> crate::error::Result<f64> {
         let model = context.metric.require_model(self.metric_op())?;
         self.validate_model(model)?;

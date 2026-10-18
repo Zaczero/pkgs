@@ -1,5 +1,7 @@
 use super::support::assert_chart_pair_contract;
 use super::*;
+use crate::geometry::LineSeq;
+use crate::geometry::distance::chart_parts_counters as chart_product_counters;
 
 #[test]
 #[expect(
@@ -105,6 +107,136 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
     })?;
     Ok(())
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Assertions define the count oracle while Result propagates setup errors"
+)]
+fn fixed_point_batches_admit_the_source_once_before_probe_resolution() -> Result<()> {
+    let shape = Shape::LineString(LineSeq::segment(
+        Point::new_axes(-30.0, 5.0, ZOrdinate(None), MOrdinate(Some(0.0)))?,
+        Point::new_axes(30.0, 5.0, ZOrdinate(None), MOrdinate(Some(60.0)))?,
+    )?);
+    let data = PreparedPlan::new(shape.clone());
+    let frame_cache = FrameDependentCaches::default();
+    let probes = [(-10.0, 7.0), (0.0, 8.0), (20.0, 9.0)];
+
+    with_ellipsoid_metric("EPSG:4326", &[&shape], |metric| {
+        let (semi_major, flattening) = metric.ellipsoid_parameters();
+        FrameDependentCaches::reset_geographic_admission_reads();
+        let distances = data.geodesic_distance_points(
+            &frame_cache,
+            probes.into_iter(),
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+            metric.frame(),
+        )?;
+        assert_eq!(distances.len(), probes.len());
+        assert!(distances.iter().all(|distance| distance.is_finite()));
+        assert_eq!(FrameDependentCaches::geographic_admission_reads(), 1);
+
+        let generation = metric.runtime_generation();
+        let admission = GeographicPrepared::try_new(&data, &frame_cache, metric.frame())?;
+        data.chart_line_index(
+            &frame_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            generation,
+            metric,
+            admission,
+        )?;
+        data.measured_chart_parts(
+            &frame_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            generation,
+            metric,
+            admission,
+        )?;
+        FrameDependentCaches::reset_geographic_admission_reads();
+        let matches = data.geodesic_dwithin_points(
+            &frame_cache,
+            probes.into_iter(),
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+            300_000.0,
+            metric.frame(),
+        )?;
+        assert_eq!(matches.len(), probes.len());
+        assert_eq!(FrameDependentCaches::geographic_admission_reads(), 1);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Assertions define the reuse oracle while Result propagates setup errors"
+)]
+fn geodesic_shortest_line_reuses_warmed_operand_frame_products() -> Result<()> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    let model = crate::crs::metric_model_at(Some("EPSG:4326"), &state)?;
+    let geodesic = crate::crs::GeodesicMetric::from_model(&model)?;
+    let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+    let left = PreparedPlan::new(line(vec![p(-10.0, 0.0), p(10.0, 0.0)]));
+    let right = PreparedPlan::new(Shape::Point(p(0.5, 1.0)));
+    let left_cache = FrameDependentCaches::default();
+    let right_cache = FrameDependentCaches::default();
+    let (semi_major, flattening) = (geodesic.geodesic.a, geodesic.geodesic.f);
+
+    let distance = left.geodesic_distance_cached(
+        &left_cache,
+        &right,
+        &right_cache,
+        &geodesic.crs,
+        semi_major,
+        flattening,
+        &geodesic,
+    )?;
+    assert!(distance > 0.0);
+
+    FrameDependentCaches::reset_geographic_admission_reads();
+    chart_product_counters::reset_chart_parts_builds();
+    let output = crate::broadcast::metric_shortest_line_resolved(
+        &resolved,
+        &left,
+        Some(crate::geometry::FrameDependentCachePair {
+            left: &left_cache,
+            right: &right_cache,
+        }),
+        &right,
+        crate::geometry::TopologyDomain::Geographic(geodesic.frame),
+        &crate::geometry::SourceArcContext::cartesian(),
+    )?;
+
+    let Shape::LineString(line) = output else {
+        panic!("geodesic shortest_line returns a line");
+    };
+    let endpoints: Vec<_> = line.as_coords().iter().collect();
+    assert!(endpoints.len() >= 2);
+    assert!((endpoints[0].x - 0.5).abs() < 1.0e-8);
+    assert!(endpoints[0].y.abs() < 1.0e-8);
+    let endpoint = endpoints.last().unwrap();
+    assert_eq!((endpoint.x, endpoint.y), (0.5, 1.0));
+    assert_eq!(FrameDependentCaches::geographic_admission_reads(), 2);
+    assert_eq!(
+        chart_product_counters::chart_parts_builds(),
+        0,
+        "shortest_line reuses both warmed chart-part products"
+    );
+    Ok(())
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_distance_measures_a_full_turn_line_as_its_parallel() {

@@ -18,10 +18,17 @@ fn shortest_line_array_output(
     metric: &crate::crs::ResolvedMetric,
     left: &crate::geometry::PreparedPlan,
     right: &crate::geometry::PreparedPlan,
-    ctx: &crate::dispatch::CachelessRowContext<'_>,
+    ctx: &crate::dispatch::MetricRowContext<'_>,
     source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> crate::error::Result<GeometryOutput> {
-    let output = metric_shortest_line_resolved(metric, left, right, ctx.domain, source_context)?;
+    let output = metric_shortest_line_resolved(
+        metric,
+        left,
+        ctx.frame_caches.copied(),
+        right,
+        ctx.domain,
+        source_context,
+    )?;
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(GeometryOutput::Shape(output)),
         crate::geometry::TopologyDomain::Geographic(_) => Ok(GeometryOutput::Pending(
@@ -117,6 +124,7 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     true,
+                    false,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)
@@ -137,6 +145,7 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     true,
+                    false,
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)
@@ -148,9 +157,17 @@ pub(crate) fn shortest_line(
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
                 let left_plan = left.prepared_plan();
                 let right_plan = right.prepared_plan();
+                let frame_cache_arcs = matches!(&resolved, crate::crs::ResolvedMetric::Geodesic(_))
+                    .then(|| (left.frame_cache(), right.frame_cache()));
                 let domain = admission.domain;
                 let source_frame = admission.frame.clone();
                 let shape = py.detach(move || {
+                    let frame_caches = frame_cache_arcs.as_ref().map(|(left, right)| {
+                        crate::geometry::FrameDependentCachePair {
+                            left: left.as_ref(),
+                            right: right.as_ref(),
+                        }
+                    });
                     crate::broadcast::with_source_arc_context(
                         &resolved,
                         &source_frame,
@@ -159,6 +176,7 @@ pub(crate) fn shortest_line(
                             metric_shortest_line_resolved(
                                 &resolved,
                                 &left_plan,
+                                frame_caches,
                                 &right_plan,
                                 domain,
                                 source_context,
@@ -180,6 +198,7 @@ pub(crate) fn shortest_line(
                     &admission,
                     crate::dispatch::MetricResolver::GeographicCarry,
                     true,
+                    matches!(&resolved, crate::crs::ResolvedMetric::Geodesic(_)),
                     move |left, right, ctx| {
                         ctx.with_source_arc_context(|source_context| {
                             shortest_line_array_output(&resolved, left, right, ctx, source_context)

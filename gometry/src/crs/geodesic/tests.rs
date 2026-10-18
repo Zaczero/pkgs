@@ -155,15 +155,13 @@ fn chart_lrs_index_rejects_half_period_edges() {
     let geodesic = Geodesic::new(6_378_137.0, 0.0);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let shape = PreparedPlan::new(line(&[p(0.0, 10.0), p(180.0, -10.0)]));
+    let cache = FrameDependentCaches::default();
+    let admission =
+        crate::geometry::GeographicPrepared::try_new(&shape, &cache, metric.chart_frame()).unwrap();
     assert!(
         shape
             .chart_line_index(
-                &FrameDependentCaches::default(),
-                "TEST",
-                geodesic.a,
-                geodesic.f,
-                0,
-                &metric,
+                &cache, "TEST", geodesic.a, geodesic.f, 0, &metric, admission,
             )
             .is_err()
     );

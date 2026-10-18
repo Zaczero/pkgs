@@ -7,7 +7,7 @@ use crate::broadcast::{
 };
 use crate::crs::frame::Frame;
 use crate::dispatch::metric::{
-    CachelessRowContext, Lane, LinearReferenceRow, MetricCtx, MetricResolver, MetricScratch,
+    Lane, LinearReferenceRow, MetricCtx, MetricResolver, MetricRowContext, MetricScratch,
 };
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::packed::{
@@ -24,13 +24,14 @@ fn execute_unary_scalar<R: BulkElement>(
     plan: &PreparedPlan,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
+    kernel: impl FnOnce(&PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> Result<R> {
-    let ctx = CachelessRowContext {
+    let ctx = MetricRowContext {
         frame: &geometry.frame,
         domain,
         metric,
         lane: Lane::Scalar,
+        frame_caches: None,
     };
     kernel(plan, &ctx)
 }
@@ -87,7 +88,7 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
+    kernel: impl FnOnce(&PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
     let plan = geometry.prepared_plan();
@@ -174,7 +175,7 @@ pub(crate) fn unary_array<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_f64(py, array, op, unit) {
@@ -293,7 +294,7 @@ fn execute_unary_rows<T: BulkElement>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
     + pyo3::marker::Ungil,
 ) -> std::result::Result<Vec<T>, (usize, crate::error::Error)> {
     py.detach(move || {
@@ -304,11 +305,12 @@ fn execute_unary_rows<T: BulkElement>(
                 ArrayRow::Present(present) => {
                     let row_index = present.logical();
                     let shape_row = present.row();
-                    let ctx = CachelessRowContext {
+                    let ctx = MetricRowContext {
                         frame: &array.frame,
                         domain,
                         metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: None,
                     };
                     match mode {
                         UnaryRowMode::ShapeOnly => {
@@ -333,7 +335,7 @@ fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> crate::error::BatchResult<PyGeometryArray> {
     py.detach(move || {
@@ -345,11 +347,12 @@ fn execute_unary_shape_rows<R: Into<GeometryOutput>>(
                 ArrayRow::Present(present) => {
                     let row_index = present.logical();
                     let shape_row = present.row();
-                    let ctx = CachelessRowContext {
+                    let ctx = MetricRowContext {
                         frame: &array.frame,
                         domain,
                         metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: None,
                     };
                     let data = match mode {
                         UnaryRowMode::ShapeOnly => crate::array::PreparedRow::transient(shape_row),
@@ -380,7 +383,7 @@ fn run_unary_shape_rows<R: Into<GeometryOutput>>(
     array: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
@@ -418,7 +421,7 @@ fn run_unary_rows<T: BulkElement>(
     array: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
     + pyo3::marker::Ungil,
 ) -> PyResult<(Vec<T>, Frame)> {
     match resolver {
@@ -456,7 +459,7 @@ pub(crate) fn unary_scalar_shape(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + pyo3::marker::Ungil,
+    kernel: impl FnOnce(&PreparedPlan, &MetricRowContext<'_>) -> Result<Shape> + pyo3::marker::Ungil,
 ) -> PyResult<Typed> {
     if op == Operation::SplitAntimeridian {
         return unary_scalar_split_antimeridian(py, geometry);
@@ -468,7 +471,7 @@ pub(crate) fn unary_scalar_shape(
 
 fn split_drawing(
     data: &PreparedPlan,
-    ctx: &CachelessRowContext<'_>,
+    ctx: &MetricRowContext<'_>,
 ) -> Result<crate::geometry::SplitDrawing> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
     if ctx.frame.crs_ref().is_none() {
@@ -529,11 +532,12 @@ fn unary_array_split_antimeridian(
                             let logical = present.logical();
                             let data = crate::array::PreparedRow::transient(present.row())
                                 .map_err(|error| (logical, error))?;
-                            let ctx = CachelessRowContext {
+                            let ctx = MetricRowContext {
                                 frame: &array.frame,
                                 domain,
                                 metric,
                                 lane: Lane::Array(logical),
+                                frame_caches: None,
                             };
                             let drawing =
                                 split_drawing(&data, &ctx).map_err(|error| (logical, error))?;
@@ -566,7 +570,7 @@ pub(crate) fn unary_array_shapes<R: Into<GeometryOutput>>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<PyGeometryArray> {
     if op == Operation::SplitAntimeridian {
         return unary_array_split_antimeridian(py, array);
@@ -734,7 +738,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     parameter: &'static str,
     mut kernel: impl FnMut(
         &PreparedPlan,
-        &CachelessRowContext<'_>,
+        &MetricRowContext<'_>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Shape>
     + pyo3::marker::Ungil,
@@ -766,11 +770,12 @@ pub(crate) fn unary_array_shapes_budgeted(
                     ArrayRow::Present(present) => {
                         let row = present.logical();
                         let shape_row = present.row();
-                        let ctx = CachelessRowContext {
+                        let ctx = MetricRowContext {
                             frame: &frame,
                             domain,
                             metric,
                             lane: Lane::Array(row),
+                            frame_caches: None,
                         };
                         let result = match rows.prepared_at(row, shape_row) {
                             Ok(data) => {
@@ -803,7 +808,7 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
+    kernel: impl Fn(&PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
     let Some(input) = classify_input(value) else {
@@ -828,7 +833,7 @@ mod scalar_boundary_tests {
     use crate::dispatch::kernels;
     use crate::test_support::{boundary_probe, initialize_python, python_is_attached};
 
-    type Kernel = fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<bool>;
+    type Kernel = fn(&PreparedPlan, &MetricRowContext<'_>) -> Result<bool>;
 
     fn make_geometry(wkt: &str, frame: Frame) -> PyGeometry {
         PyGeometry::with_frame(crate::io::parse_wkt(wkt).unwrap(), frame)

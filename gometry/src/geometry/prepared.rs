@@ -5,7 +5,7 @@ mod topology;
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub(crate) use frame::FrameDependentCaches;
+pub(crate) use frame::{FrameDependentCachePair, FrameDependentCaches};
 use frame::{GeographicTopologyKey, GeographicTopologyProducts};
 use metric::MetricPlan;
 use topology::TopologyPlan;

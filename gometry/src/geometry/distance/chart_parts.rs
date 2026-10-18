@@ -4,10 +4,10 @@ use std::sync::OnceLock;
 use crate::HeapSize;
 use crate::crs::{ChartEdge, POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch};
 use crate::error::Result;
+#[cfg(test)]
+use crate::geographic::GeographicFrame;
 use crate::geographic::lonlat::invalid_lonlat_error;
-use crate::geographic::{
-    ChartStep, EdgeDirection, GeographicFrame, GeographicInputs, TurnDirection,
-};
+use crate::geographic::{ChartStep, EdgeDirection, GeographicInputs, TurnDirection};
 use crate::geometry::overlay::overlay_all_geographic_from_with_metric;
 use crate::geometry::{
     ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, DwithinOutcome, FrameDependentCaches,
@@ -62,6 +62,8 @@ impl ChartParts {
     }
 
     pub(crate) fn build(shape: &Shape, metric: &impl ChartMetric) -> Result<Self> {
+        #[cfg(test)]
+        counters::chart_parts_build();
         let mut vertices = Vec::new();
         shape.for_each_first_point_run(|point| vertices.push(point));
 
@@ -126,50 +128,34 @@ impl HeapSize for ChartParts {
     }
 }
 
-impl PreparedPlan {
+impl GeographicPrepared<'_> {
     pub(in crate::geometry) fn cached_chart_parts(
-        &self,
-        frame_cache: &crate::geometry::FrameDependentCaches,
-        key: &crate::geometry::GeographicMetricKey,
+        self,
+        frame_cache: &FrameDependentCaches,
+        key: &GeographicMetricKey,
         metric: &impl ChartMetric,
     ) -> Result<std::sync::Arc<ChartParts>> {
+        debug_assert_eq!(self.frame(), metric.chart_frame());
         if let Some(parts) = frame_cache.cached_chart_parts(key) {
             return Ok(parts);
         }
-        GeographicPrepared::try_new(self, frame_cache, metric.chart_frame())?;
-        let parts = std::sync::Arc::new(ChartParts::build(self.shape(), metric)?);
+        let parts = std::sync::Arc::new(ChartParts::build(self.plan().shape(), metric)?);
         let entry = frame_cache.merge_chart_parts(key, &parts);
         Ok(entry.unwrap_or(parts))
     }
 }
 
-pub(crate) fn geographic_intersects_cached(
-    left: &PreparedPlan,
-    left_cache: &crate::geometry::FrameDependentCaches,
-    right: &PreparedPlan,
-    right_cache: &crate::geometry::FrameDependentCaches,
-    frame: GeographicFrame,
-) -> Result<bool> {
-    let left = GeographicPrepared::try_new(left, left_cache, frame)?;
-    let right = GeographicPrepared::try_new(right, right_cache, frame)?;
-    graph_intersects_data_geographic(&left, &right)
-}
-
-pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
-    left: &PreparedPlan,
-    left_cache: &FrameDependentCaches,
-    right: &PreparedPlan,
-    right_cache: &FrameDependentCaches,
-    frame: GeographicFrame,
+fn geographic_intersection_witness_prepared<M: ChartMetric>(
+    left: GeographicPrepared<'_>,
+    right: GeographicPrepared<'_>,
     metric: &M,
 ) -> Result<Option<Point>> {
-    let left = GeographicPrepared::try_new(left, left_cache, frame)?;
-    let right = GeographicPrepared::try_new(right, right_cache, frame)?;
     let inputs = GeographicInputs::try_from_first_and_shapes(
         left.view(),
         std::iter::once(right.plan().shape()),
     )
     .map_err(|error| invalid_lonlat_error(error.native.x, error.native.y))?;
+    let frame = left.frame();
     let metric_access = || Ok(metric);
     let intersection = overlay_all_geographic_from_with_metric(
         &inputs,
@@ -386,11 +372,24 @@ pub(crate) mod counters {
     use std::cell::Cell;
 
     thread_local! {
+        static CHART_PARTS_BUILDS: Cell<u64> = const { Cell::new(0) };
         static TARGET_EDGE_CANDIDATES: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
         TARGET_EDGE_CANDIDATES.set(0);
+    }
+
+    pub(crate) fn reset_chart_parts_builds() {
+        CHART_PARTS_BUILDS.set(0);
+    }
+
+    pub(crate) fn chart_parts_build() {
+        CHART_PARTS_BUILDS.set(CHART_PARTS_BUILDS.get().saturating_add(1));
+    }
+
+    pub(crate) fn chart_parts_builds() -> u64 {
+        CHART_PARTS_BUILDS.get()
     }
 
     pub(crate) fn target_edge_candidate() {
@@ -791,7 +790,10 @@ pub(crate) fn cached_chart_distance<M>(
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
-    if geographic_intersects_cached(left, left_cache, right, right_cache, metric.chart_frame())? {
+    let frame = metric.chart_frame();
+    let left_admission = GeographicPrepared::try_new(left, left_cache, frame)?;
+    let right_admission = GeographicPrepared::try_new(right, right_cache, frame)?;
+    if graph_intersects_data_geographic(&left_admission, &right_admission)? {
         return Ok(0.0);
     }
     let key = GeographicMetricKey::new_at_generation(
@@ -800,8 +802,8 @@ where
         flattening,
         metric.runtime_generation(),
     );
-    let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
-    let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
+    let left_parts = left_admission.cached_chart_parts(left_cache, &key, metric)?;
+    let right_parts = right_admission.cached_chart_parts(right_cache, &key, metric)?;
     let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
     let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
@@ -840,7 +842,10 @@ where
         metric.ensure_shape(right.shape())?;
         return Ok(true);
     }
-    if geographic_intersects_cached(left, left_cache, right, right_cache, metric.chart_frame())? {
+    let frame = metric.chart_frame();
+    let left_admission = GeographicPrepared::try_new(left, left_cache, frame)?;
+    let right_admission = GeographicPrepared::try_new(right, right_cache, frame)?;
+    if graph_intersects_data_geographic(&left_admission, &right_admission)? {
         return Ok(true);
     }
     if limit == 0.0 {
@@ -852,8 +857,8 @@ where
         flattening,
         metric.runtime_generation(),
     );
-    let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
-    let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
+    let left_parts = left_admission.cached_chart_parts(left_cache, &key, metric)?;
+    let right_parts = right_admission.cached_chart_parts(right_cache, &key, metric)?;
     let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
     let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
@@ -883,20 +888,17 @@ where
     if left.shape().is_empty() || right.shape().is_empty() {
         return Ok(None);
     }
-    if geographic_intersects_cached(left, left_cache, right, right_cache, metric.chart_frame())? {
-        let witness = geographic_intersection_witness_cached(
-            left,
-            left_cache,
-            right,
-            right_cache,
-            metric.chart_frame(),
-            metric,
-        )?
-        .ok_or_else(|| {
-            crate::crs::CrsError::message(
-                "exact geographic intersection did not provide a nearest-point witness",
-            )
-        })?;
+    let frame = metric.chart_frame();
+    let left_admission = GeographicPrepared::try_new(left, left_cache, frame)?;
+    let right_admission = GeographicPrepared::try_new(right, right_cache, frame)?;
+    if graph_intersects_data_geographic(&left_admission, &right_admission)? {
+        let witness =
+            geographic_intersection_witness_prepared(left_admission, right_admission, metric)?
+                .ok_or_else(|| {
+                    crate::crs::CrsError::message(
+                        "exact geographic intersection did not provide a nearest-point witness",
+                    )
+                })?;
         return Ok(Some(ChartPairMinimum {
             first: witness,
             second: witness,
@@ -914,8 +916,8 @@ where
         flattening,
         metric.runtime_generation(),
     );
-    let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
-    let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
+    let left_parts = left_admission.cached_chart_parts(left_cache, &key, metric)?;
+    let right_parts = right_admission.cached_chart_parts(right_cache, &key, metric)?;
     let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
     let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
@@ -1318,9 +1320,15 @@ mod tests {
             .unwrap()
         };
         let nearest_separation = separation(first, second);
+        let left_cache = FrameDependentCaches::default();
+        let right_cache = FrameDependentCaches::default();
         let shortest = crate::metric_shortest_line_resolved(
             &resolved,
             &left,
+            Some(crate::geometry::FrameDependentCachePair {
+                left: &left_cache,
+                right: &right_cache,
+            }),
             &right,
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
             &source_context,

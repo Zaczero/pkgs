@@ -82,10 +82,10 @@ pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use prepared::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
-    ChartPointDistanceSample, DwithinOutcome, FrameDependentCaches, GeodesicMetric,
-    GeodesicNumericalPolicy, IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery,
-    PointEdgeQueryResult, PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue,
-    canonical_f64_bits,
+    ChartPointDistanceSample, DwithinOutcome, FrameDependentCachePair, FrameDependentCaches,
+    GeodesicMetric, GeodesicNumericalPolicy, IndexedSegment, IntoSharedShape, PointEdgeMinimum,
+    PointEdgeQuery, PointEdgeQueryResult, PointKey, PolygonizeFull, PreparedPlan, ShapeData,
+    ValidationIssue, canonical_f64_bits,
 };
 pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,

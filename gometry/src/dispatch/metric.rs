@@ -5,7 +5,7 @@ use crate::DistanceUnit;
 use crate::broadcast::{resolve_metric, resolve_metric_at};
 use crate::crs::frame::{Crs, Frame};
 use crate::crs::{self, MetricModel, ResolvedMetric};
-use crate::geometry::TopologyDomain;
+use crate::geometry::{FrameDependentCachePair, TopologyDomain};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters::metric_context_acquisition;
 
@@ -319,17 +319,19 @@ impl Lane {
 /// A unary kernel producing one `f64` per geometry — the shape every
 /// CRS-aware measure (`area`, `length`, `length_3d`) shares.
 pub(crate) type UnaryMeasureKernel =
-    fn(&crate::geometry::PreparedPlan, &CachelessRowContext<'_>) -> crate::error::Result<f64>;
+    fn(&crate::geometry::PreparedPlan, &MetricRowContext<'_>) -> crate::error::Result<f64>;
 
-/// Per-row context for operations that cannot access frame-dependent products.
-pub(crate) struct CachelessRowContext<'a> {
+/// Per-row metric and dispatch state.
+pub(crate) struct MetricRowContext<'a> {
     pub frame: &'a Frame,
     pub domain: TopologyDomain,
     pub metric: MetricCtx<'a>,
     pub lane: Lane,
+    /// Present when this binary lane owns prepared operand sidecars.
+    pub frame_caches: Option<&'a FrameDependentCachePair<'a>>,
 }
 
-impl CachelessRowContext<'_> {
+impl MetricRowContext<'_> {
     pub(crate) fn with_source_arc_capture_for_axes<T>(
         &self,
         output_axes: crate::geometry::CoordinateAxes,

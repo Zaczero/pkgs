@@ -412,7 +412,7 @@ impl PreparedPlan {
             flattening,
             metric.runtime_generation(),
         );
-        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
+        let parts = prepared.cached_chart_parts(frame_cache, &key, metric)?;
         let mut scratch = distance::chart_scratch();
         let scratch = &mut *scratch;
         let (point_edge, stack) = (&mut scratch.point_edge, &mut scratch.stack);
@@ -458,7 +458,7 @@ impl PreparedPlan {
             flattening,
             metric.runtime_generation(),
         );
-        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
+        let parts = prepared.cached_chart_parts(frame_cache, &key, metric)?;
         let mut scratch = distance::chart_scratch();
         let scratch = &mut *scratch;
         let (point_edge, stack) = (&mut scratch.point_edge, &mut scratch.stack);

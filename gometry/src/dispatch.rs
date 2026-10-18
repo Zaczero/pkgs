@@ -23,7 +23,7 @@ pub(crate) use binary_fast::{
 };
 pub(crate) use linref::{line_interpolate_points_scalar, line_locate_input};
 pub(crate) use metric::{
-    CachelessRowContext, Lane, MetricCtx, MetricResolver, MetricScratch, UnaryMeasureKernel,
+    Lane, MetricCtx, MetricResolver, MetricRowContext, MetricScratch, UnaryMeasureKernel,
 };
 pub(crate) use operation::{MetricOp, Operation};
 pub(crate) use packed::{PackedLinearReference, PackedUnary};

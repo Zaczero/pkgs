@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 
 use super::*;
 use crate::crs::frame::crs_arc_static;
-use crate::dispatch::{CachelessRowContext, Lane, MetricResolver, MetricScratch, kernels};
+use crate::dispatch::{Lane, MetricResolver, MetricRowContext, MetricScratch, kernels};
 use crate::error::ErrorKind;
 use crate::geometry::{MOrdinate, PreparedPlan, ZOrdinate};
 
@@ -19,11 +19,12 @@ fn pending(wkt: &str, logical: usize, frame: &Frame) -> PendingPublicationRow {
         .resolve_topology_ctx(frame, &mut scratch)
         .unwrap();
     let data = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
-    let context = CachelessRowContext {
+    let context = MetricRowContext {
         frame,
         domain,
         metric,
         lane: Lane::Array(logical),
+        frame_caches: None,
     };
     let GeometryOutput::Pending(pending) = kernels::unary_boundary_array(&data, &context).unwrap()
     else {

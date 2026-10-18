@@ -10,12 +10,14 @@ use crate::broadcast::{
 use crate::crs::frame::Frame;
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{
-    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricScratch,
+    GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricRowContext, MetricScratch,
 };
 use crate::error::Result;
 use crate::geometry::publication::{GeometryOutput, PublicationRows};
 use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
-use crate::geometry::{GeometryErrorKind, PreparedPlan, Shape, ShapeData, TopologyDomain};
+use crate::geometry::{
+    FrameDependentCachePair, GeometryErrorKind, PreparedPlan, Shape, ShapeData, TopologyDomain,
+};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
 use crate::{PyGeometry, PyGeometryArray, Typed};
@@ -68,6 +70,15 @@ enum RawMetricBinary<R> {
 enum ArrayOperandSide {
     Left,
     Right,
+}
+
+#[derive(Clone, Copy)]
+struct BinaryGeometryContext<'a> {
+    frame: &'a Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'a>,
+    split_geographic_inputs: bool,
+    paired_array_frame_caches: bool,
 }
 
 /// Classified operands and their one common frame. Admission owns the
@@ -138,7 +149,7 @@ where
     K: for<'row, 'ctx> Fn(
             usize,
             ShapeRow<'row>,
-            &CachelessRowContext<'ctx>,
+            &MetricRowContext<'ctx>,
             &mut ArrayRowOperation<'row>,
         ) -> Result<R>
         + pyo3::marker::Ungil,
@@ -152,11 +163,12 @@ where
                 ArrayRow::Present(present) => {
                     let row_index = present.logical();
                     let shape_row = present.row();
-                    let ctx = CachelessRowContext {
+                    let ctx = MetricRowContext {
                         frame,
                         domain,
                         metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: None,
                     };
                     kernel(row_index, shape_row, &ctx, &mut rows)
                 },
@@ -180,7 +192,7 @@ where
             usize,
             ShapeRow<'left>,
             ShapeRow<'right>,
-            &CachelessRowContext<'ctx>,
+            &MetricRowContext<'ctx>,
             &mut ArrayRowOperation<'left>,
             &mut ArrayRowOperation<'right>,
         ) -> Result<R>
@@ -199,11 +211,12 @@ where
                     let row_index = left.logical();
                     let left_row = left.row();
                     let right_row = right.row();
-                    let ctx = CachelessRowContext {
+                    let ctx = MetricRowContext {
                         frame,
                         domain,
                         metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: None,
                     };
                     kernel(
                         row_index,
@@ -235,7 +248,7 @@ where
     K: for<'row, 'ctx> Fn(
             usize,
             ShapeRow<'row>,
-            &CachelessRowContext<'ctx>,
+            &MetricRowContext<'ctx>,
             &mut ArrayRowOperation<'row>,
         ) -> Result<R>
         + pyo3::marker::Ungil,
@@ -251,11 +264,12 @@ where
                 ArrayRow::Present(present) => {
                     let row_index = present.logical();
                     let shape_row = present.row();
-                    let ctx = CachelessRowContext {
+                    let ctx = MetricRowContext {
                         frame,
                         domain,
                         metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: None,
                     };
                     let result = kernel(row_index, shape_row, &ctx, &mut rows)
                         .and_then(|output_row| output.try_push(output_row.into()));
@@ -273,9 +287,7 @@ fn run_paired_shape_rows<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
-    frame: &Frame,
-    domain: TopologyDomain,
-    metric: MetricCtx<'_>,
+    context: BinaryGeometryContext<'_>,
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
@@ -284,7 +296,7 @@ where
             usize,
             ShapeRow<'left>,
             ShapeRow<'right>,
-            &CachelessRowContext<'ctx>,
+            &MetricRowContext<'ctx>,
             &mut ArrayRowOperation<'left>,
             &mut ArrayRowOperation<'right>,
         ) -> Result<R>
@@ -292,7 +304,7 @@ where
 {
     let left_array = left.clone();
     let right_array = right.clone();
-    let output_frame = frame.clone();
+    let output_frame = context.frame.clone();
     let result = py.detach(move || {
         let mut left_rows = left_array.row_operation();
         let mut right_rows = right_array.row_operation();
@@ -305,11 +317,25 @@ where
                     let row_index = left.logical();
                     let left_row = left.row();
                     let right_row = right.row();
-                    let ctx = CachelessRowContext {
-                        frame,
-                        domain,
-                        metric,
+                    let frame_cache_arcs = context.paired_array_frame_caches.then(|| {
+                        (
+                            left_rows.frame_cache(row_index),
+                            right_rows.frame_cache(row_index),
+                        )
+                    });
+                    let frame_cache_pair =
+                        frame_cache_arcs
+                            .as_ref()
+                            .map(|(left, right)| FrameDependentCachePair {
+                                left: left.as_ref(),
+                                right: right.as_ref(),
+                            });
+                    let ctx = MetricRowContext {
+                        frame: context.frame,
+                        domain: context.domain,
+                        metric: context.metric,
                         lane: Lane::Array(row_index),
+                        frame_caches: frame_cache_pair.as_ref(),
                     };
                     let result = kernel(
                         row_index,
@@ -352,8 +378,7 @@ fn run_binary_fixed_array_rows<R, K>(
 ) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
-        + pyo3::marker::Ungil,
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 {
     let values =
         run_binary_fixed_array_values(py, array, fixed, side, frame, domain, metric, kernel)?;
@@ -372,13 +397,11 @@ fn run_binary_fixed_array_values<R, K>(
 ) -> Result<Vec<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
-        + pyo3::marker::Ungil,
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 {
     let fixed_plan = fixed.prepared_plan();
-    // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
-    // frame caches are derived from MetricCtx. Never demote these kernels to
-    // bare `&Shape` (Deref coercion would drop prepared engines).
+    // Keep prepared handles; dereferencing them to `&Shape` would drop cached
+    // geometry-derived engines before the row kernel runs.
     run_array_rows(
         py,
         array,
@@ -406,8 +429,7 @@ fn run_binary_array_array_rows<R, K>(
 ) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
-        + pyo3::marker::Ungil,
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 {
     let values = run_binary_array_array_values(py, left, right, frame, domain, metric, kernel)?;
     Ok(FramedRows::paired_arrays(values, left, right, frame))
@@ -424,10 +446,9 @@ fn run_binary_array_array_values<R, K>(
 ) -> Result<Vec<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
-        + pyo3::marker::Ungil,
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 {
-    // Prepared handles; frame caches derived from MetricCtx.
+    // Keep row plans intact so kernels retain their geometry-derived engines.
     run_paired_rows(
         py,
         left,
@@ -455,7 +476,7 @@ pub(crate) fn dispatch_binary<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
@@ -471,7 +492,7 @@ pub(crate) fn dispatch_binary_admitted<R>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
@@ -534,7 +555,7 @@ fn dispatch_binary_array_admitted<R>(
     other: GeometryInput<'_>,
     side: ArrayOperandSide,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>>
 where
@@ -790,14 +811,15 @@ fn run_binary_scalar_scalar<R: pyo3::marker::Ungil>(
     frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> Result<R> {
-    let ctx = CachelessRowContext {
+    let ctx = MetricRowContext {
         frame,
         domain,
         metric,
         lane: Lane::Scalar,
+        frame_caches: None,
     };
     let left_plan = left.prepared_plan();
     let right_plan = right.prepared_plan();
@@ -812,7 +834,7 @@ pub(crate) fn dispatch_binary_array_left<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Vec<R>>
 where
@@ -966,7 +988,7 @@ pub(crate) fn dispatch_binary_geometry<R: Into<GeometryOutput>>(
     op_name: &str,
     resolver: MetricResolver,
     split_geographic_inputs: bool,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     let left = crate::normalize_geometry_batch(py, left)?;
@@ -977,16 +999,20 @@ pub(crate) fn dispatch_binary_geometry<R: Into<GeometryOutput>>(
         &admission,
         resolver,
         split_geographic_inputs,
+        false,
         kernel,
     )
 }
 
+/// Dispatches admitted geometry pairs, optionally carrying paired-row sidecars
+/// for kernels that resolve frame-dependent products.
 pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOutput>>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     resolver: MetricResolver,
     split_geographic_inputs: bool,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
+    paired_array_frame_caches: bool,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R>
     + pyo3::marker::Ungil,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
@@ -1004,11 +1030,13 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                             return Err(error.into());
                         },
                     };
-                let ctx = CachelessRowContext {
+                debug_assert!(!paired_array_frame_caches);
+                let ctx = MetricRowContext {
                     frame: &frame,
                     domain,
                     metric,
                     lane: Lane::Scalar,
+                    frame_caches: None,
                 };
                 let left_shape = left.prepared_plan();
                 let right_shape = right.prepared_plan();
@@ -1086,9 +1114,13 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R: Into<GeometryOu
                     py,
                     left,
                     right_in,
-                    domain,
-                    metric,
-                    split_geographic_inputs,
+                    BinaryGeometryContext {
+                        frame: &frame,
+                        domain,
+                        metric,
+                        split_geographic_inputs,
+                        paired_array_frame_caches,
+                    },
                     kernel,
                 )
             };
@@ -1103,17 +1135,16 @@ fn geometry_kernel_over_array_admitted<R: Into<GeometryOutput>, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: GeometryInput<'_>,
-    domain: TopologyDomain,
-    metric: MetricCtx<'_>,
-    split_geographic_inputs: bool,
+    context: BinaryGeometryContext<'_>,
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
-        + pyo3::marker::Ungil,
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<R> + pyo3::marker::Ungil,
 {
     use GeometryInput::{Many, One};
-    let frame = &left.frame;
+    let frame = context.frame;
+    let domain = context.domain;
+    let metric = context.metric;
     let row_box = |bounds: &Option<crate::array::ElementBounds>,
                    row: usize|
      -> Option<crate::geometry::Bounds> {
@@ -1126,7 +1157,8 @@ where
 
     match right {
         One(right) => {
-            let right_shape = if split_geographic_inputs {
+            debug_assert!(!context.paired_array_frame_caches);
+            let right_shape = if context.split_geographic_inputs {
                 match split_operand_arc_for_topology(domain, right, metric) {
                     Ok(right_shape) => right_shape,
                     Err(error) => return Err(PyErr::from(error)),
@@ -1150,7 +1182,7 @@ where
                         metric,
                         &left_data,
                         &right_shape,
-                        split_geographic_inputs,
+                        context.split_geographic_inputs,
                         &|l, r| kernel(l, r, ctx),
                     )
                 },
@@ -1162,9 +1194,7 @@ where
                 py,
                 left,
                 right,
-                frame,
-                domain,
-                metric,
+                context,
                 move |row, left_row, right_row, ctx, left_products, right_products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let right_box =
@@ -1176,7 +1206,7 @@ where
                         metric,
                         &left_data,
                         &right_data,
-                        split_geographic_inputs,
+                        context.split_geographic_inputs,
                         &|l, r| kernel(l, r, ctx),
                     )
                 },
@@ -1195,7 +1225,7 @@ fn geometry_kernel_over_array<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+    K: Fn(&PreparedPlan, &PreparedPlan, &MetricRowContext<'_>) -> Result<Shape>
         + pyo3::marker::Ungil,
 {
     let admission = admit_binary_inputs(GeometryInput::Many(left), right, op_name)?;
@@ -1206,9 +1236,13 @@ where
             py,
             left,
             admission.right,
-            admission.domain,
-            metric,
-            true,
+            BinaryGeometryContext {
+                frame: &admission.frame,
+                domain: admission.domain,
+                metric,
+                split_geographic_inputs: true,
+                paired_array_frame_caches: false,
+            },
             kernel,
         )
     };

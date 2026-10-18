@@ -79,7 +79,7 @@ pub(crate) fn broadcast2_geometry<K>(
     kernel: K,
 ) -> PyResult<Py<PyAny>>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::CachelessRowContext<'_>) -> Result<Shape>
+    K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::MetricRowContext<'_>) -> Result<Shape>
         + pyo3::marker::Ungil,
 {
     crate::dispatch::dispatch_binary_geometry(

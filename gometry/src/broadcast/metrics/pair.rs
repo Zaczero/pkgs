@@ -10,8 +10,8 @@ use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographi
 use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{
-    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, SourceArcCapture,
-    SourceArcContext, TopologyDomain, storage,
+    FrameDependentCachePair, FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery,
+    SourceArcCapture, SourceArcContext, TopologyDomain, storage,
 };
 use crate::{NonNegative, validate_lonlat_shape};
 

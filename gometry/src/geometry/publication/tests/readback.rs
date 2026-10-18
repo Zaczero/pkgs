@@ -417,10 +417,16 @@ fn shortest_line_receipt_omission_fails_final_readback() {
     let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
     let left = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, 0.0)));
     let right = crate::geometry::PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 1.0)));
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
     let source_context = crate::geometry::SourceArcContext::cartesian();
     let output = crate::broadcast::metric_shortest_line_resolved(
         &resolved,
         &left,
+        Some(crate::geometry::FrameDependentCachePair {
+            left: &left_cache,
+            right: &right_cache,
+        }),
         &right,
         TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
         &source_context,
@@ -523,11 +529,12 @@ fn convex_hull_receipt_omission_fails_final_readback() {
         .resolve_topology_ctx(&frame, &mut scratch)
         .unwrap();
     let data = crate::geometry::PreparedPlan::new(shape);
-    let context = crate::dispatch::CachelessRowContext {
+    let context = crate::dispatch::MetricRowContext {
         frame: &frame,
         domain,
         metric,
         lane: crate::dispatch::Lane::Scalar,
+        frame_caches: None,
     };
     let output = unary_convex_hull(&data, &context).unwrap();
     let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();
@@ -562,11 +569,12 @@ fn degenerate_minimum_rectangle_receipt_omission_fails_final_readback() {
         .resolve_topology_ctx(&frame, &mut scratch)
         .unwrap();
     let data = crate::geometry::PreparedPlan::new(shape);
-    let context = crate::dispatch::CachelessRowContext {
+    let context = crate::dispatch::MetricRowContext {
         frame: &frame,
         domain,
         metric,
         lane: crate::dispatch::Lane::Scalar,
+        frame_caches: None,
     };
     let output = unary_minimum_rotated_rectangle(&data, &context).unwrap();
     let mut receipt = ProducerDrawingReceipt::point_selection(output).unwrap();

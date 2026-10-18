@@ -17,10 +17,10 @@ fn chart_line_index(
     line: &PreparedPlan,
     cache: &FrameDependentCaches,
     metric: &GeodesicMetric,
+    admission: GeographicPrepared<'_>,
 ) -> Result<std::sync::Arc<ChartLineIndex>> {
     #[cfg(test)]
     linear_reference_counters::prepared_chart_index_resolution();
-    GeographicPrepared::try_new(line, cache, metric.frame)?;
     line.chart_line_index(
         cache,
         &metric.crs,
@@ -28,6 +28,7 @@ fn chart_line_index(
         metric.geodesic.f,
         metric.state.generation,
         metric,
+        admission,
     )
 }
 
@@ -35,8 +36,8 @@ fn measured_line_context<'a>(
     line: &'a PreparedPlan,
     cache: &FrameDependentCaches,
     metric: &GeodesicMetric,
+    admission: GeographicPrepared<'_>,
 ) -> Result<(std::sync::Arc<ChartParts>, &'a MeasuredLineIndex)> {
-    GeographicPrepared::try_new(line, cache, metric.frame)?;
     let parts = line.measured_chart_parts(
         cache,
         &metric.crs,
@@ -44,6 +45,7 @@ fn measured_line_context<'a>(
         metric.geodesic.f,
         metric.state.generation,
         metric,
+        admission,
     )?;
     Ok((parts, line.measured_line_index()?))
 }
@@ -138,12 +140,12 @@ pub(crate) fn prepare_line_locate<'a>(
             to_metre: to_metre.get(),
         },
         ResolvedMetric::Geodesic(metric) => {
-            GeographicPrepared::try_new(line, cache, metric.frame)?;
+            let admission = GeographicPrepared::try_new(line, cache, metric.frame)?;
             if !query.x.is_nan() {
                 crate::crs::ensure_geographic_lonlat_in_frame(metric.frame, query.x, query.y)?;
             }
             if basis_m {
-                let (parts, index) = measured_line_context(line, cache, metric)?;
+                let (parts, index) = measured_line_context(line, cache, metric, admission)?;
                 PreparedLineLocate::GeographicMeasure {
                     index,
                     parts,
@@ -151,7 +153,7 @@ pub(crate) fn prepare_line_locate<'a>(
                 }
             } else {
                 PreparedLineLocate::GeographicDistance {
-                    index: chart_line_index(line, cache, metric)?,
+                    index: chart_line_index(line, cache, metric, admission)?,
                     metric,
                     normalized,
                 }
@@ -171,7 +173,8 @@ pub(crate) fn line_interpolate_shape_m(
     match metric {
         ResolvedMetric::Planar { .. } => line.line_interpolate_point_m_with(m, &PlanarMetric),
         ResolvedMetric::Geodesic(metric) => {
-            let (parts, index) = measured_line_context(line, cache, metric)?;
+            let admission = GeographicPrepared::try_new(line, cache, metric.frame)?;
+            let (parts, index) = measured_line_context(line, cache, metric, admission)?;
             Ok(Shape::Point(index.chart_interpolate(m, &parts, metric)?))
         },
     }
@@ -186,7 +189,8 @@ pub(crate) fn line_substring_shape_m(
     match metric {
         ResolvedMetric::Planar { .. } => line.line_substring_m_with(range, &PlanarMetric),
         ResolvedMetric::Geodesic(metric) => {
-            let (parts, index) = measured_line_context(line, cache, metric)?;
+            let admission = GeographicPrepared::try_new(line, cache, metric.frame)?;
+            let (parts, index) = measured_line_context(line, cache, metric, admission)?;
             index.chart_substring(range, &parts, metric)
         },
     }
@@ -353,7 +357,10 @@ pub(crate) fn line_interpolate_points_shape(
             }
         },
         ResolvedMetric::Geodesic(metric) => {
-            let index = match chart_line_index(shape, frame_cache, metric) {
+            let admission = GeographicPrepared::try_new(shape, frame_cache, metric.frame);
+            let index = match admission
+                .and_then(|admission| chart_line_index(shape, frame_cache, metric, admission))
+            {
                 Ok(index) => index,
                 Err(error) => {
                     shapes.push(crate::broadcast::degrade_linref_point(Err(error), lane)?);
@@ -406,10 +413,10 @@ pub(crate) fn line_interpolate_shape(
             normalized,
         )?,
         ResolvedMetric::Geodesic(metric) => {
-            GeographicPrepared::try_new(line, frame_cache, metric.frame)?;
+            let admission = GeographicPrepared::try_new(line, frame_cache, metric.frame)?;
             let distance = crate::Finite::try_new("distance", distance)?.get();
             Shape::Point(
-                chart_line_index(line, frame_cache, metric)?
+                chart_line_index(line, frame_cache, metric, admission)?
                     .interpolate_route_position(distance, normalized, metric)?,
             )
         },
@@ -434,7 +441,9 @@ pub(crate) fn line_substring_shape(
             normalized,
         )?,
         ResolvedMetric::Geodesic(metric) => {
-            chart_line_index(line, frame_cache, metric)?.substring(range, normalized, metric)?
+            let admission = GeographicPrepared::try_new(line, frame_cache, metric.frame)?;
+            chart_line_index(line, frame_cache, metric, admission)?
+                .substring(range, normalized, metric)?
         },
     })
 }

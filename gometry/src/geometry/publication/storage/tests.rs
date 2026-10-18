@@ -556,11 +556,12 @@ fn geographic_hull_pending() -> (PendingPublicationRow, Frame) {
         .resolve_topology_ctx(&frame, &mut scratch)
         .unwrap();
     let data = crate::geometry::PreparedPlan::new(shape);
-    let context = crate::dispatch::CachelessRowContext {
+    let context = crate::dispatch::MetricRowContext {
         frame: &frame,
         domain,
         metric,
         lane: crate::dispatch::Lane::Array(0),
+        frame_caches: None,
     };
     let GeometryOutput::Pending(pending) = unary_convex_hull_array(&data, &context).unwrap() else {
         panic!("geographic array hull captures a pending producer row");

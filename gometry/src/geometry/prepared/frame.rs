@@ -3,6 +3,11 @@ use super::{
     GeographicTopologyRoute, HeapSize, Mutex, OnceLock, ValidationIssue, canonical_f64_bits, fmt,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    static GEOGRAPHIC_ADMISSION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Sidecar for geodesic products keyed by ellipsoid and PROJ runtime generation.
 #[derive(Default)]
 pub(crate) struct FrameDependentCaches {
@@ -15,6 +20,12 @@ pub(crate) struct FrameDependentCaches {
             GeographicTopologyRoute,
         )>,
     >,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct FrameDependentCachePair<'a> {
+    pub(crate) left: &'a FrameDependentCaches,
+    pub(crate) right: &'a FrameDependentCaches,
 }
 
 impl fmt::Debug for FrameDependentCaches {
@@ -63,7 +74,7 @@ pub(super) struct GeographicTopologyProducts {
     pub(super) validity: OnceLock<Option<Box<ValidationIssue>>>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(super) struct FrameDependentEntry {
     pub(super) line_index: Option<Arc<ChartLineIndex>>,
     pub(super) chart_parts: Option<Arc<ChartParts>>,
@@ -71,12 +82,24 @@ pub(super) struct FrameDependentEntry {
 }
 
 impl FrameDependentCaches {
+    #[cfg(test)]
+    pub(crate) fn reset_geographic_admission_reads() {
+        GEOGRAPHIC_ADMISSION_READS.with(|reads| reads.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn geographic_admission_reads() -> usize {
+        GEOGRAPHIC_ADMISSION_READS.with(std::cell::Cell::get)
+    }
+
     /// Whether the raw box is sound in `frame`, once the coordinates have
     /// been admitted there; `None` before that admission.
     pub(crate) fn geographic_admission(
         &self,
         frame: crate::geographic::GeographicFrame,
     ) -> Option<(bool, GeographicTopologyRoute)> {
+        #[cfg(test)]
+        GEOGRAPHIC_ADMISSION_READS.with(|reads| reads.set(reads.get().wrapping_add(1)));
         self.admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -97,20 +120,24 @@ impl FrameDependentCaches {
             Some((frame, bounds_sound, route));
     }
 
-    pub(super) fn get(&self, key: &GeographicMetricKey) -> Option<FrameDependentEntry> {
+    fn get_product<T>(
+        &self,
+        key: &GeographicMetricKey,
+        select: impl FnOnce(&FrameDependentEntry) -> Option<T>,
+    ) -> Option<T> {
         self.entry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .filter(|(candidate, _)| candidate == key)
-            .map(|(_, value)| value.clone())
+            .and_then(|(_, entry)| select(entry))
     }
 
-    pub(super) fn merge(
+    fn merge<T>(
         &self,
         key: GeographicMetricKey,
-        update: impl FnOnce(&mut FrameDependentEntry),
-    ) -> Option<FrameDependentEntry> {
+        update: impl FnOnce(&mut FrameDependentEntry) -> T,
+    ) -> Option<T> {
         let mut slot = self
             .entry
             .lock()
@@ -125,17 +152,55 @@ impl FrameDependentCaches {
             .take()
             .filter(|(candidate, _)| candidate == &key)
             .map_or_else(FrameDependentEntry::default, |(_, value)| value);
-        update(&mut value);
-        *slot = Some((key, value.clone()));
+        let product = update(&mut value);
+        *slot = Some((key, value));
         drop(slot);
-        Some(value)
+        Some(product)
+    }
+
+    pub(super) fn cached_line_index(
+        &self,
+        key: &GeographicMetricKey,
+    ) -> Option<Arc<ChartLineIndex>> {
+        self.get_product(key, |entry| entry.line_index.clone())
+    }
+
+    pub(super) fn merge_line_index(
+        &self,
+        key: &GeographicMetricKey,
+        index: &Arc<ChartLineIndex>,
+    ) -> Option<Arc<ChartLineIndex>> {
+        self.merge(key.clone(), |entry| {
+            Arc::clone(entry.line_index.get_or_insert_with(|| Arc::clone(index)))
+        })
+    }
+
+    pub(super) fn cached_measured_chart_parts(
+        &self,
+        key: &GeographicMetricKey,
+    ) -> Option<Arc<ChartParts>> {
+        self.get_product(key, |entry| entry.measured_chart_parts.clone())
+    }
+
+    pub(super) fn merge_measured_chart_parts(
+        &self,
+        key: &GeographicMetricKey,
+        parts: &Arc<ChartParts>,
+    ) -> Option<Arc<ChartParts>> {
+        self.merge(key.clone(), |entry| {
+            Arc::clone(
+                entry
+                    .measured_chart_parts
+                    .get_or_insert_with(|| Arc::clone(parts)),
+            )
+        })
     }
 
     pub(in crate::geometry) fn cached_chart_parts(
         &self,
         key: &GeographicMetricKey,
     ) -> Option<Arc<ChartParts>> {
-        self.get(key).and_then(|entry| entry.chart_parts)
+        self.get_product(key, |entry| entry.chart_parts.clone())
     }
 
     pub(in crate::geometry) fn merge_chart_parts(
@@ -144,9 +209,8 @@ impl FrameDependentCaches {
         parts: &Arc<ChartParts>,
     ) -> Option<Arc<ChartParts>> {
         self.merge(key.clone(), |entry| {
-            entry.chart_parts.get_or_insert_with(|| Arc::clone(parts));
+            Arc::clone(entry.chart_parts.get_or_insert_with(|| Arc::clone(parts)))
         })
-        .and_then(|entry| entry.chart_parts)
     }
 }
 

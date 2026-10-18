@@ -879,7 +879,7 @@ mod frame_cache_row_tests {
 
     use super::*;
     use crate::crs::frame::{Frame, crs_arc_static};
-    use crate::geometry::{CoordSeq, LineSeq, Point};
+    use crate::geometry::{ChartMetric as _, CoordSeq, LineSeq, Point};
     use crate::test_support::allocation_count;
 
     fn points() -> PyGeometryArray {
@@ -1755,6 +1755,12 @@ mod frame_cache_row_tests {
             .unwrap()
             .into_owned_plan();
         let cache_a = a.row_products.frame_cache(1);
+        let admission_a = crate::geometry::GeographicPrepared::try_new(
+            &prepared_a,
+            &cache_a,
+            metric.chart_frame(),
+        )
+        .unwrap();
         let index_a = prepared_a
             .chart_line_index(
                 &cache_a,
@@ -1763,6 +1769,7 @@ mod frame_cache_row_tests {
                 1.0 / 298.257_223_563,
                 4,
                 &metric,
+                admission_a,
             )
             .expect("first keyed line index");
 
@@ -1774,6 +1781,12 @@ mod frame_cache_row_tests {
         let cache_b = b.row_products.frame_cache(1);
         assert!(Arc::ptr_eq(&prepared_a, &prepared_b));
         assert!(Arc::ptr_eq(&cache_a, &cache_b));
+        let admission_b = crate::geometry::GeographicPrepared::try_new(
+            &prepared_b,
+            &cache_b,
+            metric.chart_frame(),
+        )
+        .unwrap();
         let index_b = prepared_b
             .chart_line_index(
                 &cache_b,
@@ -1782,6 +1795,7 @@ mod frame_cache_row_tests {
                 1.0 / 298.257_222_101,
                 4,
                 &metric,
+                admission_b,
             )
             .expect("retagged keyed line index");
         assert!(!Arc::ptr_eq(&index_a, &index_b));
@@ -1789,6 +1803,12 @@ mod frame_cache_row_tests {
         let back_to_a = b.retag_frame(Frame::Crs(crs_arc_static("EPSG:4326")));
         let cache_a2 = back_to_a.row_products.frame_cache(1);
         assert!(Arc::ptr_eq(&cache_a, &cache_a2));
+        let admission_a2 = crate::geometry::GeographicPrepared::try_new(
+            &prepared_a,
+            &cache_a2,
+            metric.chart_frame(),
+        )
+        .unwrap();
         let index_a2 = prepared_a
             .chart_line_index(
                 &cache_a2,
@@ -1797,6 +1817,7 @@ mod frame_cache_row_tests {
                 1.0 / 298.257_223_563,
                 4,
                 &metric,
+                admission_a2,
             )
             .expect("restored keyed line index");
         assert!(!Arc::ptr_eq(&index_a, &index_a2));
