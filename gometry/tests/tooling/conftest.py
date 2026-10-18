@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -15,6 +14,8 @@ import pytest
 import quality_runtime
 import runtime_artifact
 from gometry import _lib
+
+from tests.tooling._wheel_support import record_bytes
 
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,80 +54,74 @@ def quality_artifact_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     )
     archive_directory = workspace / 'artifacts'
     archive_directory.mkdir()
-    receipt_path = quality_runtime.quality_receipt_path(GOMETRY_ROOT)
+    assert distribution.files is not None
+    members = {
+        str(member): Path(distribution.locate_file(member)).read_bytes()
+        for member in distribution.files
+    }
+    record_name = next(name for name in members if name.endswith('.dist-info/RECORD'))
+    record = record_bytes(members)
+    installed_record = Path(distribution.locate_file(record_name)).read_bytes()
+    source_receipt_path = quality_runtime.quality_receipt_path(GOMETRY_ROOT)
     source_receipt = (
         quality_runtime.read_quality_receipt(GOMETRY_ROOT)
-        if receipt_path.is_file()
+        if source_receipt_path.is_file()
         else None
     )
-    source_wheel = (
-        GOMETRY_ROOT.parent / source_receipt['wheel']['path']
-        if source_receipt is not None
-        and Path(source_receipt['package_root']).resolve() == package_root
-        and source_receipt['python_members'] == python_members
-        and source_receipt['prepared_inputs']['files'] == prepared['files']
-        else None
-    )
-    if source_wheel is not None:
-        artifact_package_root = package_root
-        wheel_digest = artifact_common.sha256_file(source_wheel)
-        if wheel_digest != source_receipt['wheel']['sha256']:
-            raise AssertionError('quality receipt wheel archive digest is corrupt')
-        content_directory = archive_directory / wheel_digest
-        content_directory.mkdir()
-        wheel = content_directory / source_wheel.name
-        wheel.symlink_to(source_wheel.resolve())
-        inspection = artifact_content.inspect_wheel(
-            wheel,
-            release=False,
-            expected_prepared_inputs=prepared['files'],
-        )
-    else:
+    source_wheel = None
+    if installed_record != record:
+        if (
+            source_receipt is not None
+            and Path(source_receipt['package_root']).resolve() == package_root
+            and source_receipt['python_members'] == python_members
+        ):
+            source_wheel = GOMETRY_ROOT.parent / source_receipt['wheel']['path']
+        else:
+            raise AssertionError(
+                'installed gometry RECORD is stale and no matching producer wheel is available'
+            )
+    if source_wheel is None:
         wheel = archive_directory / f'gometry-{distribution.version}-{tag}.whl'
-        assert distribution.files is not None
-        members = {
-            str(member): Path(distribution.locate_file(member)).read_bytes()
-            for member in distribution.files
-        }
-        record_name = next(
-            name for name in members if name.endswith('.dist-info/RECORD')
-        )
-        members[record_name] = artifact_content._record_bytes(members)
+        members[record_name] = record
         with zipfile.ZipFile(wheel, 'w', compression=zipfile.ZIP_STORED) as archive:
             for name, payload in members.items():
                 archive.writestr(name, payload)
-        artifact_package_root = workspace / 'package'
-        artifact_package_root.mkdir()
-        (artifact_package_root / 'gometry').symlink_to(
-            package_root / 'gometry', target_is_directory=True
-        )
-        dist_info = [
-            path for path in package_root.glob('gometry*.dist-info') if path.is_dir()
-        ]
-        if len(dist_info) != 1:
-            raise AssertionError(
-                f'expected one gometry dist-info directory: {dist_info}'
-            )
-        shutil.copytree(dist_info[0], artifact_package_root / dist_info[0].name)
-        dist_info_name = dist_info[0].name
-        for name in members:
-            if name.startswith(('gometry/', f'{dist_info_name}/')):
-                continue
-            source = package_root / name
-            destination = artifact_package_root / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.symlink_to(source)
-        (artifact_package_root / record_name).write_bytes(members[record_name])
         wheel_digest = artifact_common.sha256_file(wheel)
-        content_directory = archive_directory / wheel_digest
-        content_directory.mkdir()
+    else:
+        wheel_digest = artifact_common.sha256_file(source_wheel)
+        if wheel_digest != source_receipt['wheel']['sha256']:
+            raise AssertionError('quality receipt wheel archive digest is corrupt')
+        wheel = source_wheel
+    content_directory = archive_directory / wheel_digest
+    content_directory.mkdir()
+    if source_wheel is None:
         wheel = wheel.rename(content_directory / wheel.name)
-        inspection = artifact_content.inspect_wheel(
-            wheel,
-            release=False,
-            expected_prepared_inputs=prepared['files'],
-        )
+    else:
+        local_wheel = content_directory / wheel.name
+        local_wheel.symlink_to(wheel.resolve())
+        wheel = local_wheel
+    inspection = artifact_content.inspect_wheel(
+        wheel,
+        release=False,
+        expected_prepared_inputs=prepared['files'],
+    )
     extension_member, extension = inspection['extension_members'].popitem()
+    if source_wheel is None and (
+        artifact_content.wheel_python_members(inspection['members']) != python_members
+    ):
+        raise AssertionError(
+            'synthetic wheel Python members differ from installed package'
+        )
+    if source_wheel is not None and (
+        extension_member != source_receipt['wheel']['extension_member']
+        or artifact_common._sha256_bytes(extension)
+        != source_receipt['wheel']['extension_sha256']
+    ):
+        raise AssertionError('producer wheel extension differs from its receipt')
+    if artifact_common.sha256_file(
+        Path(_lib.__file__)
+    ) != artifact_common._sha256_bytes(extension):
+        raise AssertionError('quality fixture wheel differs from the loaded extension')
     interpreter = runtime_artifact._runtime_interpreter()
     info = _lib.__build_info__
     if callable(info):
@@ -149,7 +144,7 @@ def quality_artifact_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     receipt = {
         'schema': 1,
         'kind': 'gometry-quality-runtime',
-        'package_root': str(artifact_package_root),
+        'package_root': str(package_root),
         'profile': 'dev',
         'source': {
             **artifact_content.source_input_digests(root),

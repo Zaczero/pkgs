@@ -36,6 +36,11 @@ import runtime_artifact  # ruff: ignore[module-import-not-at-top-of-file]
 import sanitizers  # ruff: ignore[module-import-not-at-top-of-file]
 import source_artifact  # ruff: ignore[module-import-not-at-top-of-file]
 
+from tests.tooling._wheel_support import (  # ruff: ignore[module-import-not-at-top-of-file]
+    record_bytes,
+    record_digest,
+)
+
 
 def test_sanitizer_environment_preserves_target_and_offloader_flags(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -148,7 +153,7 @@ def _wheel(
         members.update(content)
     record_name = 'fixture-1.dist-info/RECORD'
     members[record_name] = b''
-    members[record_name] = artifact_content._record_bytes(members, rows=rows)
+    members[record_name] = record_bytes(members, rows=rows)
     if signatures:
         members['fixture-1.dist-info/RECORD.jws'] = b'signature'
     path = tmp_path / name
@@ -184,7 +189,7 @@ def _quality_wheel(
     }
     record_name = f'{dist_info}/RECORD'
     members[record_name] = b''
-    members[record_name] = artifact_content._record_bytes(members)
+    members[record_name] = record_bytes(members)
     path = directory / f'gometry-{version}-cp314-cp314-manylinux_2_17_x86_64.whl'
     with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, payload in members.items():
@@ -995,7 +1000,7 @@ def test_record_rejects_stale_content_or_size(
             (row[0], row[1], '10') if row[0] == 'gometry/_api.py' else tuple(row)
             for row in rows
         ]
-        members[record_name] = artifact_content._record_bytes(members, rows=rows)
+        members[record_name] = record_bytes(members, rows=rows)
     wheel = tmp_path / 'mutated-record.whl'
     with zipfile.ZipFile(wheel, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, payload in members.items():
@@ -1030,7 +1035,7 @@ def test_record_rejects_membership_and_blank_hash_mutations(
     elif row_change == 'extra':
         rows.append((
             'gometry/not-in-archive.py',
-            artifact_content._record_digest(b'x'),
+            record_digest(b'x'),
             '1',
         ))
     else:
@@ -1038,7 +1043,7 @@ def test_record_rejects_membership_and_blank_hash_mutations(
             [row[0], '', row[2]] if row[0] == 'gometry/_api.py' else row for row in rows
         ]
     changed_rows = [tuple(row) for row in rows]
-    members[record_name] = artifact_content._record_bytes(members, rows=changed_rows)
+    members[record_name] = record_bytes(members, rows=changed_rows)
     wheel = tmp_path / f'{row_change}.whl'
     with zipfile.ZipFile(wheel, 'w') as archive:
         for name, payload in members.items():
@@ -1098,7 +1103,7 @@ def test_record_rejects_sha1_even_when_the_row_digest_matches(tmp_path: Path) ->
         else tuple(row)
         for row in rows
     ]
-    members[record_name] = artifact_content._record_bytes(members, rows=rows)
+    members[record_name] = record_bytes(members, rows=rows)
     weak_record = tmp_path / 'weak-record.whl'
     with zipfile.ZipFile(weak_record, 'w') as archive:
         for name, payload in members.items():
@@ -1177,7 +1182,7 @@ def test_python_member_identity_requires_py_typed(tmp_path: Path) -> None:
         }
     record_name = 'fixture-1.dist-info/RECORD'
     members[record_name] = b''
-    members[record_name] = artifact_content._record_bytes(members)
+    members[record_name] = record_bytes(members)
     without_marker = tmp_path / 'without-py-typed.whl'
     with zipfile.ZipFile(without_marker, 'w') as archive:
         for name, payload in members.items():
