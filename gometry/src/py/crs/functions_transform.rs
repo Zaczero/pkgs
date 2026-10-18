@@ -272,17 +272,7 @@ pub(crate) fn crs_transform(
         Ok((execution, TransformOutput::from_coordinates(coordinates)))
     })?;
     drain_accuracy_warning(py, &execution)?;
-    let output = output.map_err(|error| match error {
-        TransformOutputError::SizeOverflow => {
-            crate::error::Error::from(crate::error::ResourceError::SizeOverflowContext(
-                "coordinate matrix size overflows usize",
-            ))
-            .into()
-        },
-        TransformOutputError::Allocation(error) => {
-            pyo3::exceptions::PyMemoryError::new_err(error.to_string())
-        },
-    })?;
+    let output = output?;
     match output {
         TransformOutput::Xy(x, y) => Ok((x, y).into_pyobject(py)?.unbind().into()),
         TransformOutput::Xyz(x, y, z) => Ok((x, y, z).into_pyobject(py)?.unbind().into()),
@@ -376,18 +366,13 @@ enum TransformOutput {
     },
 }
 
-enum TransformOutputError {
-    SizeOverflow,
-    Allocation(std::collections::TryReserveError),
-}
-
 impl TransformOutput {
     /// The epoch is an input to transformation, not a spatial output ordinate.
     #[expect(
         clippy::indexing_slicing,
         reason = "scalar CrsCoordinateArgs columns contain exactly one ordinate"
     )]
-    fn from_coordinates(coordinates: CrsCoordinateArgs) -> Result<Self, TransformOutputError> {
+    fn from_coordinates(coordinates: CrsCoordinateArgs) -> crate::error::Result<Self> {
         let CrsCoordinateArgs { x, y, zt, scalar } = coordinates;
         let (x, y) = (x.values, y.values);
         let z = match zt {
@@ -399,13 +384,12 @@ impl TransformOutput {
         }
         let rows = x.len();
         let columns = if z.is_some() { 3 } else { 2 };
-        let capacity = rows
-            .checked_mul(columns)
-            .ok_or(TransformOutputError::SizeOverflow)?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(capacity)
-            .map_err(TransformOutputError::Allocation)?;
+        let capacity =
+            rows.checked_mul(columns)
+                .ok_or(crate::error::ResourceError::SizeOverflowContext(
+                    "coordinate matrix size overflows usize",
+                ))?;
+        let mut values = Vec::with_capacity(capacity);
         match z {
             None => {
                 for pair in x.into_iter().zip(y) {
