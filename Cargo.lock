@@ -182,7 +182,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1622d8446a2d4b2ce0c7eefc73dd43a99779028d5ee5c2dd8073a658ba8a2bc"
 dependencies = [
  "cc",
- "cmake",
+ "cmake 0.1.58 (registry+https://github.com/rust-lang/crates.io-index)",
  "dunce",
  "fs_extra",
  "pkg-config",
@@ -423,6 +423,13 @@ dependencies = [
 [[package]]
 name = "cmake"
 version = "0.1.58"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
@@ -433,7 +440,7 @@ dependencies = [
 name = "cmake-flags"
 version = "0.1.0"
 dependencies = [
- "cmake",
+ "cmake 0.1.58",
 ]
 
 [[package]]
@@ -1010,7 +1017,7 @@ dependencies = [
 name = "gometry-libtiff-sys"
 version = "0.1.0"
 dependencies = [
- "cmake",
+ "cmake 0.1.58",
  "cmake-flags",
  "libz-sys",
 ]
@@ -1605,8 +1612,6 @@ dependencies = [
 [[package]]
 name = "numpy"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa0b9111761885449e894981fa8051dcf69e0bd114aecbd4bcdd830b6be4ed92"
 dependencies = [
  "libc",
  "ndarray",
@@ -1827,7 +1832,7 @@ name = "proj-sys"
 version = "0.27.0"
 dependencies = [
  "bindgen",
- "cmake",
+ "cmake 0.1.58",
  "cmake-flags",
  "flate2",
  "gometry-libtiff-sys",
@@ -1840,8 +1845,6 @@ dependencies = [
 [[package]]
 name = "pyo3"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "229ca13b8a15bb0d1487b81ab975bfcd97513416499a8312011b6036e42e0de4"
 dependencies = [
  "inventory",
  "libc",
@@ -1857,8 +1860,6 @@ dependencies = [
 [[package]]
 name = "pyo3-build-config"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70130e2b6dd1ee589a8788026a429561ca5c40fa7a2fa7914c2282eddae24700"
 dependencies = [
  "target-lexicon",
 ]
@@ -1866,8 +1867,6 @@ dependencies = [
 [[package]]
 name = "pyo3-ffi"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e7ff73c555c286d212d4ce7e5fbda845a973c4f61bd5f160f5f2c3c2a04d1c4"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -1876,8 +1875,6 @@ dependencies = [
 [[package]]
 name = "pyo3-macros"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c46d2e5862c7bb8207e3b639f713dda3c499933444784154c11d013c5a691b60"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -1888,8 +1885,6 @@ dependencies = [
 [[package]]
 name = "pyo3-macros-backend"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b89f066f2ae72a2aef52d1537ca2fcd104440ebfadee06e97aa90738a25b9b"
 dependencies = [
  "heck",
  "proc-macro2",

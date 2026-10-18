@@ -44,7 +44,7 @@ lexical-core = { version = "1.0.6", default-features = false, features = [
 libc = { workspace = true, default-features = false }
 libm = { workspace = true, default-features = false }
 mimalloc.workspace = true
-numpy = { version = "0.30.0", default-features = false }
+numpy = { path = "../vendor/rust-numpy", version = "0.30.0", default-features = false }
 proj-sys = { path = "../vendor/proj-sys", default-features = false, features = [
   "bundled_proj",
   "tiff",
