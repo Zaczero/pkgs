@@ -1,13 +1,13 @@
-//! Native metadata and atomic publication of Python-owned entry references.
+//! Atomic metadata publication with one immutable, GC-visible reference edge.
 
 use std::num::NonZeroUsize;
 
 use parking_lot::Mutex;
 use pyo3::exceptions::PyValueError;
-use pyo3::ffi;
 use pyo3::prelude::*;
+use pyo3::pyclass::{PyTraverseError, PyVisit};
 use pyo3::sync::MutexExt as _;
-use pyo3::types::{PyInt, PyList};
+use pyo3::types::{PyInt, PyList, PyTuple};
 
 use crate::errors::CacheError;
 use crate::store::Store;
@@ -18,200 +18,148 @@ impl From<CacheError> for PyErr {
     }
 }
 
-/// Native storage for the public Python-owned LRU mapping.
+/// Native storage for the public LRU mapping.
 #[pyclass(frozen, subclass, mapping, module = "lrucache_rs._lib", name = "Cache")]
 pub(crate) struct LRUCache {
     inner: Mutex<Store>,
+    references: Py<PyList>,
     maxsize: NonZeroUsize,
 }
 
-struct Position<'py> {
-    slot: u32,
-    index: Bound<'py, PyInt>,
-}
-
-impl<'py> Position<'py> {
-    fn new(py: Python<'py>, slot: u32) -> Self {
-        Self {
-            slot,
-            index: slot.into_pyobject(py).expect("integer conversion"),
-        }
-    }
-
-    fn read(self, references: &Bound<'py, PyList>) -> PyResult<Entry<'py>> {
-        // PyList_GetItem would switch PyPy to opaque cpyext raw-reference storage.
-        let owner = references.as_any().get_item(&self.index)?.unbind();
-        Ok(Entry {
-            position: self,
-            owner,
-        })
-    }
-
-    fn write(&self, references: &Bound<'_, PyList>, owner: &Bound<'_, PyAny>) {
-        // The exact list, exact in-range int and Entry/None already have Python
-        // objects and C wrappers. Generic assignment preserves ObjectListStrategy
-        // on PyPy: its built-in shortcut unwraps the int and replaces one pointer,
-        // without allocation, resize or Python dispatch. Do not use PyList_SetItem
-        // or move object/index conversion under the mutex. Every outgoing owner
-        // has a retirement pin, preventing last-reference finalizers on CPython.
-        references
-            .as_any()
-            .set_item(&self.index, owner)
-            .expect("fixed entry slot");
-    }
-}
-
 struct Entry<'py> {
-    position: Position<'py>,
-    owner: Py<PyAny>,
+    slot: u32,
+    pair: Bound<'py, PyTuple>,
 }
 
 #[derive(Clone, Copy)]
-enum Action {
+enum Action<'a, 'py> {
     Read { touch: bool },
-    Set,
-    SetDefault,
+    Set(&'a Bound<'py, PyAny>),
+    SetDefault(&'a Bound<'py, PyAny>),
     Remove,
 }
 
-fn failed(request: &Bound<'_, PyAny>) -> PyResult<bool> {
-    // Fetching the exception or payload itself would expose recursive tuples
-    // to cpyext. Only the controlled request's Boolean crosses this boundary.
-    request.getattr("failed")?.is_truthy()
-}
-
 impl LRUCache {
-    fn snapshot_indices(&self, py: Python<'_>) -> (u64, Vec<u32>) {
-        py.detach(|| {
-            let guard = self.inner.lock();
-            (guard.revision(), guard.indices())
-        })
+    fn entry<'py>(&self, py: Python<'py>, slot: u32) -> Entry<'py> {
+        Entry {
+            slot,
+            pair: self
+                .references
+                .bind(py)
+                .get_item(slot as usize)
+                .expect("fixed reference slot")
+                .cast_into()
+                .expect("occupied reference slot"),
+        }
     }
 
-    fn references<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyList>> {
-        slf.getattr("_references")?.cast_into().map_err(Into::into)
+    fn write(&self, py: Python<'_>, slot: u32, pair: &Bound<'_, PyAny>) {
+        // The outgoing pair is pinned by the caller until after unlocking.
+        self.references
+            .bind(py)
+            .set_item(slot as usize, pair)
+            .expect("fixed reference slot");
     }
 
     fn access<'py>(
         &self,
-        references: &Bound<'py, PyList>,
-        request: &Bound<'py, PyAny>,
-        action: Action,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        let py = request.py();
-        let hash = request.hash()?;
-        if failed(request)? {
-            return Ok(None);
-        }
+        key: &Bound<'py, PyAny>,
+        action: Action<'_, 'py>,
+    ) -> PyResult<Option<Py<PyTuple>>> {
+        let py = key.py();
+        let hash = key.hash()?;
         let none = py.None();
         loop {
-            let inserting = matches!(action, Action::Set | Action::SetDefault);
-            let (revision, candidates, insertion, victim) = {
+            let (revision, entries) = {
                 let guard = self.inner.lock_py_attached(py);
-                (
-                    guard.revision(),
-                    guard.candidates(hash),
-                    guard.insertion_slot(),
-                    (inserting && guard.is_full())
-                        .then(|| guard.lru().expect("full store has tail")),
-                )
+                let entries = guard
+                    .candidates(hash)
+                    .into_iter()
+                    .map(|slot| self.entry(py, slot))
+                    .collect::<Vec<_>>();
+                (guard.revision(), entries)
             };
-            let insertion = Position::new(py, insertion);
-            let victim = victim
-                .map(|idx| Position::new(py, idx).read(references))
-                .transpose()?;
-            let entries = candidates
-                .into_iter()
-                .map(|slot| Position::new(py, slot).read(references))
-                .collect::<PyResult<Vec<_>>>()?;
-            let guard = self.inner.lock_py_attached(py);
-            let valid = guard.revision() == revision;
-            drop(guard);
-            if !valid {
-                continue;
-            }
             let mut found = None;
             for entry in entries {
-                let matched = eq_entries(&entry.owner, request)?;
-                if failed(request)? {
-                    return Ok(None);
-                }
-                if matched {
+                let stored = entry.pair.get_item(0)?;
+                if stored.is(key) || stored.eq(key)? {
                     found = Some(entry);
                     break;
                 }
             }
-            let updated = if matches!(action, Action::Set)
-                || (matches!(action, Action::SetDefault) && found.is_none())
-            {
-                let canonical = found
-                    .as_ref()
-                    .map_or_else(|| none.bind(py), |entry| entry.owner.bind(py));
-                let owner = request.call_method1("build_entry", (canonical,))?.unbind();
-                if failed(request)? {
-                    return Ok(None);
-                }
-                Some(owner)
-            } else {
-                None
+            let updated = match action {
+                Action::Set(value) | Action::SetDefault(value)
+                    if matches!(action, Action::Set(_)) || found.is_none() =>
+                {
+                    if let Some(entry) = &found {
+                        if entry.pair.get_item(1)?.is(value) {
+                            Some(entry.pair.clone())
+                        } else {
+                            Some(PyTuple::new(py, [entry.pair.get_item(0)?, value.clone()])?)
+                        }
+                    } else {
+                        Some(PyTuple::new(py, [key, value])?)
+                    }
+                },
+                Action::Read { .. } | Action::Set(_) | Action::SetDefault(_) | Action::Remove => {
+                    None
+                },
             };
+            let mut retired = None;
             let mut guard = self.inner.lock_py_attached(py);
             if guard.revision() != revision {
                 drop(guard);
                 continue;
             }
             let result = if let Some(entry) = &found {
-                let slot = entry.position.slot;
+                let slot = entry.slot;
                 match action {
                     Action::Read { touch } => {
                         if touch {
                             guard.touch(slot);
                         }
-                        Some(entry.owner.clone_ref(py))
+                        Some(entry.pair.clone().unbind())
                     },
-                    Action::Set => {
-                        let replacement = updated.as_ref().expect("built entry").bind(py);
-                        // Idempotent equality-callback writes must not invalidate
-                        // their own enclosing lookup's content revision forever.
-                        if replacement.is(&entry.owner) {
+                    Action::Set(_) => {
+                        let replacement = updated.as_ref().expect("built pair");
+                        if replacement.is(&entry.pair) {
                             guard.touch(slot);
                         } else {
-                            entry.position.write(references, replacement);
+                            self.write(py, slot, replacement.as_any());
                             guard.changed_value(slot);
                         }
                         None
                     },
-                    Action::SetDefault => {
+                    Action::SetDefault(_) => {
                         guard.touch(slot);
-                        Some(entry.owner.clone_ref(py))
+                        Some(entry.pair.clone().unbind())
                     },
                     Action::Remove => {
                         guard.remove(slot);
-                        entry.position.write(references, none.bind(py));
-                        Some(entry.owner.clone_ref(py))
+                        self.write(py, slot, none.bind(py));
+                        Some(entry.pair.clone().unbind())
                     },
                 }
             } else {
                 match action {
                     Action::Read { .. } | Action::Remove => None,
-                    Action::Set | Action::SetDefault => {
-                        // Reads can change the tail without changing membership.
-                        if guard.insertion_slot() != insertion.slot {
-                            drop(guard);
-                            continue;
-                        }
-                        if let Some(entry) = &victim {
-                            guard.remove(entry.position.slot);
+                    Action::Set(_) | Action::SetDefault(_) => {
+                        let insertion = guard.insertion_slot();
+                        if guard.is_full() {
+                            let slot = guard.lru().expect("full store has tail");
+                            retired = Some(self.entry(py, slot));
+                            guard.remove(slot);
                         }
                         let slot = guard.insert(hash);
-                        debug_assert_eq!(slot, insertion.slot);
-                        let owner = updated.as_ref().expect("built entry");
-                        insertion.write(references, owner.bind(py));
-                        matches!(action, Action::SetDefault).then(|| owner.clone_ref(py))
+                        debug_assert_eq!(slot, insertion);
+                        let pair = updated.as_ref().expect("built pair");
+                        self.write(py, slot, pair.as_any());
+                        matches!(action, Action::SetDefault(_)).then(|| pair.clone().unbind())
                     },
                 }
             };
             drop(guard);
+            drop(retired);
             return Ok(result);
         }
     }
@@ -220,7 +168,7 @@ impl LRUCache {
 #[pymethods]
 impl LRUCache {
     #[new]
-    /// Create native metadata for the given positive cache capacity.
+    /// Create native storage for the given positive cache capacity.
     ///
     /// Parameters
     /// ----------
@@ -230,7 +178,7 @@ impl LRUCache {
     /// Returns
     /// -------
     /// Cache
-    ///     Initialized native metadata for the public Python mapping.
+    ///     Initialized native storage for the public Python mapping.
     fn new(py: Python<'_>, maxsize: &Bound<'_, PyInt>) -> PyResult<Self> {
         if maxsize.le(0)? {
             return Err(CacheError::MaxsizeMustBePositive.into());
@@ -241,8 +189,18 @@ impl LRUCache {
         let maxsize = NonZeroUsize::new(maxsize.extract()?).expect("positive capacity");
         Ok(Self {
             inner: Mutex::new(py.detach(|| Store::new(maxsize))),
+            references: PyList::new(py, std::iter::repeat_n(py.None().bind(py), maxsize.get()))?
+                .unbind(),
             maxsize,
         })
+    }
+
+    #[expect(clippy::same_name_method, reason = "PyO3 requires the GC slot name")]
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        // Like an immutable tuple, this edge never needs clearing: the mutable
+        // list breaks unreachable cycles. Traversal never waits on the mutex,
+        // including when another thread holds it while reattaching to Python.
+        visit.call(&self.references)
     }
 
     fn __len__(&self, py: Python<'_>) -> usize {
@@ -250,47 +208,35 @@ impl LRUCache {
     }
 
     #[pyo3(name = "_get")]
-    fn get_entry(slf: &Bound<'_, Self>, request: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
-        slf.get()
-            .access(&Self::references(slf)?, request, Action::Read {
-                touch: true,
-            })
+    fn get_entry(&self, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyTuple>>> {
+        self.access(key, Action::Read { touch: true })
     }
 
     #[pyo3(name = "_peek")]
-    fn peek_entry(
-        slf: &Bound<'_, Self>,
-        request: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        slf.get()
-            .access(&Self::references(slf)?, request, Action::Read {
-                touch: false,
-            })
+    fn peek_entry(&self, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyTuple>>> {
+        self.access(key, Action::Read { touch: false })
     }
 
     #[pyo3(name = "_set")]
-    fn set_entry(slf: &Bound<'_, Self>, request: &Bound<'_, PyAny>) -> PyResult<()> {
-        slf.get()
-            .access(&Self::references(slf)?, request, Action::Set)?;
+    fn set_entry<'py>(&self, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        self.access(key, Action::Set(value))?;
         Ok(())
     }
 
     #[pyo3(name = "_setdefault")]
-    fn setdefault_entry(
-        slf: &Bound<'_, Self>,
-        request: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        slf.get()
-            .access(&Self::references(slf)?, request, Action::SetDefault)
+    fn setdefault_entry<'py>(
+        &self,
+        key: &Bound<'py, PyAny>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyTuple>> {
+        Ok(self
+            .access(key, Action::SetDefault(value))?
+            .expect("setdefault inserts or finds a pair"))
     }
 
     #[pyo3(name = "_remove")]
-    fn remove_entry(
-        slf: &Bound<'_, Self>,
-        request: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        slf.get()
-            .access(&Self::references(slf)?, request, Action::Remove)
+    fn remove_entry(&self, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyTuple>>> {
+        self.access(key, Action::Remove)
     }
 
     /// Remove all entries before running any retired key or value finalizers.
@@ -299,69 +245,41 @@ impl LRUCache {
     /// -------
     /// None
     ///     Finalizers may insert new entries after the clear commits.
-    fn clear(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let references = Self::references(slf)?;
-        let py = slf.py();
+    fn clear(&self, py: Python<'_>) {
+        let mut guard = self.inner.lock_py_attached(py);
+        let retired = guard
+            .indices()
+            .into_iter()
+            .map(|slot| self.entry(py, slot))
+            .collect::<Vec<_>>();
+        guard.clear();
         let none = py.None();
-        loop {
-            let (revision, indices) = slf.get().snapshot_indices(py);
-            let retired = indices
-                .into_iter()
-                .map(|slot| Position::new(py, slot).read(&references))
-                .collect::<PyResult<Vec<_>>>()?;
-            let mut guard = slf.get().inner.lock_py_attached(py);
-            if guard.revision() != revision {
-                drop(guard);
-                continue;
-            }
-            guard.clear();
-            for entry in &retired {
-                entry.position.write(&references, none.bind(py));
-            }
-            drop(guard);
-            return Ok(());
+        for entry in &retired {
+            self.write(py, entry.slot, none.bind(py));
         }
+        drop(guard);
+        drop(retired);
     }
 
     #[pyo3(name = "_popitem")]
-    fn pop_entry(slf: &Bound<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
-        let references = Self::references(slf)?;
-        let py = slf.py();
-        let none = py.None();
-        loop {
-            let (revision, tail) = {
-                let guard = slf.get().inner.lock_py_attached(py);
-                (guard.revision(), guard.lru())
-            };
-            let Some(tail) = tail else { return Ok(None) };
-            let entry = Position::new(py, tail).read(&references)?;
-            let mut guard = slf.get().inner.lock_py_attached(py);
-            if guard.revision() != revision || guard.lru() != Some(tail) {
-                drop(guard);
-                continue;
-            }
-            guard.remove(tail);
-            entry.position.write(&references, none.bind(py));
-            drop(guard);
-            return Ok(Some(entry.owner));
-        }
+    fn pop_entry(&self, py: Python<'_>) -> Option<Py<PyTuple>> {
+        let mut guard = self.inner.lock_py_attached(py);
+        let slot = guard.lru()?;
+        let entry = self.entry(py, slot);
+        guard.remove(slot);
+        self.write(py, slot, py.None().bind(py));
+        drop(guard);
+        Some(entry.pair.unbind())
     }
 
     #[pyo3(name = "_snapshot_entries")]
-    fn snapshot_entries(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        loop {
-            let (revision, indices) = slf.get().snapshot_indices(py);
-            // Only integer indices enter a native-created container. The
-            // recursive entry graph stays in a Python-created snapshot list.
-            let entries = slf.call_method1("_capture", (indices,))?.unbind();
-            let guard = slf.get().inner.lock_py_attached(py);
-            let valid = guard.revision() == revision;
-            drop(guard);
-            if valid {
-                return Ok(entries);
-            }
-        }
+    fn snapshot_entries(&self, py: Python<'_>) -> Vec<Py<PyTuple>> {
+        let guard = self.inner.lock_py_attached(py);
+        guard
+            .indices()
+            .into_iter()
+            .map(|slot| self.entry(py, slot).pair.unbind())
+            .collect()
     }
 
     #[getter]
@@ -378,18 +296,5 @@ impl LRUCache {
     fn __repr__(&self, py: Python<'_>) -> String {
         let len = self.inner.lock_py_attached(py).len();
         format!("LRUCache(maxsize={}, currsize={len})", self.maxsize.get())
-    }
-}
-
-fn eq_entries(stored: &Py<PyAny>, request: &Bound<'_, PyAny>) -> PyResult<bool> {
-    // SAFETY: both ordinary Python envelope objects have independent strong
-    // references and this thread is attached. Their comparison transports
-    // provider errors in Python slots and returns only a bool, outside locking.
-    let cmp =
-        unsafe { ffi::PyObject_RichCompareBool(stored.as_ptr(), request.as_ptr(), ffi::Py_EQ) };
-    if cmp < 0 {
-        Err(PyErr::fetch(request.py()))
-    } else {
-        Ok(cmp == 1)
     }
 }

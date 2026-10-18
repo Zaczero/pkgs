@@ -99,6 +99,7 @@ def test_concurrent_disjoint_writes_and_cleanup():
         'key',
         'value',
         'self',
+        'self-value',
         'two-caches',
         'tuple-key',
         'tuple-value',
@@ -143,6 +144,9 @@ def test_cycles_are_collectible(owner):
                 cache['value'] = value
             elif {owner!r} == 'self':
                 cache['self'] = cache
+                cache['value'] = value
+            elif {owner!r} == 'self-value':
+                value.self = value
                 cache['value'] = value
             elif {owner!r} == 'two-caches':
                 other = LRUCache(4)

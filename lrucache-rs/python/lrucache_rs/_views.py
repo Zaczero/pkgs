@@ -24,9 +24,7 @@ class CacheItemsView(ItemsView[_K, _V]):
     _mapping: LRUCache[_K, _V]
 
     def __iter__(self) -> Iterator[tuple[_K, _V]]:
-        return iter([
-            (entry.key, entry.value) for entry in self._mapping._snapshot_entries()
-        ])
+        return iter(self._mapping._snapshot_entries())
 
     def __contains__(self, item: object) -> bool:
         key, expected = cast('tuple[_K, _V]', item)
@@ -38,7 +36,7 @@ class CacheValuesView(ValuesView[_V]):
     _mapping: LRUCache[Hashable, _V]
 
     def __iter__(self) -> Iterator[_V]:
-        return iter([entry.value for entry in self._mapping._snapshot_entries()])
+        return iter([entry[1] for entry in self._mapping._snapshot_entries()])
 
     def __contains__(self, expected: object) -> bool:
         return any(value is expected or value == expected for value in self)
