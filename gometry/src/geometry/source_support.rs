@@ -15,9 +15,7 @@ use crate::geometry::Ring;
 use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::segments::stored_orientation_sign;
-use crate::geometry::tessellation::exact::{
-    ExactDyadic, compare_ratios, outward_ratio_bounds, round_ratio,
-};
+use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, outward_ratio_bounds};
 use crate::geometry::{
     Bounds, Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
     same_topological_coordinate, storage,
@@ -29,17 +27,17 @@ mod streaming;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(in crate::geometry) use query::exact_stored_point;
 pub(in crate::geometry) use query::{
-    ExactQuery, InfinitesimalQuery, PointQuery, QueryAxis, StoredQuery,
-    exact_offset_point_in_bounds, exact_point_in_bounds, exact_query_xy, exact_query_y,
-    exact_stored_point,
+    ExactProbe, PointQuery, QueryAxis, StoredQuery, point_in_bounds,
 };
 use rays::{
     Ray, compare_query_rays, line_location, query_ray_groups, symbolic_orientation_from_sign,
 };
 #[cfg(test)]
 use rays::{RayGroup, has_nonzero_segment};
-pub(in crate::geometry) use rays::{compare_rays, exact_edge_winding, exact_offset_edge_winding};
+pub(in crate::geometry) use rays::{compare_rays, edge_winding_for_query};
 pub(crate) use rays::{edge_winding, ring_kind_columns};
 use streaming::LocationMode;
 pub(in crate::geometry) use streaming::StreamingLocation;
@@ -187,17 +185,12 @@ pub(crate) fn cartesian_row_area_covers_point(row: storage::ShapeRow<'_>, point:
         .area
 }
 
+#[cfg(test)]
 pub(in crate::geometry) fn cartesian_exact_point_location_and_area(
     shape: &Shape,
     point: &[ExactDyadic; 3],
 ) -> Result<SourcePointLocation> {
-    if let Some(point) = exact_stored_point(point) {
-        return Ok(cartesian_point_location_and_area(shape, point));
-    }
-    let mut location = StreamingLocation::for_exact_point(point)?;
-    let mut owners = None;
-    location.visit_shape(shape, &mut owners)?;
-    location.finish()
+    cartesian_row_probe_location_and_area(shape.into(), &ExactProbe::new(point))
 }
 
 #[cfg(test)]
@@ -208,15 +201,13 @@ pub(in crate::geometry) fn cartesian_exact_point_location(
     Ok(cartesian_exact_point_location_and_area(shape, point)?.location)
 }
 
+#[cfg(test)]
 pub(in crate::geometry) fn cartesian_exact_offset_location_and_area(
     shape: &Shape,
     point: &[ExactDyadic; 3],
     direction: &[ExactDyadic; 2],
 ) -> Result<SourcePointLocation> {
-    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
-    let mut owners = None;
-    location.visit_shape(shape, &mut owners)?;
-    location.finish()
+    cartesian_row_probe_offset_location_and_area(shape.into(), &ExactProbe::new(point), direction)
 }
 
 #[cfg(test)]
@@ -228,28 +219,49 @@ pub(in crate::geometry) fn cartesian_exact_offset_location(
     Ok(cartesian_exact_offset_location_and_area(shape, point, direction)?.location)
 }
 
+#[cfg(test)]
 pub(in crate::geometry) fn cartesian_row_exact_point_location_and_area(
     row: storage::ShapeRow<'_>,
     point: &[ExactDyadic; 3],
 ) -> Result<SourcePointLocation> {
-    if let Some(point) = exact_stored_point(point) {
+    cartesian_row_probe_location_and_area(row, &ExactProbe::new(point))
+}
+
+pub(in crate::geometry) fn cartesian_row_probe_location_and_area(
+    row: storage::ShapeRow<'_>,
+    probe: &ExactProbe<'_>,
+) -> Result<SourcePointLocation> {
+    if let Some(point) = probe.stored() {
         return Ok(cartesian_row_point_location_and_area(row, point));
     }
-    let mut location = StreamingLocation::for_exact_point(point)?;
+    cartesian_row_query_location_and_area(row, probe.source_query()?)
+}
+
+pub(in crate::geometry) fn cartesian_row_query_location_and_area(
+    row: storage::ShapeRow<'_>,
+    query: impl PointQuery,
+) -> Result<SourcePointLocation> {
+    let mut location = StreamingLocation::for_query(query);
     let mut owners = None;
     location.visit_row(row, &mut owners)?;
     location.finish()
 }
 
+#[cfg(test)]
 pub(in crate::geometry) fn cartesian_row_exact_offset_location_and_area(
     row: storage::ShapeRow<'_>,
     point: &[ExactDyadic; 3],
     direction: &[ExactDyadic; 2],
 ) -> Result<SourcePointLocation> {
-    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
-    let mut owners = None;
-    location.visit_row(row, &mut owners)?;
-    location.finish()
+    cartesian_row_probe_offset_location_and_area(row, &ExactProbe::new(point), direction)
+}
+
+pub(in crate::geometry) fn cartesian_row_probe_offset_location_and_area(
+    row: storage::ShapeRow<'_>,
+    probe: &ExactProbe<'_>,
+    direction: &[ExactDyadic; 2],
+) -> Result<SourcePointLocation> {
+    cartesian_row_query_location_and_area(row, probe.source_query()?.offset(direction))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

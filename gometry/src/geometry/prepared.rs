@@ -21,9 +21,10 @@ use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
+#[cfg(test)]
+use crate::geometry::source_support::{OccupiedToward, occupied_toward};
 use crate::geometry::source_support::{
-    OccupiedToward, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
-    exact_stored_point, occupied_toward,
+    PointMembership, SourcePointLocation, cartesian_point_location_and_area,
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;

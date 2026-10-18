@@ -6,11 +6,13 @@ use super::{
     Cell, ExactDyadic, ExactPointForest, GeometryErrorKind, HashMap, Loc, OccupiedToward, Point,
     PointKey, PointMembership, PreparedPlan, PreparedPointQueries, Result, Segment, ShapeRow,
     SourcePointLocation, StagedExactSources, StagedSourceComponent, XY,
-    cartesian_row_exact_offset_location_and_area, cartesian_row_exact_point_location_and_area,
     cartesian_row_point_location, cartesian_row_point_location_and_area, homogeneous_midpoint,
     matrix_predicates, occupied_toward,
 };
 use crate::geometry::segments::crossing_homogeneous_stored;
+use crate::geometry::source_support::{
+    ExactProbe, cartesian_row_probe_location_and_area, cartesian_row_probe_offset_location_and_area,
+};
 
 pub(super) struct Operand<'a> {
     pub(super) row: ShapeRow<'a>,
@@ -56,55 +58,50 @@ impl<'a> Operand<'a> {
         )
     }
 
-    pub(super) fn locate_exact(&self, point: &[ExactDyadic; 3]) -> Result<SourcePointLocation> {
+    pub(super) fn locate_probe(&self, probe: &ExactProbe<'_>) -> Result<SourcePointLocation> {
         self.point_queries()?.map_or_else(
             || {
                 self.plan.map_or_else(
-                    || cartesian_row_exact_point_location_and_area(self.row, point),
-                    |plan| plan.locate_exact(point),
+                    || cartesian_row_probe_location_and_area(self.row, probe),
+                    |plan| plan.locate_probe(probe),
                 )
             },
-            |queries| queries.locate_exact(point),
+            |queries| queries.locate_probe(probe),
         )
     }
 
+    #[cfg(test)]
     pub(super) fn locate_exact_offset(
         &self,
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<SourcePointLocation> {
+        self.locate_probe_offset(&ExactProbe::new(point), direction)
+    }
+
+    pub(super) fn locate_probe_offset(
+        &self,
+        probe: &ExactProbe<'_>,
+        direction: &[ExactDyadic; 2],
+    ) -> Result<SourcePointLocation> {
         self.point_queries()?.map_or_else(
             || {
                 self.plan.map_or_else(
-                    || cartesian_row_exact_offset_location_and_area(self.row, point, direction),
-                    |plan| plan.locate_exact_offset(point, direction),
+                    || cartesian_row_probe_offset_location_and_area(self.row, probe, direction),
+                    |plan| plan.locate_probe_offset(probe, direction),
                 )
             },
-            |queries| queries.locate_exact_offset(point, direction),
+            |queries| queries.locate_probe_offset(probe, direction),
         )
     }
 
-    pub(super) fn occupied_toward_exact(
+    pub(super) fn occupied_toward_probe(
         &self,
-        point: &[ExactDyadic; 3],
+        probe: &ExactProbe<'_>,
         direction: &[ExactDyadic; 2],
     ) -> Result<OccupiedToward> {
-        self.point_queries()?.map_or_else(
-            || {
-                self.plan.map_or_else(
-                    || {
-                        self.locate_exact_offset(point, direction)
-                            .map(occupied_toward)
-                    },
-                    |plan| plan.occupied_toward_exact(point, direction),
-                )
-            },
-            |queries| {
-                queries
-                    .locate_exact_offset(point, direction)
-                    .map(occupied_toward)
-            },
-        )
+        self.locate_probe_offset(probe, direction)
+            .map(occupied_toward)
     }
 
     pub(super) fn point_queries(&self) -> Result<Option<PreparedPointQueries<'a>>> {

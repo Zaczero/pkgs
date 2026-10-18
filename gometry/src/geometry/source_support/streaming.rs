@@ -1,11 +1,10 @@
 use std::cmp::Ordering;
 
 use super::{
-    ExactDyadic, ExactQuery, ExactSign, InfinitesimalQuery, Loc, Point, PointQuery, Polygon,
-    QueryAxis, Range, Ray, Result, RingEdgeCandidates, RingKind, Shape, SharedShapeOwners,
-    SourcePointLocation, StoredQuery, XY, compare_query_rays, line_location, query_ray_groups,
-    ring_ray_delta, same_point, storage, stored_orientation_sign, symbolic_orientation_from_sign,
-    try_sort_by,
+    ExactSign, Loc, Point, PointQuery, Polygon, QueryAxis, Range, Ray, Result, RingEdgeCandidates,
+    RingKind, Shape, SharedShapeOwners, SourcePointLocation, StoredQuery, XY, compare_query_rays,
+    line_location, query_ray_groups, ring_ray_delta, same_point, storage, stored_orientation_sign,
+    symbolic_orientation_from_sign, try_sort_by,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,28 +247,11 @@ impl StreamingLocation<StoredQuery> {
     }
 }
 
-impl<'a> StreamingLocation<ExactQuery<'a>> {
-    pub(in crate::geometry) fn for_exact_point(point: &'a [ExactDyadic; 3]) -> Result<Self> {
-        Ok(Self::new(ExactQuery::new(point)?, LocationMode::Full))
-    }
-}
-
-impl<'a> StreamingLocation<InfinitesimalQuery<'a>> {
-    pub(in crate::geometry) fn for_exact_offset(
-        point: &'a [ExactDyadic; 3],
-        direction: &'a [ExactDyadic; 2],
-    ) -> Result<Self> {
-        Ok(Self::new(
-            InfinitesimalQuery {
-                point: ExactQuery::new(point)?,
-                direction,
-            },
-            LocationMode::Full,
-        ))
-    }
-}
-
 impl<Q: PointQuery> StreamingLocation<Q> {
+    pub(in crate::geometry) const fn for_query(query: Q) -> Self {
+        Self::new(query, LocationMode::Full)
+    }
+
     pub(super) const fn new(query: Q, mode: LocationMode) -> Self {
         Self {
             query,
@@ -287,7 +269,7 @@ impl<Q: PointQuery> StreamingLocation<Q> {
         &mut self,
         rings: impl IntoIterator<Item = &'a R>,
     ) -> Result<()> {
-        let y = self.query.index_y()?;
+        let y = self.query.index_coordinate(QueryAxis::Y);
         let mut summary = PolygonSummary::new(self.boundary_rings.len());
         for (index, ring) in rings.into_iter().enumerate() {
             let view = ring.ring_view();

@@ -160,31 +160,6 @@ pub(super) fn process_pair<Q: Query, const SATURATE: bool>(
     let event = events
         .last_mut()
         .expect("the current pair event was appended");
-    for point_index in 0..event.points.len() {
-        let Some(point) = event.points.get_mut(point_index).and_then(Option::as_mut) else {
-            continue;
-        };
-        let (left_location, right_location) = match point.kind {
-            EventPointKind::Stored(_) => continue,
-            EventPointKind::Crossing { .. } => {
-                let exact = event_point_exact(point, segments, coordinates)?;
-                (
-                    operands[0].locate_exact(&exact)?,
-                    operands[1].locate_exact(&exact)?,
-                )
-            },
-        };
-        witness_point(
-            interval,
-            left_location,
-            right_location,
-            query.needs_dimensions(),
-        );
-        if let Some(answer) = query.verdict(interval) {
-            return Ok(Some(answer));
-        }
-    }
-
     match event.kind {
         // Collinear spans are labeled once in the atom pass, after all
         // same-operand contacts have established component cleanliness.
@@ -197,9 +172,19 @@ pub(super) fn process_pair<Q: Query, const SATURATE: bool>(
                 .into());
             };
             let point = event_point_exact(point, segments, coordinates)?;
+            let probe = crate::geometry::source_support::ExactProbe::new(point);
+            witness_point(
+                interval,
+                operands[0].locate_probe(&probe)?,
+                operands[1].locate_probe(&probe)?,
+                query.needs_dimensions(),
+            );
+            if let Some(answer) = query.verdict(interval) {
+                return Ok(Some(answer));
+            }
             if !operands[0].row.has_area_parts() {
                 for direction in segment_directions(a, coordinates)? {
-                    match operands[1].occupied_toward_exact(&point, &direction)? {
+                    match operands[1].occupied_toward_probe(&probe, &direction)? {
                         OccupiedToward::Yes => {
                             interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
                         },
@@ -215,7 +200,7 @@ pub(super) fn process_pair<Q: Query, const SATURATE: bool>(
             }
             if !operands[1].row.has_area_parts() {
                 for direction in segment_directions(b, coordinates)? {
-                    match operands[0].occupied_toward_exact(&point, &direction)? {
+                    match operands[0].occupied_toward_probe(&probe, &direction)? {
                         OccupiedToward::Yes => {
                             interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
                         },
@@ -231,8 +216,8 @@ pub(super) fn process_pair<Q: Query, const SATURATE: bool>(
             }
             if operands[0].row.has_area_parts() && operands[1].row.has_area_parts() {
                 for direction in crossing_quadrants(a, b, coordinates)? {
-                    let left = operands[0].occupied_toward_exact(&point, &direction)?;
-                    let right = operands[1].occupied_toward_exact(&point, &direction)?;
+                    let left = operands[0].occupied_toward_probe(&probe, &direction)?;
+                    let right = operands[1].occupied_toward_probe(&probe, &direction)?;
                     let (left, right) = match (left, right) {
                         (OccupiedToward::Yes, OccupiedToward::Yes) => {
                             (Loc::Interior, Loc::Interior)
@@ -351,33 +336,35 @@ impl EventPoint {
     }
 }
 
-pub(super) fn event_point_exact(
-    point: &mut EventPoint,
+pub(super) fn event_point_exact<'a>(
+    point: &'a mut EventPoint,
     segments: &[Segment],
     coordinates: &mut ExactCoordinates,
-) -> Result<[ExactDyadic; 3]> {
-    if let Some(exact) = &point.exact {
-        return Ok(exact.as_ref().clone());
+) -> Result<&'a [ExactDyadic; 3]> {
+    if point.exact.is_none() {
+        let exact = match point.kind {
+            EventPointKind::Stored(point) => coordinates.stored(point).clone(),
+            EventPointKind::Crossing {
+                segments: [left, right],
+                ..
+            } => {
+                let left = usize::try_from(left).map_err(|_| ResourceError::SizeOverflow)?;
+                let right = usize::try_from(right).map_err(|_| ResourceError::SizeOverflow)?;
+                let left = *segments.get(left).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("crossing references a missing left segment".into())
+                })?;
+                let right = *segments.get(right).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("crossing references a missing right segment".into())
+                })?;
+                coordinates.crossing(left, right)?
+            },
+        };
+        point.exact = Some(Box::new(exact));
     }
-    let exact = match point.kind {
-        EventPointKind::Stored(point) => coordinates.stored(point).clone(),
-        EventPointKind::Crossing {
-            segments: [left, right],
-            ..
-        } => {
-            let left = usize::try_from(left).map_err(|_| ResourceError::SizeOverflow)?;
-            let right = usize::try_from(right).map_err(|_| ResourceError::SizeOverflow)?;
-            let left = *segments.get(left).ok_or_else(|| {
-                GeometryErrorKind::Invalid("crossing references a missing left segment".into())
-            })?;
-            let right = *segments.get(right).ok_or_else(|| {
-                GeometryErrorKind::Invalid("crossing references a missing right segment".into())
-            })?;
-            coordinates.crossing(left, right)?
-        },
-    };
-    point.exact = Some(Box::new(exact.clone()));
-    Ok(exact)
+    Ok(point
+        .exact
+        .as_deref()
+        .expect("the event exact coordinate was initialized"))
 }
 
 pub(super) fn stored_exact_point(point: XY) -> [ExactDyadic; 3] {

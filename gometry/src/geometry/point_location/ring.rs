@@ -1,8 +1,7 @@
 use super::{
-    Bounds, ControlFlow, CoordSeq, EdgeId, EdgeYIndex, ExactDyadic, HeapSize, Result, Ring,
-    RingEdgeCandidates, RingView, SharedSlice, XY, edge_winding, exact_edge_winding,
-    exact_offset_edge_winding, exact_offset_point_in_bounds, exact_point_in_bounds, exact_query_y,
-    ring_kind_columns, xy_bounds_columns,
+    Bounds, ControlFlow, CoordSeq, EdgeId, EdgeYIndex, HeapSize, PointQuery, QueryAxis, Result,
+    Ring, RingEdgeCandidates, RingView, SharedSlice, XY, edge_winding, edge_winding_for_query,
+    point_in_bounds, ring_kind_columns, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -112,38 +111,11 @@ impl RingPointIndex {
         touched.is_none().then_some(winding)
     }
 
-    pub(super) fn winding_off_boundary_exact(
-        &self,
-        point: &[ExactDyadic; 3],
-    ) -> Result<Option<i64>> {
-        self.winding_off_boundary_exact_query(point, None)
-    }
-
-    pub(super) fn winding_off_boundary_exact_offset(
-        &self,
-        point: &[ExactDyadic; 3],
-        direction: &[ExactDyadic; 2],
-    ) -> Result<Option<i64>> {
-        self.winding_off_boundary_exact_query(point, Some(direction))
-    }
-
-    fn winding_off_boundary_exact_query(
-        &self,
-        point: &[ExactDyadic; 3],
-        direction: Option<&[ExactDyadic; 2]>,
-    ) -> Result<Option<i64>> {
-        let in_bounds = match direction {
-            Some(direction) => exact_offset_point_in_bounds(self.bounds, point, direction)?,
-            None => exact_point_in_bounds(self.bounds, point)?,
-        };
-        if !in_bounds {
+    pub(super) fn winding_off_boundary_query(&self, query: impl PointQuery) -> Result<Option<i64>> {
+        if !point_in_bounds(query, self.bounds)? {
             return Ok(Some(0));
         }
-        let direction_y = direction.map(|direction| {
-            let [_, y] = direction;
-            y
-        });
-        let y = exact_query_y(point, direction_y)?;
+        let y = query.index_coordinate(QueryAxis::Y);
         let mut winding = 0_i64;
         let mut boundary = false;
         let mut error = None;
@@ -151,10 +123,7 @@ impl RingPointIndex {
             let (ax, ay, bx, by) = self.edge_xy(edge);
             let start = XY::new(ax, ay);
             let end = XY::new(bx, by);
-            let contact = direction.map_or_else(
-                || exact_edge_winding(start, end, point),
-                |direction| exact_offset_edge_winding(start, end, point, direction),
-            );
+            let contact = edge_winding_for_query(start, end, query);
             match contact {
                 Ok(Some(delta)) => {
                     winding = winding.wrapping_add(delta);

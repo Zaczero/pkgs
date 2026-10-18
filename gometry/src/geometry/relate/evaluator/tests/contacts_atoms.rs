@@ -42,6 +42,7 @@ fn clean_ring_atom_labels(
             &ring_owner,
             component,
             &atom,
+            &OnceCell::new(),
             &mut ExactCoordinates::default(),
             &forest,
         )?;
@@ -339,4 +340,56 @@ fn clean_ring_atom_labels_use_only_areal_support() {
     )
     .unwrap();
     assert_eq!(filled_edge, Loc::Interior);
+}
+#[test]
+#[cfg(debug_assertions)]
+fn exact_probe_reuses_admission_across_operands_and_opposite_normals() {
+    use crate::geometry::source_support::ExactProbe;
+    use crate::test_support::exact_operation_counts::measure;
+
+    let left = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap();
+    let right = crate::io::parse_wkt("POLYGON ((0 -2,2 -2,2 0,0 0,0 -2))").unwrap();
+    let operands = [
+        Operand::from_row((&left).into()),
+        Operand::from_row((&right).into()),
+    ];
+    let point = [
+        ExactDyadic::one(),
+        ExactDyadic::zero(),
+        ExactDyadic::from_f64(3.0),
+    ];
+    let probe = ExactProbe::new(&point);
+    let ((), first) = measure(|| {
+        assert_eq!(
+            operands[0].locate_probe(&probe).unwrap(),
+            SourcePointLocation {
+                location: Loc::Boundary,
+                area: true,
+            }
+        );
+    });
+    assert_eq!(first.ratio_roundings, 2);
+    let up = [ExactDyadic::zero(), ExactDyadic::one()];
+    let down = [ExactDyadic::zero(), ExactDyadic::from_f64(-1.0)];
+    let ((), additional) = measure(|| {
+        assert_eq!(
+            operands[1].locate_probe(&probe).unwrap(),
+            SourcePointLocation {
+                location: Loc::Boundary,
+                area: true,
+            }
+        );
+        for (operand, direction, expected) in [
+            (&operands[0], &up, OccupiedToward::Yes),
+            (&operands[0], &down, OccupiedToward::No),
+            (&operands[1], &up, OccupiedToward::No),
+            (&operands[1], &down, OccupiedToward::Yes),
+        ] {
+            assert_eq!(
+                operand.occupied_toward_probe(&probe, direction).unwrap(),
+                expected
+            );
+        }
+    });
+    assert_eq!(additional.ratio_roundings, 0);
 }

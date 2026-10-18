@@ -32,7 +32,11 @@ pub(super) fn intern_event_points(
                         rounded,
                     } => {
                         let exact = event_point_exact(point, segments, coordinates)?;
-                        forest.push_crossing_with_exact(crossing_segments, rounded, exact)?
+                        forest.push_crossing_with_exact(
+                            crossing_segments,
+                            rounded,
+                            exact.clone(),
+                        )?
                     },
                 };
                 point.handle = Some(handle);

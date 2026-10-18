@@ -1,8 +1,11 @@
 use super::{
-    Bounds, ExactDyadic, OccupiedToward, OnceLock, Point, PointMembership, PointQueryPlan,
-    PreparedPlan, PreparedPointQueries, Result, Shape, ShapeData, SourcePointLocation,
-    cartesian_point_location_and_area, exact_stored_point, occupied_toward,
+    Bounds, ExactDyadic, OnceLock, Point, PointMembership, PointQueryPlan, PreparedPlan,
+    PreparedPointQueries, Result, Shape, ShapeData, SourcePointLocation,
+    cartesian_point_location_and_area,
 };
+#[cfg(test)]
+use super::{OccupiedToward, occupied_toward};
+use crate::geometry::source_support::ExactProbe;
 
 fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
     bounds.is_none_or(|bounds| {
@@ -16,6 +19,35 @@ fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
 const POINT_SCANS_BEFORE_INDEXING: u32 = 3;
 
 impl PreparedPlan {
+    pub(in crate::geometry) fn locate_probe(
+        &self,
+        probe: &ExactProbe<'_>,
+    ) -> Result<SourcePointLocation> {
+        if let Some(point) = probe.stored() {
+            if self
+                .shape
+                .bounds
+                .get()
+                .is_some_and(|bounds| point_outside_bounds(*bounds, point))
+            {
+                return Ok(SourcePointLocation {
+                    location: crate::geometry::Loc::Exterior,
+                    area: false,
+                });
+            }
+            return self.locate_stored(point);
+        }
+        self.prepare_point_queries(1)?.locate_probe(probe)
+    }
+
+    pub(in crate::geometry) fn locate_probe_offset(
+        &self,
+        probe: &ExactProbe<'_>,
+        direction: &[ExactDyadic; 2],
+    ) -> Result<SourcePointLocation> {
+        self.prepare_point_queries(1)?
+            .locate_probe_offset(probe, direction)
+    }
     /// Exact Cartesian location, admitted by this operand's accumulated demand.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
         self.locate_stored(point).map(|location| location.location)
@@ -35,11 +67,12 @@ impl PreparedPlan {
         self.prepare_point_queries(1)?.locate_stored(point)
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact(
         &self,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
-        self.locate_exact_with_stored(point, exact_stored_point(point))
+        self.locate_probe(&ExactProbe::new(point))
     }
 
     /// Locate from a borrowed source, deferring its owned plan until a stored
@@ -50,8 +83,11 @@ impl PreparedPlan {
         bounds: Option<Bounds>,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
-        let stored = exact_stored_point(point);
-        if stored.is_some_and(|stored| point_outside_bounds(bounds, stored)) {
+        let probe = ExactProbe::new(point);
+        if probe
+            .stored()
+            .is_some_and(|stored| point_outside_bounds(bounds, stored))
+        {
             return Ok(SourcePointLocation {
                 location: crate::geometry::Loc::Exterior,
                 area: false,
@@ -62,31 +98,10 @@ impl PreparedPlan {
             data.seed_bounds(bounds);
             Self::new(data)
         });
-        plan.locate_exact_with_stored(point, stored)
+        plan.locate_probe(&probe)
     }
 
-    fn locate_exact_with_stored(
-        &self,
-        point: &[ExactDyadic; 3],
-        stored: Option<Point>,
-    ) -> Result<SourcePointLocation> {
-        if let Some(stored) = stored {
-            if self
-                .shape
-                .bounds
-                .get()
-                .is_some_and(|bounds| point_outside_bounds(*bounds, stored))
-            {
-                return Ok(SourcePointLocation {
-                    location: crate::geometry::Loc::Exterior,
-                    area: false,
-                });
-            }
-            return self.locate_stored(stored);
-        }
-        self.prepare_point_queries(1)?.locate_exact(point)
-    }
-
+    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact_offset(
         &self,
         point: &[ExactDyadic; 3],
@@ -96,6 +111,7 @@ impl PreparedPlan {
             .locate_exact_offset(point, direction)
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn occupied_toward_exact(
         &self,
         point: &[ExactDyadic; 3],

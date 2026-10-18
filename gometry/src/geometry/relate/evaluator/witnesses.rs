@@ -66,6 +66,7 @@ pub(super) fn event_node_witnesses<Q: Query>(
                 )
             } else {
                 let exact = forest.points().exact(root)?;
+                let probe = crate::geometry::source_support::ExactProbe::new(&exact);
                 #[cfg(all(test, debug_assertions))]
                 update_atom_metrics(|metrics| {
                     metrics.node_locations = metrics.node_locations.wrapping_add(
@@ -73,8 +74,8 @@ pub(super) fn event_node_witnesses<Q: Query>(
                     );
                 });
                 (
-                    left.map_or_else(|| operands[0].locate_exact(&exact), Ok)?,
-                    right.map_or_else(|| operands[1].locate_exact(&exact), Ok)?,
+                    left.map_or_else(|| operands[0].locate_probe(&probe), Ok)?,
+                    right.map_or_else(|| operands[1].locate_probe(&probe), Ok)?,
                 )
             };
             witness_point(interval, left, right, query.needs_dimensions());

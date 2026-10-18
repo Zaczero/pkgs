@@ -1,8 +1,9 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 
 use super::{
     Bounds, ExactDyadic, ExactSign, Point, Result, XY, compare_ratios, outward_ratio_bounds,
-    round_ratio, same_topological_coordinate, stored_orientation_sign,
+    same_topological_coordinate, stored_orientation_sign,
 };
 
 #[derive(Clone, Copy)]
@@ -20,7 +21,15 @@ pub(in crate::geometry) struct AxisRelation {
 pub(in crate::geometry) trait PointQuery: Copy {
     fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering>;
     fn orientation(self, start: XY, end: XY) -> Result<ExactSign>;
-    fn index_y(self) -> Result<f64>;
+    /// Lower-sided candidate key, not a rounded replacement for exact predicates.
+    fn index_coordinate(self, axis: QueryAxis) -> f64;
+
+    fn index_xy(self) -> XY {
+        XY::new(
+            self.index_coordinate(QueryAxis::X),
+            self.index_coordinate(QueryAxis::Y),
+        )
+    }
 
     fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
         self.compare_axis(axis, value).map(|order| AxisRelation {
@@ -84,8 +93,11 @@ impl PointQuery for StoredQuery {
         ))
     }
 
-    fn index_y(self) -> Result<f64> {
-        Ok(self.0.y)
+    fn index_coordinate(self, axis: QueryAxis) -> f64 {
+        match axis {
+            QueryAxis::X => self.0.x,
+            QueryAxis::Y => self.0.y,
+        }
     }
 }
 
@@ -96,14 +108,54 @@ pub(in crate::geometry) struct ExactQuery<'a> {
     y_bounds: (f64, f64),
 }
 
+pub(in crate::geometry) struct ExactProbe<'a> {
+    point: &'a [ExactDyadic; 3],
+    stored: Option<Point>,
+    source: OnceCell<ExactQuery<'a>>,
+}
+
+impl<'a> ExactProbe<'a> {
+    pub(in crate::geometry) fn new(point: &'a [ExactDyadic; 3]) -> Self {
+        Self {
+            point,
+            stored: exact_stored_point(point),
+            source: OnceCell::new(),
+        }
+    }
+
+    pub(in crate::geometry) const fn homogeneous(&self) -> &'a [ExactDyadic; 3] {
+        self.point
+    }
+
+    pub(in crate::geometry) const fn stored(&self) -> Option<Point> {
+        self.stored
+    }
+
+    pub(in crate::geometry) fn source_query(&self) -> Result<ExactQuery<'a>> {
+        Ok(*self
+            .source
+            .get_or_try_init(|| ExactQuery::new(self.point))?)
+    }
+}
+
 impl<'a> ExactQuery<'a> {
-    pub(super) fn new(point: &'a [ExactDyadic; 3]) -> Result<Self> {
+    fn new(point: &'a [ExactDyadic; 3]) -> Result<Self> {
         let [x, y, w] = point;
         Ok(Self {
             point,
             x_bounds: outward_ratio_bounds(x, w)?,
             y_bounds: outward_ratio_bounds(y, w)?,
         })
+    }
+
+    pub(in crate::geometry) const fn offset(
+        self,
+        direction: &'a [ExactDyadic; 2],
+    ) -> InfinitesimalQuery<'a> {
+        InfinitesimalQuery {
+            point: self,
+            direction,
+        }
     }
 }
 
@@ -154,8 +206,11 @@ impl PointQuery for ExactQuery<'_> {
         })
     }
 
-    fn index_y(self) -> Result<f64> {
-        exact_query_y(self.point, None)
+    fn index_coordinate(self, axis: QueryAxis) -> f64 {
+        match axis {
+            QueryAxis::X => self.x_bounds.0,
+            QueryAxis::Y => self.y_bounds.0,
+        }
     }
 
     fn misses_height(self, start: f64, end: f64) -> bool {
@@ -178,51 +233,10 @@ fn compare_exact_axis(point: &[ExactDyadic; 3], axis: QueryAxis, value: f64) -> 
     )
 }
 
-fn exact_query_coordinate(
-    numerator: &ExactDyadic,
-    denominator: &ExactDyadic,
-    direction: Option<&ExactDyadic>,
-) -> Result<f64> {
-    let rounded = round_ratio(numerator, denominator)?;
-    let order = compare_ratios(
-        numerator,
-        denominator,
-        &ExactDyadic::from_f64(rounded),
-        &ExactDyadic::one(),
-    )?;
-    let below = order == Ordering::Less
-        || (order == Ordering::Equal
-            && direction.is_some_and(|direction| direction.sign() == ExactSign::Negative));
-    Ok(if below { rounded.next_down() } else { rounded })
-}
-
-pub(in crate::geometry) fn exact_query_y(
-    point: &[ExactDyadic; 3],
-    direction_y: Option<&ExactDyadic>,
-) -> Result<f64> {
-    let [_, y, w] = point;
-    exact_query_coordinate(y, w, direction_y)
-}
-
-pub(in crate::geometry) fn exact_query_xy(
-    point: &[ExactDyadic; 3],
-    direction: Option<&[ExactDyadic; 2]>,
-) -> Result<XY> {
-    let [x, y, w] = point;
-    let direction = direction.map(|direction| {
-        let [direction_x, direction_y] = direction;
-        (direction_x, direction_y)
-    });
-    Ok(XY::new(
-        exact_query_coordinate(x, w, direction.map(|(x, _)| x))?,
-        exact_query_coordinate(y, w, direction.map(|(_, y)| y))?,
-    ))
-}
-
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct InfinitesimalQuery<'a> {
-    pub(super) point: ExactQuery<'a>,
-    pub(super) direction: &'a [ExactDyadic; 2],
+    point: ExactQuery<'a>,
+    direction: &'a [ExactDyadic; 2],
 }
 
 impl PointQuery for InfinitesimalQuery<'_> {
@@ -258,9 +272,20 @@ impl PointQuery for InfinitesimalQuery<'_> {
             .sign())
     }
 
-    fn index_y(self) -> Result<f64> {
-        let [_direction_x, direction_y] = self.direction;
-        exact_query_y(self.point.point, Some(direction_y))
+    #[expect(
+        clippy::float_cmp,
+        reason = "equal bracket endpoints prove exact representability"
+    )]
+    fn index_coordinate(self, axis: QueryAxis) -> f64 {
+        let (bounds, direction) = match axis {
+            QueryAxis::X => (self.point.x_bounds, &self.direction[0]),
+            QueryAxis::Y => (self.point.y_bounds, &self.direction[1]),
+        };
+        if bounds.0 == bounds.1 && direction.sign() == ExactSign::Negative {
+            bounds.0.next_down()
+        } else {
+            bounds.0
+        }
     }
 
     fn misses_height(self, start: f64, end: f64) -> bool {
@@ -282,28 +307,7 @@ pub(in crate::geometry) fn exact_stored_point(point: &[ExactDyadic; 3]) -> Optio
         .map(|(x, y)| Point::new_raw_xy(x, y))
 }
 
-pub(in crate::geometry) fn exact_point_in_bounds(
-    bounds: Bounds,
-    point: &[ExactDyadic; 3],
-) -> Result<bool> {
-    point_in_bounds(ExactQuery::new(point)?, bounds)
-}
-
-pub(in crate::geometry) fn exact_offset_point_in_bounds(
-    bounds: Bounds,
-    point: &[ExactDyadic; 3],
-    direction: &[ExactDyadic; 2],
-) -> Result<bool> {
-    point_in_bounds(
-        InfinitesimalQuery {
-            point: ExactQuery::new(point)?,
-            direction,
-        },
-        bounds,
-    )
-}
-
-fn point_in_bounds(query: impl PointQuery, bounds: Bounds) -> Result<bool> {
+pub(in crate::geometry) fn point_in_bounds(query: impl PointQuery, bounds: Bounds) -> Result<bool> {
     Ok(
         query.compare_axis(QueryAxis::X, bounds.minx())? != Ordering::Less
             && query.compare_axis(QueryAxis::X, bounds.maxx())? != Ordering::Greater

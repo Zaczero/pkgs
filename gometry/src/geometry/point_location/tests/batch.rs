@@ -128,8 +128,10 @@ fn indexed_rational_locations_match_streaming_labels_and_area() {
     ] {
         let expected = cartesian_exact_point_location_and_area(&shape, &point).unwrap();
         assert_eq!(
-            tester.location_and_area_exact(&point).unwrap(),
-            Some(expected)
+            tester
+                .location_and_area_query(ExactProbe::new(&point).source_query().unwrap())
+                .unwrap(),
+            expected
         );
         assert_eq!(
             cartesian_exact_point_location(&shape, &point).unwrap(),
@@ -190,6 +192,90 @@ fn exact_offsets_use_indexed_edges_and_preserve_tangency() {
             expected_toward
         );
     }
+}
+
+#[test]
+fn exact_probe_locations_preserve_rationals_zero_and_subnormal_neighbours() {
+    let shape = dense_square();
+    let plan = crate::geometry::PreparedPlan::transient(&shape);
+    let rings = plan.prepare_point_queries(4).unwrap();
+    assert!(rings.uses_indexed_plan());
+    let subnormal = f64::from_bits(1);
+    for (x, y, weight, location, area) in [
+        (1.0, 1.0, 3.0, Loc::Interior, true),
+        (1.0, 0.0, 3.0, Loc::Boundary, true),
+        (-1.0, -1.0, -3.0, Loc::Interior, true),
+        (30.0, 30.0, 3.0, Loc::Boundary, true),
+        (-0.0, 0.0, 3.0, Loc::Boundary, true),
+        (subnormal, 1.0, 3.0, Loc::Interior, true),
+        (-subnormal, 1.0, 3.0, Loc::Exterior, false),
+    ] {
+        let point = [
+            ExactDyadic::from_f64(x),
+            ExactDyadic::from_f64(y),
+            ExactDyadic::from_f64(weight),
+        ];
+        let probe = ExactProbe::new(&point);
+        let expected = SourcePointLocation { location, area };
+        assert_eq!(rings.locate_probe(&probe).unwrap(), expected);
+        assert_eq!(
+            cartesian_row_probe_location_and_area((&shape).into(), &probe,).unwrap(),
+            expected,
+        );
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn homogeneous_slab_queries_do_not_admit_source_filters() {
+    use crate::test_support::exact_operation_counts::measure;
+
+    let mut members = vec![dense_square()];
+    members.extend((0..32).map(|i| Shape::Point(Point::new_raw_xy(100.0 + f64::from(i), 100.0))));
+    let shape = Shape::geometry_collection(members).unwrap();
+    let plan = crate::geometry::PreparedPlan::transient(&shape);
+    let queries = plan.prepare_point_queries(usize::MAX).unwrap();
+    assert!(queries.uses_slabs());
+    let point = [
+        ExactDyadic::one(),
+        ExactDyadic::one(),
+        ExactDyadic::from_f64(3.0),
+    ];
+    let probe = ExactProbe::new(&point);
+    let direction = [ExactDyadic::one(), ExactDyadic::zero()];
+    let ((), counts) = measure(|| {
+        assert_eq!(queries.locate_probe(&probe).unwrap(), SourcePointLocation {
+            location: Loc::Interior,
+            area: true,
+        });
+        assert_eq!(
+            queries.locate_probe_offset(&probe, &direction).unwrap(),
+            SourcePointLocation {
+                location: Loc::Interior,
+                area: true,
+            }
+        );
+    });
+    assert_eq!(counts.ratio_roundings, 0);
+    let (_, admission) = measure(|| probe.source_query().unwrap());
+    assert_eq!(admission.ratio_roundings, 2);
+
+    let outside = [
+        ExactDyadic::from_f64(f64::MAX)
+            .try_product(&ExactDyadic::from_f64(2.0))
+            .unwrap(),
+        ExactDyadic::one(),
+        ExactDyadic::one(),
+    ];
+    let outside = ExactProbe::new(&outside);
+    assert_eq!(
+        queries.locate_probe(&outside).unwrap(),
+        SourcePointLocation {
+            location: Loc::Exterior,
+            area: false,
+        }
+    );
+    assert!(outside.source_query().is_err());
 }
 
 #[test]

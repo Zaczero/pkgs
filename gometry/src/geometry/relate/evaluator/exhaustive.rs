@@ -95,10 +95,13 @@ pub(super) fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                 segment,
                 direction: &direction,
             };
+            let start_probe = OnceCell::new();
+            let side_probe = OnceCell::new();
             let own = atom_owner_label(
                 by_operand(operands, side),
                 component,
                 &atom,
+                &start_probe,
                 coordinates,
                 forest,
             )?;
@@ -113,6 +116,7 @@ pub(super) fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                     by_operand(operands, target_side),
                     partner,
                     &atom,
+                    &start_probe,
                     coordinates,
                     forest,
                 )?;
@@ -121,6 +125,7 @@ pub(super) fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                     partner,
                     *by_operand(operand_has_area, target_side),
                     &atom,
+                    &side_probe,
                     coordinates,
                     forest,
                 )?;
@@ -136,6 +141,7 @@ pub(super) fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                         by_operand(operands, target_side),
                         component_id,
                         &atom,
+                        &start_probe,
                         coordinates,
                         run_cache.as_ref(),
                         forest,
@@ -154,6 +160,7 @@ pub(super) fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                 component,
                 *by_operand(operand_has_area, side),
                 &atom,
+                &side_probe,
                 coordinates,
                 forest,
             )?;

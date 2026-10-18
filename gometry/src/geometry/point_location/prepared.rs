@@ -11,8 +11,8 @@ use crate::error::Result;
 use crate::geometry::Loc;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::source_support::{
-    PointMembership, SourcePointLocation, cartesian_exact_offset_location_and_area,
-    cartesian_exact_point_location_and_area, cartesian_point_location_and_area, exact_stored_point,
+    ExactProbe, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
+    cartesian_row_query_location_and_area,
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{MetricSupportRun, Point, RunIdentity, Shape};
@@ -206,68 +206,62 @@ impl<'a> PreparedPointQueries<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact(
         &self,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
+        self.locate_probe(&ExactProbe::new(point))
+    }
+
+    pub(in crate::geometry) fn locate_probe(
+        &self,
+        probe: &ExactProbe<'_>,
+    ) -> Result<SourcePointLocation> {
         self.record_query();
         match self.0 {
-            PointQueryRoute::Slabs(index) => index.locate_exact(point),
+            PointQueryRoute::Slabs(index) => index.locate_exact(probe.homogeneous()),
             PointQueryRoute::Streaming(shape) => {
-                if let Some(point) = exact_stored_point(point) {
+                if let Some(point) = probe.stored() {
                     return Ok(cartesian_point_location_and_area(shape, point));
                 }
-                cartesian_exact_point_location_and_area(shape, point)
+                cartesian_row_query_location_and_area(shape.into(), probe.source_query()?)
             },
             PointQueryRoute::Rings { rings, .. } => {
-                if let Some(point) = exact_stored_point(point) {
+                if let Some(point) = probe.stored() {
                     return Ok(rings.location_and_area(point));
                 }
-                rings.location_and_area_exact(point)?.map_or_else(
-                    || match rings {
-                        PointBatchTester::Generic(tester) => {
-                            cartesian_exact_point_location_and_area(&tester.shape, point)
-                        },
-                        PointBatchTester::Polygon { .. }
-                        | PointBatchTester::MultiPolygon { .. } => unreachable!(
-                            "polygonal exact queries resolve contacts through indexed rings"
-                        ),
-                    },
-                    Ok,
-                )
+                rings.location_and_area_query(probe.source_query()?)
             },
         }
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact_offset(
         &self,
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<SourcePointLocation> {
+        self.locate_probe_offset(&ExactProbe::new(point), direction)
+    }
+
+    pub(in crate::geometry) fn locate_probe_offset(
+        &self,
+        probe: &ExactProbe<'_>,
+        direction: &[ExactDyadic; 2],
+    ) -> Result<SourcePointLocation> {
         self.record_query();
         match self.0 {
-            PointQueryRoute::Slabs(index) => index.locate_exact_offset(point, direction),
-            PointQueryRoute::Streaming(shape) => {
-                cartesian_exact_offset_location_and_area(shape, point, direction)
+            PointQueryRoute::Slabs(index) => {
+                index.locate_exact_offset(probe.homogeneous(), direction)
             },
-            PointQueryRoute::Rings { rings, .. } => rings
-                .location_and_area_exact_offset(point, direction)?
-                .map_or_else(
-                    || match rings {
-                        PointBatchTester::Generic(tester) => {
-                            cartesian_exact_offset_location_and_area(
-                                &tester.shape,
-                                point,
-                                direction,
-                            )
-                        },
-                        PointBatchTester::Polygon { .. }
-                        | PointBatchTester::MultiPolygon { .. } => unreachable!(
-                            "polygonal exact offsets resolve contacts through indexed rings"
-                        ),
-                    },
-                    Ok,
-                ),
+            PointQueryRoute::Streaming(shape) => cartesian_row_query_location_and_area(
+                shape.into(),
+                probe.source_query()?.offset(direction),
+            ),
+            PointQueryRoute::Rings { rings, .. } => {
+                rings.location_and_area_query(probe.source_query()?.offset(direction))
+            },
         }
     }
 

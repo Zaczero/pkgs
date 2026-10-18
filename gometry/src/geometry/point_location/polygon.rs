@@ -1,7 +1,7 @@
 use super::{
-    Bounds, ControlFlow, ExactDyadic, HeapSize, Loc, Point, PointQuery, Polygon, Result, RingClass,
+    Bounds, ControlFlow, HeapSize, Loc, Point, PointQuery, Polygon, Result, RingClass,
     RingPointIndex, Shape, SourcePointLocation, StreamingLocation, YStabbingIndex,
-    checked_index_count, exact_offset_point_in_bounds, exact_point_in_bounds, exact_query_xy,
+    checked_index_count, point_in_bounds,
 };
 
 /// One polygon: shell minus holes, with hierarchical Y-stabbing on both levels.
@@ -93,73 +93,29 @@ impl PolygonPointIndex {
         touched.is_none().then_some(hole_occupied)
     }
 
-    pub(super) fn occupied_off_boundary_exact(
+    pub(super) fn occupied_off_boundary_query(
         &self,
-        point: &[ExactDyadic; 3],
+        query: impl PointQuery,
     ) -> Result<Option<bool>> {
         if let Some(bounds) = self.bounds
-            && !exact_point_in_bounds(bounds, point)?
+            && !point_in_bounds(query, bounds)?
         {
             return Ok(Some(false));
         }
         if !self.winding_rings {
             return Ok(None);
         }
-        let Some(shell) = self.shell.winding_off_boundary_exact(point)? else {
+        let Some(shell) = self.shell.winding_off_boundary_query(query)? else {
             return Ok(None);
         };
         if shell == 0 {
             return Ok(Some(false));
         }
-        let query = exact_query_xy(point, None)?;
+        let xy = query.index_xy();
         let mut hole_occupied = false;
         let mut error = None;
-        let touched = self.holes.for_each_at_point(query.x, query.y, |hole| {
-            match hole.winding_off_boundary_exact(point) {
-                Ok(Some(winding)) => {
-                    hole_occupied |= winding != 0;
-                    ControlFlow::Continue(())
-                },
-                Ok(None) => ControlFlow::Break(()),
-                Err(failure) => {
-                    error = Some(failure);
-                    ControlFlow::Break(())
-                },
-            }
-        });
-        if let Some(error) = error {
-            return Err(error);
-        }
-        Ok(touched.is_none().then_some(!hole_occupied))
-    }
-
-    pub(super) fn occupied_off_boundary_exact_offset(
-        &self,
-        point: &[ExactDyadic; 3],
-        direction: &[ExactDyadic; 2],
-    ) -> Result<Option<bool>> {
-        if let Some(bounds) = self.bounds
-            && !exact_offset_point_in_bounds(bounds, point, direction)?
-        {
-            return Ok(Some(false));
-        }
-        if !self.winding_rings {
-            return Ok(None);
-        }
-        let Some(shell) = self
-            .shell
-            .winding_off_boundary_exact_offset(point, direction)?
-        else {
-            return Ok(None);
-        };
-        if shell == 0 {
-            return Ok(Some(false));
-        }
-        let query = exact_query_xy(point, Some(direction))?;
-        let mut hole_occupied = false;
-        let mut error = None;
-        let touched = self.holes.for_each_at_point(query.x, query.y, |hole| {
-            match hole.winding_off_boundary_exact_offset(point, direction) {
+        let touched = self.holes.for_each_at_point(xy.x, xy.y, |hole| {
+            match hole.winding_off_boundary_query(query) {
                 Ok(Some(winding)) => {
                     hole_occupied |= winding != 0;
                     ControlFlow::Continue(())
@@ -242,9 +198,7 @@ impl HeapSize for PolygonPointIndex {
     }
 }
 
-/// Batched point-membership tester for a fixed shape: polygonal shapes get a
-/// hierarchical Y-stabbing plan (parts → shell/holes → edges); everything else
-/// falls through to the point kernels.
+/// Source fallback for shapes without an indexed winding-ring plan.
 pub(crate) struct ExactPointTester {
     pub(super) shape: Shape,
 }
@@ -275,20 +229,16 @@ pub(super) fn location_from_indexed_parts<Q: PointQuery>(
     location.finish()
 }
 
-pub(super) fn indexed_parts_occupied_exact(
+pub(super) fn indexed_parts_occupied_query(
     parts: &YStabbingIndex<PolygonPointIndex>,
-    point: &[ExactDyadic; 3],
-    direction: Option<&[ExactDyadic; 2]>,
+    query: impl PointQuery,
 ) -> Result<Option<bool>> {
-    let query = exact_query_xy(point, direction)?;
+    let xy = query.index_xy();
     let mut occupied = false;
     let mut unresolved = false;
     let mut error = None;
-    let _ = parts.for_each_at_point(query.x, query.y, |part| {
-        let result = direction.map_or_else(
-            || part.occupied_off_boundary_exact(point),
-            |direction| part.occupied_off_boundary_exact_offset(point, direction),
-        );
+    let _ = parts.for_each_at_point(xy.x, xy.y, |part| {
+        let result = part.occupied_off_boundary_query(query);
         match result {
             Ok(Some(inside)) => {
                 occupied |= inside;

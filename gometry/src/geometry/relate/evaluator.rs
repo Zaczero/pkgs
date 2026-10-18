@@ -14,9 +14,12 @@ use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
 use crate::geometry::segments::contact::TouchLocation;
 use crate::geometry::segments::crossing_point_with;
 use crate::geometry::source_support::{
-    OccupiedToward, PointMembership, SourcePointLocation,
+    OccupiedToward, PointMembership, SourcePointLocation, cartesian_row_point_location,
+    cartesian_row_point_location_and_area, occupied_toward,
+};
+#[cfg(test)]
+use crate::geometry::source_support::{
     cartesian_row_exact_offset_location_and_area, cartesian_row_exact_point_location_and_area,
-    cartesian_row_point_location, cartesian_row_point_location_and_area, occupied_toward,
 };
 use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};

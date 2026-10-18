@@ -1,5 +1,6 @@
 use super::atoms::{is_cross_event_node, same_atom_point};
 use super::*;
+use crate::geometry::source_support::ExactProbe;
 
 #[derive(Clone, Copy)]
 pub(super) struct AtomSides {
@@ -27,10 +28,11 @@ pub(super) struct RunCache {
     pub(super) label: Loc,
 }
 
-pub(super) fn atom_owner_label(
+pub(super) fn atom_owner_label<'a>(
     operand: &Operand<'_>,
     component: &Component,
-    atom: &ExactAtom<'_>,
+    atom: &'a ExactAtom<'_>,
+    probe: &OnceCell<ExactProbe<'a>>,
     coordinates: &mut ExactCoordinates,
     forest: &ExactPointForest<'_>,
 ) -> Result<Loc> {
@@ -53,14 +55,16 @@ pub(super) fn atom_owner_label(
         };
     }
     let (start, direction) = atom.offset(coordinates, forest)?;
-    Ok(operand.locate_exact_offset(start, direction)?.location)
+    let probe = probe.get_or_init(|| ExactProbe::new(start));
+    Ok(operand.locate_probe_offset(probe, direction)?.location)
 }
 
-pub(super) fn atom_sides(
+pub(super) fn atom_sides<'a>(
     operand: &Operand<'_>,
     component: &Component,
     has_area: bool,
-    atom: &ExactAtom<'_>,
+    atom: &'a ExactAtom<'_>,
+    probe: &OnceCell<ExactProbe<'a>>,
     coordinates: &mut ExactCoordinates,
     forest: &ExactPointForest<'_>,
 ) -> Result<AtomSides> {
@@ -105,18 +109,19 @@ pub(super) fn atom_sides(
     let (midpoint, direction) = atom.side_probe(coordinates, forest)?;
     let left = segment_left_normal_from_direction(direction);
     let right = [left[0].clone().neg(), left[1].clone().neg()];
+    let probe = probe.get_or_init(|| ExactProbe::new(midpoint));
     Ok(AtomSides::new(
-        occupied_area_side(operand, midpoint, &left)?,
-        occupied_area_side(operand, midpoint, &right)?,
+        occupied_area_probe_side(operand, probe, &left)?,
+        occupied_area_probe_side(operand, probe, &right)?,
     ))
 }
 
-pub(super) fn occupied_area_side(
+fn occupied_area_probe_side(
     operand: &Operand<'_>,
-    point: &[ExactDyadic; 3],
+    probe: &ExactProbe<'_>,
     direction: &[ExactDyadic; 2],
 ) -> Result<bool> {
-    match operand.occupied_toward_exact(point, direction)? {
+    match operand.occupied_toward_probe(probe, direction)? {
         OccupiedToward::Yes => Ok(true),
         OccupiedToward::No => Ok(false),
         OccupiedToward::Tangent => Err(GeometryErrorKind::Invalid(
@@ -130,10 +135,11 @@ pub(super) fn segment_left_normal_from_direction(direction: &[ExactDyadic; 2]) -
     [direction[1].clone().neg(), direction[0].clone()]
 }
 
-pub(super) fn run_label(
+pub(super) fn run_label<'a>(
     operand: &Operand<'_>,
     component: u32,
-    atom: &ExactAtom<'_>,
+    atom: &'a ExactAtom<'_>,
+    probe: &OnceCell<ExactProbe<'a>>,
     coordinates: &mut ExactCoordinates,
     cache: Option<&RunCache>,
     forest: &mut ExactPointForest<'_>,
@@ -148,7 +154,8 @@ pub(super) fn run_label(
         return Ok(cache.label);
     }
     let (start_exact, direction) = atom.offset(coordinates, forest)?;
-    match operand.occupied_toward_exact(start_exact, direction)? {
+    let probe = probe.get_or_init(|| ExactProbe::new(start_exact));
+    match operand.occupied_toward_probe(probe, direction)? {
         OccupiedToward::Yes => Ok(Loc::Interior),
         OccupiedToward::No => Ok(Loc::Exterior),
         OccupiedToward::Tangent => Err(GeometryErrorKind::Invalid(
@@ -167,7 +174,8 @@ pub(super) fn ring_left_area(
     let end = coordinates.stored(segment.end);
     let midpoint = homogeneous_midpoint(&start, end)?;
     let direction = segment_left_normal_from_direction(&coordinates.direction(segment)?);
-    match operand.occupied_toward_exact(&midpoint, &direction)? {
+    let probe = ExactProbe::new(&midpoint);
+    match operand.occupied_toward_probe(&probe, &direction)? {
         OccupiedToward::Yes => Ok(true),
         OccupiedToward::No => Ok(false),
         OccupiedToward::Tangent => Err(GeometryErrorKind::Invalid(

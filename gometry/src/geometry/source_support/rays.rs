@@ -3,8 +3,8 @@ use std::cmp::Ordering;
 #[cfg(test)]
 use super::Ring;
 use super::{
-    ExactDyadic, ExactQuery, ExactSign, InfinitesimalQuery, Loc, PointQuery, QueryAxis, Result,
-    RingKind, XY, point_on_segment, same_point, stored_orientation_sign,
+    ExactSign, Loc, PointQuery, QueryAxis, Result, RingKind, XY, point_on_segment, same_point,
+    stored_orientation_sign,
 };
 
 #[cfg(test)]
@@ -161,27 +161,11 @@ pub(crate) fn edge_winding(start: XY, end: XY, query: XY) -> Option<i64> {
     Some(if orientation == sign { direction } else { 0 })
 }
 
-pub(in crate::geometry) fn exact_edge_winding(
+pub(in crate::geometry) fn edge_winding_for_query(
     start: XY,
     end: XY,
-    point: &[ExactDyadic; 3],
+    query: impl PointQuery,
 ) -> Result<Option<i64>> {
-    edge_winding_for_query(start, end, ExactQuery::new(point)?)
-}
-
-pub(in crate::geometry) fn exact_offset_edge_winding(
-    start: XY,
-    end: XY,
-    point: &[ExactDyadic; 3],
-    direction: &[ExactDyadic; 2],
-) -> Result<Option<i64>> {
-    edge_winding_for_query(start, end, InfinitesimalQuery {
-        point: ExactQuery::new(point)?,
-        direction,
-    })
-}
-
-fn edge_winding_for_query(start: XY, end: XY, query: impl PointQuery) -> Result<Option<i64>> {
     if same_point(start, end) {
         return Ok(Some(0));
     }

@@ -1,10 +1,11 @@
 use super::{
-    ControlFlow, ExactDyadic, ExactPointTester, Loc, Point, PointMembership, Polygon,
+    ControlFlow, ExactPointTester, Loc, Point, PointMembership, PointQuery, Polygon,
     PolygonPointIndex, Result, Shape, SourcePointLocation, StreamingLocation, YStabbingIndex,
-    cartesian_point_location_and_area, checked_index_count, exact_query_xy,
-    indexed_parts_occupied_exact, location_from_indexed_parts,
+    cartesian_point_location_and_area, checked_index_count, indexed_parts_occupied_query,
+    location_from_indexed_parts,
 };
 use crate::HeapSize;
+use crate::geometry::source_support::cartesian_row_query_location_and_area;
 
 pub(crate) enum PointBatchTester {
     /// Single polygon — no multipolygon Y-index indirection.
@@ -186,82 +187,40 @@ impl PointBatchTester {
         }
     }
 
-    pub(in crate::geometry) fn location_and_area_exact(
+    pub(in crate::geometry) fn location_and_area_query(
         &self,
-        point: &[ExactDyadic; 3],
-    ) -> Result<Option<SourcePointLocation>> {
+        query: impl PointQuery,
+    ) -> Result<SourcePointLocation> {
         let occupied = match self {
-            Self::Polygon { index } => index.occupied_off_boundary_exact(point)?,
-            Self::MultiPolygon { parts } => indexed_parts_occupied_exact(parts, point, None)?,
-            Self::Generic(_) => return Ok(None),
+            Self::Polygon { index } => index.occupied_off_boundary_query(query)?,
+            Self::MultiPolygon { parts } => indexed_parts_occupied_query(parts, query)?,
+            Self::Generic(_) => None,
         };
         if let Some(occupied) = occupied {
-            return Ok(Some(SourcePointLocation {
+            return Ok(SourcePointLocation {
                 location: if occupied {
                     Loc::Interior
                 } else {
                     Loc::Exterior
                 },
                 area: occupied,
-            }));
+            });
         }
 
-        let location = StreamingLocation::for_exact_point(point)?;
+        let location = StreamingLocation::for_query(query);
         match self {
             Self::Polygon { index } => {
                 let mut location = location;
                 index.visit_indexed_into(&mut location)?;
-                Ok(Some(location.finish()?))
+                location.finish()
             },
             Self::MultiPolygon { parts } => {
-                let query = exact_query_xy(point, None)?;
-                Ok(Some(location_from_indexed_parts(
-                    parts, query.x, query.y, location,
-                )?))
+                let query = query.index_xy();
+                location_from_indexed_parts(parts, query.x, query.y, location)
             },
-            Self::Generic(_) => Ok(None),
-        }
-    }
-
-    pub(in crate::geometry) fn location_and_area_exact_offset(
-        &self,
-        point: &[ExactDyadic; 3],
-        direction: &[ExactDyadic; 2],
-    ) -> Result<Option<SourcePointLocation>> {
-        let occupied = match self {
-            Self::Polygon { index } => {
-                index.occupied_off_boundary_exact_offset(point, direction)?
+            Self::Generic(tester) => {
+                cartesian_row_query_location_and_area((&tester.shape).into(), query)
             },
-            Self::MultiPolygon { parts } => {
-                indexed_parts_occupied_exact(parts, point, Some(direction))?
-            },
-            Self::Generic(_) => return Ok(None),
-        };
-        if let Some(occupied) = occupied {
-            return Ok(Some(SourcePointLocation {
-                location: if occupied {
-                    Loc::Interior
-                } else {
-                    Loc::Exterior
-                },
-                area: occupied,
-            }));
-        }
-
-        let location = StreamingLocation::for_exact_offset(point, direction)?;
-        match self {
-            Self::Polygon { index } => {
-                let mut location = location;
-                index.visit_indexed_into(&mut location)?;
-                Ok(Some(location.finish()?))
-            },
-            Self::MultiPolygon { parts } => {
-                let query = exact_query_xy(point, Some(direction))?;
-                Ok(Some(location_from_indexed_parts(
-                    parts, query.x, query.y, location,
-                )?))
-            },
-            Self::Generic(_) => Ok(None),
         }
     }
 
