@@ -13,7 +13,6 @@ NumPy is required; system GEOS, GDAL, and PROJ installations are not.
 | --- | --- |
 | Optimized CPython wheels | 3.11–3.15, including 3.14t and 3.15t |
 | Generic stable-ABI wheels | CPython 3.15 and newer, standard and free-threaded builds (`abi3` and `abi3t`) |
-| PyPy | Not supported |
 | Linux | glibc and musl 1.2 or newer, `x86_64` and `aarch64` |
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |
