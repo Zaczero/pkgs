@@ -165,6 +165,14 @@ fn projected_point_interval(point: XY, projection: ObliqueProjection) -> Option<
     (lower <= upper).then_some((lower, upper))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the nonempty run range is checked against the pool length before scalar access"
+)]
+#[expect(
+    clippy::needless_range_loop,
+    reason = "scalar reads avoid reborrowing the whole pool for each run"
+)]
 fn run_oblique_bounds_with_work<W: Work>(
     pool: &[Segment],
     run: &MonotoneRun,
@@ -172,23 +180,22 @@ fn run_oblique_bounds_with_work<W: Work>(
     work: &mut W,
 ) -> Result<(f64, f64)> {
     let full = (f64::NEG_INFINITY, f64::INFINITY);
-    let Some(segments) = pool.get(run.start as usize..run.end as usize) else {
+    let (start, end) = (run.start as usize, run.end as usize);
+    if start >= end || end > pool.len() {
         return Ok(full);
-    };
+    }
     let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
-    for segment in segments {
+    for index in start..end {
         work.charge_into_error(1)?;
+        let segment = &pool[index];
         let Some((lo, hi)) = projected_point_interval(segment.start, projection) else {
             return Ok(full);
         };
         min = min.min(lo);
         max = max.max(hi);
     }
-    let Some(last) = segments.last() else {
-        return Ok(full);
-    };
     work.charge_into_error(1)?;
-    let Some((lo, hi)) = projected_point_interval(last.end, projection) else {
+    let Some((lo, hi)) = projected_point_interval(pool[end.wrapping_sub(1)].end, projection) else {
         return Ok(full);
     };
     Ok((min.min(lo), max.max(hi)))
@@ -607,7 +614,7 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
 
 #[expect(
     clippy::indexing_slicing,
-    reason = "run windows and entry ordinals are generated from these exact u32-admitted slices"
+    reason = "run endpoint indices and entry ordinals belong to these exact u32-admitted slices"
 )]
 fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
     pool: &[Segment],
@@ -625,13 +632,11 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
     let mut oblique_count = 0_usize;
     for (ordinal, run) in runs.iter().enumerate() {
         work.charge_into_error(1)?;
-        // Length-exact run window: first/last via slice pattern (elision).
-        let segs = &pool[run.start as usize..run.end as usize];
-        let (first, last) = match segs {
-            [only] => (only.start, only.end),
-            [first, .., last] => (first.start, last.end),
-            [] => continue,
-        };
+        if run.start == run.end {
+            continue;
+        }
+        let first = pool[run.start as usize].start;
+        let last = pool[run.end.wrapping_sub(1) as usize].end;
         let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
         let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
         work.charge_into_error(2)?;
@@ -1103,17 +1108,17 @@ fn banded_windows<B, W: Work>(
             cursor[band] = cursor[band].wrapping_add(1);
         }
     }
+    let slots = slots.as_slice();
     for band in 0..bands {
         work.charge_into_error(1)?;
         let next = band.wrapping_add(1);
-        let row = &slots[starts[band]..starts[next]];
-        let mut remaining = row;
-        while let Some((&left_slot, right_slots)) = remaining.split_first() {
+        let (start, end) = (starts[band], starts[next]);
+        for left_position in start..end {
             work.charge_into_error(1)?;
-            let left = &entries[left_slot];
-            for &right_slot in right_slots {
+            let left = &entries[slots[left_position]];
+            for right_position in left_position.wrapping_add(1)..end {
                 work.charge_into_error(1)?;
-                let right = &entries[right_slot];
+                let right = &entries[slots[right_position]];
                 if right.sweep_min > left.sweep_max {
                     break;
                 }
@@ -1128,7 +1133,6 @@ fn banded_windows<B, W: Work>(
                     }
                 }
             }
-            remaining = right_slots;
         }
     }
     Ok(ControlFlow::Continue(()))
@@ -1200,6 +1204,100 @@ mod window_tests {
         .unwrap();
         assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(pairs, expected);
+    }
+}
+
+#[cfg(test)]
+mod run_bounds_tests {
+    use super::*;
+    use crate::geometry::test_support::RecordingWork;
+
+    #[rstest::rstest]
+    #[case::single(1, 2, Some((3.0, 4.0)), 2)]
+    #[case::multiple(1, 3, Some((-7.0, 5.0)), 3)]
+    #[case::empty_start(0, 0, None, 0)]
+    #[case::empty_end(3, 3, None, 0)]
+    #[case::reversed(2, 1, None, 0)]
+    #[case::past_end(1, 4, None, 0)]
+    fn oblique_run_bounds_preserve_selection_and_work(
+        #[case] start: u32,
+        #[case] end: u32,
+        #[case] expected: Option<(f64, f64)>,
+        #[case] ticks: usize,
+    ) {
+        let pool = [
+            Segment {
+                start: XY::new(-1000.0, 0.0),
+                end: XY::new(1000.0, 0.0),
+            },
+            Segment {
+                start: XY::new(3.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            },
+            Segment {
+                start: XY::new(-7.0, 0.0),
+                end: XY::new(5.0, 0.0),
+            },
+        ];
+        let run = MonotoneRun {
+            start,
+            end,
+            sign_x: 0,
+            sign_y: 0,
+        };
+        let mut work = RecordingWork::with_remaining("run_bounds", 100).unwrap();
+        let actual = run_oblique_bounds_with_work(
+            &pool,
+            &run,
+            ObliqueProjection { x: 1.0, y: 0.0 },
+            &mut work,
+        )
+        .unwrap();
+        if let Some((lo, hi)) = expected {
+            assert!(lo - 0.5 < actual.0 && actual.0 <= lo);
+            assert!(hi <= actual.1 && actual.1 < hi + 0.5);
+        } else {
+            assert_eq!(actual, (f64::NEG_INFINITY, f64::INFINITY));
+        }
+        assert_eq!(work.accepted, vec![1; ticks]);
+    }
+
+    #[test]
+    fn oblique_run_bounds_stop_at_the_first_refused_charge() {
+        let pool = [Segment {
+            start: XY::new(3.0, 0.0),
+            end: XY::new(4.0, 0.0),
+        }];
+        let run = MonotoneRun {
+            start: 0,
+            end: 1,
+            sign_x: 1,
+            sign_y: 0,
+        };
+        let mut work = RecordingWork::with_remaining("run_bounds", 0).unwrap();
+        run_oblique_bounds_with_work(&pool, &run, ObliqueProjection { x: 1.0, y: 0.0 }, &mut work)
+            .unwrap_err();
+        assert_eq!(work.attempted, [1]);
+        assert!(work.accepted.is_empty());
+    }
+
+    #[test]
+    fn empty_runs_do_not_read_pool_endpoints() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let runs = [MonotoneRun {
+            start: 0,
+            end: 0,
+            sign_x: 0,
+            sign_y: 0,
+        }];
+        let flow: ControlFlow<()> = try_candidate_pairs_over_runs::<false, _, _>(
+            &[],
+            &runs,
+            &mut Unmetered,
+            &mut |_, _, _| panic!("empty runs have no candidate pairs"),
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
     }
 }
 
