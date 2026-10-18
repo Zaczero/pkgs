@@ -245,15 +245,10 @@ pub(crate) fn buffer_to_column_f64(
     // SAFETY: PyBuffer<f64> admits element format, size and alignment; the
     // C-contiguous export stays pinned and quiescent for this capture.
     let source = unsafe { pointer.as_ref() };
-    let mut values = vec![0.0; item_count];
     if buffer_format_is_native_endian(buffer.format()) {
-        values.copy_from_slice(source);
-    } else {
-        for (value, &item) in values.iter_mut().zip(source) {
-            *value = swap_f64_endian(item);
-        }
+        return Ok(source.to_vec());
     }
-    Ok(values)
+    Ok(source.iter().map(|&item| swap_f64_endian(item)).collect())
 }
 
 /// Copy buffer elements to a `Vec<f64>` in host-native order (byteswaps when
@@ -271,8 +266,7 @@ pub(crate) fn buffer_to_vec_f64(
     if item_count == 0 {
         return Ok(Vec::new());
     }
-    let mut values = vec![0.0; item_count];
-    buffer.copy_to_slice(py, &mut values)?;
+    let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
             *value = swap_f64_endian(*value);
@@ -295,44 +289,13 @@ pub(crate) fn buffer_to_vec_u64(
     if item_count == 0 {
         return Ok(Vec::new());
     }
-    let mut values = vec![0; item_count];
-    buffer.copy_to_slice(py, &mut values)?;
+    let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
             *value = swap_u64_endian(*value);
         }
     }
     Ok(values)
-}
-
-/// `copy_to_slice` then byteswap if the buffer format is non-native.
-///
-/// The exporter must remain quiescent until the copy returns. A destination
-/// slice is exclusive after the copy, but `copy_to_slice` does not synchronize
-/// the source with a native writer. Callers must admit the buffer with
-/// [`buffer_item_count`] before allocating `target`, then pass that count with
-/// the correspondingly sized destination.
-pub(crate) fn buffer_copy_to_slice_u64(
-    py: Python<'_>,
-    buffer: &PyBuffer<u64>,
-    item_count: usize,
-    target: &mut [u64],
-) -> PyResult<()> {
-    if target.len() != item_count {
-        return Err(PyBufferError::new_err(
-            "buffer destination length does not match admitted item count",
-        ));
-    }
-    if item_count == 0 {
-        return Ok(());
-    }
-    buffer.copy_to_slice(py, target)?;
-    if !buffer_format_is_native_endian(buffer.format()) {
-        for value in target.iter_mut() {
-            *value = swap_u64_endian(*value);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

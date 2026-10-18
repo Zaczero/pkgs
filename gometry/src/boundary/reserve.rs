@@ -163,22 +163,21 @@ fn copy_exported_byte_buffer(
         .ok_or(ByteBufferCopyError::NotOneByte)?;
     if let Ok(buffer) = buffer.as_typed::<u8>() {
         let item_count = buffer_item_count(buffer).map_err(ByteBufferCopyError::PythonError)?;
-        let mut owned = vec![0; item_count];
-        if item_count != 0 {
-            buffer
-                .copy_to_slice(value.py(), &mut owned)
-                .map_err(ByteBufferCopyError::PythonError)?;
+        if item_count == 0 {
+            return Ok(Vec::new());
         }
-        return Ok(owned);
+        return buffer
+            .to_vec(value.py())
+            .map_err(ByteBufferCopyError::PythonError);
     }
     if let Ok(buffer) = buffer.as_typed::<i8>() {
         let item_count = buffer_item_count(buffer).map_err(ByteBufferCopyError::PythonError)?;
-        let mut signed = vec![0; item_count];
-        if item_count != 0 {
-            buffer
-                .copy_to_slice(value.py(), &mut signed)
-                .map_err(ByteBufferCopyError::PythonError)?;
+        if item_count == 0 {
+            return Ok(Vec::new());
         }
+        let signed = buffer
+            .to_vec(value.py())
+            .map_err(ByteBufferCopyError::PythonError)?;
         let (ptr, len, capacity) = signed.into_raw_parts();
         // SAFETY: i8 and u8 have the same layout and every byte is initialized.
         return Ok(unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) });

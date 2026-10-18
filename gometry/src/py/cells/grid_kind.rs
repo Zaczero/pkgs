@@ -626,9 +626,8 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
                 "cell array ids must be zero- or one-dimensional",
             ));
         }
-        let mut values = vec![0; count];
         // Normalize non-native endian (e.g. NumPy `>u8`) before interpreting ids.
-        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, count, &mut values)?;
+        let values = crate::buffer_to_vec_u64(ids.py(), &buffer, count)?;
         for &id in &values {
             kind.validate_id(id)?;
         }

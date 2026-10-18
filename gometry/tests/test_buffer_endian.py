@@ -60,6 +60,24 @@ def test_native_endian_float64_unchanged() -> None:
     assert arr[1].x == -7.25 and arr[1].y == 0.125
 
 
+@pytest.mark.parametrize(
+    'layout',
+    ['native-contiguous', 'opposite-contiguous', 'native-reversed'],
+)
+def test_float64_buffer_capture_preserves_negative_zero_sign(layout: str) -> None:
+    if layout == 'native-reversed':
+        x = np.array([1.25, -0.0], dtype=np.float64)[::-1]
+    else:
+        x = np.array([-0.0, 1.25], dtype=np.float64)
+        if layout == 'opposite-contiguous':
+            opposite = '>' if sys.byteorder == 'little' else '<'
+            x = x.astype(f'{opposite}f8')
+
+    line = gm.LineString(x=x, y=[3.5, 4.5])
+    assert np.signbit(line.coords[0][0])
+    assert not np.signbit(line.coords[1][0])
+
+
 def test_zero_dimensional_float64_buffers_remain_single_coordinate_columns() -> None:
     points = gm.points(np.array(1.25), [2.5, 3.5])
     assert points.to_wkt() == ['POINT (1.25 2.5)', 'POINT (1.25 3.5)']
