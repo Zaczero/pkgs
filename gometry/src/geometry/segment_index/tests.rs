@@ -326,8 +326,9 @@ mod indexed_bounds_characterization {
             bounds(1.0, -1.0, 3.0, 1.0),
             bounds(2.5, -1.0, 3.5, 1.0),
         ]);
-        rows.extend((0..4093).map(|index| {
-            let min_x = 4.5 + f64::from(index) * 2.0;
+        rows.extend([bounds(4.5, -3.0, 5.0, -2.0), bounds(6.5, 2.0, 7.0, 3.0)]);
+        rows.extend((0..4091).map(|index| {
+            let min_x = 8.5 + f64::from(index) * 2.0;
             bounds(min_x, -1.0, min_x + 0.5, 1.0)
         }));
 

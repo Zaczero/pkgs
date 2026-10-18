@@ -94,9 +94,12 @@ impl ExactPartition<'_> {
     }
 
     fn crossings(&self) -> Vec<NodeId> {
-        (0..self.node_count() as u32)
-            .map(NodeId)
-            .filter(|&node| !self.is_stored(node))
+        self.points
+            .recipes
+            .iter()
+            .enumerate()
+            .filter(|(_, recipe)| !matches!(recipe, NodeRecipe::Stored))
+            .map(|(index, _)| NodeId(index as u32))
             .collect()
     }
 }

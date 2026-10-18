@@ -1052,6 +1052,20 @@ fn banded_windows<B, W: Work>(
     work: &mut W,
     visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
+    let (mut common_min, mut common_max) = (f64::NEG_INFINITY, f64::INFINITY);
+    for entry in entries {
+        work.charge_into_error(1)?;
+        common_min = common_min.max(entry.cross_min);
+        common_max = common_max.min(entry.cross_max);
+        if common_min > common_max {
+            break;
+        }
+    }
+    // A common cross coordinate makes bands repeat work without rejecting pairs.
+    if common_min <= common_max {
+        return plain_windows(entries, work, visit);
+    }
+
     let band_of = |cross: f64| -> usize {
         (((cross - cross_lo) / band_height) as usize).min(bands.wrapping_sub(1))
     };
@@ -1142,6 +1156,48 @@ fn visit_pair<B, W: Work>(
         (right.ordinal, left.ordinal)
     };
     visit(low as usize, high as usize, work)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    #[test]
+    fn banded_cross_windows_preserve_closed_contacts_and_operand_order() {
+        for (first_cross_max, expected) in [(0.0, vec![(7, 4), (3, 4)]), (-0.5, vec![(3, 4)])] {
+            let entries = [
+                (7, CROSS_LEFT_SIDE, [0.0, 2.0], [-2.0, first_cross_max]),
+                (4, CROSS_RIGHT_SIDE, [1.0, 3.0], [0.0, 2.0]),
+                (3, CROSS_LEFT_SIDE, [2.0, 4.0], [-1.0, 1.0]),
+                (5, CROSS_RIGHT_SIDE, [5.0, 6.0], [-4.0, 0.0]),
+            ]
+            .map(
+                |(ordinal, side, [sweep_min, sweep_max], [cross_min, cross_max])| SweepEntry {
+                    sweep_min,
+                    sweep_max,
+                    cross_min,
+                    cross_max,
+                    ordinal,
+                    side,
+                },
+            );
+            let mut pairs = Vec::new();
+            let flow = banded_windows(
+                &entries,
+                4,
+                -4.0,
+                1.5,
+                &mut Unmetered,
+                &mut |left, right, _| {
+                    pairs.push((left, right));
+                    Ok(ControlFlow::<()>::Continue(()))
+                },
+            )
+            .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
+            assert_eq!(pairs, expected);
+        }
+    }
 }
 
 #[cfg(test)]
