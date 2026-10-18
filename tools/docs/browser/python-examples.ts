@@ -154,7 +154,7 @@ declare const PYTHON_WORKER_URL: string;
                 editor.destroy();
             });
             const appendOutput = (text: string) => {
-                output.textContent += `${output.hidden ? "" : "\n"}${text}`;
+                output.append(`${output.hidden ? "" : "\n"}${text}`);
                 output.hidden = false;
             };
             reset.onclick = () => {
