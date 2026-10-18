@@ -6,18 +6,18 @@ use crate::crs::catalog::{
     add_cf_lambert_conformal_conic_1sp_parameters, add_cf_lambert_conformal_conic_parameters,
     add_cf_lambert_cylindrical_equal_area_parameters, add_cf_mercator_variant_a_parameters,
     add_cf_mercator_variant_b_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cached_export, cf_lcc_1sp_admits_mapping,
-    cf_mercator_b_has_scale, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
-    export, is_operation_method, is_transverse_mercator,
+    add_cf_projection_parameters, cf_lcc_1sp_admits_mapping, cf_mercator_b_has_scale,
+    cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre, export, is_operation_method,
+    is_transverse_mercator,
 };
 use crate::crs::{
     AuthorityObjectInfo, AxisInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
     CRS_NAME_MATCH_CACHE, CRS_NAME_MATCH_CACHE_CAPACITY, CachedAuthorityObjects,
-    CachedCrsAuthorityMatches, CachedCrsNameMatch, CfValue, Confidence, CrsError, CrsExportKind,
-    CrsInfo, CrsNameMatchOptions, CrsObjectKind, CrsWktOptions, IdentifyCandidate,
-    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, RuntimeState,
-    WktVersion, authority_object_info, cstring, ensure_thread_caches_current, info_with_state,
-    lru_resolve, normalize, proj_context_error_message, runtime_state_snapshot,
+    CachedCrsAuthorityMatches, CachedCrsNameMatch, CfValue, Confidence, CrsError, CrsInfo,
+    CrsNameMatchOptions, CrsObjectKind, CrsWktOptions, IdentifyCandidate, NON_DEPRECATED_CACHE,
+    NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, RuntimeState, WktVersion,
+    authority_object_info, cstring, ensure_thread_caches_current, info_with_state, lru_insert,
+    lru_promote, lru_resolve, normalize, proj_context_error_message, runtime_state_snapshot,
     validate_min_confidence, with_proj_context_at,
 };
 use crate::error::Result;
@@ -109,29 +109,22 @@ pub(crate) fn identify_with_state(
     ProjObject::new_with_state(&normalized, state)?.identify(authority, &normalized)
 }
 
-pub(crate) fn to_authority(
-    value: &str,
-    authority: Option<&str>,
-    min_confidence: Confidence,
-) -> Result<Option<(String, String)>> {
-    let state = runtime_state_snapshot()?;
-    to_authority_with_state(value, authority, min_confidence, &state)
-}
-
 pub(crate) fn to_authority_with_state(
     value: &str,
     authority: Option<&str>,
     min_confidence: Confidence,
     state: &RuntimeState,
 ) -> Result<Option<(String, String)>> {
-    with_authority_matches(value, authority, min_confidence, state, |items| {
-        items.iter().find_map(|candidate| {
-            candidate
-                .authority
-                .as_ref()
-                .zip(candidate.code.as_ref())
-                .map(|(authority, code)| (authority.clone(), code.clone()))
-        })
+    with_authority_matches(value, authority, min_confidence, state, best_authority)
+}
+
+fn best_authority(items: &[IdentifyCandidate]) -> Option<(String, String)> {
+    items.iter().find_map(|candidate| {
+        candidate
+            .authority
+            .as_ref()
+            .zip(candidate.code.as_ref())
+            .map(|(authority, code)| (authority.clone(), code.clone()))
     })
 }
 
@@ -157,69 +150,71 @@ fn with_authority_matches<R>(
     validate_min_confidence(min_confidence);
     ensure_thread_caches_current(state);
     let normalized = normalize(value)?;
-    let authority = authority.map(str::to_owned);
     CRS_AUTHORITY_MATCH_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let entry = lru_resolve(
-            &mut cache,
-            CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
-            |item| {
-                item.definition.as_str() == normalized.as_ref()
-                    && item.authority == authority
-                    && item.min_confidence == min_confidence
-            },
-            || {
-                let candidates = ProjObject::new_with_state(&normalized, state)?
-                    .identify(authority.as_deref(), &normalized)?;
-                let items: Vec<_> = candidates
-                    .into_iter()
-                    .filter(|candidate| {
-                        candidate.confidence >= min_confidence
-                            && candidate.authority.is_some()
-                            && candidate.code.is_some()
-                    })
-                    .collect();
-                Ok(CachedCrsAuthorityMatches {
+        if !lru_promote(&mut cache, |item| {
+            item.matches(&normalized, authority, min_confidence)
+        }) {
+            let candidates = identify_with_state(&normalized, authority, state)?;
+            let items: Vec<_> = candidates
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.confidence >= min_confidence
+                        && candidate.authority.is_some()
+                        && candidate.code.is_some()
+                })
+                .collect();
+            lru_insert(
+                &mut cache,
+                CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
+                CachedCrsAuthorityMatches {
                     definition: normalized.clone().into(),
-                    authority: authority.clone(),
+                    authority: authority.map(str::to_owned),
                     min_confidence,
                     items,
-                })
-            },
-        )?;
+                },
+            );
+        }
+        let entry = cache.last().expect("resolved authority matches");
         Ok(read(&entry.items))
     })
 }
 
-pub(crate) fn to_epsg(value: &str, min_confidence: Confidence) -> Result<Option<i32>> {
-    let Some((_, code)) = to_authority(value, Some("EPSG"), min_confidence)? else {
-        return Ok(None);
-    };
-    Ok(code.parse().ok())
+impl CachedCrsAuthorityMatches {
+    fn matches(&self, value: &str, authority: Option<&str>, min_confidence: Confidence) -> bool {
+        self.definition == value
+            && self.authority.as_deref() == authority
+            && self.min_confidence == min_confidence
+    }
 }
 
-pub(crate) fn to_2d(value: &str, name: Option<&str>) -> Result<String> {
-    let state = runtime_state_snapshot()?;
-    cached_export(
-        value,
-        || CrsExportKind::To2d {
-            name: name.map(str::to_owned),
-        },
-        export::crs_to_2d_export_at,
-        &state,
-    )
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AuthorityLookup {
+    Uncached,
+    Cached(Option<(String, String)>),
 }
 
-pub(crate) fn to_3d(value: &str, name: Option<&str>) -> Result<String> {
-    let state = runtime_state_snapshot()?;
-    cached_export(
-        value,
-        || CrsExportKind::To3d {
-            name: name.map(str::to_owned),
-        },
-        export::crs_to_3d_export_at,
-        &state,
-    )
+pub(crate) fn authority_if_cached(
+    value: &str,
+    authority: Option<&str>,
+    min_confidence: Confidence,
+    state: &RuntimeState,
+) -> Result<AuthorityLookup> {
+    let normalized = normalize(value)?;
+    if !crate::crs::thread_caches_are_current(state) {
+        return Ok(AuthorityLookup::Uncached);
+    }
+    CRS_AUTHORITY_MATCH_CACHE.with(|items| {
+        let mut cache = items.borrow_mut();
+        if !lru_promote(&mut cache, |item| {
+            item.matches(&normalized, authority, min_confidence)
+        }) {
+            return Ok(AuthorityLookup::Uncached);
+        }
+        Ok(AuthorityLookup::Cached(best_authority(
+            &cache.last().expect("promoted authority matches").items,
+        )))
+    })
 }
 
 pub(crate) fn to_cf(value: &str, wkt_version: WktVersion) -> Result<Vec<(&'static str, CfValue)>> {
@@ -512,6 +507,40 @@ fn catalog_name_matches_uncached(
         }
         Ok(items)
     })?
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn authority_lookup_keeps_the_resolved_match_until_native_invalidation() {
+        let state = runtime_state_snapshot().expect("runtime state");
+        let confidence = Confidence::try_new("min_confidence", 70).expect("confidence");
+        let expected = to_authority_with_state("EPSG:4326", Some("EPSG"), confidence, &state)
+            .expect("authority lookup");
+        assert_eq!(expected, Some(("EPSG".to_owned(), "4326".to_owned())));
+        assert_eq!(
+            authority_if_cached("EPSG:4326", Some("EPSG"), confidence, &state)
+                .expect("cached lookup"),
+            AuthorityLookup::Cached(expected.clone()),
+        );
+        let next = RuntimeState {
+            generation: state.generation.wrapping_add(1),
+            config: std::sync::Arc::clone(&state.config),
+        };
+        assert_eq!(
+            authority_if_cached("EPSG:4326", Some("EPSG"), confidence, &next)
+                .expect("stale lookup"),
+            AuthorityLookup::Uncached,
+        );
+        assert_eq!(
+            authority_if_cached("EPSG:4326", Some("EPSG"), confidence, &state)
+                .expect("original lookup"),
+            AuthorityLookup::Cached(expected),
+        );
+    }
 }
 
 #[cfg(test)]

@@ -69,6 +69,24 @@ pub(crate) fn info_with_state(
     })
 }
 
+/// Read already-resolved metadata without constructing a PROJ object.
+pub(crate) fn info_if_cached(
+    value: &str,
+    state: &RuntimeState,
+) -> Result<Option<std::sync::Arc<CrsInfo>>> {
+    let normalized = normalize(value)?;
+    if !crate::crs::thread_caches_are_current(state) {
+        return Ok(None);
+    }
+    CRS_INFO_CACHE.with(|items| {
+        let mut cache = items.borrow_mut();
+        Ok(
+            crate::crs::lru_promote(&mut cache, |item| item.definition == normalized)
+                .then(|| std::sync::Arc::clone(&cache.last().expect("promoted info entry").info)),
+        )
+    })
+}
+
 /// Whether a CRS admits a coordinate epoch on a geometry frame.
 pub(crate) fn admits_geometry_epoch(value: &str) -> Result<bool> {
     let state = runtime_state_snapshot()?;
@@ -410,6 +428,31 @@ mod tests {
     use super::*;
     use crate::crs::{RUNTIME_STATE_TEST_LOCK, transform_coordinates};
     use crate::geographic::Latitude;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn metadata_lookup_preserves_the_resolved_owner_across_a_stale_read() {
+        let state = runtime_state_snapshot().expect("runtime state");
+        let expected = info_with_state("EPSG:4326", &state).expect("geographic info");
+        let hit = info_if_cached("EPSG:4326", &state)
+            .expect("metadata lookup")
+            .expect("resolved metadata");
+        assert!(std::sync::Arc::ptr_eq(&expected, &hit));
+        let next = RuntimeState {
+            generation: state.generation.wrapping_add(1),
+            config: std::sync::Arc::clone(&state.config),
+        };
+        assert!(
+            info_if_cached("EPSG:4326", &next)
+                .expect("stale lookup")
+                .is_none()
+        );
+        assert!(
+            info_if_cached("EPSG:4326", &state)
+                .expect("original lookup")
+                .is_some()
+        );
+    }
 
     fn assert_close(actual: f64, expected: f64, tolerance: f64) {
         assert!(

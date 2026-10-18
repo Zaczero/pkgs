@@ -65,8 +65,8 @@ impl PyCrs {
         clippy::used_underscore_items,
         reason = "IPython's HTML display protocol requires the `_repr_html_` method name"
     )]
-    fn _repr_html_(&self) -> PyResult<String> {
-        let info = self.cached_info()?;
+    fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
+        let info = self.cached_info(py)?;
         let mut rows: Vec<(&str, String)> = Vec::new();
         rows.push(("CRS", info.definition.to_string()));
         if let Some(name) = &info.name {

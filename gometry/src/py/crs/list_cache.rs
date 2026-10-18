@@ -86,7 +86,7 @@ fn shallow_copy_list<'py>(py: Python<'py>, list: &Py<PyList>) -> PyResult<Bound<
 /// Generation-stamped, error-aware list/dict resolve shaped like
 /// [`crs::lru_resolve`]: drop stale entries, move-to-back on hit, build on miss.
 fn py_lru_resolve<E, R>(
-    cache: &mut Vec<E>,
+    cache: &RefCell<Vec<E>>,
     capacity: usize,
     generation: u64,
     entry_generation: impl Fn(&E) -> u64,
@@ -94,19 +94,36 @@ fn py_lru_resolve<E, R>(
     copy_out: impl FnOnce(&E) -> PyResult<R>,
     make: impl FnOnce() -> PyResult<E>,
 ) -> PyResult<R> {
-    cache.retain(|entry| entry_generation(entry) == generation);
-    if let Some(index) = cache.iter().position(&matches) {
-        let entry = cache.remove(index);
-        let out = copy_out(&entry)?;
-        cache.push(entry);
-        return Ok(out);
-    }
-    if cache.len() >= capacity {
-        cache.remove(0);
-    }
-    let entry = make()?;
+    let (entry, stale) = {
+        let mut cache = cache.borrow_mut();
+        let stale = cache
+            .extract_if(.., |entry| entry_generation(entry) != generation)
+            .collect::<Vec<_>>();
+        let entry = cache
+            .iter()
+            .position(&matches)
+            .map(|index| cache.remove(index));
+        (entry, stale)
+    };
+    drop(stale);
+    // Python construction and copying can reenter this thread-local cache.
+    let entry = match entry {
+        Some(entry) => entry,
+        None => make()?,
+    };
     let out = copy_out(&entry)?;
-    cache.push(entry);
+    let retired = {
+        let mut cache = cache.borrow_mut();
+        let mut retired = cache
+            .extract_if(.., |entry| matches(entry))
+            .collect::<Vec<_>>();
+        if cache.len() >= capacity {
+            retired.push(cache.remove(0));
+        }
+        cache.push(entry);
+        retired
+    };
+    drop(retired);
     Ok(out)
 }
 
@@ -188,9 +205,8 @@ pub(crate) fn units_py_list<'py>(
     let state = crs::runtime_state_snapshot()?;
     let generation = state.generation;
     UNITS_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
         py_lru_resolve(
-            &mut cache,
+            cache,
             UNITS_PY_CAPACITY,
             generation,
             |e| e.generation,
@@ -201,7 +217,9 @@ pub(crate) fn units_py_list<'py>(
             },
             |e| isolation_copy_record_list(py, &e.list),
             || {
-                let items = crs::units_with_state(authority, category, allow_deprecated, &state)?;
+                let items = py.detach(|| {
+                    crs::units_with_state(authority, category, allow_deprecated, &state)
+                })?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -225,16 +243,15 @@ pub(crate) fn celestial_bodies_py_list<'py>(
     let state = crs::runtime_state_snapshot()?;
     let generation = state.generation;
     BODIES_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
         py_lru_resolve(
-            &mut cache,
+            cache,
             BODIES_PY_CAPACITY,
             generation,
             |e| e.generation,
             |e| e.authority.as_deref() == authority,
             |e| isolation_copy_record_list(py, &e.list),
             || {
-                let items = crs::celestial_bodies_with_state(authority, &state)?;
+                let items = py.detach(|| crs::celestial_bodies_with_state(authority, &state))?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -254,16 +271,15 @@ pub(crate) fn authorities_py_list(py: Python<'_>) -> PyResult<Bound<'_, PyList>>
     let state = crs::runtime_state_snapshot()?;
     let generation = state.generation;
     AUTHORITIES_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
         py_lru_resolve(
-            &mut cache,
+            cache,
             AUTHORITIES_PY_CAPACITY,
             generation,
             |e| e.generation,
             |_| true,
             |e| shallow_copy_list(py, &e.list),
             || {
-                let items = crs::authorities_with_state(&state)?;
+                let items = py.detach(|| crs::authorities_with_state(&state))?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -287,16 +303,16 @@ pub(crate) fn crs_operation_py_dict<'py>(
     let state = crs::runtime_state_snapshot()?;
     let generation = state.generation;
     OPERATION_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
         py_lru_resolve(
-            &mut cache,
+            cache,
             OPERATION_PY_CAPACITY,
             generation,
             |e| e.generation,
             |e| e.source == source && e.target == target && e.options == *options,
             |e| isolation_copy_dict(py, &e.dict),
             || {
-                let info = crs::operation_info_with_state(source, target, options, &state)?;
+                let info =
+                    py.detach(|| crs::operation_info_with_state(source, target, options, &state))?;
                 let built = info.into_pyobject(py)?;
                 let owned = freeze_top_dict(py, &built)?;
                 Ok(OperationPyEntry {
@@ -321,16 +337,16 @@ pub(crate) fn crs_operations_py_list<'py>(
     let state = crs::runtime_state_snapshot()?;
     let generation = state.generation;
     OPERATIONS_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
         py_lru_resolve(
-            &mut cache,
+            cache,
             OPERATIONS_PY_CAPACITY,
             generation,
             |e| e.generation,
             |e| e.source == source && e.target == target && e.options == *options,
             |e| isolation_copy_record_list(py, &e.list),
             || {
-                let items = crs::operations_info_with_state(source, target, options, &state)?;
+                let items =
+                    py.detach(|| crs::operations_info_with_state(source, target, options, &state))?;
                 let list = PyList::empty(py);
                 for item in items {
                     let built = item.into_pyobject(py)?;
@@ -366,9 +382,46 @@ fn isolation_copy_record_list<'py>(
 /// Drop Python-side catalog lists and dict materializations immediately
 /// (generation already bumped).
 pub(crate) fn clear_py_list_caches() {
-    UNITS_PY_CACHE.with(|cache| cache.borrow_mut().clear());
-    BODIES_PY_CACHE.with(|cache| cache.borrow_mut().clear());
-    AUTHORITIES_PY_CACHE.with(|cache| cache.borrow_mut().clear());
-    OPERATION_PY_CACHE.with(|cache| cache.borrow_mut().clear());
-    OPERATIONS_PY_CACHE.with(|cache| cache.borrow_mut().clear());
+    UNITS_PY_CACHE.with(|cache| drop(cache.take()));
+    BODIES_PY_CACHE.with(|cache| drop(cache.take()));
+    AUTHORITIES_PY_CACHE.with(|cache| drop(cache.take()));
+    OPERATION_PY_CACHE.with(|cache| drop(cache.take()));
+    OPERATIONS_PY_CACHE.with(|cache| drop(cache.take()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::miss(false)]
+    #[case::hit(true)]
+    fn copying_can_reenter_the_catalog_cache(#[case] warm: bool) {
+        let cache = RefCell::new(if warm { vec![7] } else { Vec::new() });
+        let value = py_lru_resolve(
+            &cache,
+            2,
+            1,
+            |_| 1,
+            |entry| *entry == 7,
+            |entry| {
+                let nested = py_lru_resolve(
+                    &cache,
+                    2,
+                    1,
+                    |_| 1,
+                    |entry| *entry == 11,
+                    |entry| Ok(*entry),
+                    || Ok(11),
+                )?;
+                Ok((*entry, nested))
+            },
+            || Ok(7),
+        )
+        .expect("copy can resolve another catalog entry");
+        assert_eq!(value, (7, 11));
+        let mut entries = cache.into_inner();
+        entries.sort_unstable();
+        assert_eq!(entries, [7, 11]);
+    }
 }

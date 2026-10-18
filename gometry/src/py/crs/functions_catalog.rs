@@ -43,11 +43,12 @@ pub(crate) fn crs_authorities(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types:
 #[pyfunction]
 #[pyo3(signature = (authority, *, kind = None, allow_deprecated = false))]
 pub(crate) fn crs_codes(
+    py: Python<'_>,
     authority: &str,
     kind: Option<&str>,
     allow_deprecated: bool,
 ) -> PyResult<Vec<String>> {
-    Ok(crs::codes(authority, kind, allow_deprecated)?)
+    Ok(py.detach(|| crs::codes(authority, kind, allow_deprecated))?)
 }
 
 /// Non-deprecated replacements for a deprecated CRS.
@@ -63,7 +64,8 @@ pub(crate) fn crs_codes(
 pub(crate) fn crs_non_deprecated(
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
-    Ok(crs::non_deprecated(&crs_normalize(value)?)?)
+    let definition = crs_normalize(value)?;
+    Ok(value.py().detach(|| crs::non_deprecated(&definition))?)
 }
 
 /// Catalog of CRS in the database matching the given filters.
@@ -144,27 +146,28 @@ pub(crate) fn crs_catalog(
         celestial_body,
     };
     let state = crs::runtime_state_snapshot()?;
-    let mut items = crs::catalog_with_state(authority, &options, &state)?;
-    if let Some(name) = name {
-        if name.trim().is_empty() {
-            return Err(CRSError::new_err(
-                "CRS catalog name must be a non-empty string",
-            ));
+    Ok(py.detach(|| -> crate::error::Result<_> {
+        let mut items = crs::catalog_with_state(authority, &options, &state)?;
+        if let Some(name) = name {
+            if name.trim().is_empty() {
+                return Err(crs::CrsError::message(
+                    "CRS catalog name must be a non-empty string",
+                ));
+            }
+            let name_options = crs::CrsNameMatchOptions {
+                authority: Some(authority.unwrap_or("EPSG").to_owned()),
+                kind,
+                approximate,
+            };
+            let matches = crs::catalog_name_matches_with_state(name, &name_options, &state)?;
+            let matches: HashSet<_> = matches.into_iter().collect();
+            items.retain(|item| matches.contains(&item.crs));
         }
-        let name_options = crs::CrsNameMatchOptions {
-            authority: Some(authority.unwrap_or("EPSG").to_owned()),
-            kind,
-            approximate,
-        };
-        let matches =
-            py.detach(|| crs::catalog_name_matches_with_state(name, &name_options, &state))?;
-        let matches: HashSet<_> = matches.into_iter().collect();
-        items.retain(|item| matches.contains(&item.crs));
-    }
-    if let Some(limit) = limit {
-        items.truncate(limit);
-    }
-    Ok(items)
+        if let Some(limit) = limit {
+            items.truncate(limit);
+        }
+        Ok(items)
+    })?)
 }
 
 /// UTM-zone CRS from the catalog.
@@ -200,17 +203,19 @@ pub(crate) fn crs_catalog(
 #[pyfunction]
 #[pyo3(signature = (*, datum_name = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false))]
 pub(crate) fn crs_utm_zones(
+    py: Python<'_>,
     datum_name: Option<String>,
     area_of_interest: Option<&Bound<'_, PyAny>>,
     contains_area_of_interest: bool,
     allow_deprecated: bool,
 ) -> PyResult<Vec<crs::CrsCatalogInfo>> {
-    Ok(crs::utm_zones(&crs::UtmCatalogOptions {
+    let options = crs::UtmCatalogOptions {
         datum_name,
         area: parse_area(area_of_interest, "area_of_interest")?,
         contains_area: contains_area_of_interest,
         allow_deprecated,
-    })?)
+    };
+    Ok(py.detach(|| crs::utm_zones(&options))?)
 }
 
 /// Celestial bodies known to the CRS database.
@@ -251,5 +256,5 @@ pub(crate) fn crs_celestial_bodies<'py>(
 /// list
 pub(crate) fn crs_geoid_models(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let crs = crs_normalize(value)?;
-    Ok(crs::geoid_models(&crs)?)
+    Ok(value.py().detach(|| crs::geoid_models(&crs))?)
 }

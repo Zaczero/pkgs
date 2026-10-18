@@ -13,8 +13,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_geographic(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_geographic())
+    fn is_geographic(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_geographic())
     }
 
     /// Whether this CRS is projected (planar, metric).
@@ -26,8 +26,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_projected(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_projected())
+    fn is_projected(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_projected())
     }
 
     /// Whether this CRS is vertical (height/depth only).
@@ -39,8 +39,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_vertical(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_vertical())
+    fn is_vertical(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_vertical())
     }
 
     /// Whether this CRS is geocentric (earth-centered Cartesian).
@@ -52,8 +52,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_geocentric(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_geocentric())
+    fn is_geocentric(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_geocentric())
     }
 
     /// Whether this CRS is compound (horizontal + vertical).
@@ -62,8 +62,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_compound(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_compound())
+    fn is_compound(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_compound())
     }
 
     /// Whether this CRS is engineering (local/non-geodetic).
@@ -72,8 +72,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_engineering(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_engineering())
+    fn is_engineering(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_engineering())
     }
 
     /// Whether this CRS is a bound CRS (carries a datum transform).
@@ -82,8 +82,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_bound(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_bound())
+    fn is_bound(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_bound())
     }
 
     /// Whether this CRS is flagged deprecated by its authority.
@@ -92,8 +92,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_deprecated(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_deprecated())
+    fn is_deprecated(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_deprecated())
     }
 
     /// Whether this CRS is derived from a base CRS.
@@ -102,8 +102,8 @@ impl PyCrs {
     /// -------
     /// bool
     #[getter]
-    fn is_derived(&self) -> PyResult<bool> {
-        Ok(self.cached_info()?.is_derived)
+    fn is_derived(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(self.cached_info(py)?.is_derived)
     }
 
     /// CRS kind as a snake_case token (``"geographic_2d"``, ``"geographic_3d"``,
@@ -114,8 +114,8 @@ impl PyCrs {
     /// -------
     /// str
     #[getter]
-    fn kind(&self) -> PyResult<&'static str> {
-        Ok(self.cached_info()?.kind)
+    fn kind(&self, py: Python<'_>) -> PyResult<&'static str> {
+        Ok(self.cached_info(py)?.kind)
     }
 
     /// Human-readable CRS name, if known.
@@ -124,8 +124,8 @@ impl PyCrs {
     /// -------
     /// str or None
     #[getter]
-    fn name(&self) -> PyResult<Option<String>> {
-        Ok(self.cached_info()?.name.clone())
+    fn name(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.cached_info(py)?.name.clone())
     }
 
     /// Registry authority (e.g. ``"EPSG"``), if identified.
@@ -134,8 +134,8 @@ impl PyCrs {
     /// -------
     /// str or None
     #[getter]
-    fn authority(&self) -> PyResult<Option<String>> {
-        Ok(self.cached_info()?.authority.clone())
+    fn authority(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.cached_info(py)?.authority.clone())
     }
 
     /// Authority code (e.g. ``"4326"``), if identified.
@@ -144,8 +144,8 @@ impl PyCrs {
     /// -------
     /// str or None
     #[getter]
-    fn code(&self) -> PyResult<Option<String>> {
-        Ok(self.cached_info()?.code.clone())
+    fn code(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.cached_info(py)?.code.clone())
     }
 
     /// Stored definition string for this CRS.
@@ -166,8 +166,8 @@ impl PyCrs {
     /// -------
     /// list of str
     #[getter]
-    fn axis_order(&self) -> PyResult<Vec<String>> {
-        let info = self.cached_info()?;
+    fn axis_order(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        let info = self.cached_info(py)?;
         Ok(info.axis_order.iter().map(|a| (*a).to_owned()).collect())
     }
 
@@ -177,8 +177,8 @@ impl PyCrs {
     /// -------
     /// str or None
     #[getter]
-    fn celestial_body(&self) -> PyResult<Option<String>> {
-        Ok(self.cached_info()?.celestial_body.clone())
+    fn celestial_body(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.cached_info(py)?.celestial_body.clone())
     }
 
     /// Coordinate-system axes as a list of dicts.
@@ -187,8 +187,8 @@ impl PyCrs {
     /// -------
     /// list of CrsAxisInfo
     #[getter]
-    fn axes(&self) -> PyResult<Vec<crs::AxisInfo>> {
-        Ok(self.cached_info()?.axes.clone())
+    fn axes(&self, py: Python<'_>) -> PyResult<Vec<crs::AxisInfo>> {
+        Ok(self.cached_info(py)?.axes.clone())
     }
 
     /// Area of use as a ``{west, south, east, north, name}`` dict, or ``None``.
@@ -197,8 +197,8 @@ impl PyCrs {
     /// -------
     /// CrsAreaOfUse or None
     #[getter]
-    fn area_of_use(&self) -> PyResult<Option<crs::AreaOfUse>> {
-        Ok(self.cached_info()?.area_of_use.clone())
+    fn area_of_use(&self, py: Python<'_>) -> PyResult<Option<crs::AreaOfUse>> {
+        Ok(self.cached_info(py)?.area_of_use.clone())
     }
 
     /// Reference ellipsoid as a dict, or ``None``.
@@ -207,8 +207,8 @@ impl PyCrs {
     /// -------
     /// CrsEllipsoidInfo or None
     #[getter]
-    fn ellipsoid(&self) -> PyResult<Option<crs::EllipsoidInfo>> {
-        Ok(self.cached_info()?.ellipsoid.clone())
+    fn ellipsoid(&self, py: Python<'_>) -> PyResult<Option<crs::EllipsoidInfo>> {
+        Ok(self.cached_info(py)?.ellipsoid.clone())
     }
 
     /// Geodetic datum as a dict, or ``None``.
@@ -217,8 +217,8 @@ impl PyCrs {
     /// -------
     /// CrsDatumInfo or None
     #[getter]
-    fn datum(&self) -> PyResult<Option<crs::DatumInfo>> {
-        Ok(self.cached_info()?.datum.clone())
+    fn datum(&self, py: Python<'_>) -> PyResult<Option<crs::DatumInfo>> {
+        Ok(self.cached_info(py)?.datum.clone())
     }
 
     /// Prime meridian as a dict, or ``None``.
@@ -227,8 +227,8 @@ impl PyCrs {
     /// -------
     /// CrsPrimeMeridianInfo or None
     #[getter]
-    fn prime_meridian(&self) -> PyResult<Option<crs::PrimeMeridianInfo>> {
-        Ok(self.cached_info()?.prime_meridian.clone())
+    fn prime_meridian(&self, py: Python<'_>) -> PyResult<Option<crs::PrimeMeridianInfo>> {
+        Ok(self.cached_info(py)?.prime_meridian.clone())
     }
 
     /// Underlying geodetic CRS as an authority-object dict, or ``None``.
@@ -237,8 +237,8 @@ impl PyCrs {
     /// -------
     /// CrsAuthorityObject or None
     #[getter]
-    fn geodetic_crs(&self) -> PyResult<Option<crs::AuthorityObjectInfo>> {
-        Ok(self.cached_info()?.geodetic_crs.clone())
+    fn geodetic_crs(&self, py: Python<'_>) -> PyResult<Option<crs::AuthorityObjectInfo>> {
+        Ok(self.cached_info(py)?.geodetic_crs.clone())
     }
 
     /// Full raw PROJ description as a dict (escape hatch).
@@ -310,7 +310,7 @@ impl PyCrs {
         slf: &Bound<'_, Self>,
         authority: Option<&str>,
     ) -> PyResult<Vec<crs::IdentifyCandidate>> {
-        slf.borrow().cached_identify(authority)
+        Ok(slf.borrow().cached_identify(slf.py(), authority)?)
     }
 
     /// Non-deprecated authority objects equivalent to this CRS.

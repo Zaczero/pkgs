@@ -52,6 +52,8 @@ mod types;
 #[cfg(test)]
 pub(crate) static RUNTIME_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(crate) use cache::cache_info;
 use cache::{
     CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CRS_CATALOG_CACHE,
     CRS_CATALOG_CACHE_CAPACITY, CRS_CELESTIAL_BODIES_CACHE, CRS_CELESTIAL_BODIES_CACHE_CAPACITY,
@@ -64,19 +66,23 @@ use cache::{
     CachedAuthorityObjects, CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog,
     CachedCrsComparison, CachedCrsExport, CachedCrsInfo, CachedCrsNameMatch, CachedCrsOperations,
     CachedGeodesicObject, CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey,
-    CrsExportKey, CrsExportKind, NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY,
-    begin_transform_observation, ensure_thread_caches_current, record_transform_engine,
-    with_proj_diagnostic_pipeline_at, with_proj_operation_at, with_proj_pipeline_at,
-    with_proj_pipeline_indexed_at,
+    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
+    ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
+    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
-pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
+pub(crate) use cache::{
+    CrsExportKey, CrsExportKind, cache_info_with_state, lru_insert, lru_promote, lru_resolve,
+    thread_caches_are_current,
+};
+#[cfg(test)]
+pub(crate) use catalog::to_wkt_with_options;
 pub(crate) use catalog::{
-    CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT, ProjStringVersion,
-    authorities_with_state, catalog_name_matches_with_state, catalog_with_state,
-    celestial_bodies_with_state, codes, ellipsoids, geoid_models, identify_with_state,
-    non_deprecated, prime_meridians, proj_operations, same, to_2d, to_3d, to_authority, to_cf,
-    to_epsg, to_proj, to_projjson, to_projjson_with_options, to_projjson_with_options_at,
-    to_wkt_with_options, unit_info, units_with_state, utm_zones,
+    AuthorityLookup, CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT,
+    ProjStringVersion, authorities_with_state, authority_if_cached,
+    catalog_name_matches_with_state, catalog_with_state, celestial_bodies_with_state, codes,
+    ellipsoids, geoid_models, identify_with_state, non_deprecated, prime_meridians,
+    proj_operations, same, same_if_cached, same_with_state, to_authority_with_state, to_cf,
+    to_projjson, to_projjson_with_options_at, unit_info, units_with_state, utm_zones,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
@@ -114,7 +120,7 @@ use in_core::{
 };
 pub(crate) use info::{
     AngularUnit, admits_geometry_epoch, admits_geometry_epoch_with_state, engine_info_with_state,
-    factor_columns, factors, factors_at, info, info_with_state, operation_info_at,
+    factor_columns, factors, factors_at, info, info_if_cached, info_with_state, operation_info_at,
     operation_info_with_state,
 };
 pub(crate) use introspect::Confidence;

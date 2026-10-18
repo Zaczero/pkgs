@@ -11,9 +11,10 @@ use crate::crs::{
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsNameMatchOptions, CrsProjJsonOptions,
     CrsProjOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
     ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
-    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
-    runtime_state_snapshot,
+    TransformOptions, UnitInfo, WktVersion, preserve_resource_error,
 };
+#[cfg(test)]
+use crate::crs::{runtime, runtime_state_snapshot};
 use crate::error::Result;
 
 thread_local! {
@@ -302,6 +303,11 @@ pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {
     });
 }
 
+pub(crate) fn thread_caches_are_current(state: &RuntimeState) -> bool {
+    CRS_CACHE_GENERATION.with(|generation| *generation.borrow() == state.generation)
+}
+
+#[cfg(test)]
 pub(crate) fn cache_info() -> CacheInfo {
     let state = runtime_state_snapshot().unwrap_or_else(|_| {
         runtime::runtime_state_lock()
@@ -309,7 +315,11 @@ pub(crate) fn cache_info() -> CacheInfo {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     });
-    ensure_thread_caches_current(&state);
+    cache_info_with_state(&state)
+}
+
+pub(crate) fn cache_info_with_state(state: &RuntimeState) -> CacheInfo {
+    ensure_thread_caches_current(state);
     let buckets = crs_reported_cache_buckets();
     let (last_transform_engine, transform_invocations) =
         TRANSFORM_OBSERVATION.with(std::cell::Cell::get);

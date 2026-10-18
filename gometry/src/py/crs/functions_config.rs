@@ -66,10 +66,19 @@ pub(crate) fn crs_configure(
     search_paths: ConfigureArgument,
     user_writable_directory: ConfigureArgument,
 ) -> PyResult<crs::RuntimeConfig> {
-    Ok(crs::configure_runtime(
-        parse_search_paths(py, search_paths)?,
-        parse_optional_path(py, "user_writable_directory", user_writable_directory)?,
-    )?)
+    let search_paths = parse_search_paths(py, search_paths)?;
+    let user_writable_directory =
+        parse_optional_path(py, "user_writable_directory", user_writable_directory)?;
+    if matches!(
+        (&search_paths, &user_writable_directory),
+        (ConfigUpdate::Keep, ConfigUpdate::Keep)
+    ) {
+        return Ok(crs::configure_runtime(
+            search_paths,
+            user_writable_directory,
+        )?);
+    }
+    Ok(py.detach(|| crs::configure_runtime(search_paths, user_writable_directory))?)
 }
 
 fn parse_optional_path(
@@ -205,8 +214,8 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
 /// >>> isinstance(gm.crs_reset(), dict)
 /// True
 #[pyfunction]
-pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
-    Ok(crs::reset_runtime_config()?)
+pub(crate) fn crs_reset(py: Python<'_>) -> PyResult<crs::RuntimeConfig> {
+    Ok(py.detach(crs::reset_runtime_config)?)
 }
 
 /// Clear the CRS object cache.
@@ -222,8 +231,8 @@ pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
 /// >>> True
 /// True
 #[pyfunction]
-pub(crate) fn crs_clear_cache() {
-    crs::clear_cache();
+pub(crate) fn crs_clear_cache(py: Python<'_>) {
+    py.detach(crs::clear_cache);
     // Drop Python-side catalog list materializations on this thread immediately
     // (generation bump already invalidates on next access for other threads).
     super::list_cache::clear_py_list_caches();
@@ -242,6 +251,11 @@ pub(crate) fn crs_clear_cache() {
 /// >>> gm.crs_cache_info()['total_capacity'] > 0
 /// True
 #[pyfunction]
-pub(crate) fn crs_cache_info() -> crs::CacheInfo {
-    crs::cache_info()
+pub(crate) fn crs_cache_info(py: Python<'_>) -> PyResult<crs::CacheInfo> {
+    let state = crs::runtime_state_snapshot()?;
+    Ok(if crs::thread_caches_are_current(&state) {
+        crs::cache_info_with_state(&state)
+    } else {
+        py.detach(|| crs::cache_info_with_state(&state))
+    })
 }

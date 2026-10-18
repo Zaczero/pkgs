@@ -27,15 +27,17 @@ pub(crate) use cf::{
     cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre, is_operation_method,
     is_transverse_mercator,
 };
+#[cfg(test)]
+pub(crate) use export::to_wkt_with_options;
 pub(crate) use export::{
-    ProjStringVersion, cached_export, ellipsoids, prime_meridians, proj_operations, same, to_proj,
-    to_projjson, to_projjson_with_options, to_projjson_with_options_at, to_wkt_with_options,
+    ProjStringVersion, ellipsoids, prime_meridians, proj_operations, same, same_if_cached,
+    same_with_state, to_projjson, to_projjson_with_options_at,
 };
 #[cfg(test)]
 pub(crate) use identify::authority_matches;
 pub(crate) use identify::{
-    catalog_name_matches_with_state, identify_with_state, non_deprecated, to_2d, to_3d,
-    to_authority, to_cf, to_epsg,
+    AuthorityLookup, authority_if_cached, catalog_name_matches_with_state, identify_with_state,
+    non_deprecated, to_authority_with_state, to_cf,
 };
 pub(crate) use lookup::{
     authorities_with_state, catalog_with_state, celestial_bodies_with_state, codes, geoid_models,

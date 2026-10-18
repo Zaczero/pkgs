@@ -491,6 +491,15 @@ fn cf_projected_units(dict: &Bound<'_, PyDict>) -> PyResult<(&'static str, f64)>
 /// Maximum nesting depth for CRS-holder objects (`.crs` / `.srs` indirection).
 const MAX_CRS_HOLDER_DEPTH: u8 = 4;
 
+fn admit_definition(py: pyo3::Python<'_>, text: &str) -> PyResult<Crs> {
+    let normalized = crs::normalize(text)?;
+    let state = crs::runtime_state_snapshot()?;
+    if crs::info_if_cached(&normalized, &state)?.is_none() {
+        py.detach(|| crs::info_with_state(&normalized, &state))?;
+    }
+    Ok(crs_arc(normalized))
+}
+
 pub(crate) fn parse_crs_inner(value: &Bound<'_, PyAny>, depth: u8) -> PyResult<Option<Crs>> {
     if depth > MAX_CRS_HOLDER_DEPTH {
         return Err(CRSError::new_err("CRS holder nesting is too deep"));
@@ -502,28 +511,31 @@ pub(crate) fn parse_crs_inner(value: &Bound<'_, PyAny>, depth: u8) -> PyResult<O
     // string is never an authority tuple, mapping, or CRS-holder object, so skip
     // the type-dispatch ladder and its per-call attribute probes.
     if let Ok(text) = value.cast_exact::<pyo3::types::PyString>() {
-        return Ok(Some(crs_arc(crs::definition(&text.to_cow()?)?)));
+        return Ok(Some(admit_definition(value.py(), &text.to_cow()?)?));
     }
     // A `CRS` object already holds its validated definition — do not reparse it.
     if let Ok(crs_obj) = value.cast::<PyCrs>() {
         return Ok(Some(crs_obj.get().definition.clone()));
     }
     if let Some(code) = crs_epsg_code(value)? {
-        return Ok(Some(crs_arc(crs::definition(&format!("EPSG:{code}"))?)));
+        return Ok(Some(admit_definition(value.py(), &format!("EPSG:{code}"))?));
     }
     if let Some(text) = crs_text_from_authority_pair(value, "CRS authority tuple")? {
-        return Ok(Some(crs_arc(crs::definition(&text)?)));
+        return Ok(Some(admit_definition(value.py(), &text)?));
     }
     if let Some(dict) = crate::mapping_as_dict(value)? {
-        return Ok(Some(crs_arc(crs::definition(&crs_text_from_dict(&dict)?)?)));
+        return Ok(Some(admit_definition(
+            value.py(),
+            &crs_text_from_dict(&dict)?,
+        )?));
     }
     if let Some(text) = crs_text_from_object(value, depth)? {
-        return Ok(Some(crs_arc(crs::definition(&text)?)));
+        return Ok(Some(admit_definition(value.py(), &text)?));
     }
     let text = value.extract::<String>().map_err(|_| {
         PyTypeError::new_err(
             "CRS input must be an authority string, authority tuple, integer EPSG code, PROJJSON dictionary, CF dictionary, CRS-holder object, or object with to_wkt()/to_json()/to_authority()/to_epsg()",
         )
     })?;
-    Ok(Some(crs_arc(crs::definition(&text)?)))
+    Ok(Some(admit_definition(value.py(), &text)?))
 }

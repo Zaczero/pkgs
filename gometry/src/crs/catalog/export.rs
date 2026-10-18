@@ -1,11 +1,10 @@
 use crate::crs::{
     CRS_COMPARISON_CACHE, CRS_COMPARISON_CACHE_CAPACITY, CRS_EXPORT_CACHE,
     CRS_EXPORT_CACHE_CAPACITY, CachedCrsComparison, CachedCrsExport, CrsComparison,
-    CrsComparisonKey, CrsExportKey, CrsExportKind, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
-    CrsWktOptions, EllipsoidCatalogInfo, OnceLock, PrimeMeridianCatalogInfo, ProjObject,
-    ProjOperationCatalogInfo, RuntimeState, WktVersion, ensure_thread_caches_current,
-    first_static_string_from_ptr, info_with_state, lru_insert, lru_promote, lru_resolve, normalize,
-    runtime_state_snapshot,
+    CrsComparisonKey, CrsExportKey, CrsExportKind, CrsInfo, CrsProjJsonOptions, CrsWktOptions,
+    EllipsoidCatalogInfo, OnceLock, PrimeMeridianCatalogInfo, ProjObject, ProjOperationCatalogInfo,
+    RuntimeState, WktVersion, ensure_thread_caches_current, first_static_string_from_ptr,
+    info_with_state, lru_insert, lru_promote, normalize, runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -90,6 +89,7 @@ fn prime_meridians_uncached() -> Vec<PrimeMeridianCatalogInfo> {
     items
 }
 
+#[cfg(test)]
 pub(crate) fn to_wkt_with_options(
     value: &str,
     version: WktVersion,
@@ -111,7 +111,6 @@ pub(crate) fn to_wkt_with_options_at(
             version,
             options: options.clone(),
         },
-        wkt_export,
         state,
     )
 }
@@ -138,7 +137,6 @@ pub(crate) fn to_projjson_with_options_at(
         || CrsExportKind::ProjJson {
             options: options.clone(),
         },
-        projjson_export,
         state,
     )
 }
@@ -156,36 +154,9 @@ impl std::hash::Hash for ProjStringVersion {
     }
 }
 
-pub(crate) fn to_proj(
-    value: &str,
-    version: ProjStringVersion,
-    options: &CrsProjOptions,
-) -> Result<String> {
-    let state = runtime_state_snapshot()?;
-    to_proj_at(value, version, options, &state)
-}
-
-pub(crate) fn to_proj_at(
-    value: &str,
-    version: ProjStringVersion,
-    options: &CrsProjOptions,
-    state: &RuntimeState,
-) -> Result<String> {
-    cached_export(
-        value,
-        || CrsExportKind::Proj {
-            version,
-            options: options.clone(),
-        },
-        proj_string_export,
-        state,
-    )
-}
-
-pub(crate) fn cached_export(
+fn cached_export(
     value: &str,
     kind: impl FnOnce() -> CrsExportKind,
-    produce: impl FnOnce(&CrsExportKey, &RuntimeState) -> Result<String>,
     state: &RuntimeState,
 ) -> Result<String> {
     let normalized = normalize(value)?;
@@ -193,50 +164,51 @@ pub(crate) fn cached_export(
         definition: normalized.into(),
         kind: kind(),
     };
-    cached_crs_export_with_state(&key, state, produce)
+    key.resolve(state)
 }
 
-fn wkt_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
-    let CrsExportKind::Wkt { version, options } = &key.kind else {
-        unreachable!("WKT cache key");
-    };
-    ProjObject::new_with_state(&key.definition, state)?.to_wkt_with_options(
-        &key.definition,
-        version.to_proj(),
-        options,
-    )
-}
+impl CrsExportKey {
+    /// Copy an existing export without invoking PROJ.
+    pub(crate) fn cached(&self, state: &RuntimeState) -> Option<String> {
+        if !crate::crs::thread_caches_are_current(state) {
+            return None;
+        }
+        CRS_EXPORT_CACHE.with(|items| {
+            let mut cache = items.borrow_mut();
+            lru_promote(&mut cache, |item| item.key == *self)
+                .then(|| cache.last().expect("promoted export entry").value.clone())
+        })
+    }
 
-fn projjson_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
-    let CrsExportKind::ProjJson { options } = &key.kind else {
-        unreachable!("PROJJSON export cache key has PROJJSON options")
-    };
-    ProjObject::new_with_state(&key.definition, state)?.to_projjson(&key.definition, options)
-}
-
-fn proj_string_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
-    let CrsExportKind::Proj { version, options } = &key.kind else {
-        unreachable!("PROJ string cache key");
-    };
-    ProjObject::new_with_state(&key.definition, state)?.to_proj_string(
-        &key.definition,
-        version.to_proj(),
-        options,
-    )
-}
-
-pub(crate) fn crs_to_2d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
-    let CrsExportKind::To2d { name } = &key.kind else {
-        unreachable!("2D CRS cache key");
-    };
-    ProjObject::new_with_state(&key.definition, state)?.to_2d(&key.definition, name.as_deref())
-}
-
-pub(crate) fn crs_to_3d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
-    let CrsExportKind::To3d { name } = &key.kind else {
-        unreachable!("3D CRS cache key");
-    };
-    ProjObject::new_with_state(&key.definition, state)?.to_3d(&key.definition, name.as_deref())
+    pub(crate) fn resolve(&self, state: &RuntimeState) -> Result<String> {
+        ensure_thread_caches_current(state);
+        if let Some(value) = self.cached(state) {
+            return Ok(value);
+        }
+        let object = ProjObject::new_with_state(&self.definition, state)?;
+        let value = match &self.kind {
+            CrsExportKind::Wkt { version, options } => {
+                object.to_wkt_with_options(&self.definition, version.to_proj(), options)?
+            },
+            CrsExportKind::ProjJson { options } => object.to_projjson(&self.definition, options)?,
+            CrsExportKind::Proj { version, options } => {
+                object.to_proj_string(&self.definition, version.to_proj(), options)?
+            },
+            CrsExportKind::To2d { name } => object.to_2d(&self.definition, name.as_deref())?,
+            CrsExportKind::To3d { name } => object.to_3d(&self.definition, name.as_deref())?,
+        };
+        CRS_EXPORT_CACHE.with(|items| {
+            lru_insert(
+                &mut items.borrow_mut(),
+                CRS_EXPORT_CACHE_CAPACITY,
+                CachedCrsExport {
+                    key: self.clone(),
+                    value: value.clone(),
+                },
+            );
+        });
+        Ok(value)
+    }
 }
 
 pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result<bool> {
@@ -250,7 +222,41 @@ pub(crate) fn same_with_state(
     comparison: CrsComparison,
     state: &RuntimeState,
 ) -> Result<bool> {
+    if let Some(value) = same_if_cached(left, right, comparison, state)? {
+        return Ok(value);
+    }
+    let left = normalize(left)?;
+    let right = normalize(right)?;
+    let (left, right) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let value = crs_same_uncached(&left, &right, comparison, state)?;
     ensure_thread_caches_current(state);
+    let key = CrsComparisonKey {
+        left: left.into(),
+        right: right.into(),
+        mode: comparison,
+    };
+    CRS_COMPARISON_CACHE.with(|items| {
+        let mut cache = items.borrow_mut();
+        Ok(lru_insert(
+            &mut cache,
+            CRS_COMPARISON_CACHE_CAPACITY,
+            CachedCrsComparison { key, value },
+        )
+        .value)
+    })
+}
+
+/// Structural identities and memoized comparisons need no PROJ execution.
+pub(crate) fn same_if_cached(
+    left: &str,
+    right: &str,
+    comparison: CrsComparison,
+    state: &RuntimeState,
+) -> Result<Option<bool>> {
     let left = normalize(left)?;
     let right = normalize(right)?;
     // Order the pair so (A,B) and (B,A) share one cache entry (comparison is
@@ -260,7 +266,13 @@ pub(crate) fn same_with_state(
     } else {
         (right, left)
     };
-    let hit = CRS_COMPARISON_CACHE.with(|items| {
+    if left == right {
+        return Ok(Some(true));
+    }
+    if !crate::crs::thread_caches_are_current(state) {
+        return Ok(None);
+    }
+    Ok(CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
         lru_promote(&mut cache, |item| {
             item.key.left.as_str() == left.as_ref()
@@ -273,28 +285,7 @@ pub(crate) fn same_with_state(
                 .expect("a promoted CRS comparison is the MRU tail")
                 .value
         })
-    });
-    if let Some(value) = hit {
-        return Ok(value);
-    }
-    let value = crs_same_uncached(&left, &right, comparison, state)?;
-    ensure_thread_caches_current(state);
-    let key = CrsComparisonKey {
-        left: left.into(),
-        right: right.into(),
-        mode: comparison,
-    };
-    // `crs_same_uncached` resolves only CRS info and PROJ objects; it cannot
-    // re-enter this thread-local comparison bucket between the miss and insert.
-    CRS_COMPARISON_CACHE.with(|items| {
-        let mut cache = items.borrow_mut();
-        Ok(lru_insert(
-            &mut cache,
-            CRS_COMPARISON_CACHE_CAPACITY,
-            CachedCrsComparison { key, value },
-        )
-        .value)
-    })
+    }))
 }
 
 /// Single horizontal geographic or projected CRS (top-level kind only).
@@ -348,33 +339,6 @@ fn crs_same_uncached(
     }
 }
 
-pub(crate) fn cached_crs_export_with_state<F>(
-    key: &CrsExportKey,
-    state: &RuntimeState,
-    produce: F,
-) -> Result<String>
-where
-    F: FnOnce(&CrsExportKey, &RuntimeState) -> Result<String>,
-{
-    ensure_thread_caches_current(state);
-    CRS_EXPORT_CACHE.with(|items| {
-        let mut cache = items.borrow_mut();
-        let entry = lru_resolve(
-            &mut cache,
-            CRS_EXPORT_CACHE_CAPACITY,
-            |item| &item.key == key,
-            || {
-                let value = produce(key, state)?;
-                Ok(CachedCrsExport {
-                    key: key.clone(),
-                    value,
-                })
-            },
-        )?;
-        Ok(entry.value.clone())
-    })
-}
-
 pub(crate) static PROJ_OPERATION_CATALOG: OnceLock<Vec<ProjOperationCatalogInfo>> = OnceLock::new();
 pub(crate) static ELLIPSOID_CATALOG: OnceLock<Vec<EllipsoidCatalogInfo>> = OnceLock::new();
 pub(crate) static PRIME_MERIDIAN_CATALOG: OnceLock<Vec<PrimeMeridianCatalogInfo>> = OnceLock::new();
@@ -382,6 +346,29 @@ pub(crate) static PRIME_MERIDIAN_CATALOG: OnceLock<Vec<PrimeMeridianCatalogInfo>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+    fn export_lookup_leaves_stale_native_products_for_the_resolver() {
+        let state = runtime_state_snapshot().expect("runtime state");
+        ensure_thread_caches_current(&state);
+        let key = CrsExportKey {
+            definition: "EPSG:4326".into(),
+            kind: CrsExportKind::Wkt {
+                version: WktVersion::Wkt2_2019,
+                options: CrsWktOptions::default(),
+            },
+        };
+        let expected = key.resolve(&state).expect("WKT export");
+        assert!(expected.starts_with("GEOGCRS["));
+        assert_eq!(key.cached(&state).as_deref(), Some(expected.as_str()));
+        let next = RuntimeState {
+            generation: state.generation.wrapping_add(1),
+            config: std::sync::Arc::clone(&state.config),
+        };
+        assert!(key.cached(&next).is_none());
+        assert_eq!(key.cached(&state).as_deref(), Some(expected.as_str()));
+    }
 
     #[test]
     fn warm_comparison_of_an_authored_crs_allocates_nothing() {

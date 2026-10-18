@@ -61,12 +61,16 @@ impl PyCrs {
     ///
     /// Returns an `Arc` so the receiver cell can be re-resolved after a
     /// runtime-config generation bump without dangling references.
-    pub(crate) fn cached_info(&self) -> PyResult<Arc<crs::CrsInfo>> {
+    pub(crate) fn cached_info(&self, py: Python<'_>) -> crate::error::Result<Arc<crs::CrsInfo>> {
         let state = crs::runtime_state_snapshot()?;
-        self.cached_info_at(&state)
+        self.cached_info_at(py, &state)
     }
 
-    fn cached_info_at(&self, state: &crs::RuntimeState) -> PyResult<Arc<crs::CrsInfo>> {
+    fn cached_info_at(
+        &self,
+        py: Python<'_>,
+        state: &crs::RuntimeState,
+    ) -> crate::error::Result<Arc<crs::CrsInfo>> {
         let generation = state.generation;
         {
             let guard = self
@@ -80,7 +84,10 @@ impl PyCrs {
             }
         }
         // Resolve outside the lock (PROJ may take its own locks).
-        let resolved = crs::info_with_state(&self.definition, state)?;
+        let resolved = match crs::info_if_cached(&self.definition, state)? {
+            Some(info) => info,
+            None => py.detach(|| crs::info_with_state(&self.definition, state))?,
+        };
         {
             let mut guard = self
                 .info
@@ -101,8 +108,9 @@ impl PyCrs {
     /// query per distinct authority filter, then a clone of the answer.
     pub(crate) fn cached_identify(
         &self,
+        py: Python<'_>,
         authority: Option<&str>,
-    ) -> PyResult<Vec<crs::IdentifyCandidate>> {
+    ) -> crate::error::Result<Vec<crs::IdentifyCandidate>> {
         let state = crs::runtime_state_snapshot()?;
         let generation = state.generation;
         {
@@ -117,7 +125,8 @@ impl PyCrs {
                 return Ok(candidates.clone());
             }
         }
-        let candidates = crs::identify_with_state(&self.definition, authority, &state)?;
+        let candidates =
+            py.detach(|| crs::identify_with_state(&self.definition, authority, &state))?;
         *self
             .identify
             .lock()
@@ -138,36 +147,40 @@ impl PyCrs {
         state: &crs::RuntimeState,
     ) -> PyResult<Bound<'py, PyDict>> {
         let generation = state.generation;
-        {
+        let cached = {
             let guard = self
                 .info_py
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((cached_gen, dict)) = guard.as_ref()
-                && *cached_gen == generation
-            {
-                return super::list_cache::isolation_copy_dict(py, dict);
-            }
+            guard
+                .as_ref()
+                .filter(|(cached_gen, _)| *cached_gen == generation)
+                .map(|(_, dict)| dict.clone_ref(py))
+        };
+        if let Some(dict) = cached {
+            return super::list_cache::isolation_copy_dict(py, &dict);
         }
         // Build outside the lock (IntoPyObject may take the GIL / call Python).
-        let info = (*self.cached_info_at(state)?).clone();
+        let info = (*self.cached_info_at(py, state)?).clone();
         let built = info.into_pyobject(py)?;
         let owned = super::list_cache::freeze_top_dict(py, &built)?;
         let out = super::list_cache::isolation_copy_dict(py, &owned)?;
-        {
+        let retired = {
             let mut guard = self
                 .info_py
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Another thread may have won the race; prefer the first stored entry
             // if its generation still matches.
-            if let Some((cached_gen, dict)) = guard.as_ref()
+            if let Some((cached_gen, _)) = guard.as_ref()
                 && *cached_gen == generation
             {
-                return super::list_cache::isolation_copy_dict(py, dict);
+                None
+            } else {
+                guard.replace((generation, owned))
             }
-            *guard = Some((generation, owned));
-        }
+        };
+        drop(retired);
         Ok(out)
     }
 
@@ -500,10 +513,10 @@ mod footprint_tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn identify_memo_heap_is_reported_after_resolution() {
+        crate::test_support::initialize_python();
         let crs = PyCrs::from_definition("EPSG:3857".into());
         let cold = crs.heap_bytes();
-        let candidates = crs
-            .cached_identify(None)
+        let candidates = Python::attach(|py| crs.cached_identify(py, None))
             .expect("EPSG:3857 identify must resolve");
         assert!(!candidates.is_empty());
         assert!(

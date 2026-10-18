@@ -1,4 +1,6 @@
-use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner, pyfunction};
+use crate::py::crs::{
+    Bound, CRSError, Crs, PyAny, PyResult, Python, crs, parse_crs_inner, pyfunction,
+};
 /// Name/version of the underlying CRS engine (PROJ).
 ///
 /// Returns
@@ -13,9 +15,9 @@ use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner
 /// >>> gm.crs_engine()['version']
 /// '9.9.0'
 #[pyfunction]
-pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
+pub(crate) fn crs_engine(py: Python<'_>) -> PyResult<crs::EngineInfo> {
     let state = crs::runtime_state_snapshot()?;
-    Ok(crs::engine_info_with_state(&state)?)
+    Ok(py.detach(|| crs::engine_info_with_state(&state))?)
 }
 
 /// One required-CRS parser: borrowed `Crs`/text through the shared

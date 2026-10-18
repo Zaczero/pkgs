@@ -286,10 +286,15 @@ impl PyCrs {
     /// 4326
     #[pyo3(signature = (*, name = None))]
     fn to_2d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
-        Ok(Self::from_definition(crs_arc(crs::to_2d(
-            &slf.get().definition,
-            name,
-        )?)))
+        Ok(Self::from_definition(crs_arc(
+            super::functions::export_crs(
+                slf.py(),
+                slf.get().definition.clone(),
+                crs::CrsExportKind::To2d {
+                    name: name.map(str::to_owned),
+                },
+            )?,
+        )))
     }
 
     /// Return the 3D form of this CRS (adds an ellipsoidal height axis).
@@ -314,9 +319,14 @@ impl PyCrs {
     /// 4979
     #[pyo3(signature = (*, name = None))]
     fn to_3d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
-        Ok(Self::from_definition(crs_arc(crs::to_3d(
-            &slf.get().definition,
-            name,
-        )?)))
+        Ok(Self::from_definition(crs_arc(
+            super::functions::export_crs(
+                slf.py(),
+                slf.get().definition.clone(),
+                crs::CrsExportKind::To3d {
+                    name: name.map(str::to_owned),
+                },
+            )?,
+        )))
     }
 }

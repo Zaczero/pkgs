@@ -265,12 +265,30 @@ pub(crate) fn crs_transform(
         force_over,
     }
     .parse()?;
-    let execution = py.detach(|| {
+    let (execution, output) = py.detach(|| -> crate::error::Result<_> {
         let (x, y, zt) = coordinates.columns_mut();
-        crs::transform_coordinates(&source, &target, x, y, zt, options)
+        let execution = crs::transform_coordinates(&source, &target, x, y, zt, options)?;
+        // Warning-as-error takes precedence over native output assembly errors.
+        Ok((execution, TransformOutput::from_coordinates(coordinates)))
     })?;
     drain_accuracy_warning(py, &execution)?;
-    coordinates_to_matrix_py(py, coordinates)
+    let output = output.map_err(|error| match error {
+        TransformOutputError::SizeOverflow => {
+            GeometryError::new_err("coordinate matrix size overflows usize")
+        },
+        TransformOutputError::Allocation(error) => {
+            pyo3::exceptions::PyMemoryError::new_err(error.to_string())
+        },
+    })?;
+    match output {
+        TransformOutput::Xy(x, y) => Ok((x, y).into_pyobject(py)?.unbind().into()),
+        TransformOutput::Xyz(x, y, z) => Ok((x, y, z).into_pyobject(py)?.unbind().into()),
+        TransformOutput::Matrix {
+            values,
+            rows,
+            columns,
+        } => float64_matrix(py, values, rows, columns),
+    }
 }
 
 /// Apply a PROJ pipeline/operation definition to coordinates.
@@ -345,66 +363,64 @@ pub(crate) fn crs_apply(
     coordinates_to_py(py, coordinates)
 }
 
-/// Rebuild the `crs_transform` result — scalars in, a scalar tuple out
-/// (`(x, y)` or `(x, y, z)`); lane input returns a frozen `(N, 2)`/`(N, 3)`
-/// `float64` matrix (interleaved, consistent with the NumPy export of
-/// `geometry.coords` and `transform_bounds_many`). The input epoch `t` is never
-/// a transformed spatial ordinate, so it is not echoed (unlike `crs_apply`,
-/// which returns the raw columns it ran on).
-#[expect(
-    clippy::indexing_slicing,
-    reason = "CrsCoordinateArgs records scalar input before broadcasting and scalar columns contain one ordinate"
-)]
-pub(crate) fn coordinates_to_matrix_py(
-    py: Python<'_>,
-    coordinates: CrsCoordinateArgs,
-) -> PyResult<Py<PyAny>> {
-    let CrsCoordinateArgs { x, y, zt, scalar } = coordinates;
-    let (x, y) = (x.values, y.values);
-    let z = match zt {
-        crate::Zt::None | crate::Zt::T(_) => None,
-        crate::Zt::Z(z) | crate::Zt::Zt { z, .. } => Some(z.values),
-    };
-    if scalar {
-        return match z {
-            None => Ok((x[0], y[0]).into_pyobject(py)?.unbind().into()),
-            Some(z) => Ok((x[0], y[0], z[0]).into_pyobject(py)?.unbind().into()),
+enum TransformOutput {
+    Xy(f64, f64),
+    Xyz(f64, f64, f64),
+    Matrix {
+        values: Vec<f64>,
+        rows: usize,
+        columns: usize,
+    },
+}
+
+enum TransformOutputError {
+    SizeOverflow,
+    Allocation(std::collections::TryReserveError),
+}
+
+impl TransformOutput {
+    /// The epoch is an input to transformation, not a spatial output ordinate.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "scalar CrsCoordinateArgs columns contain exactly one ordinate"
+    )]
+    fn from_coordinates(coordinates: CrsCoordinateArgs) -> Result<Self, TransformOutputError> {
+        let CrsCoordinateArgs { x, y, zt, scalar } = coordinates;
+        let (x, y) = (x.values, y.values);
+        let z = match zt {
+            crate::Zt::None | crate::Zt::T(_) => None,
+            crate::Zt::Z(z) | crate::Zt::Zt { z, .. } => Some(z.values),
         };
+        if scalar {
+            return Ok(z.map_or_else(|| Self::Xy(x[0], y[0]), |z| Self::Xyz(x[0], y[0], z[0])));
+        }
+        let rows = x.len();
+        let columns = if z.is_some() { 3 } else { 2 };
+        let capacity = rows
+            .checked_mul(columns)
+            .ok_or(TransformOutputError::SizeOverflow)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(capacity)
+            .map_err(TransformOutputError::Allocation)?;
+        match z {
+            None => {
+                for pair in x.into_iter().zip(y) {
+                    values.extend_from_slice(&<[f64; 2]>::from(pair));
+                }
+            },
+            Some(z) => {
+                for ((x, y), z) in x.into_iter().zip(y).zip(z) {
+                    values.extend_from_slice(&[x, y, z]);
+                }
+            },
+        }
+        Ok(Self::Matrix {
+            values,
+            rows,
+            columns,
+        })
     }
-    let rows = x.len();
-    let columns = if z.is_some() { 3 } else { 2 };
-    let capacity = rows
-        .checked_mul(columns)
-        .ok_or_else(|| GeometryError::new_err("coordinate matrix size overflows usize"))?;
-    let mut flat = vec![0.0; capacity];
-    match z {
-        None => {
-            for (values, (&x, &y)) in flat
-                .as_chunks_mut::<2>()
-                .0
-                .iter_mut()
-                .zip(x.iter().zip(y.iter()))
-            {
-                let [out_x, out_y] = values;
-                *out_x = x;
-                *out_y = y;
-            }
-        },
-        Some(z) => {
-            for (values, ((&x, &y), &z)) in flat
-                .as_chunks_mut::<3>()
-                .0
-                .iter_mut()
-                .zip(x.iter().zip(y.iter()).zip(z.iter()))
-            {
-                let [out_x, out_y, out_z] = values;
-                *out_x = x;
-                *out_y = y;
-                *out_z = z;
-            }
-        },
-    }
-    float64_matrix(py, flat, rows, columns)
 }
 
 /// Rebuild the Python result tuple — `(x, y)`, `(x, y, z)`, or
@@ -928,5 +944,102 @@ pub(crate) fn crs_roundtrip(
             .into())
     } else {
         Ok(float64_array(py, errors)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::xy(false, false, false)]
+    #[case::xyz(true, false, false)]
+    #[case::xyt(false, true, false)]
+    #[case::xyzt(true, true, false)]
+    #[case::empty_xy(false, false, true)]
+    #[case::empty_xyz(true, false, true)]
+    #[cfg_attr(miri, ignore = "Miri cannot execute Python/NumPy and native PROJ FFI")]
+    fn transform_matrix_preserves_spatial_columns_and_omits_epoch(
+        #[case] with_z: bool,
+        #[case] with_t: bool,
+        #[case] empty: bool,
+    ) {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let crs = 4326_i32.into_pyobject(py).expect("EPSG input").into_any();
+            let x = if empty { vec![] } else { vec![0.0, -0.0] }
+                .into_pyobject(py)
+                .expect("x input");
+            let y = if empty { vec![] } else { vec![1.0, 2.0] }
+                .into_pyobject(py)
+                .expect("y input");
+            let z = if empty { vec![] } else { vec![3.0, 4.0] }
+                .into_pyobject(py)
+                .expect("z input");
+            let t = if empty { vec![] } else { vec![2020.0, 2021.0] }
+                .into_pyobject(py)
+                .expect("t input");
+            let output = crs_transform(
+                py,
+                &crs,
+                &crs,
+                x.as_any(),
+                y.as_any(),
+                with_z.then_some(z.as_any()),
+                with_t.then_some(t.as_any()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .expect("identity transform");
+            let output = output.bind(py);
+            let columns = if with_z { 3 } else { 2 };
+            assert_eq!(
+                output
+                    .getattr("shape")
+                    .expect("matrix shape")
+                    .extract::<(usize, usize)>()
+                    .expect("shape pair"),
+                (if empty { 0 } else { 2 }, columns)
+            );
+            assert!(
+                !output
+                    .getattr("flags")
+                    .expect("matrix flags")
+                    .getattr("writeable")
+                    .expect("writable flag")
+                    .extract::<bool>()
+                    .expect("boolean flag")
+            );
+            let values = output
+                .call_method0("tolist")
+                .expect("matrix rows")
+                .extract::<Vec<Vec<f64>>>()
+                .expect("numeric rows");
+            let expected = if empty {
+                vec![]
+            } else if with_z {
+                vec![vec![0.0, 1.0, 3.0], vec![-0.0, 2.0, 4.0]]
+            } else {
+                vec![vec![0.0, 1.0], vec![-0.0, 2.0]]
+            };
+            assert_eq!(
+                values
+                    .iter()
+                    .flatten()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .flatten()
+                    .map(|value: &f64| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+        });
     }
 }
