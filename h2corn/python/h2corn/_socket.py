@@ -173,13 +173,9 @@ class _BorrowedListener:
 class _InheritedListener:
     """A descriptor a supervisor already transferred to this worker.
 
-    Deliberately *not* wrapped in a `socket.socket`. `O_NONBLOCK` lives on the
-    open file description, which every forked worker shares, and PyPy's
-    `socket.socket(fileno=fd)` clears it -- so a worker still in lifespan
-    startup would silently make `accept` blocking for its siblings that are
-    already serving, parking their runtime threads in `accept(2)`. Holding the
-    bare descriptor keeps that state unreachable rather than repairing it after
-    the fact, and saves a socket object per listener per worker start.
+    The transferred descriptor stays raw through native serving and is closed
+    when the lease is released. This avoids allocating a socket object for each
+    inherited listener on every worker start.
     """
 
     fd: int | None
@@ -298,13 +294,6 @@ def _adopt_listener(fd: int) -> _BorrowedListener:
     return listener
 
 
-#: `socket.TCP_FASTOPEN` is missing from PyPy's socket module, but the option
-#: is a stable part of the Linux UAPI and the kernel still honours it. Falling
-#: back to the numeric value keeps Fast Open working there instead of silently
-#: dropping it.
-_TCP_FASTOPEN = getattr(socket, 'TCP_FASTOPEN', 23)
-
-
 def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -312,13 +301,12 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
     value = 512 if sys.platform == 'linux' else 1
-    try:
-        sock.setsockopt(socket.IPPROTO_TCP, _TCP_FASTOPEN, value)
-    except OSError:
-        # The kernel or its configuration refused the option. A binding that
-        # simply does not name the constant is a different thing, and is
-        # handled by `_TCP_FASTOPEN` rather than swallowed here.
-        pass
+    # CPython omits TCP_FASTOPEN on Windows versions before Windows 10 1607.
+    if hasattr(socket, 'TCP_FASTOPEN'):
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_FASTOPEN, value)
+        except OSError:
+            pass
 
     if sys.platform == 'linux':
         try:

@@ -2616,8 +2616,8 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
 
 
 @pytest.mark.skipif(
-    sys.platform != 'linux' or sys.implementation.name != 'cpython',
-    reason='requires Linux CPython RSS accounting',
+    sys.platform != 'linux',
+    reason='requires Linux RSS accounting',
 )
 async def test_header_only_responses_retain_nothing_per_stream() -> None:
     """

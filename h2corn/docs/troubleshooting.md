@@ -114,7 +114,7 @@ supervisor. The development `--reload` file watcher is separate from
 Install `h2corn[uvloop]` in the same environment as h2corn, or choose
 [`--loop asyncio`](configuration.md#option-loop). `--loop auto` uses uvloop
 when installed and otherwise uses the standard-library loop.
-PyPy, Windows, and some free-threaded combinations lack a usable uvloop package.
+Windows and some free-threaded combinations lack a usable uvloop package.
 
 ## systemd notify does not become ready
 

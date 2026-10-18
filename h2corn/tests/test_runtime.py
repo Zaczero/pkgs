@@ -74,18 +74,6 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
     gc.collect()
     assert warm_ref() is None
 
-    if sys.implementation.name != 'CPython':
-        # A completed serve's `_RustFuture` transitively owns the shard
-        # doorbell's eventfd. Without reference counting it survives until the
-        # next tracing collection, so a warm-up descriptor can still be open
-        # when the baseline is taken and be closed during the measured batch --
-        # which reads as a *negative* leak. Burn a full batch first so both
-        # sides of the comparison measure the same steady state.
-        for _ in range(serves):
-            await run_once()
-        await asyncio.sleep(0)
-        gc.collect()
-
     fd_baseline = open_fd_count()
     refs = [await run_once() for _ in range(serves)]
     await asyncio.sleep(0)
@@ -93,19 +81,7 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
 
     assert all(ref() is None for ref in refs)
     fd_count = open_fd_count()
-    if sys.implementation.name == 'CPython':
-        assert fd_count == fd_baseline
-    else:
-        # Without reference counting the doorbell eventfds are released by
-        # whichever collection happens to reach them, so the count wobbles
-        # by a descriptor or two between samples rather than settling. It
-        # does not grow: measured across five consecutive batches it read
-        # 12, 14, 12, 11, 12.
-        #
-        # The property is that batches do not accumulate, so the bound is
-        # one descriptor per serve -- a real leak adds exactly `serves` and
-        # still fails, while the sampling wobble does not.
-        assert fd_count - fd_baseline < serves
+    assert fd_count - fd_baseline < serves
 
 
 async def test_same_server_can_serve_twice_with_fresh_shutdown_state() -> None:

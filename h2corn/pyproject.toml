@@ -33,7 +33,6 @@ classifiers = [
   "Programming Language :: Python :: 3.15",
   "Programming Language :: Python :: Free Threading :: 3 - Stable",
   "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
   "Programming Language :: Rust",
   "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
   "Topic :: Software Development :: Libraries :: Python Modules",
@@ -52,12 +51,10 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/h2corn"
 h2corn = "h2corn._server:main"
 
 [project.optional-dependencies]
-# uvloop has no PyPy wheel and its C source does not build there (it calls
-# `PyOS_AfterFork_Child`, which PyPy does not provide), so the marker excludes
-# it rather than letting resolution fail. The suite already runs asyncio-only
-# when uvloop is absent -- see `pytest_asyncio_loop_factories` in tests/conftest.py.
+# Windows does not support uvloop. The suite already runs asyncio-only when it
+# is absent -- see `pytest_asyncio_loop_factories` in tests/conftest.py.
 uvloop = [
-  "uvloop>=0.23.0; sys_platform != 'win32' and platform_python_implementation != 'PyPy'",
+  "uvloop>=0.23.0; sys_platform != 'win32'",
 ]
 
 [dependency-groups]
