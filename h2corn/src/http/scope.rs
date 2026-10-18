@@ -211,16 +211,9 @@ fn http_scope_extensions<'py>(
     // not even compiled with.
     //
     // Conditional entries rather than one arm per combination: `py_dict!`
-    // sizes the dict from the entries actually pushed, so spelling the four
-    // combinations out bought nothing but four copies of one list that could
-    // drift apart.
-    //
-    // It is not quite free -- measured at +0.181% instructions/request (95% CI
-    // +0.052..+0.373) against the spelled-out form, because unconditional
-    // entries let the slot indices constant-fold while a conditional one makes
-    // the write index a runtime value. Accepted deliberately: ~50 instructions
-    // against four copies of a list, and a fraction of what sharing the
-    // mappings below just returned.
+    // reserves for the maximum declared field count and evaluates each
+    // condition once, so spelling the four combinations out would duplicate a
+    // list that could drift apart.
     let extensions = py_dict!(py, {
         "http.response.pathsend" => empty_extension_params(py)?,
         if cfg!(unix) => {

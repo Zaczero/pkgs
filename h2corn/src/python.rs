@@ -1,39 +1,11 @@
-#[cfg(not(any(windows, PyPy, GraalPy, Py_LIMITED_API)))]
+#[cfg(not(any(windows, Py_LIMITED_API)))]
 mod dict_api {
-    use std::ffi::c_int;
+    use pyo3::ffi;
 
-    use pyo3::{PyErr, ffi};
-
-    use crate::python::{Bound, Py, PyAny, PyDict, PyResult, PyString, Python};
-
-    pub(super) type CachedKey = (Py<PyString>, ffi::Py_hash_t);
+    use crate::python::{Bound, PyDict, PyResult, Python};
 
     unsafe extern "C" {
         fn _PyDict_NewPresized(minused: ffi::Py_ssize_t) -> *mut ffi::PyObject;
-        #[cfg(not(Py_GIL_DISABLED))]
-        fn _PyDict_GetItem_KnownHash(
-            mp: *mut ffi::PyObject,
-            key: *mut ffi::PyObject,
-            hash: ffi::Py_hash_t,
-        ) -> *mut ffi::PyObject;
-        fn _PyDict_SetItem_KnownHash(
-            mp: *mut ffi::PyObject,
-            key: *mut ffi::PyObject,
-            value: *mut ffi::PyObject,
-            hash: ffi::Py_hash_t,
-        ) -> c_int;
-    }
-
-    pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
-        let key = PyString::intern(py, text).unbind();
-        // SAFETY: `key` is a live Python object and the current thread is attached
-        // to the interpreter through `py`.
-        let hash = unsafe { ffi::PyObject_Hash(key.as_ptr()) };
-        if hash == -1 {
-            Err(PyErr::fetch(py))
-        } else {
-            Ok((key, hash))
-        }
     }
 
     pub(super) fn new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
@@ -51,114 +23,22 @@ mod dict_api {
                 .map(|dict| dict.cast_into_unchecked::<PyDict>())
         }
     }
-
-    #[cfg(not(Py_GIL_DISABLED))]
-    pub(super) fn get_item<'py>(
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        (key, hash): &CachedKey,
-    ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let key = key.bind(py);
-        // SAFETY: the GIL is held by `py`; `dict` and `key` are live bound Python
-        // objects; the cached hash was computed for this exact interned key.
-        let value = unsafe { _PyDict_GetItem_KnownHash(dict.as_ptr(), key.as_ptr(), *hash) };
-        if value.is_null() {
-            // SAFETY: the GIL is held by `py`; checking the current Python error indicator
-            // is valid.
-            if unsafe { ffi::PyErr_Occurred().is_null() } {
-                Ok(None)
-            } else {
-                Err(PyErr::fetch(py))
-            }
-        } else {
-            // SAFETY: `_PyDict_GetItem_KnownHash` returns a borrowed reference from `dict`,
-            // which is bound to the same GIL lifetime as `py`.
-            Ok(Some(unsafe { Bound::from_borrowed_ptr(py, value) }))
-        }
-    }
-
-    #[cfg(Py_GIL_DISABLED)]
-    pub(super) fn get_item<'py>(
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        (key, _hash): &CachedKey,
-    ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        use pyo3::types::PyDictMethods;
-
-        // A borrowed dict value can be invalidated by another thread between
-        // lookup and INCREF on free-threaded CPython. PyO3's safe path uses
-        // `PyDict_GetItemRef`, which returns a strong reference atomically with
-        // the lookup. The cached interned key still avoids key construction and
-        // its hash is already cached by CPython.
-        dict.get_item(key.bind(py))
-    }
-
-    pub(super) fn set_item<'py>(
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        (key, hash): &CachedKey,
-        value: &Bound<'py, PyAny>,
-    ) -> PyResult<()> {
-        let key = key.bind(py);
-        // SAFETY: the current thread is attached through `py`; `dict`, `key`,
-        // and `value` are live bound Python objects; the cached hash was
-        // computed for this exact interned key. CPython's function enters the
-        // dict critical section on free-threaded builds.
-        if unsafe { _PyDict_SetItem_KnownHash(dict.as_ptr(), key.as_ptr(), value.as_ptr(), *hash) }
-            == -1
-        {
-            Err(PyErr::fetch(py))
-        } else {
-            Ok(())
-        }
-    }
 }
 
-#[cfg(any(windows, PyPy, GraalPy, Py_LIMITED_API))]
+#[cfg(any(windows, Py_LIMITED_API))]
 mod dict_api {
-    use pyo3::types::PyDictMethods as _;
-
-    use crate::python::{Bound, Py, PyAny, PyDict, PyResult, PyString, Python};
-
-    pub(super) type CachedKey = Py<PyString>;
+    use crate::python::{Bound, PyDict, PyResult, Python};
 
     #[expect(
         clippy::unnecessary_wraps,
-        reason = "portable helpers share the fallible CPython dictionary interface"
-    )]
-    pub(super) fn cache_key(py: Python<'_>, text: &'static str) -> PyResult<CachedKey> {
-        Ok(PyString::intern(py, text).unbind())
-    }
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "portable helpers share the fallible CPython dictionary interface"
+        reason = "dict construction shares the fallible CPython dictionary interface"
     )]
     pub(super) fn new_dict(py: Python<'_>, _capacity: usize) -> PyResult<Bound<'_, PyDict>> {
         Ok(PyDict::new(py))
     }
-
-    pub(super) fn get_item<'py>(
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        key: &CachedKey,
-    ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        dict.get_item(key.bind(py))
-    }
-
-    pub(super) fn set_item<'py>(
-        py: Python<'py>,
-        dict: &Bound<'py, PyDict>,
-        key: &CachedKey,
-        value: &Bound<'py, PyAny>,
-    ) -> PyResult<()> {
-        dict.set_item(key.bind(py), value)
-    }
 }
 
 use std::any::Any;
-use std::mem::MaybeUninit;
-use std::slice::from_raw_parts;
 
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
@@ -200,93 +80,82 @@ macro_rules! py_dict_slots {
 #[macro_export]
 macro_rules! py_dict {
     ($py:expr, { $($items:tt)* }) => {{
-        let mut __scratch = $crate::python::PyDictScratch::<
-            { $crate::python::py_dict_slots!($($items)*) }
-        >::new($py);
-        $crate::python::py_dict!(@push __scratch, 0_usize; $($items)*);
-        __scratch.finish()?
+        let __py = $py;
+        let __dict =
+            $crate::python::py_new_dict(__py, $crate::python::py_dict_slots!($($items)*))?;
+        $crate::python::py_dict!(@push __dict, __py; $($items)*);
+        __dict
     }};
-    (@push $scratch:ident, $index:expr;) => {};
-    (@push $scratch:ident, $index:expr; $key:literal => true $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident;) => {};
+    (@push $dict:ident, $py:ident; $key:literal => true $(, $($rest:tt)*)?) => {{
         $crate::python::py_dict!(
-            @push_value $scratch,
-            $index,
+            @push_value $dict,
+            $py,
             $crate::python::py_static_key!($key),
             true
         )?;
-        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $index:expr; $key:literal => false $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident; $key:literal => false $(, $($rest:tt)*)?) => {{
         $crate::python::py_dict!(
-            @push_value $scratch,
-            $index,
+            @push_value $dict,
+            $py,
             $crate::python::py_static_key!($key),
             false
         )?;
-        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $index:expr; $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident; $key:literal => $value:literal $(, $($rest:tt)*)?) => {{
         static CACHED: $crate::python::PyOnceLock<
             $crate::python::Py<$crate::python::PyAny>,
         > = $crate::python::PyOnceLock::new();
         let value = CACHED
             .get_or_try_init(
-                $scratch.py(),
+                $py,
                 || -> $crate::python::PyResult<$crate::python::Py<$crate::python::PyAny>> {
                     Ok(
-                        $crate::python::py_dict_literal_value($scratch.py(), $value)?
-                        .unbind(),
+                        $crate::python::py_dict_literal_value($py, $value)?.unbind(),
                     )
                 },
             )?
-            .bind($scratch.py())
-            .clone();
+            .bind($py);
         $crate::python::py_dict!(
-            @push_bound $scratch,
-            $index,
+            @push_bound $dict,
+            $py,
             $crate::python::py_static_key!($key),
             value
-        );
-        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
+        )?;
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $index:expr; $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident; $key:literal => $value:expr $(, $($rest:tt)*)?) => {{
         $crate::python::py_dict!(
-            @push_value $scratch,
-            $index,
+            @push_value $dict,
+            $py,
             $crate::python::py_static_key!($key),
             $value
         )?;
-        $crate::python::py_dict!(@push $scratch, $index + 1_usize; $($($rest)*)?);
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $index:expr; if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident; if let $pattern:pat = $value:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
         if let $pattern = $value {
-            $crate::python::py_dict!(@push $scratch, $index; $($body)*);
+            $crate::python::py_dict!(@push $dict, $py; $($body)*);
         }
-        $crate::python::py_dict!(@push $scratch, $index + $crate::python::py_dict_slots!($($body)*); $($($rest)*)?);
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push $scratch:ident, $index:expr; if $condition:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
+    (@push $dict:ident, $py:ident; if $condition:expr => { $($body:tt)* } $(, $($rest:tt)*)?) => {{
         if $condition {
-            $crate::python::py_dict!(@push $scratch, $index; $($body)*);
+            $crate::python::py_dict!(@push $dict, $py; $($body)*);
         }
-        $crate::python::py_dict!(@push $scratch, $index + $crate::python::py_dict_slots!($($body)*); $($($rest)*)?);
+        $crate::python::py_dict!(@push $dict, $py; $($($rest)*)?);
     }};
-    (@push_value $scratch:ident, $index:expr, $key:expr, $value:expr) => {{
-        const __INDEX: usize = $index;
-        let __scratch = &mut $scratch;
+    (@push_value $dict:ident, $py:ident, $key:expr, $value:expr) => {{
         let __key = $key;
-        let __value = $value;
-        // SAFETY: `py_dict!` assigns each lexical field one static slot and
-        // visits it at most once in field order.
-        unsafe { __scratch.push_at::<__INDEX, _>(__key, __value) }
+        let __value = ::pyo3::IntoPyObjectExt::into_bound_py_any($value, $py)?;
+        __key.set_item($py, &$dict, &__value)
     }};
-    (@push_bound $scratch:ident, $index:expr, $key:expr, $value:expr) => {{
-        const __INDEX: usize = $index;
-        let __scratch = &mut $scratch;
+    (@push_bound $dict:ident, $py:ident, $key:expr, $value:expr) => {{
         let __key = $key;
-        let __value = $value;
-        // SAFETY: `py_dict!` assigns each lexical field one static slot and
-        // visits it at most once in field order.
-        unsafe { __scratch.push_bound_at::<__INDEX>(__key, __value) }
+        __key.set_item($py, &$dict, $value)
     }};
 }
 
@@ -397,7 +266,7 @@ macro_rules! py_match_cached_bytes {
 
 pub(crate) struct StaticPyKey {
     text: &'static str,
-    cached: PyOnceLock<dict_api::CachedKey>,
+    cached: PyOnceLock<Py<PyString>>,
 }
 
 impl StaticPyKey {
@@ -408,9 +277,9 @@ impl StaticPyKey {
         }
     }
 
-    fn key(&self, py: Python<'_>) -> PyResult<&dict_api::CachedKey> {
+    fn key(&self, py: Python<'_>) -> &Py<PyString> {
         self.cached
-            .get_or_try_init(py, || dict_api::cache_key(py, self.text))
+            .get_or_init(py, || PyString::intern(py, self.text).unbind())
     }
 
     pub(crate) fn get_item<'py>(
@@ -418,113 +287,17 @@ impl StaticPyKey {
         py: Python<'py>,
         dict: &Bound<'py, PyDict>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        dict_api::get_item(py, dict, self.key(py)?)
+        dict.get_item(self.key(py).bind(py))
     }
 
-    fn set_item<'py>(
+    pub(crate) fn set_item<'py>(
         &self,
         py: Python<'py>,
         dict: &Bound<'py, PyDict>,
         value: &Bound<'py, PyAny>,
     ) -> PyResult<()> {
-        dict_api::set_item(py, dict, self.key(py)?, value)
+        dict.set_item(self.key(py).bind(py), value)
     }
-}
-
-pub(crate) struct PyDictScratch<'py, const N: usize> {
-    py: Python<'py>,
-    len: usize,
-    items: [MaybeUninit<PendingDictItem<'py>>; N],
-}
-
-impl<'py, const N: usize> PyDictScratch<'py, N> {
-    pub(crate) const fn new(py: Python<'py>) -> Self {
-        Self {
-            py,
-            len: 0,
-            items: [const { MaybeUninit::uninit() }; N],
-        }
-    }
-
-    /// # Safety
-    ///
-    /// Macro expansion must visit lexical slot `I` at most once and in field
-    /// order. This makes the number of prior successful pushes at most `I`.
-    pub(crate) unsafe fn push_at<const I: usize, V>(
-        &mut self,
-        key: &'static StaticPyKey,
-        value: V,
-    ) -> PyResult<()>
-    where
-        V: IntoPyObject<'py>,
-    {
-        let value = value.into_bound_py_any(self.py)?;
-        // SAFETY: forwarded from this function's contract.
-        unsafe {
-            self.push_bound_at::<I>(key, value);
-        }
-        Ok(())
-    }
-
-    /// # Safety
-    ///
-    /// Macro expansion must visit lexical slot `I` at most once and in field
-    /// order. This makes the number of prior successful pushes at most `I`.
-    pub(crate) unsafe fn push_bound_at<const I: usize>(
-        &mut self,
-        key: &'static StaticPyKey,
-        value: Bound<'py, PyAny>,
-    ) {
-        const { assert!(I < N) };
-        debug_assert!(self.len <= I);
-        // SAFETY: `len <= I < N` by the macro contract and const assertion.
-        unsafe { self.items.get_unchecked_mut(self.len) }.write(PendingDictItem { key, value });
-        // Publish the new live prefix only after initialization completes.
-        self.len = self.len.wrapping_add(1);
-    }
-
-    pub(crate) const fn py(&self) -> Python<'py> {
-        self.py
-    }
-
-    pub(crate) fn finish(self) -> PyResult<Bound<'py, PyDict>> {
-        // SAFETY: `len` is advanced only after initializing a slot and the
-        // macro contract prevents it from exceeding `N`.
-        let items = unsafe { from_raw_parts(self.items.as_ptr(), self.len) };
-        finish_pending_dict(self.py, items)
-    }
-}
-
-impl<const N: usize> Drop for PyDictScratch<'_, N> {
-    fn drop(&mut self) {
-        while self.len != 0 {
-            self.len = self.len.wrapping_sub(1);
-            // SAFETY: `0..len` is exactly the initialized prefix. Decrementing
-            // first ensures a panicking item destructor cannot be visited a
-            // second time if cleanup resumes.
-            unsafe {
-                self.items.get_unchecked_mut(self.len).assume_init_drop();
-            }
-        }
-    }
-}
-
-struct PendingDictItem<'py> {
-    key: &'static StaticPyKey,
-    value: Bound<'py, PyAny>,
-}
-
-fn finish_pending_dict<'py>(
-    py: Python<'py>,
-    items: &[MaybeUninit<PendingDictItem<'py>>],
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = py_new_dict(py, items.len())?;
-    for item in items {
-        // SAFETY: callers expose only the initialized prefix.
-        let item = unsafe { item.assume_init_ref() };
-        item.key.set_item(py, &dict, &item.value)?;
-    }
-    Ok(dict)
 }
 
 pub(crate) fn py_new_dict(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
@@ -557,9 +330,9 @@ mod tests {
     };
     use pyo3::{IntoPyObjectExt as _, PyResult, Python, ffi};
 
-    #[cfg(not(Py_GIL_DISABLED))]
-    use super::PyDictScratch;
-    use super::{PyString, StaticPyKey};
+    use super::PyString;
+    #[cfg(Py_GIL_DISABLED)]
+    use super::StaticPyKey;
 
     fn init_python() {
         Python::initialize();
@@ -640,7 +413,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-    fn py_dict_static_slots_keep_conditional_fields_sparse_and_ordered() {
+    fn py_dict_omits_false_conditional_fields() {
         init_python();
         Python::attach(|py| -> PyResult<()> {
             let include = false;
@@ -658,34 +431,6 @@ mod tests {
             Ok(())
         })
         .unwrap();
-    }
-
-    #[cfg(not(Py_GIL_DISABLED))]
-    #[test]
-    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-    fn py_dict_scratch_partial_drop_releases_every_initialized_value() {
-        static FIRST: StaticPyKey = StaticPyKey::new("first");
-        static THIRD: StaticPyKey = StaticPyKey::new("third");
-
-        init_python();
-        Python::attach(|py| {
-            let value = PyBytes::new(py, b"owned").into_any();
-            // SAFETY: `value` is live under the attached interpreter.
-            let baseline = unsafe { ffi::Py_REFCNT(value.as_ptr()) };
-            {
-                let mut scratch = PyDictScratch::<3>::new(py);
-                // SAFETY: lexical slots 0 and 2 are visited once and in order;
-                // the skipped middle slot models a false conditional field.
-                unsafe {
-                    scratch.push_bound_at::<0>(&FIRST, value.clone());
-                    scratch.push_bound_at::<2>(&THIRD, value.clone());
-                }
-                // SAFETY: `value` remains live under the attached interpreter.
-                assert_eq!(unsafe { ffi::Py_REFCNT(value.as_ptr()) }, baseline + 2);
-            }
-            // SAFETY: `value` remains live under the attached interpreter.
-            assert_eq!(unsafe { ffi::Py_REFCNT(value.as_ptr()) }, baseline);
-        });
     }
 
     #[cfg(Py_GIL_DISABLED)]
