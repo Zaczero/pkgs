@@ -313,17 +313,28 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
     }
     let mut nest_issue: Option<ValidationIssue> = None;
     let _hole_pairs = for_each_overlapping_bounds_pair(&hole_bounds, |index, other_index| {
+        let hole = polygon
+            .holes
+            .get(index)
+            .expect("hole bounds retain their polygon ring ordinals");
         let other = polygon
             .holes
             .get(other_index)
             .expect("hole bounds retain their polygon ring ordinals");
-        let probe = *probes
+        let mut probe = *probes
             .get(index)
             .expect("hole probes retain their polygon ring ordinals");
-        let other_probe = *probes
+        let mut other_probe = *probes
             .get(other_index)
             .expect("hole probes retain their polygon ring ordinals");
-        if ring_classify_point(other.coords(), probe) == RingClass::Interior {
+        let mut location = ring_classify_point(other.coords(), probe);
+        if location == RingClass::Boundary {
+            // A probe chosen off the shell can still be the holes' shared
+            // touch vertex; it cannot decide their nesting.
+            probe = ring_probe_point(hole.coords(), other.coords());
+            location = ring_classify_point(other.coords(), probe);
+        }
+        if location == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
                 "hole_overlap",
@@ -335,11 +346,12 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
             ));
             return std::ops::ControlFlow::Break(());
         }
-        let hole = polygon
-            .holes
-            .get(index)
-            .expect("hole bounds retain their polygon ring ordinals");
-        if ring_classify_point(hole.coords(), other_probe) == RingClass::Interior {
+        let mut location = ring_classify_point(hole.coords(), other_probe);
+        if location == RingClass::Boundary {
+            other_probe = ring_probe_point(other.coords(), hole.coords());
+            location = ring_classify_point(hole.coords(), other_probe);
+        }
+        if location == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
                 "hole_overlap",

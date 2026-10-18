@@ -321,6 +321,35 @@ def test_is_valid_packed_polygons_reject_topology_counterexamples() -> None:
     np.testing.assert_array_equal(values.is_valid, [True, False, False])
 
 
+@pytest.mark.parametrize(
+    ('holes', 'expected'),
+    [
+        (
+            '(0 0,4 0,4 4,0 4,0 0),(0 0,2 1,1 2,0 0)',
+            False,
+        ),
+        (
+            '(0 0,2 1,1 2,0 0),(0 0,4 0,4 4,0 4,0 0)',
+            False,
+        ),
+        (
+            '(2 2,0 2,0 0,2 0,2 2),(2 2,4 3,3 4,2 2)',
+            True,
+        ),
+    ],
+    ids=['nested', 'nested-reversed', 'exterior-point-touch'],
+)
+def test_hole_nesting_is_not_decided_at_a_shared_first_vertex(
+    holes: str, expected: bool
+) -> None:
+    wkt = f'POLYGON((-5 -5,5 -5,5 5,-5 5,-5 -5),{holes})'
+    polygon = gm.from_wkt(wkt)
+    assert polygon.is_valid is expected
+    assert polygon.validate().code == (None if expected else 'hole_overlap')
+    rows = gm.GeometryArray([gm.from_wkt(wkt), None])
+    np.testing.assert_array_equal(rows.is_valid, [expected, False])
+
+
 def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     bowtie = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))', crs=4326)
     square = gm.box(0, 0, 1, 1)
