@@ -804,21 +804,15 @@ mod ownership_tests {
             crate::array::PreparedRow::Owned(data) => data,
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index
-            .rows
-            .operation()
-            .prepared(0)
-            .unwrap()
-            .into_owned_plan();
+        let mut index_rows = index.rows.operation();
+        let mut indexed_row = index_rows.resolve(0).unwrap();
+        let indexed_arc = indexed_row.prepared().unwrap().into_owned_plan();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse
-            .rows
-            .operation()
-            .prepared(0)
-            .unwrap()
-            .into_owned_plan();
+        let mut inverse_rows = inverse.rows.operation();
+        let mut indexed_row = inverse_rows.resolve(0).unwrap();
+        let indexed_first = indexed_row.prepared().unwrap().into_owned_plan();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
             .unwrap()

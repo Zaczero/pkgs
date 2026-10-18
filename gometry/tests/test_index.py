@@ -1162,6 +1162,9 @@ def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutati
     assert ids(index.candidates(gm.box(-1.0, -1.0, 1.0, 1.0))) == [1]
     assert ids(index.nearest(gm.Point(2.0, 2.0))) == [3]
     assert ids(index.query(values[[3, 0, 3]])) == [[3], None, [3]]
+    gathered = values[[3, 1, 3]]
+    assert ids(index.query(gathered)) == [[3], [1], [3]]
+    assert pair_rows(index.join(gathered)) == [(0, 3), (1, 1), (2, 3)]
     assert index[1].to_wkt() == 'POINT (0 0)'
 
     window = values[1:4]

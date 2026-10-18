@@ -83,38 +83,7 @@ impl PySpatialIndex {
 
     pub(crate) fn geometry_at_handle(&self, handle: usize) -> Result<PyGeometry> {
         let frame = self.metadata.clone().unwrap_or_default();
-        let mut rows = self.rows.operation();
-        match rows.resolve(handle)? {
-            super::IndexRowSource::Packed {
-                operation,
-                logical,
-                row,
-            } => {
-                let plan = operation.prepared_at(logical, row)?.into_owned_plan();
-                let source = &self
-                    .rows
-                    .packed
-                    .as_ref()
-                    .expect("packed handle has a source")
-                    .source;
-                let geometry = PyGeometry::with_row_products(
-                    std::sync::Arc::clone(plan.shape_arc()),
-                    source.frame.clone(),
-                    source.row_products.clone(),
-                    logical,
-                );
-                Ok(geometry.with_prepared_plan(plan))
-            },
-            super::IndexRowSource::Boxed(geometry) => {
-                if let Some(plan) = geometry.cached_prepared_plan() {
-                    return Ok(geometry.with_prepared_plan(plan));
-                }
-                Ok(crate::PyGeometry::with_frame(
-                    crate::ShapeData::new(geometry.shape.shape().clone()),
-                    frame,
-                ))
-            },
-        }
+        self.rows.operation().geometry(handle, frame)
     }
 
     pub(crate) fn live_geometries(&self) -> Result<Vec<(usize, PyGeometry)>> {

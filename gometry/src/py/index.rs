@@ -757,6 +757,41 @@ enum IndexRowSource<'operation, 'data> {
     Boxed(&'data PyGeometry),
 }
 
+pub(crate) struct ResolvedIndexRow<'operation, 'data> {
+    source: IndexRowSource<'operation, 'data>,
+}
+
+impl<'data> ResolvedIndexRow<'_, 'data> {
+    pub(crate) fn row(&self) -> ShapeRow<'data> {
+        match &self.source {
+            IndexRowSource::Packed { row, .. } => *row,
+            IndexRowSource::Boxed(geometry) => ShapeRow::Shape(geometry.shape.shape()),
+        }
+    }
+
+    pub(crate) fn prepared(&mut self) -> crate::error::Result<crate::array::PreparedRow<'data>> {
+        match &mut self.source {
+            IndexRowSource::Packed {
+                operation,
+                logical,
+                row,
+            } => operation.prepared_at(*logical, *row),
+            IndexRowSource::Boxed(geometry) => {
+                Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
+            },
+        }
+    }
+
+    pub(crate) fn frame_cache(&mut self) -> Arc<crate::geometry::FrameDependentCaches> {
+        match &mut self.source {
+            IndexRowSource::Packed {
+                operation, logical, ..
+            } => operation.frame_cache(*logical),
+            IndexRowSource::Boxed(geometry) => geometry.frame_cache(),
+        }
+    }
+}
+
 impl<'a> IndexRowOperation<'a> {
     fn new(rows: &'a IndexRows) -> Self {
         Self {
@@ -774,10 +809,10 @@ impl<'a> IndexRowOperation<'a> {
         ))
     }
 
-    fn resolve<'operation>(
+    pub(crate) fn resolve<'operation>(
         &'operation mut self,
         handle: usize,
-    ) -> crate::error::Result<IndexRowSource<'operation, 'a>> {
+    ) -> crate::error::Result<ResolvedIndexRow<'operation, 'a>> {
         if !self.rows.live_handles.contains(handle) {
             return Err(Self::missing_handle(handle));
         }
@@ -806,38 +841,69 @@ impl<'a> IndexRowOperation<'a> {
                     (handle, packed_store.source.storage().row(ordinal))
                 },
             };
-            return Ok(IndexRowSource::Packed {
-                operation: packed,
-                logical,
-                row,
+            return Ok(ResolvedIndexRow {
+                source: IndexRowSource::Packed {
+                    operation: packed,
+                    logical,
+                    row,
+                },
             });
         }
         let rows: &'a IndexRows = self.rows;
-        rows.boxed
+        let geometry = rows
+            .boxed
             .get(handle, packed_len)
-            .map(IndexRowSource::Boxed)
-            .ok_or_else(|| Self::missing_handle(handle))
+            .ok_or_else(|| Self::missing_handle(handle))?;
+        Ok(ResolvedIndexRow {
+            source: IndexRowSource::Boxed(geometry),
+        })
     }
 
     pub(crate) fn row(&mut self, handle: usize) -> crate::error::Result<ShapeRow<'a>> {
-        match self.resolve(handle)? {
-            IndexRowSource::Packed { row, .. } => Ok(row),
-            IndexRowSource::Boxed(geometry) => Ok(ShapeRow::Shape(geometry.shape.shape())),
-        }
+        Ok(self.resolve(handle)?.row())
     }
 
     pub(crate) fn prepared(
         &mut self,
         handle: usize,
     ) -> crate::error::Result<crate::array::PreparedRow<'a>> {
-        match self.resolve(handle)? {
+        self.resolve(handle)?.prepared()
+    }
+
+    pub(crate) fn geometry(
+        &mut self,
+        handle: usize,
+        frame: Frame,
+    ) -> crate::error::Result<PyGeometry> {
+        let rows = self.rows;
+        match self.resolve(handle)?.source {
             IndexRowSource::Packed {
                 operation,
                 logical,
                 row,
-            } => operation.prepared_at(logical, row),
+            } => {
+                let plan = operation.prepared_at(logical, row)?.into_owned_plan();
+                let source = &rows
+                    .packed
+                    .as_ref()
+                    .expect("packed handle has a source")
+                    .source;
+                Ok(PyGeometry::with_row_products(
+                    Arc::clone(plan.shape_arc()),
+                    source.frame.clone(),
+                    source.row_products.clone(),
+                    logical,
+                )
+                .with_prepared_plan(plan))
+            },
             IndexRowSource::Boxed(geometry) => {
-                Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
+                if let Some(plan) = geometry.cached_prepared_plan() {
+                    return Ok(geometry.with_prepared_plan(plan));
+                }
+                Ok(PyGeometry::with_frame(
+                    ShapeData::new(geometry.shape.shape().clone()),
+                    frame,
+                ))
             },
         }
     }
@@ -846,12 +912,7 @@ impl<'a> IndexRowOperation<'a> {
         &mut self,
         handle: usize,
     ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
-        match self.resolve(handle)? {
-            IndexRowSource::Packed {
-                operation, logical, ..
-            } => Ok(operation.frame_cache(logical)),
-            IndexRowSource::Boxed(geometry) => Ok(geometry.frame_cache()),
-        }
+        Ok(self.resolve(handle)?.frame_cache())
     }
 }
 

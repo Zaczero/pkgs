@@ -330,12 +330,13 @@ impl PySpatialIndex {
                 * to_metre
         };
         let exact = |idx| {
+            let mut source = rows.resolve(idx)?;
             if let Some(exclude) = exclude
-                && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+                && source.row().with_shape(|other| *other == *exclude)?
             {
                 return Ok(None);
             }
-            let data = rows.prepared(idx)?;
+            let data = source.prepared()?;
             Ok(Some(pair_distance_planar(to_metre, &data, query)?))
         };
         if k == 1 {
@@ -447,16 +448,18 @@ impl PySpatialIndex {
             let mut rows = self.rows.operation();
             let bound = |envelope: &AABB<[f64; 2]>| pruner.lower_bound(envelope);
             let exact = |idx| {
+                let mut source = rows.resolve(idx)?;
                 if let Some(exclude) = exclude
-                    && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+                    && source.row().with_shape(|other| *other == *exclude)?
                 {
                     return Ok(None);
                 }
-                let data = rows.prepared(idx)?;
+                let data = source.prepared()?;
+                let candidate_cache = source.frame_cache();
                 Ok(Some(pair_distance_geodesic(
                     resolved,
                     &data,
-                    &*rows.frame_cache(idx)?,
+                    &candidate_cache,
                     query,
                     &query_cache_owner,
                 )?))
@@ -519,16 +522,18 @@ impl PySpatialIndex {
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
+            let mut source = rows.resolve(idx)?;
             if let Some(exclude) = exclude
-                && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+                && source.row().with_shape(|other| *other == *exclude)?
             {
                 return Ok(None);
             }
-            let data = rows.prepared(idx)?;
+            let data = source.prepared()?;
+            let candidate_cache = source.frame_cache();
             Ok(Some(pair_distance_geodesic(
                 resolved,
                 &data,
-                &*rows.frame_cache(idx)?,
+                &candidate_cache,
                 query,
                 &query_cache_owner,
             )?))
@@ -914,7 +919,8 @@ mod tests {
                 .live_handles_sorted()
                 .into_iter()
                 .map(|handle| {
-                    let data = rows.prepared(handle).expect("prepared row");
+                    let mut source = rows.resolve(handle).expect("prepared row");
+                    let data = source.prepared().expect("prepared row");
                     NearestCandidate::new(
                         pair_distance_planar(to_metre.get(), &data, &query)
                             .expect("planar distance"),
