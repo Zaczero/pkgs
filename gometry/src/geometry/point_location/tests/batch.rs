@@ -495,7 +495,7 @@ fn prepared_contact_certificate_includes_the_hole_hierarchy() {
 }
 
 #[test]
-fn sustained_queries_promote_after_an_advisory_light_batch() {
+fn query_forecasts_do_not_credit_demand_before_ring_work() {
     let shape = Shape::LineString(LineSeq::from_proven(
         CoordSeq::try_from_xy(
             &(0..17)
@@ -505,8 +505,10 @@ fn sustained_queries_promote_after_an_advisory_light_batch() {
         .unwrap(),
     ));
     let plan = crate::geometry::PreparedPlan::transient(&shape);
-    let queries = plan.prepare_point_queries(4).unwrap();
+    let queries = plan.prepare_point_queries(127).unwrap();
     assert!(!queries.uses_slabs());
+    // Forecasts guide this resolve only; they are not completed ring queries.
+    assert!(!plan.prepare_point_queries(127).unwrap().uses_slabs());
     for _ in 0..256 {
         assert_eq!(
             queries.location(Point::new_raw_xy(0.0, 0.0)).unwrap(),
@@ -515,6 +517,12 @@ fn sustained_queries_promote_after_an_advisory_light_batch() {
     }
     let promoted = plan.prepare_point_queries(0).unwrap();
     assert!(promoted.uses_slabs());
+    assert!(!queries.uses_slabs());
+    assert_eq!(
+        queries.location(Point::new_raw_xy(0.0, 0.0)).unwrap(),
+        Loc::Exterior,
+        "an admitted ring handle remains valid after later resolves promote"
+    );
     assert_eq!(
         promoted.location(Point::new_raw_xy(0.0, 0.0)).unwrap(),
         Loc::Exterior

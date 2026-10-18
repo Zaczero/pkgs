@@ -130,15 +130,8 @@ impl PointQueryPlan {
         if let Some(index) = admission.slab.get() {
             return Ok(PreparedPointQueries(PointQueryRoute::Slabs(index)));
         }
-        let previous = admission
-            .demand
-            .try_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |demand| Some(demand.saturating_add(expected_queries)),
-            )
-            .expect("the demand update always supplies a value");
-        if previous.saturating_add(expected_queries) >= admission.after {
+        let observed = admission.demand.load(std::sync::atomic::Ordering::Relaxed);
+        if observed.saturating_add(expected_queries) >= admission.after {
             let index = admission.slab.get_or_try_init(|| {
                 let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[shape])?;
                 let partition = inventory.partition_without_budget()?;
