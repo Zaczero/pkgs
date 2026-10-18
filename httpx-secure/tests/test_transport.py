@@ -521,3 +521,66 @@ async def test_falsey_async_validator_still_runs(server_factory):
 
     assert response.content == b'OK'
     assert calls == [('127.0.0.1', ip_address('127.0.0.1'), server.port)]
+
+
+async def test_falsey_sync_validator_can_deny_and_cache_denial(server_factory):
+    calls = []
+
+    class FalseyValidator:
+        def __bool__(self):
+            return False
+
+        def __call__(self, hostname, address, port):
+            calls.append((hostname, address, port))
+            return False
+
+    validator = FalseyValidator()
+
+    async with (
+        server_factory() as server,
+        httpx_ssrf_protection(
+            httpx.AsyncClient(trust_env=False),
+            check_globally_reachable=False,
+            custom_validator=validator,
+        ) as client,
+    ):
+        url = f'http://127.0.0.1:{server.port}/denied'
+        with pytest.raises(SSRFProtectionError) as first:
+            await client.get(url)
+        with pytest.raises(SSRFProtectionError) as second:
+            await client.get(url)
+
+    assert calls == [('127.0.0.1', ip_address('127.0.0.1'), server.port)]
+    assert first.value is not second.value
+    assert first.value.request.url.path == '/denied'
+    assert second.value.request.url.path == '/denied'
+
+
+async def test_sync_validator_exception_identity_and_retry(server_factory):
+    calls = []
+    provider_error = ValueError('synchronous policy provider failed')
+
+    def validate(hostname, address, port):
+        calls.append((hostname, address, port))
+        if len(calls) == 1:
+            raise provider_error
+        return True
+
+    async with (
+        server_factory() as server,
+        httpx_ssrf_protection(
+            httpx.AsyncClient(trust_env=False),
+            check_globally_reachable=False,
+            custom_validator=validate,
+        ) as client,
+    ):
+        url = f'http://127.0.0.1:{server.port}/'
+        with pytest.raises(ValueError, check=lambda error: error is provider_error):
+            await client.get(url)
+        response = await client.get(url)
+
+    assert response.content == b'OK'
+    assert calls == [
+        ('127.0.0.1', ip_address('127.0.0.1'), server.port),
+        ('127.0.0.1', ip_address('127.0.0.1'), server.port),
+    ]
