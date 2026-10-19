@@ -96,15 +96,10 @@ pub(crate) fn normalize_geometry_batch<'py>(
     if classify_input(value).is_some() {
         return Ok(value.clone());
     }
-    let capacity = value
-        .get_type()
-        .getattr_opt(pyo3::intern!(py, "__len__"))?
-        .map(|_| value.len())
-        .transpose()?
-        .unwrap_or_default();
     let iterator = crate::py_iter_or_error(value, || {
         crate::broadcast::expected_geometry_or_array_for(value)
     })?;
+    let capacity = crate::optional_len(value)?.unwrap_or_default();
     let mut rows = Vec::with_capacity(capacity);
     for (logical_row, item) in iterator.enumerate() {
         let item = item?;

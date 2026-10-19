@@ -30,16 +30,16 @@ use boundary::{
     coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
     coordinates, coordinates_object, copy_one_byte_buffer, f64_required, f64_scalar_named,
     finite_coordinate_required, finite_f64_required, float_values, float_values_at_most,
-    float_values_exact, is_one_byte_buffer, json_to_py, non_negative_int,
+    float_values_exact, has_iter_protocol, is_one_byte_buffer, json_to_py, non_negative_int,
     optional_coordinate_column_values, optional_coordinate_column_values_from_buffer,
     optional_coordinate_input_with_expected, optional_len, parameter_input_with_expected,
     parse_affine_matrix, parse_area, parse_cdt_refinement, parse_grid_size, parse_sample_count,
     parse_sample_seed, point_tuple, positive_int, py_i64_bounded, py_i64_required, py_index_check,
-    py_index_object, py_isize_required, py_iter_or_error, py_u64_if_index, py_u64_required,
-    reject_multidimensional_coordinate_array, reserve_from_py_len, strict_i32, strict_i32_overflow,
-    strict_i64, strict_i64_overflow, strict_i128, strict_optional_i64, strict_u64,
-    try_coordseq_from_nd_buffer, validate_subdivide_max_vertices, visit_py_iter_from_iter,
-    with_one_byte_buffer,
+    py_index_object, py_isize_required, py_iter_or_error, py_iter_or_none, py_u64_if_index,
+    py_u64_required, reject_multidimensional_coordinate_array, reserve_from_py_len, strict_i32,
+    strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128, strict_optional_i64,
+    strict_u64, try_coordseq_from_nd_buffer, validate_subdivide_max_vertices,
+    visit_py_iter_from_iter, with_one_byte_buffer,
 };
 use collections::csr::CsrBuilder;
 use collections::reserve_hint;

@@ -254,12 +254,7 @@ fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(
                 if error.is_instance_of::<PyTypeError>(value.py())
                     && (value.cast::<PyString>().is_ok()
                         || value.cast::<PyBytes>().is_ok()
-                        || (value
-                            .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
-                            .is_none()
-                            && value
-                                .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
-                                .is_none())) =>
+                        || !crate::has_iter_protocol(value)) =>
             {
                 return Err(PyTypeError::new_err(format!(
                     "snap_to_grid {name} must be {expected}"

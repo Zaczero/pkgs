@@ -58,6 +58,56 @@ def test_geometry_iterables_propagate_iterator_failures_without_partial_results(
             consume(broken())
 
 
+def test_geometry_batch_protocols_follow_type_slots() -> None:
+    instance_lookups: list[str] = []
+
+    class InstanceOnly:
+        def __init__(self) -> None:
+            object.__setattr__(self, '__iter__', lambda: iter([gm.Point(0, 0)]))
+            object.__setattr__(self, '__getitem__', lambda _index: gm.Point(0, 0))
+            object.__setattr__(self, '__len__', lambda: 1)
+
+        def __getattribute__(self, name: str) -> object:
+            if name in {'__iter__', '__getitem__', '__len__'}:
+                instance_lookups.append(name)
+                raise RuntimeError('instance magic attribute was inspected')
+            return object.__getattribute__(self, name)
+
+    with pytest.raises(TypeError):
+        gm.distance(InstanceOnly(), gm.Point(0, 0))
+    with pytest.raises(TypeError):
+        gm.Point(0, 0).snap_to_grid(InstanceOnly())
+    with pytest.raises(TypeError):
+        gm.s2_bounding_cell(InstanceOnly())
+    with pytest.raises(TypeError):
+        gm.CellArray(InstanceOnly(), type=gm.H3Cell)
+    assert instance_lookups == []
+
+    iterator_error = TypeError('iterator provider sentinel')
+
+    class BrokenIterator:
+        def __iter__(self) -> object:
+            raise iterator_error
+
+        def __len__(self) -> int:
+            raise RuntimeError('length provider should not run first')
+
+    with pytest.raises(TypeError) as caught:
+        gm.distance(BrokenIterator(), gm.Point(0, 0))
+    assert caught.value is iterator_error
+
+    class LegacySequence:
+        def __getitem__(self, index: int) -> object:
+            if index == 2:
+                raise IndexError
+            return (gm.Point(0, 0), gm.Point(3, 4))[index]
+
+    np.testing.assert_array_equal(
+        gm.distance(LegacySequence(), gm.Point(0, 0)),
+        [0.0, 5.0],
+    )
+
+
 def test_wkb_accepts_any_buffer_exporter() -> None:
     wkb = gm.Point(1, 2).to_wkb()
     for payload in (bytearray(wkb), memoryview(wkb), array.array('B', wkb)):

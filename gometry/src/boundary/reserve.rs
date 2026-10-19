@@ -5,6 +5,7 @@
 //! checks. Provider exceptions propagate and native allocator exhaustion aborts.
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence, PyString};
 
@@ -32,38 +33,41 @@ pub(crate) fn py_iter_or_error<'py>(
     py_iter_or_none(value)?.ok_or_else(error)
 }
 
+/// Whether the type supplies Python's iterator or legacy sequence protocol.
+///
+/// Instance attributes named ``__iter__`` and ``__getitem__`` do not
+/// participate in implicit special-method lookup.
+pub(crate) fn has_iter_protocol(value: &Bound<'_, PyAny>) -> bool {
+    type_has_slot(value, ffi::Py_tp_iter) || type_has_slot(value, ffi::Py_sq_item)
+}
+
 /// Acquire a Python iterator, returning `None` only when the value has neither
 /// the iterator nor legacy sequence protocol. Errors raised by a supplied
 /// protocol are returned unchanged.
 pub(crate) fn py_iter_or_none<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Option<Bound<'py, PyIterator>>> {
-    match value.try_iter() {
-        Ok(iter) => Ok(Some(iter)),
-        Err(protocol_error)
-            if protocol_error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
-                    .is_none()
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
-                    .is_none() =>
-        {
-            Ok(None)
-        },
-        Err(protocol_error) => Err(protocol_error),
+    if has_iter_protocol(value) {
+        value.try_iter().map(Some)
+    } else {
+        Ok(None)
     }
 }
 
-/// Read a Python size only when the object actually exposes ``__len__``.
-/// Missing length is normal for a one-shot iterator; an error from a supplied
-/// ``__len__`` belongs to the provider and must not be demoted to "no length".
+fn type_has_slot(value: &Bound<'_, PyAny>, slot: std::ffi::c_int) -> bool {
+    let ty = value.get_type();
+    // SAFETY: `ty` is a live Python type and `slot` is one of the public,
+    // supported slot identifiers used by the callers below.
+    unsafe { !ffi::PyType_GetSlot(ty.as_type_ptr(), slot).is_null() }
+}
+
+/// Read Python's size only when the type supplies a length slot.
+///
+/// Missing length is normal for a one-shot iterator. Calling `len()` after
+/// classification preserves the provider's descriptor behavior and exception.
 pub(crate) fn optional_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
-    let Some(len) = value.getattr_opt(pyo3::intern!(value.py(), "__len__"))? else {
+    if !type_has_slot(value, ffi::Py_mp_length) && !type_has_slot(value, ffi::Py_sq_length) {
         return Ok(None);
-    };
-    if !len.is_callable() {
-        return Err(PyTypeError::new_err("__len__ must be callable"));
     }
     value.len().map(Some)
 }
@@ -413,6 +417,149 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn protocol_classification_uses_type_slots_and_calls_descriptors_once() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let locals = pyo3::types::PyDict::new(py);
+            py.run(
+                c"
+instance_lookups = []
+class InstanceOnly:
+    def __init__(self):
+        object.__setattr__(self, '__iter__', lambda: iter((1,)))
+        object.__setattr__(self, '__getitem__', lambda index: 1)
+        object.__setattr__(self, '__len__', lambda: 1)
+    def __len__(self):
+        return 7
+    def __getattribute__(self, name):
+        if name in ('__iter__', '__getitem__', '__len__'):
+            instance_lookups.append(name)
+            raise RuntimeError('instance magic attribute was inspected')
+        return object.__getattribute__(self, name)
+instance_only = InstanceOnly()
+
+descriptor_calls = []
+class IterDescriptor:
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        descriptor_calls.append('iter')
+        return lambda: iter(range(7))
+class LenDescriptor:
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        descriptor_calls.append('len')
+        return lambda: 7
+class DescribedProtocols:
+    __iter__ = IterDescriptor()
+    __len__ = LenDescriptor()
+described = DescribedProtocols()
+",
+                Some(&locals),
+                Some(&locals),
+            )?;
+
+            let instance_only = locals
+                .get_item("instance_only")?
+                .expect("instance-only fixture");
+            assert!(!has_iter_protocol(&instance_only));
+            assert!(py_iter_or_none(&instance_only)?.is_none());
+            assert_eq!(optional_len(&instance_only)?, Some(7));
+            let lookups: Vec<String> = locals
+                .get_item("instance_lookups")?
+                .expect("lookup log")
+                .extract()?;
+            assert!(lookups.is_empty());
+
+            let described = locals.get_item("described")?.expect("descriptor fixture");
+            let iter = py_iter_or_none(&described)?.expect("type supplies __iter__");
+            let items = collect_py_iter_from_iter(&described, iter, |item| item.extract::<i64>())?;
+            assert_eq!(items, [0, 1, 2, 3, 4, 5, 6]);
+            let calls: Vec<String> = locals
+                .get_item("descriptor_calls")?
+                .expect("descriptor call log")
+                .extract()?;
+            assert_eq!(calls, ["iter", "len"]);
+            Ok(())
+        })
+        .expect("type-slot protocol classification");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn protocol_admission_preserves_legacy_sequences_and_provider_errors() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let locals = pyo3::types::PyDict::new(py);
+            py.run(
+                c"
+class DisabledIterator:
+    __iter__ = None
+    def __getitem__(self, index):
+        return index
+disabled = DisabledIterator()
+
+class LegacySequence:
+    def __getitem__(self, index):
+        if index == 3:
+            raise IndexError
+        return index + 10
+legacy = LegacySequence()
+
+iter_error = TypeError('iterator provider sentinel')
+class BrokenIterator:
+    def __iter__(self):
+        raise iter_error
+broken_iter = BrokenIterator()
+
+len_error = RuntimeError('length provider sentinel')
+class BrokenLength:
+    def __len__(self):
+        raise len_error
+broken_len = BrokenLength()
+",
+                Some(&locals),
+                Some(&locals),
+            )?;
+
+            let disabled = locals
+                .get_item("disabled")?
+                .expect("disabled iterator fixture");
+            let Err(error) = py_iter_or_none(&disabled) else {
+                panic!("__iter__ = None must keep Python's TypeError");
+            };
+            assert!(error.is_instance_of::<PyTypeError>(py));
+
+            let legacy = locals.get_item("legacy")?.expect("legacy sequence fixture");
+            let iter = py_iter_or_none(&legacy)?.expect("legacy sequence protocol");
+            let items = collect_py_iter_from_iter(&legacy, iter, |item| item.extract::<i64>())?;
+            assert_eq!(items, [10, 11, 12]);
+
+            let broken_iter = locals
+                .get_item("broken_iter")?
+                .expect("broken iterator fixture");
+            let Err(error) = py_iter_or_none(&broken_iter) else {
+                panic!("iterator provider error must propagate");
+            };
+            let sentinel = locals.get_item("iter_error")?.expect("iterator exception");
+            assert_eq!(error.value(py).as_ptr(), sentinel.as_ptr());
+
+            let broken_len = locals
+                .get_item("broken_len")?
+                .expect("broken length fixture");
+            let error =
+                optional_len(&broken_len).expect_err("length provider error must propagate");
+            let sentinel = locals.get_item("len_error")?.expect("length exception");
+            assert_eq!(error.value(py).as_ptr(), sentinel.as_ptr());
+            Ok(())
+        })
+        .expect("protocol admission preserves providers");
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn at_most_collector_drops_retained_values_before_excess_error() {

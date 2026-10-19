@@ -39,20 +39,8 @@ pub(super) fn cell_items<'py>(cells: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'
     }
     // Only plain non-iterables are scalar singleton inputs; errors raised by
     // a supplied iterable protocol belong to that provider.
-    let iter = match cells.try_iter() {
-        Ok(iter) => iter,
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(cells.py())
-                && cells
-                    .getattr_opt(pyo3::intern!(cells.py(), "__iter__"))?
-                    .is_none()
-                && cells
-                    .getattr_opt(pyo3::intern!(cells.py(), "__getitem__"))?
-                    .is_none() =>
-        {
-            return Ok(vec![cells.clone()]);
-        },
-        Err(error) => return Err(error),
+    let Some(iter) = crate::py_iter_or_none(cells)? else {
+        return Ok(vec![cells.clone()]);
     };
     crate::collect_py_iter_from_iter(cells, iter, Ok)
 }
@@ -139,12 +127,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         Ok(values) => values,
         Err(error)
             if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
-                    .is_none()
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
-                    .is_none() =>
+                && !crate::has_iter_protocol(value) =>
         {
             return Err(PyTypeError::new_err(
                 "expected a Geometry, GeometryArray, or (minx, miny, maxx, maxy) bounds",

@@ -1,6 +1,5 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::PyIterator;
 
 use crate::boundary::metadata;
 use crate::crs::frame::FrameAdoption;
@@ -51,28 +50,10 @@ fn collect_iterable<'py>(values: &Bound<'py, PyAny>) -> PyResult<Option<Vec<Boun
     if values.is_none() {
         return Ok(None);
     }
-    let Some(iter) = iterable_or_none(values)? else {
+    let Some(iter) = crate::py_iter_or_none(values)? else {
         return Ok(None);
     };
     crate::collect_py_iter_from_iter(values, iter, Ok).map(Some)
-}
-
-fn iterable_or_none<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyIterator>>> {
-    match value.try_iter() {
-        Ok(iter) => Ok(Some(iter)),
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
-                    .is_none()
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
-                    .is_none() =>
-        {
-            Ok(None)
-        },
-        Err(error) => Err(error),
-    }
 }
 
 fn geometry_array_from_items(
@@ -141,7 +122,7 @@ fn coordinate_matrix(rows: &[Bound<'_, PyAny>]) -> PyResult<Option<(Vec<f64>, Ve
     let Some(first) = rows.first() else {
         return Ok(Some((Vec::new(), Vec::new())));
     };
-    let Some(mut first_iter) = iterable_or_none(first)? else {
+    let Some(mut first_iter) = crate::py_iter_or_none(first)? else {
         return Ok(None);
     };
     let Some(longitude) = first_iter.next() else {
@@ -162,7 +143,7 @@ fn coordinate_matrix(rows: &[Bound<'_, PyAny>]) -> PyResult<Option<(Vec<f64>, Ve
     longitudes.push(longitude);
     latitudes.push(latitude);
     for (row, item) in rows.iter().enumerate().skip(1) {
-        let Some(mut ordinates) = iterable_or_none(item)? else {
+        let Some(mut ordinates) = crate::py_iter_or_none(item)? else {
             return Err(PyTypeError::new_err(format!(
                 "coordinate matrix row {row} must contain at least x and y"
             )));

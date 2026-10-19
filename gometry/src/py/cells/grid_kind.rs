@@ -636,20 +636,8 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
             missing: None,
         });
     }
-    let iter = match ids.try_iter() {
-        Ok(iter) => iter,
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(ids.py())
-                && ids
-                    .getattr_opt(pyo3::intern!(ids.py(), "__iter__"))?
-                    .is_none()
-                && ids
-                    .getattr_opt(pyo3::intern!(ids.py(), "__getitem__"))?
-                    .is_none() =>
-        {
-            return Err(PyTypeError::new_err("cell array ids must be an iterable"));
-        },
-        Err(error) => return Err(error),
+    let Some(iter) = crate::py_iter_or_none(ids)? else {
+        return Err(PyTypeError::new_err("cell array ids must be an iterable"));
     };
     collect_ids_from_iter(ids, iter, kind, |item_kind| {
         PyTypeError::new_err(format!(
@@ -687,22 +675,10 @@ pub(super) fn collect_inferred_ids(
             "cell array type is required for raw id arrays and buffers",
         ));
     }
-    let iter = match values.try_iter() {
-        Ok(iter) => iter,
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(values.py())
-                && values
-                    .getattr_opt(pyo3::intern!(values.py(), "__iter__"))?
-                    .is_none()
-                && values
-                    .getattr_opt(pyo3::intern!(values.py(), "__getitem__"))?
-                    .is_none() =>
-        {
-            return Err(PyTypeError::new_err(
-                "cell array values must be an iterable of typed cell objects",
-            ));
-        },
-        Err(error) => return Err(error),
+    let Some(iter) = crate::py_iter_or_none(values)? else {
+        return Err(PyTypeError::new_err(
+            "cell array values must be an iterable of typed cell objects",
+        ));
     };
     collect_inferred_from_iter(values, iter)
 }

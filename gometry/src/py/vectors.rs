@@ -461,20 +461,8 @@ impl Groups {
     /// equality (`==`, row-aligned) — so the two can never disagree. Internal
     /// (not a `#[pymethods]` surface).
     fn parse_int64_row_item(item: &Bound<'_, PyAny>) -> PyResult<Option<Vec<i64>>> {
-        let iter = match item.try_iter() {
-            Ok(iter) => iter,
-            Err(error)
-                if error.is_instance_of::<PyTypeError>(item.py())
-                    && item
-                        .getattr_opt(pyo3::intern!(item.py(), "__iter__"))?
-                        .is_none()
-                    && item
-                        .getattr_opt(pyo3::intern!(item.py(), "__getitem__"))?
-                        .is_none() =>
-            {
-                return Ok(None);
-            },
-            Err(error) => return Err(error),
+        let Some(iter) = crate::py_iter_or_none(item)? else {
+            return Ok(None);
         };
         let mut values = Vec::new();
         crate::reserve_from_py_len(item, &mut values)?;
