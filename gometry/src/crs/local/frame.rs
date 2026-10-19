@@ -1119,7 +1119,6 @@ mod datum_preserving_tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::case_name_wgs_84_utm_crs_epsg_4326_point_74_0_40_515e8a36(Case {
         name: "WGS 84 UTM",
         crs: "EPSG:4326",
@@ -1174,6 +1173,7 @@ mod datum_preserving_tests {
         point: (0.0, -81.0),
         expected_authority: Some("EPSG:5042"),
     })]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn selected_local_frames_preserve_the_source_datum(#[case] case: Case) {
         let state = runtime_state_snapshot().unwrap();
 
@@ -1194,9 +1194,9 @@ mod datum_preserving_tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::epsg_4807("EPSG:4807", "EPSG:32631")]
     #[case::epsg_4269("EPSG:4269", "EPSG:5042")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn pipeline_owner_rejects_the_previous_cross_datum_fallbacks(
         #[case] source: &'static str,
         #[case] previous_target: &'static str,

@@ -587,11 +587,11 @@ mod tests {
     /// apart because the deriving conversion differs. 3857/3395 likewise
     /// (~32.75 km in Y), and 4326/4258 differ by datum.
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::epsg_2180("EPSG:2180", "EPSG:2177")]
     #[case::epsg_3857("EPSG:3857", "EPSG:3395")]
     #[case::epsg_4326("EPSG:4326", "EPSG:4258")]
     #[case::epsg_4326_e37ab5f0("EPSG:4326", "EPSG:4979")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn compatible_rejects_same_attribute_different_conversion(
         #[case] left: &'static str,
         #[case] right: &'static str,

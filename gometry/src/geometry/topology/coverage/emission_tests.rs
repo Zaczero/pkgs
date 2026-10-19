@@ -30,9 +30,9 @@ fn geographic_clean_never_collapses_a_rational_sliver() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::disabled(false)]
 #[case::enabled(true)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_attributes_belong_to_the_output_occurrence(#[case] reverse: bool) {
     let rows = [
         crate::io::parse_wkt("POLYGON ZM ((0 0 10 7, 1 0 10 7, 1 1 10 7, 0 1 10 7, 0 0 10 7))")
@@ -136,9 +136,9 @@ fn geographic_clean_reuses_polar_source_rings_per_selected_region() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::coverageoverlaprule_maxarea(CoverageOverlapRule::MaxArea)]
 #[case::coverageoverlaprule_minarea(CoverageOverlapRule::MinArea)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_area_rankings_retain_source_ring_anchors(#[case] rule: CoverageOverlapRule) {
     let rows = [
         crate::io::parse_wkt("POLYGON ((10 60, 10 85, 0 85, 0 60, 10 60))")
@@ -160,7 +160,6 @@ fn geographic_clean_area_rankings_retain_source_ring_anchors(#[case] rule: Cover
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::north(
     "north",
     "POLYGON ((10 60, 10 80, 0 80, 0 60, 10 60))",
@@ -176,6 +175,7 @@ fn geographic_clean_area_rankings_retain_source_ring_anchors(#[case] rule: Cover
     "POLYGON ((-170 60, -170 80, 170 80, 170 60, -170 60))",
     "POLYGON ((-170 70, -170 90, 170 90, 170 70, -170 70))"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_clean_longest_border_retains_polar_boundary(
     #[case] case: &'static str,
     #[case] first: &'static str,

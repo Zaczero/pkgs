@@ -1360,10 +1360,10 @@ fn t2_equator_crossing_generated_boundary_closes_only_the_selected_pole(
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::coordinateaxes_xyz(CoordinateAxes::XYZ)]
 #[case::coordinateaxes_xym(CoordinateAxes::XYM)]
 #[case::coordinateaxes_xyzm(CoordinateAxes::XYZM)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn t2_synthetic_pole_closure_drops_unsourceable_axes_before_publication(
     #[case] axes: CoordinateAxes,
 ) {

@@ -208,9 +208,9 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::f64_from_bits_0x2006_a09e_667f_3bcd(f64::from_bits(0x2006_A09E_667F_3BCD))]
     #[case::f64_from_bits_0x5fd2_0dd7_5042_9b6d(f64::from_bits(0x5FD2_0DD7_5042_9B6D))]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn axis_arithmetic_boundaries_admit_scaled_physical_distances(#[case] axis: f64) {
         let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
         let model = crate::crs::metric_model(Some(&crs)).unwrap();
@@ -228,9 +228,9 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::f64_from_bits_0x2006_a09e_667f_3bcc(f64::from_bits(0x2006_A09E_667F_3BCC))]
     #[case::f64_from_bits_0x5fd2_0dd7_5042_9b6e(f64::from_bits(0x5FD2_0DD7_5042_9B6E))]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn axis_arithmetic_boundaries_reject_adjacent_unrepresentable_areas(#[case] axis: f64) {
         let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
         let model = crate::crs::metric_model(Some(&crs)).unwrap();

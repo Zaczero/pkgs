@@ -159,9 +159,9 @@ fn drawing_groups_reject_authentic_q_rows_with_group_addresses() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::logical_0(0)]
 #[case::logical_2(2)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories(#[case] logical: usize) {
     let (mut rows, mut expected, frame) = mixed_rows();
     let shape = expected
@@ -192,9 +192,9 @@ fn boundary_final_writer_rejects_m_corruption_in_both_receipt_inventories(#[case
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::logical_0(0)]
 #[case::logical_2(2)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories(
     #[case] logical: usize,
 ) {
@@ -205,9 +205,9 @@ fn boundary_final_writer_rejects_unique_literal_omission_in_both_inventories(
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::logical_0(0)]
 #[case::logical_2(2)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn boundary_final_writer_rejects_changed_logical_identity_in_both_inventories(
     #[case] logical: usize,
 ) {

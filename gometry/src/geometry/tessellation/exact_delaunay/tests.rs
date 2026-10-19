@@ -369,7 +369,6 @@ fn assert_refinement_order_identity(wkt: &str, option: &str, value: f64) {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 #[case::area_1024_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 1024.0)]
 #[case::area_2048_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 2048.0)]
 #[case::area_4096_order_identity("POLYGON((0 0,2 0,2 2,0 2,0 0))", "max_area", 4.0 / 4096.0)]
@@ -379,6 +378,7 @@ fn assert_refinement_order_identity(wkt: &str, option: &str, value: f64) {
 #[case::angle_4096_order_identity("POLYGON((0 0,1024 0,1024 1,0 1,0 0))", "min_angle", 20.0)]
 #[case::angle_8192_order_identity("POLYGON((0 0,2048 0,2048 1,0 1,0 0))", "min_angle", 20.0)]
 #[case::angle_16384_order_identity("POLYGON((0 0,4096 0,4096 1,0 1,0 0))", "min_angle", 20.0)]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn refinement_preserves_insertion_order_identity(
     #[case] wkt: &str,
     #[case] option: &str,

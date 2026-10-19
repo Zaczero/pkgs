@@ -674,7 +674,6 @@ mod tests {
     /// Geometry epoch policy: the WGS 84 ensemble and dynamic datums admit
     /// epochs; a static datum and a merely dynamic-member ensemble do not.
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::epsg_4326("EPSG:4326", true)]
     // WGS 84 ensemble of dynamic realizations
     #[case::epsg_9000("EPSG:9000", true)]
@@ -685,6 +684,7 @@ mod tests {
     // ETRS89 ensemble is not itself dynamic
     #[case::epsg_3857("EPSG:3857", true)]
     // Web Mercator on the WGS84 ensemble
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geometry_epoch_admission_matches_frame_policy(
         #[case] crs: &'static str,
         #[case] expected: bool,
@@ -722,9 +722,9 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::enabled(true)]
     #[case::disabled(false)]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn authored_axis_meaning_is_preserved_in_native_forward_inverse_pipeline(
         #[case] latitude_first: bool,
     ) {

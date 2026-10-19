@@ -91,11 +91,11 @@ fn retained_geographic_queries_match_closed_point_and_line_support(
     );
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::maxx_0_49(0.49, b"212101212")]
 #[case::maxx_0_5(0.5, b"212101212")]
 #[case::maxx_0_500_000_000_000_000_1(0.500_000_000_000_000_1, b"212101212")]
 #[case::maxx_0_51(0.51, b"212101212")]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_near_vertical_box_keeps_planar_boundary_dimension(
     #[case] maxx: f64,
     #[case] expected: &'static [u8],
@@ -132,7 +132,6 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension(
     );
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::disjoint("disjoint", Shape::Polygon(rectangle(-20.0, 0.0, -18.0, 2.0)), Shape::Polygon(rectangle(-16.0, 0.0, -14.0, 2.0)), "FF2FF1212")]
 #[case::nested("nested", Shape::Polygon(rectangle(-20.0, 0.0, -10.0, 10.0)), Shape::Polygon(rectangle(-18.0, 2.0, -16.0, 4.0)), "212FF1FF2")]
 #[case::overlapping("overlapping", Shape::Polygon(rectangle(-20.0, 0.0, -16.0, 4.0)), Shape::Polygon(rectangle(-18.0, 2.0, -14.0, 6.0)), "212101212")]
@@ -156,6 +155,7 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension(
     Shape::Polygon(rectangle(-8.0, -8.0, -2.0, -4.0)),
     "212101212"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn ordinary_geographic_relation_matches_known_matrices(
     #[case] name: &str,
     #[case] left: Shape,
@@ -252,7 +252,6 @@ fn ordinary_country_charts_match_q_relation() {
     );
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::seam(
     "seam",
     Shape::Polygon(polygon(&[
@@ -270,6 +269,7 @@ fn ordinary_country_charts_match_q_relation() {
     Shape::Polygon(rectangle(350.0, 0.0, 360.0, 2.0)),
     "FF2FF1212"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_pair_q_matches_known_matrices_at_quotient_aliases(
     #[case] name: &str,
     #[case] left: Shape,
@@ -408,7 +408,6 @@ fn geographic_split_crossing_keeps_boundary_point_relation() {
     assert_eq!(split_probe_relation, raw_probe_relation);
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::adjacent_interior(
     {
         let left = Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0));
@@ -470,6 +469,7 @@ fn geographic_split_crossing_keeps_boundary_point_relation() {
     Point::new_raw_xy(0.0, 0.0),
     "FF20F1FF2"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_aggregate_contacts_use_quotient_face_locations(
     #[case] geometry: Shape,
     #[case] point: Point,
@@ -534,7 +534,6 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
     }
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::ordinary(
     Shape::geometry_collection(vec![
         Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
@@ -607,6 +606,7 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
     .expect("test collection is valid"),
     "212101212"
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn mixed_geographic_relation_keeps_known_area_and_curve_cells(
     #[case] left: Shape,
     #[case] right: Shape,

@@ -107,7 +107,6 @@ fn retained_source_connection_preserves_relative_lift_and_public_half_turn_polic
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::degrees("degrees", degrees(), 360.0, 10.0, 2.0)]
 #[case::radians("radians", radians(), std::f64::consts::TAU, 0.0, 0.5)]
 #[case::proj_radian_crs(
@@ -166,6 +165,7 @@ fn retained_source_connection_preserves_relative_lift_and_public_half_turn_polic
     5.0,
     2.0
 )]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn source_sheet_publication_uses_rust_admitted_frame_periods_and_branches(
     #[case] name: &str,
     #[case] frame: GeographicFrame,

@@ -1,7 +1,7 @@
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::predicate_crosses(Predicate::Crosses)]
 #[case::predicate_overlaps(Predicate::Overlaps)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn refinement_kind_gate_precedes_geographic_admission(#[case] predicate: Predicate) {
     let frame = Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None).unwrap();
     let index = spatial_index(vec![PyGeometry::with_frame(

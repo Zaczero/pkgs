@@ -184,9 +184,9 @@ fn scalar_rows_relate_prepared_array_rows_from_fixed_graphs() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::sound(PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)), line((-1.0, 1.0), (3.0, 1.0)))]
 #[case::unsound(PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)), rectangle(170.0, 40.0, -170.0, 50.0))]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_scalar_rows_cover_sound_and_unsound_operands_in_both_orders(
     #[case] scalar: PreparedPlan,
     #[case] row: Shape,

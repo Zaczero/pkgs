@@ -1437,7 +1437,6 @@ mod root_capture_tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::line(line(&[Point::new_raw_xy(0.0, 1.0), Point::new_raw_xy(360.0, 60.0)]))]
     #[case::polygon(polygon(&[
         Point::new_raw_xy(-10.0, -5.0),
@@ -1451,6 +1450,7 @@ mod root_capture_tests {
         Point::new_raw_xy(-170.0, 0.0),
         Point::new_raw_xy(180.0, 10.0),
     ]))]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn geographic_xy_hull_and_rectangle_kernels_skip_root_capture(#[case] input: Shape) {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let frame = Frame::Crs("OGC:CRS84".into());

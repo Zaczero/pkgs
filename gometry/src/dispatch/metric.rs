@@ -577,9 +577,9 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     #[case::epsg_4326("EPSG:4326")]
     #[case::epsg_4979("EPSG:4979")]
+    #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn wgs84_geographic_carry_captures_runtime_before_lazy_metric_resolution(
         #[case] code: &'static str,
     ) {

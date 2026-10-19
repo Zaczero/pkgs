@@ -304,9 +304,9 @@ fn geographic_face_labels_fill_a_seam_bordered_hole() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::shell_latitude_70_0(70.0, 89.0)]
 #[case::negative_shell_latitude_70_0(-70.0, -89.0)]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_face_labels_keep_a_polar_hole_distinct_from_the_complement(
     #[case] shell_latitude: f64,
     #[case] hole_latitude: f64,

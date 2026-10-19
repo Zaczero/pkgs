@@ -33,7 +33,6 @@ fn geographic_strict_membership_retains_shared_line_boundary_parity() {
 }
 
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 #[case::polygon_0_0_4_0_4_4_0_4_0_0("POLYGON ((0 0,4 0,4 4,0 4,0 0))")]
 #[case::polygon_0_0_4_0_4_4_2_4_2_7_2_4_0_4_0_0("POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))")]
 #[case::polygon_0_0_2_2_4_4_0_0("POLYGON ((0 0,2 2,4 4,0 0))")]
@@ -54,6 +53,7 @@ fn geographic_strict_membership_retains_shared_line_boundary_parity() {
 #[case::multipolygon_0_0_2_2_4_4_0_0_empty("MULTIPOLYGON (((0 0,2 2,4 4,0 0)),EMPTY)")]
 #[case::polygon_179_0_181_0_181_4_179_4_179_0("POLYGON ((179 0,181 0,181 4,179 4,179 0))")]
 #[case::linestring_0_80_0_90("LINESTRING (0 80,0 90)")]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn geographic_point_membership_matches_full_relation(#[case] wkt: &'static str) {
     let shape = crate::io::parse_wkt(wkt).unwrap();
     let target = PreparedPlan::transient(&shape);

@@ -286,7 +286,6 @@ fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
     }
 }
 #[rstest::rstest]
-#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 #[case::exact("exact", [10.0, 12.5])]
 #[case::one_ulp("one ULP", [10.0_f64.next_up(), 12.5_f64.next_up()])]
 #[case::name_1e_9_degree("1e-9 degree", [10.0 + 1.0e-9, 12.5 + 1.0e-9])]
@@ -296,6 +295,7 @@ fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
     12.5 + 1.0e-9,
 ])]
 #[case::reversed_target("reversed target", [12.5 + 1.0e-9, 10.0 + 1.0e-9])]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn public_parallel_hausdorff_perturbations_have_bounded_work(
     #[case] name: &'static str,
     #[case] target_longitudes: [f64; 2],
