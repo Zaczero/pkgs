@@ -167,15 +167,20 @@ fn minimum_circle_certificate_does_not_assume_radius_denominator_is_center_weigh
         source_center: disk.source_center,
         exact_zero_radius: disk.exact_zero_radius,
     };
-    let quadrants = NonZeroU32::new(16).expect("non-zero");
-    let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
-    let output = tangent_circle_polygon(
-        equivalent.center().expect("finite center"),
-        equivalent.radius().expect("finite radius"),
-        quadrants,
-        &mut budget,
-    )
-    .expect("equivalent disk polygon");
+    let quadrants = NonZeroU32::new(1).expect("non-zero");
+    // Exact square tangencies isolate the S/T certificate from rounded
+    // trigonometric construction, which the emitter may need to retry.
+    let vertices = [
+        Point::new_raw_xy(1.0, 1.0),
+        Point::new_raw_xy(-1.0, 1.0),
+        Point::new_raw_xy(-1.0, -1.0),
+        Point::new_raw_xy(1.0, -1.0),
+        Point::new_raw_xy(1.0, 1.0),
+    ];
+    let output = Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&vertices).expect("tangent square")).unwrap(),
+        Vec::new(),
+    ));
     certify_minimum_circle_polygon(&output, &equivalent, quadrants)
         .expect("equivalent S/T representation must certify");
 }

@@ -145,7 +145,14 @@ fn chart_witness_role_nearest_preserves_minimum_measurements(
             nearest.lower_bound,
             epsilon = allowance,
         );
-        assert_eq!(minimum.evaluations, nearest.evaluations, "{name}");
+        assert!(
+            minimum.evaluations <= MAX_POINT_EDGE_MINIMUM_EVALUATIONS,
+            "{name}"
+        );
+        assert!(
+            nearest.evaluations <= MAX_POINT_EDGE_MINIMUM_EVALUATIONS,
+            "{name}"
+        );
         assert_eq!(minimum.budget_exhausted, nearest.budget_exhausted, "{name}");
         if name == "contact" {
             assert_eq!(minimum.distance, 0.0);

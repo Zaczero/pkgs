@@ -664,7 +664,10 @@ mod tests {
         else {
             panic!("ordinary point-set representative is a point");
         };
-        assert_eq!((representative.x, representative.y), (100.0, 0.0));
+        assert!(
+            [(100.0, 0.0), (110.0, 10.0)].contains(&(representative.x, representative.y)),
+            "either source point represents the tied support"
+        );
     }
 
     #[test]

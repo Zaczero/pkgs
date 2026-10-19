@@ -117,8 +117,15 @@ fn chart_polar_area_maps_native_poles_to_physical_hemispheres(
     let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
     let polygon = polygon(&points, &[]);
     let area = chart_polygon_area(&metric, &polygon, frame).unwrap();
+    // Integrate a four-ULP absolute harmonic-evaluation allowance over the cap's
+    // angular rectangle. a² / (1-f)² bounds the ellipsoid surface scale; a
+    // relative tolerance on the small cap alone over-pins platform sin/cos.
+    let colatitude = std::f64::consts::FRAC_PI_2 - physical_latitude.abs().to_radians();
+    let polar_scale = metric.geodesic.a / (1.0 - metric.geodesic.f);
+    let allowance =
+        4.0 * f64::EPSILON * std::f64::consts::TAU * colatitude * polar_scale * polar_scale;
     assert!(
-        (area - expected).abs() <= 3.0e-15 * expected,
+        (area - expected).abs() <= allowance,
         "{name} cap area={area:.17}, expected={expected:.17}"
     );
 }
