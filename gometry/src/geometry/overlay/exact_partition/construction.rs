@@ -149,18 +149,6 @@ impl<'a> PointArena<'a> {
         )
     }
 
-    /// Move an entry out, leaving a stored placeholder behind.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the admitted PointArena node ID addresses its recipe and rounded point together"
-    )]
-    pub(super) fn take(&mut self, index: u32) -> (NodeRecipe, XY) {
-        (
-            mem::replace(&mut self.recipes[index as usize], NodeRecipe::Stored),
-            self.rounded[index as usize],
-        )
-    }
-
     #[expect(
         clippy::indexing_slicing,
         reason = "the admitted PointArena node ID addresses its recipe column"
@@ -811,30 +799,44 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
 
     // A compacted node never follows the visited handle, so every overwritten
     // recipe is either a nonroot or a root that has already been moved.
-    let mut compact_of: Vec<Option<u32>> = Vec::with_capacity(forest.parent.len());
-    compact_of.resize(forest.parent.len(), None);
+    let Forest {
+        mut points,
+        mut parent,
+    } = forest;
+    let mut compact_of: Vec<Option<u32>> = Vec::with_capacity(parent.len());
+    compact_of.resize(parent.len(), None);
     let mut compact_count = 0_usize;
     #[expect(
         clippy::indexing_slicing,
         reason = "forest roots are valid handles; compact_of is sized one-for-one with the forest and PointArena"
     )]
-    for handle in 0..forest.parent.len() as u32 {
-        let root = forest.find(handle);
-        if compact_of[root as usize].is_none() {
-            let (recipe, rounded) = forest.points.take(root);
-            if !matches!(recipe, NodeRecipe::Stored)
-                && let Some(budget) = budget.as_deref_mut()
-            {
-                budget.add(1)?;
+    {
+        let parent = parent.as_mut_slice();
+        let compact_of = compact_of.as_mut_slice();
+        let recipes = points.recipes.as_mut_slice();
+        let rounded = points.rounded.as_mut_slice();
+        for handle in 0..parent.len() {
+            let mut root = handle;
+            while parent[root] as usize != root {
+                parent[root] = parent[parent[root] as usize];
+                root = parent[root] as usize;
             }
-            compact_of[root as usize] = Some(compact_count as u32);
-            forest.points.recipes[compact_count] = recipe;
-            forest.points.rounded[compact_count] = rounded;
-            compact_count = compact_count.wrapping_add(1);
+            if compact_of[root].is_none() {
+                let recipe = mem::replace(&mut recipes[root], NodeRecipe::Stored);
+                let point = rounded[root];
+                if !matches!(recipe, NodeRecipe::Stored)
+                    && let Some(budget) = budget.as_deref_mut()
+                {
+                    budget.add(1)?;
+                }
+                compact_of[root] = Some(compact_count as u32);
+                recipes[compact_count] = recipe;
+                rounded[compact_count] = point;
+                compact_count = compact_count.wrapping_add(1);
+            }
+            compact_of[handle] = compact_of[root];
         }
-        compact_of[handle as usize] = compact_of[root as usize];
     }
-    let Forest { mut points, parent } = forest;
     drop(parent);
     points.recipes.truncate(compact_count);
     points.rounded.truncate(compact_count);
@@ -969,11 +971,14 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     }
 
     let mut point_sources = Vec::new();
-    for ((segment, &start_handle), owners) in
-        unique.iter().zip(&start_handle).zip(provenance.iter())
-    {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "unique segment ordinals index the aligned start-handle column"
+    )]
+    for (index, segment) in unique.iter().enumerate() {
         if same_point(segment.start, segment.end) {
-            let node = NodeId(node_of(start_handle)?);
+            let node = NodeId(node_of(start_handle[index])?);
+            let owners = provenance.owners(index);
             point_sources.reserve(owners.len());
             point_sources.extend(owners.iter().map(|&(ordinal, _)| (node, ordinal)));
         }
