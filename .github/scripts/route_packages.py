@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Route changed paths to monorepo packages that need testing.
 
-Reads paths on stdin and emits a JSON package selection with native-input impact.
+Reads paths on stdin and emits a JSON package selection.
 Documentation-only paths are validated locally.
 Diagnostics go to stderr; metadata/TOML failures exit nonzero.
 """
@@ -90,7 +90,6 @@ def route_paths(
     test_packages: set[str] | None = None,
     native_packages: set[str] | None = None,
     reverse_consumers: Mapping[str, set[str]] | None = None,
-    native_only: bool = False,
 ) -> list[str]:
     """Select packages impacted by raw changed paths.
 
@@ -118,15 +117,6 @@ def route_paths(
 
     selected: set[str] = set()
     for path in filter_changed_paths(paths):
-        parts = Path(path).parts
-        if (
-            native_only
-            and len(parts) >= 3
-            and parts[0] in native
-            and parts[1] in {'python', 'tests'}
-            and Path(path).suffix in {'.py', '.pyi'}
-        ):
-            continue
         if path in ROOT_RUST_PATHS or path == '.cargo' or path.startswith('.cargo/'):
             selected.update(native)
         elif path == '.python-versions':
@@ -144,8 +134,6 @@ def route_paths(
             if consumer not in selected:
                 selected.add(consumer)
                 pending.append(consumer)
-    if native_only:
-        selected.intersection_update(native)
     return sorted(selected, key=ci_package_sort_key)
 
 
@@ -159,12 +147,7 @@ def main() -> None:
         print(f'route_packages failed: {error}', file=sys.stderr)
         raise SystemExit(1) from error
 
-    native = set(route_paths(paths, native_only=True))
-    print(
-        json.dumps([
-            {'package': name, 'native-changed': name in native} for name in selected
-        ])
-    )
+    print(json.dumps([{'package': name} for name in selected]))
     output = os.environ.get('GITHUB_OUTPUT')
     if output:
         python = any(

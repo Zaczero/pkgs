@@ -78,7 +78,7 @@ jobs:
 
           if $test_all; then
             selection="$(jq -R -s -c '
-              split("\n") | map(select(length > 0) | {package: ., "native-changed": true})
+              split("\n") | map(select(length > 0) | {package: .})
             ' <<< "$changed")"
             echo "lint-python=true" >> "$GITHUB_OUTPUT"
             echo "lint-rust=true" >> "$GITHUB_OUTPUT"
@@ -106,7 +106,7 @@ jobs:
           set -euo pipefail
           uv run --no-project --with pytest python -m pytest \
             -c /dev/null -p no:cacheprovider --strict-config --strict-markers -q \
-            .github/scripts/tests/test_matrix.py
+            .github/scripts/tests
 
       - id: release
         if: startsWith(github.ref, 'refs/tags/')
@@ -264,7 +264,6 @@ jobs:
     with:
       package: ${{ matrix.package }}
       plan: ${{ toJson(matrix.plan) }}
-      native-changed: ${{ matrix.native-changed }}
 
   release:
     needs: [detect, test, lint-python, lint-rust, test-kani]

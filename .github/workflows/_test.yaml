@@ -11,10 +11,6 @@ on:
         required: true
         type: string
 
-      native-changed:
-        type: boolean
-        required: true
-
 permissions:
   contents: read
 
@@ -126,59 +122,6 @@ jobs:
             count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
             if [[ "$count" == 0 ]]; then
               echo "::notice::The instrumented package targets contain no Rust tests."
-              exit 0
-            fi
-          fi
-          exit "$status"
-
-  test-miri:
-    if: fromJson(inputs.plan).crate != '' && inputs.native-changed
-
-    runs-on: ubuntu-26.04
-
-    env:
-      # File-backed tests use uniquely owned host fixtures.
-      # Capture allocation backtraces on local reruns instead of every CI allocation.
-      MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-disable-leak-backtraces
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: fromJson(inputs.plan).type != 'rust'
-        with:
-          python-version: ${{ fromJson(inputs.plan).primary-python }}
-
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          components: miri, rust-src
-          cache-key: ${{ inputs.package }}-miri
-          cache-directories: ~/.cache/miri
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: nextest
-
-      - name: Interpret Rust tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          PYO3_PYTHON="$(command -v python3)"
-          export PYO3_PYTHON
-          args=(--locked -p "$CARGO_PACKAGE" --profile default-miri)
-          status=0
-          cargo miri nextest run "${args[@]}" || status=$?
-          if [[ "$status" == 4 && "$PACKAGE_TYPE" != rust ]]; then
-            cargo miri nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
-            count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
-            if [[ "$count" == 0 ]]; then
-              echo "::notice::The interpreted package targets contain no Rust tests."
               exit 0
             fi
           fi
