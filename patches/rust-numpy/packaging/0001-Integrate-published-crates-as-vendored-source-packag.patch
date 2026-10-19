@@ -1,0 +1,64 @@
+From 5fca62266ad0e1d7877da8b41d69a81a6fe7bbb6 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Mon, 19 Oct 2026 06:47:13 +0000
+Subject: [PATCH] Integrate published crates as vendored source packages
+
+Apply to the published crate manifests in the vendored source-package layout from vendor/rust-numpy. Keep local path resolution on the patched source graph and exclude Cargo-reserved archive metadata from package listings used by Maturin. The metadata itself remains available for source provenance.
+---
+ Cargo.toml | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 5f86f65..00d2693 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -20,10 +20,12 @@ authors = [
+ ]
+ build = "build.rs"
+ exclude = [
+     ".github/*",
+     ".gitignore",
++    ".cargo_vcs_info.json",
++    "Cargo.toml.orig",
+     "codecov.yml",
+     "x.py",
+ ]
+ autolib = false
+ autobins = false
+@@ -113,10 +115,11 @@ version = "0.1"
+ 
+ [dependencies.num-traits]
+ version = "0.2"
+ 
+ [dependencies.pyo3]
++path = "../pyo3/pyo3"
+ version = "0.30.0"
+ features = ["macros"]
+ default-features = false
+ 
+ [dependencies.rand_core]
+@@ -134,19 +137,21 @@ version = "0.8.2"
+ version = ">=0.30, <0.35"
+ features = ["std"]
+ default-features = false
+ 
+ [dev-dependencies.pyo3]
++path = "../pyo3/pyo3"
+ version = "0.30.0"
+ features = ["auto-initialize"]
+ default-features = false
+ 
+ [dev-dependencies.rand]
+ version = "0.9.1"
+ default-features = false
+ 
+ [build-dependencies.pyo3-build-config]
++path = "../pyo3/pyo3-build-config"
+ version = "0.30"
+ features = ["resolve-config"]
+ 
+ [lints.clippy]
+ needless_lifetimes = "allow"
+-- 
+2.54.0
+

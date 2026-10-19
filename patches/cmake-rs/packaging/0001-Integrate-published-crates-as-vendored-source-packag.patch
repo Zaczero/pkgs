@@ -1,0 +1,29 @@
+From 7b80435dcd86657a67a20ae6be24cedddd0f827e Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Mon, 19 Oct 2026 06:47:13 +0000
+Subject: [PATCH] Integrate published crates as vendored source packages
+
+Apply to the published crate manifests in the vendored source-package layout from vendor/cmake-rs/cmake. Keep local path resolution on the patched source graph and exclude Cargo-reserved archive metadata from package listings used by Maturin. The metadata itself remains available for source provenance.
+---
+ Cargo.toml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index a721d61..1511f9f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,10 +12,11 @@
+ [package]
+ edition = "2021"
+ rust-version = "1.65"
+ name = "cmake"
+ version = "0.1.58"
++exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
+ authors = ["Alex Crichton <alex@alexcrichton.com>"]
+ build = false
+ autolib = false
+ autobins = false
+ autoexamples = false
+-- 
+2.54.0
+

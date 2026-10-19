@@ -1,0 +1,150 @@
+From cfec93e3e8a1140ab88626ba5426fc19c71783d6 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Mon, 19 Oct 2026 06:47:13 +0000
+Subject: [PATCH] Integrate published crates as vendored source packages
+
+Apply to the published crate manifests in the vendored source-package layout from vendor/pyo3. Keep local path resolution on the patched source graph and exclude Cargo-reserved archive metadata from package listings used by Maturin. The metadata itself remains available for source provenance.
+---
+ pyo3-build-config/Cargo.toml   | 1 +
+ pyo3-ffi/Cargo.toml            | 2 ++
+ pyo3-macros-backend/Cargo.toml | 1 +
+ pyo3-macros/Cargo.toml         | 2 ++
+ pyo3/Cargo.toml                | 5 +++++
+ 5 files changed, 11 insertions(+)
+
+diff --git a/pyo3-build-config/Cargo.toml b/pyo3-build-config/Cargo.toml
+index 22031de..78aab1e 100644
+--- a/pyo3-build-config/Cargo.toml
++++ b/pyo3-build-config/Cargo.toml
+@@ -12,10 +12,11 @@
+ [package]
+ edition = "2024"
+ rust-version = "1.85"
+ name = "pyo3-build-config"
+ version = "0.30.1"
++exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
+ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
+ build = false
+ autolib = false
+ autobins = false
+ autoexamples = false
+diff --git a/pyo3-ffi/Cargo.toml b/pyo3-ffi/Cargo.toml
+index 07a4ba5..148d46e 100644
+--- a/pyo3-ffi/Cargo.toml
++++ b/pyo3-ffi/Cargo.toml
+@@ -12,10 +12,11 @@
+ [package]
+ edition = "2024"
+ rust-version = "1.85"
+ name = "pyo3-ffi"
+ version = "0.30.1"
++exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
+ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
+ build = "build.rs"
+ links = "python"
+ autolib = false
+ autobins = false
+@@ -74,10 +75,11 @@ version = "0.2.62"
+ 
+ [dev-dependencies.paste]
+ version = "1"
+ 
+ [build-dependencies.pyo3-build-config]
++path = "../pyo3-build-config"
+ version = "=0.30.1"
+ 
+ [lints.clippy]
+ checked_conversions = "warn"
+ dbg_macro = "warn"
+diff --git a/pyo3-macros-backend/Cargo.toml b/pyo3-macros-backend/Cargo.toml
+index e4d9a24..3ee04d8 100644
+--- a/pyo3-macros-backend/Cargo.toml
++++ b/pyo3-macros-backend/Cargo.toml
+@@ -12,10 +12,11 @@
+ [package]
+ edition = "2024"
+ rust-version = "1.85"
+ name = "pyo3-macros-backend"
+ version = "0.30.1"
++exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
+ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
+ build = "build.rs"
+ autolib = false
+ autobins = false
+ autoexamples = false
+diff --git a/pyo3-macros/Cargo.toml b/pyo3-macros/Cargo.toml
+index 9f95f76..c395d6c 100644
+--- a/pyo3-macros/Cargo.toml
++++ b/pyo3-macros/Cargo.toml
+@@ -12,10 +12,11 @@
+ [package]
+ edition = "2024"
+ rust-version = "1.85"
+ name = "pyo3-macros"
+ version = "0.30.1"
++exclude = [".cargo_vcs_info.json", "Cargo.toml.orig"]
+ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
+ build = false
+ autolib = false
+ autobins = false
+ autoexamples = false
+@@ -50,10 +51,11 @@ proc-macro = true
+ [dependencies.proc-macro2]
+ version = "1.0.60"
+ default-features = false
+ 
+ [dependencies.pyo3-macros-backend]
++path = "../pyo3-macros-backend"
+ version = "=0.30.1"
+ 
+ [dependencies.quote]
+ version = "1"
+ 
+diff --git a/pyo3/Cargo.toml b/pyo3/Cargo.toml
+index add8d93..a89b394 100644
+--- a/pyo3/Cargo.toml
++++ b/pyo3/Cargo.toml
+@@ -16,10 +16,12 @@ name = "pyo3"
+ version = "0.30.1"
+ authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
+ build = "build.rs"
+ links = "pyo3-python"
+ exclude = [
++    ".cargo_vcs_info.json",
++    "Cargo.toml.orig",
+     "/.gitignore",
+     ".cargo/config",
+     "/codecov.yml",
+     "/Makefile",
+     "/pyproject.toml",
+@@ -458,13 +460,15 @@ default-features = false
+ [dependencies.parking_lot]
+ version = "0.12"
+ optional = true
+ 
+ [dependencies.pyo3-ffi]
++path = "../pyo3-ffi"
+ version = "=0.30.1"
+ 
+ [dependencies.pyo3-macros]
++path = "../pyo3-macros"
+ version = "=0.30.1"
+ optional = true
+ 
+ [dependencies.rust_decimal]
+ version = "1.15"
+@@ -537,10 +541,11 @@ version = "0.30.4"
+ [dev-dependencies.uuid]
+ version = "1.10.0"
+ features = ["v4"]
+ 
+ [build-dependencies.pyo3-build-config]
++path = "../pyo3-build-config"
+ version = "=0.30.1"
+ 
+ [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.ctrlc]
+ version = "3.5.2"
+ 
+-- 
+2.54.0
+
