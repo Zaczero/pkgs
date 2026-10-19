@@ -149,11 +149,20 @@ def test_smoke_rejects_tags_for_a_different_interpreter_abi() -> None:
         release_artifact._check_smoke_wheel_tags(wheel, [incompatible])
 
 
-def test_smoke_admits_the_regular_stable_abi_suffix() -> None:
+def test_smoke_admits_the_active_stable_abi_suffix() -> None:
     from importlib.machinery import EXTENSION_SUFFIXES
 
-    assert '.abi3.so' in EXTENSION_SUFFIXES
-    member = 'gometry/_lib.abi3.so'
+    suffix = next(
+        (
+            suffix
+            for suffix in EXTENSION_SUFFIXES
+            if suffix in {'.abi3.so', '.abi3t.so', '.pyd'}
+        ),
+        None,
+    )
+    if suffix is None:
+        pytest.skip('this interpreter has no stable-ABI extension suffix')
+    member = f'gometry/_lib{suffix}'
     assert release_artifact._smoke_extension_member({member: b'extension'}) == member
 
 

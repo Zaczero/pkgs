@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -29,6 +30,10 @@ def quality_artifact_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
         (root / name).symlink_to(
             GOMETRY_ROOT / name, target_is_directory=name != 'build.rs'
         )
+    for _, logical, source in artifact_content.source_root_entries(GOMETRY_ROOT):
+        destination = workspace / logical
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination)
     for logical, source in quality_runtime._quality_fixed_input_paths(GOMETRY_ROOT):
         destination = workspace / logical
         if destination.exists():
