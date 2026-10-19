@@ -1,11 +1,9 @@
 target-version = "py311"
 preview = true
 
-# libtiff is an upstream submodule, so its build and documentation scripts are
-# another project's source: holding them to our style makes every upstream sync
-# a conflict over whitespace. `extend-exclude` rather than `exclude`, which
-# would replace ruff's own defaults instead of adding to them.
-extend-exclude = ["vendor/libtiff/source/**"]
+# Vendored upstream sources keep their own style and lint policy.
+extend-exclude = ["vendor"]
+force-exclude = true
 
 [per-file-target-version]
 ".github/scripts/**" = "py311"

@@ -6,6 +6,8 @@ members = [
   "gometry",
   "h2corn",
   "lrucache-rs",
+  "native/cmake-flags",
+  "native/libtiff-sys",
   "osm-shortlink",
   "polyline-rs",
   "totp-rs",
@@ -19,6 +21,8 @@ exclude = [
   "vendor/pyo3/pyo3-macros-backend",
   "vendor/rust-numpy",
   "vendor/cmake-rs/cmake",
+  "vendor/h3o",
+  "vendor/proj-sys",
 ]
 
 [workspace.package]
@@ -167,6 +171,9 @@ verbose_file_reads = "warn"
 wildcard_enum_match_arm = "warn"
 
 [workspace.lints.rust]
+# Path dependencies are local to Cargo too; enforce our warning policy only on
+# crates that inherit these lints, not on vendored upstream code.
+warnings = { level = "deny", priority = -1 }
 ambiguous_negative_literals = "warn"
 closure_returning_async_block = "warn"
 deprecated_in_future = "warn"
@@ -209,8 +216,7 @@ split-debuginfo = "unpacked"
 opt-level = 2
 debug = false
 
-# gometry's CMake-built native dependencies are workspace members, so the wildcard
-# above does not reach them: give them the same optimized, debug-free settings,
+# Keep gometry's CMake-built native dependencies optimized and debug-free,
 # which also makes their CMake builds Release-type. `trim-paths` hands Cargo's path
 # remap to their build scripts, and `native/cmake-flags` forwards it to
 # the C and C++ objects, so every checkout compiles identical objects and the
