@@ -306,7 +306,6 @@ async fn read_request_accepts_options_asterisk() {
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case::connect_tunnel_http_1_1_r_nhost_example_com_r_n_r_n(b"CONNECT /tunnel HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice())]
 #[case::connect_http_1_1_r_nhost_example_com_r_n_r_n(
     b"CONNECT * HTTP/1.1\r\nHost: example.com\r\n\r\n"
@@ -321,6 +320,7 @@ async fn read_request_accepts_options_asterisk() {
 #[case::get_p_q_http_1_1_r_nhost_example_com_r_n_r_n(
     b"GET p/q HTTP/1.1\r\nHost: example.com\r\n\r\n"
 )]
+#[tokio::test]
 async fn read_request_rejects_target_forms_for_incompatible_methods(#[case] request: &[u8]) {
     assert!(
         read_test_request(request)
@@ -616,9 +616,9 @@ async fn read_request_classifies_h2c_bodies() {
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case::settings_empty("")]
 #[case::aaeaaaab("AAEAAAAB")]
+#[tokio::test]
 async fn read_request_rejects_duplicate_h2c_settings(#[case] settings: &str) {
     let request = format!(
         concat!(
