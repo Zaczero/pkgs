@@ -3021,6 +3021,102 @@ async def test_websocket_graceful_server_shutdown_uses_expected_close_code(
     assert _decode_ws_close_payload(close_frames[0][1])[0] == expected_code
 
 
+@pytest.mark.parametrize('peer_end', ['eof', 'reset'])
+async def test_h2_websocket_peer_end_cancels_app_away_from_receive(
+    peer_end: str,
+) -> None:
+    finished = asyncio.Event()
+    app = _parked_websocket_app(finished)
+    config = Config(port=0, timeout_graceful_shutdown=10)
+    async with running_server(app, config) as server:
+        _reader, writer, conn, stream_id, _handshake = await _h2_open_websocket_stream(
+            port=server_port(server), path='/ws'
+        )
+        try:
+            if peer_end == 'reset':
+                conn.reset_stream(stream_id, error_code=8)
+                writer.write(conn.data_to_send())
+                await writer.drain()
+            else:
+                writer.close()
+                await writer.wait_closed()
+            await asyncio.wait_for(finished.wait(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+@pytest.mark.parametrize('api', ['raw', 'starlette'])
+@pytest.mark.parametrize(
+    ('peer_end', 'expected_code'),
+    [('close', 1000), ('eof', 1005), ('reset', 1006)],
+)
+async def test_h2_websocket_pending_receive_observes_disconnect_before_cancellation(
+    api: str,
+    peer_end: str,
+    expected_code: int,
+) -> None:
+    from starlette.websockets import WebSocket, WebSocketDisconnect
+
+    receiving = asyncio.Event()
+    finished = asyncio.Event()
+    state = {}
+
+    async def app(scope, receive, send):
+        assert scope['type'] == 'websocket'
+        try:
+            if api == 'starlette':
+                websocket = WebSocket(scope, receive, send)
+                await websocket.accept()
+                receiving.set()
+                try:
+                    await websocket.receive_text()
+                except WebSocketDisconnect as exc:
+                    state['disconnect'] = {
+                        'type': 'websocket.disconnect',
+                        'code': exc.code,
+                    }
+            else:
+                assert (await receive()) == {'type': 'websocket.connect'}
+                await send({'type': 'websocket.accept'})
+                receiving.set()
+                state['disconnect'] = await receive()
+        except asyncio.CancelledError:
+            state['cancelled'] = True
+            raise
+        finally:
+            finished.set()
+
+    async with running_server(app, Config(port=0)) as server:
+        reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
+            port=server_port(server), path='/ws'
+        )
+        try:
+            await asyncio.wait_for(receiving.wait(), timeout=5)
+            if peer_end == 'close':
+                conn.send_data(
+                    stream_id,
+                    _encode_ws_client_frame(0x8, (1000).to_bytes(2, 'big')),
+                    end_stream=False,
+                )
+                writer.write(conn.data_to_send())
+                await writer.drain()
+                await _read_ws_server_result(reader, writer, conn, stream_id, handshake)
+            elif peer_end == 'reset':
+                conn.reset_stream(stream_id, error_code=8)
+                writer.write(conn.data_to_send())
+                await writer.drain()
+                await asyncio.wait_for(finished.wait(), timeout=5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+
+    assert 'cancelled' not in state
+    assert state['disconnect']['type'] == 'websocket.disconnect'
+    assert state['disconnect']['code'] == expected_code
+
+
 @pytest.mark.parametrize('transport', ['h2', 'http1'])
 @pytest.mark.parametrize(
     ('message', 'expected_error'),

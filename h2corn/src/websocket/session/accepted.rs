@@ -573,11 +573,6 @@ where
                 })?;
                 Ok(ControlFlow::Break(Ok(())))
             },
-            TransportRead::PeerGoneSilent => {
-                self.running_app.close_outbound();
-                self.state.mark_peer_gone(close_code::NO_STATUS_RECEIVED);
-                Ok(ControlFlow::Break(Ok(())))
-            },
             TransportRead::PeerReset { reason } => {
                 let code = close_code::ABNORMAL_CLOSURE;
                 self.terminate_session(code, Some(reason), |state, code| {

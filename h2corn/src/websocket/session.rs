@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::watch;
 
 use crate::async_util::with_optional_timeout;
-use crate::bridge::{PayloadBytes, WEBSOCKET_INBOUND_BYTE_CAPACITY};
+use crate::bridge::{PayloadBytes, RequestInputShared, WEBSOCKET_INBOUND_BYTE_CAPACITY};
 use crate::config::WebSocketKeepAlive;
 use crate::error::{ErrorExt as _, H2CornError, WebSocketError};
 use crate::http::response::HttpResponseTransport;
@@ -175,7 +175,6 @@ impl AcceptedWebSocketState {
 pub(crate) enum TransportRead {
     Progress,
     PeerGone,
-    PeerGoneSilent,
     PeerReset { reason: BytesStr },
 }
 
@@ -269,6 +268,7 @@ pub(crate) struct WebSocketContext {
     /// Only long-lived sessions watch for shutdown, so the receiver travels
     /// with the WebSocket upgrade instead of riding on every request context.
     pub(crate) shutdown: watch::Receiver<ShutdownState>,
+    pub(crate) receive_signal: Option<Arc<RequestInputShared>>,
 }
 
 pub(super) struct AcceptedSessionConfig {

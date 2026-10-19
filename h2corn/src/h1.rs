@@ -276,6 +276,7 @@ where
                     admission,
                     meta: *meta,
                     shutdown: context.shutdown,
+                    receive_signal: None,
                 },
                 key,
                 reader,

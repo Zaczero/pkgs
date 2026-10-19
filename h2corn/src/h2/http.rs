@@ -208,11 +208,12 @@ fn prepare_and_spawn_request(
             input,
         } => {
             context.tasks.track_admission(stream_id, &mut admission);
+            let (input_tx, input_rx, _, receive_signal) = input.into_parts();
             register_inbound_stream(
                 &mut context,
                 stream_id,
                 InboundStream::new(
-                    Some(input.tx.clone()),
+                    Some(input_tx),
                     false,
                     end_stream,
                     content_length,
@@ -228,9 +229,10 @@ fn prepare_and_spawn_request(
                     admission,
                     meta,
                     shutdown: context.shutdown.clone(),
+                    receive_signal: Some(receive_signal),
                 },
                 stream_id,
-                input.rx,
+                input_rx,
                 connection.clone(),
             );
         },
@@ -266,7 +268,13 @@ fn spawn_websocket_request(
     // larger than an ordinary HTTP request. One session-scoped box keeps that
     // rare state out of the H2 connection poll stack; Tokio's task allocation
     // then contains only the pointer.
-    tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
+    let cancellation = context
+        .receive_signal
+        .as_ref()
+        .map_or(RequestTaskCancellation::Immediate, |signal| {
+            RequestTaskCancellation::AfterPendingReceive(std::sync::Arc::clone(signal))
+        });
+    tasks.spawn(stream_id, cancellation, async move {
         crate::server::report_request_failure(
             Box::pin(handle_websocket_request(
                 context, stream_id, input, connection,

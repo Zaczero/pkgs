@@ -188,11 +188,10 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
                 }
                 Ok(TransportRead::Progress)
             },
-            Some(StreamInput::EndStream) => Ok(TransportRead::PeerGone),
+            Some(StreamInput::EndStream) | None => Ok(TransportRead::PeerGone),
             Some(StreamInput::Reset(code)) => Ok(TransportRead::PeerReset {
                 reason: format!("stream reset: {code}").into(),
             }),
-            None => Ok(TransportRead::PeerGoneSilent),
         }
     }
 

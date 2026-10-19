@@ -780,7 +780,7 @@ pub(crate) trait EventSource: Send + pyo3::marker::Ungil + 'static {
 
     fn try_pull(&mut self) -> Option<Self::Event>;
 
-    /// Mark a slow-path waiter as live. HTTP request ownership uses this to
+    /// Mark a slow-path waiter as live. Request ownership uses this to
     /// distinguish an application already awaiting disconnect from an
     /// abandoned task that can be cancelled immediately.
     fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {

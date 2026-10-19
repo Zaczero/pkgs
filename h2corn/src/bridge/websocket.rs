@@ -9,7 +9,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::bridge::{
-    EventSource, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent,
+    EventSource, RequestInputShared, Requeueable, WebSocketInboundEvent, WebSocketOutboundEvent,
     build_websocket_inbound_event_ref, parse_websocket_outbound_event, ready_none,
     receive_or_await,
 };
@@ -80,6 +80,7 @@ pub(crate) struct WebSocketInboundReceiver {
     messages: mpsc::UnboundedReceiver<QueuedWebSocketInboundMessage>,
     terminal: watch::Receiver<Option<WebSocketDisconnect>>,
     terminal_delivered: bool,
+    receive_signal: Option<Arc<RequestInputShared>>,
 }
 
 impl WebSocketInboundSender {
@@ -350,6 +351,10 @@ impl WebSocketReceiveState {
 impl EventSource for WebSocketReceiveState {
     type Event = WebSocketInboundEvent;
 
+    fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {
+        self.rx.receive_signal.clone()
+    }
+
     fn try_pull(&mut self) -> Option<Self::Event> {
         match self.phase {
             WebSocketReceivePhase::PendingConnect => {
@@ -503,6 +508,7 @@ impl PyWebSocketSend {
 
 pub(crate) fn websocket_inbound_channel(
     byte_capacity: usize,
+    receive_signal: Option<Arc<RequestInputShared>>,
 ) -> (WebSocketInboundSender, WebSocketInboundReceiver) {
     let byte_capacity = u32::try_from(byte_capacity.max(1)).unwrap_or(u32::MAX);
     let (messages_tx, messages_rx) = mpsc::unbounded_channel();
@@ -518,6 +524,7 @@ pub(crate) fn websocket_inbound_channel(
             messages: messages_rx,
             terminal: terminal_rx,
             terminal_delivered: false,
+            receive_signal,
         },
     )
 }
@@ -606,7 +613,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn disconnect_completes_while_data_queue_is_full() {
-        let (tx, mut rx) = websocket_inbound_channel(2);
+        let (tx, mut rx) = websocket_inbound_channel(2, None);
         tx.send(WebSocketInboundMessage::Bytes(Bytes::from_static(b"a")))
             .await
             .expect("slot 1");
@@ -633,7 +640,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn disconnect_is_first_value_wins() {
-        let (tx, mut rx) = websocket_inbound_channel(1);
+        let (tx, mut rx) = websocket_inbound_channel(1, None);
         tx.disconnect(WebSocketDisconnect {
             code: close_code::NORMAL,
             reason: BytesStr::from("first"),

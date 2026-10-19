@@ -215,11 +215,12 @@ pub(super) fn start_websocket_app(
         admission,
         meta,
         shutdown,
+        receive_signal,
     } = ctx;
     // The session took its own handle before starting the app. Dropped by
     // name rather than with `..`, which would keep it alive to end of scope.
     drop(shutdown);
-    let (recv_tx, recv_rx) = websocket_inbound_channel(inbound_byte_capacity);
+    let (recv_tx, recv_rx) = websocket_inbound_channel(inbound_byte_capacity, receive_signal);
     let (send_tx, send_rx) = mpsc::channel(WEBSOCKET_OUTBOUND_QUEUE_CAPACITY);
     let (send_state, send_buffer) = WebSocketSendState::new();
     let connection = Arc::clone(&ctx.connection);

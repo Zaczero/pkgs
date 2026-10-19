@@ -291,7 +291,7 @@ mod tests {
         event: WebSocketOutboundEvent,
         task: WebSocketAppTask,
     ) -> RunningWebSocketApp {
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (_send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -334,7 +334,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn unary_denial_response_collapses_into_final_response() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -375,7 +375,7 @@ mod tests {
     async fn forwarded_denial_body_precedes_app_completion() {
         let mut transport = RecordingHandshakeTransport::default();
         let status = final_status(HttpStatusCode::new(401).expect("401 is a valid status"));
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -431,7 +431,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn empty_denial_response_finishes_as_final_response_when_app_ends() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         let mut running_app = RunningWebSocketApp {
@@ -464,7 +464,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn incomplete_denial_response_aborts_transport_when_app_ends() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
@@ -515,7 +515,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     async fn denial_response_with_buffered_body_can_be_dropped() {
         let mut transport = RecordingHandshakeTransport::default();
-        let (recv_tx, _recv_rx) = websocket_inbound_channel(1);
+        let (recv_tx, _recv_rx) = websocket_inbound_channel(1, None);
         let (send_tx, send_rx) = mpsc::channel(1);
         let (send_state, send_buffer) = WebSocketSendState::new();
         assert!(matches!(
