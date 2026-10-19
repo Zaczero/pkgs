@@ -1,6 +1,6 @@
-From c212905c7b9b13569380914bf8d46fdfa5ba5e22 Mon Sep 17 00:00:00 2001
+From 8156d75f464af7c42fc54abec50f4497e75181bb Mon Sep 17 00:00:00 2001
 From: Kamil Monicz <kamil@monicz.dev>
-Date: Mon, 19 Oct 2026 06:50:48 +0000
+Date: Mon, 19 Oct 2026 10:03:37 +0000
 Subject: [PATCH] Expose exact H3 projection carriers and preserve grid
  traversal
 
@@ -10,18 +10,18 @@ Based on HydroniumLabs/h3o fa1557fd1edd56f64e4da95b2fd294609ce2353e (0.11.0). Ex
  GOMETRY_DIVERGENCE.md      |  37 +++++
  src/boundary.rs            | 311 ++++++++++++++++++++++++++++++++++++-
  src/coord/faceijk.rs       | 294 ++++++++++++++++++++++++++++++++---
- src/coord/mod.rs           |  76 ++++++++-
+ src/coord/mod.rs           |  68 +++++++-
  src/coord/vec2d.rs         |   7 +-
  src/coord/vec3d.rs         |  16 +-
  src/coord/vec3d_tests.rs   |  20 ++-
  src/grid/iterator.rs       |  25 ++-
  src/grid/iterator_tests.rs |  15 ++
  src/index/cell.rs          |  28 +++-
- src/index/cell_tests.rs    | 237 ++++++++++++++++++++++++++++
+ src/index/cell_tests.rs    | 233 +++++++++++++++++++++++++++
  src/lib.rs                 |   6 +-
  src/math/functions-std.rs  |   6 +-
  src/resolution.rs          |  15 +-
- 15 files changed, 1045 insertions(+), 50 deletions(-)
+ 15 files changed, 1033 insertions(+), 50 deletions(-)
  create mode 100644 GOMETRY_DIVERGENCE.md
 
 diff --git a/Cargo.toml b/Cargo.toml
@@ -848,7 +848,7 @@ index 94da359..955d338 100644
  ///
  /// IJK coordinates are adjusted during the traversal so that, at the end, they
 diff --git a/src/coord/mod.rs b/src/coord/mod.rs
-index 89f387a..4834853 100644
+index 89f387a..2d63240 100644
 --- a/src/coord/mod.rs
 +++ b/src/coord/mod.rs
 @@ -9,39 +9,45 @@ mod latlng;
@@ -914,7 +914,7 @@ index 89f387a..4834853 100644
      0.14285714285714285,
      0.05399492471560388,
      0.02040816326530612,
-@@ -94,5 +100,65 @@ pub fn to_positive_angle(mut angle: f64) -> f64 {
+@@ -94,5 +100,57 @@ pub fn to_positive_angle(mut angle: f64) -> f64 {
      }
      debug_assert!((0.0..=TWO_PI).contains(&angle), "{angle}");
  
@@ -933,8 +933,8 @@ index 89f387a..4834853 100644
 +            substrate,
 +        } => (
 +            Vec2d::new(
-+                seed_coordinate(point.x2) * 0.5,
-+                seed_coordinate(point.y_sqrt3) * SQRT3_2,
++                point.x2 as f64 * 0.5,
++                point.y_sqrt3 as f64 * SQRT3_2,
 +            ),
 +            face,
 +            resolution,
@@ -949,8 +949,8 @@ index 89f387a..4834853 100644
 +        } => {
 +            let point = |value: crate::Hex2Int| {
 +                Vec2d::new(
-+                    seed_coordinate(value.x2) * 0.5,
-+                    seed_coordinate(value.y_sqrt3) * SQRT3_2,
++                    value.x2 as f64 * 0.5,
++                    value.y_sqrt3 as f64 * SQRT3_2,
 +                )
 +            };
 +            (
@@ -971,14 +971,6 @@ index 89f387a..4834853 100644
 +        substrate,
 +    )
 +    .into()
-+}
-+
-+#[expect(
-+    clippy::cast_precision_loss,
-+    reason = "H3's bounded lattice coordinates are exactly representable here; this intentionally mirrors Vec2d::from(CoordIJK)"
-+)]
-+const fn seed_coordinate(value: i64) -> f64 {
-+    value as f64
 +}
 diff --git a/src/coord/vec2d.rs b/src/coord/vec2d.rs
 index 6aff79e..33f746b 100644
@@ -1280,10 +1272,10 @@ index f3ca3da..c1633fb 100644
      /// Returns all the base cell indexes.
      ///
 diff --git a/src/index/cell_tests.rs b/src/index/cell_tests.rs
-index bf77e2c..ec92e87 100644
+index bf77e2c..0241a67 100644
 --- a/src/index/cell_tests.rs
 +++ b/src/index/cell_tests.rs
-@@ -63,5 +63,242 @@ fn debug_impl() {
+@@ -63,5 +63,238 @@ fn debug_impl() {
      assert_eq!(
          format!("{:?}", CellIndex::new_unchecked(0x8F2834782B9C2AB)),
          "20-064360256341253 (8f2834782b9c2ab)"
@@ -1381,10 +1373,6 @@ index bf77e2c..ec92e87 100644
 +}
 +
 +#[test]
-+#[expect(
-+    clippy::too_many_lines,
-+    reason = "the table keeps raw point and inserted seam carriers beside their expected edge identities"
-+)]
 +fn projected_boundary_pins_raw_seed_order_and_insertion_edge_identity() {
 +    use crate::{Hex2Int, ProjectionSeed};
 +

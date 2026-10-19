@@ -157,10 +157,6 @@ fn target_cap_profile_carries_all_native_suffixes_vertices_and_directed_seams() 
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the table keeps raw point and inserted seam carriers beside their expected edge identities"
-)]
 fn projected_boundary_pins_raw_seed_order_and_insertion_edge_identity() {
     use crate::{Hex2Int, ProjectionSeed};
 

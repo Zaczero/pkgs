@@ -115,8 +115,8 @@ pub fn native_projection_point(seed: ProjectionSeed) -> LatLng {
             substrate,
         } => (
             Vec2d::new(
-                seed_coordinate(point.x2) * 0.5,
-                seed_coordinate(point.y_sqrt3) * SQRT3_2,
+                point.x2 as f64 * 0.5,
+                point.y_sqrt3 as f64 * SQRT3_2,
             ),
             face,
             resolution,
@@ -131,8 +131,8 @@ pub fn native_projection_point(seed: ProjectionSeed) -> LatLng {
         } => {
             let point = |value: crate::Hex2Int| {
                 Vec2d::new(
-                    seed_coordinate(value.x2) * 0.5,
-                    seed_coordinate(value.y_sqrt3) * SQRT3_2,
+                    value.x2 as f64 * 0.5,
+                    value.y_sqrt3 as f64 * SQRT3_2,
                 )
             };
             (
@@ -153,12 +153,4 @@ pub fn native_projection_point(seed: ProjectionSeed) -> LatLng {
         substrate,
     )
     .into()
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "H3's bounded lattice coordinates are exactly representable here; this intentionally mirrors Vec2d::from(CoordIJK)"
-)]
-const fn seed_coordinate(value: i64) -> f64 {
-    value as f64
 }
