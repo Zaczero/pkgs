@@ -1,19 +1,17 @@
-From 72ecadcbf9311ae8b7bf196ac39c10ca530098cc Mon Sep 17 00:00:00 2001
+From 2361f04b5f2373064b435d702456850ce8d037b7 Mon Sep 17 00:00:00 2001
 From: Kamil Monicz <kamil@monicz.dev>
-Date: Sun, 18 Oct 2026 14:02:51 +0000
+Date: Mon, 19 Oct 2026 06:39:44 +0000
 Subject: [PATCH] Track environment changes used by CMake builds
 
-Cargo could reuse a native build after CMake or compiler environment inputs changed. Emit rerun metadata at cmake-rs environment reads and enable cc-rs environment tracking while querying compilers. The compiler query reports watched inputs without emitting linker metadata. Track PATH at actual bare-tool resolution and VisualStudioVersion at the separate Visual Studio generator probe.
-
-Add a Cargo/CMake fixture for target-qualified precedence and independent environment changes.
+Track CMake and compiler environment reads where they occur, including target-qualified settings and native tool lookup. Preserve upstream compiler environment forwarding without local lint suppressions. Exercise target-qualified precedence and independent environment changes through a Cargo/CMake fixture.
 ---
- src/lib.rs                    |  65 +++++-
+ src/lib.rs                    |  49 ++++-
  tests/environment_tracking.rs | 389 ++++++++++++++++++++++++++++++++++
- 2 files changed, 444 insertions(+), 10 deletions(-)
+ 2 files changed, 434 insertions(+), 4 deletions(-)
  create mode 100644 tests/environment_tracking.rs
 
 diff --git a/src/lib.rs b/src/lib.rs
-index 59bba9b..919c88d 100644
+index 59bba9b..acfe626 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -437,10 +437,18 @@ impl Config {
@@ -65,38 +63,7 @@ index 59bba9b..919c88d 100644
              .debug(false)
              .warnings(false)
              .host(&host)
-@@ -817,28 +829,24 @@ impl Config {
- 
-         if self.verbose_make {
-             cmd.arg("-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON");
-         }
- 
--        for (k, v) in c_compiler.env().iter().chain(&self.env) {
--            cmd.env(k, v);
--        }
-+        set_compiler_env(&mut cmd, &c_compiler, &self.env);
- 
-         if self.always_configure || !build_dir.join("CMakeCache.txt").exists() {
-             cmd.args(&self.configure_args);
-             run(cmd.env("CMAKE_PREFIX_PATH", cmake_prefix_path), "cmake");
-         } else {
-             println!("CMake project was already configured. Skipping configuration step.");
-         }
- 
-         // And build!
-         let mut cmd = self.cmake_build_command(&target);
-         cmd.current_dir(&build_dir);
- 
--        for (k, v) in c_compiler.env().iter().chain(&self.env) {
--            cmd.env(k, v);
--        }
-+        set_compiler_env(&mut cmd, &c_compiler, &self.env);
- 
-         // If the generated project is Makefile based we should carefully transfer corresponding CARGO_MAKEFLAGS
-         let mut use_jobserver = false;
-         if fs::metadata(build_dir.join("Makefile")).is_ok() {
-             match env::var_os("CARGO_MAKEFLAGS") {
-@@ -896,49 +904,62 @@ impl Config {
+@@ -896,49 +908,62 @@ impl Config {
          println!("cargo:root={}", dst.display());
          dst
      }
@@ -161,7 +128,7 @@ index 59bba9b..919c88d 100644
          self.env_cache.insert(v.to_string(), r.clone());
          r
      }
-@@ -960,10 +981,12 @@ impl Config {
+@@ -960,10 +985,12 @@ impl Config {
      }
  
      fn visual_studio_generator(&self, target: &str) -> String {
@@ -174,7 +141,7 @@ index 59bba9b..919c88d 100644
              Ok(VsVers::Vs17) => "Visual Studio 17 2022",
              Ok(VsVers::Vs16) => "Visual Studio 16 2019",
              Ok(VsVers::Vs15) => "Visual Studio 15 2017",
-@@ -1113,16 +1136,38 @@ fn run(cmd: &mut Command, program: &str) {
+@@ -1113,16 +1140,30 @@ fn run(cmd: &mut Command, program: &str) {
          ));
      }
  }
@@ -192,14 +159,6 @@ index 59bba9b..919c88d 100644
  
 +fn rerun_if_env_changed(variable: &str) {
 +    println!("cargo:rerun-if-env-changed={variable}");
-+}
-+
-+fn set_compiler_env(command: &mut Command, compiler: &cc::Tool, extra: &[(OsString, OsString)]) {
-+    // `get_envs` is newer than cmake-rs' minimum supported cc version.
-+    #[allow(deprecated)]
-+    for (key, value) in compiler.env().iter().chain(extra) {
-+        command.env(key, value);
-+    }
 +}
 +
 +fn rerun_if_path_searches_for(program: &OsStr) {

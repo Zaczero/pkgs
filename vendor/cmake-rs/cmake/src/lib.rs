@@ -831,7 +831,9 @@ impl Config {
             cmd.arg("-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON");
         }
 
-        set_compiler_env(&mut cmd, &c_compiler, &self.env);
+        for (k, v) in c_compiler.env().iter().chain(&self.env) {
+            cmd.env(k, v);
+        }
 
         if self.always_configure || !build_dir.join("CMakeCache.txt").exists() {
             cmd.args(&self.configure_args);
@@ -844,7 +846,9 @@ impl Config {
         let mut cmd = self.cmake_build_command(&target);
         cmd.current_dir(&build_dir);
 
-        set_compiler_env(&mut cmd, &c_compiler, &self.env);
+        for (k, v) in c_compiler.env().iter().chain(&self.env) {
+            cmd.env(k, v);
+        }
 
         // If the generated project is Makefile based we should carefully transfer corresponding CARGO_MAKEFLAGS
         let mut use_jobserver = false;
@@ -1150,14 +1154,6 @@ fn find_exe(path: &Path) -> PathBuf {
 
 fn rerun_if_env_changed(variable: &str) {
     println!("cargo:rerun-if-env-changed={variable}");
-}
-
-fn set_compiler_env(command: &mut Command, compiler: &cc::Tool, extra: &[(OsString, OsString)]) {
-    // `get_envs` is newer than cmake-rs' minimum supported cc version.
-    #[allow(deprecated)]
-    for (key, value) in compiler.env().iter().chain(extra) {
-        command.env(key, value);
-    }
 }
 
 fn rerun_if_path_searches_for(program: &OsStr) {
