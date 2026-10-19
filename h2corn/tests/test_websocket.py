@@ -2878,12 +2878,14 @@ async def test_websocket_client_close_is_acknowledged_and_stream_ends(
     expected_disconnect_code: int,
 ) -> None:
     disconnects = []
+    app_finished = asyncio.Event()
 
     async def app(scope, receive, send):
         assert scope['type'] == 'websocket'
         assert (await receive()) == {'type': 'websocket.connect'}
         await send({'type': 'websocket.accept', 'headers': []})
         disconnects.append(await receive())
+        app_finished.set()
 
     config = Config(port=0)
     async with running_server(app, config) as server:
@@ -2907,6 +2909,7 @@ async def test_websocket_client_close_is_acknowledged_and_stream_ends(
                     reader, writer, conn, stream_id, handshake
                 )
                 assert (terminal, detail) == ('ended', None)
+                await asyncio.wait_for(app_finished.wait(), timeout=5)
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -2918,6 +2921,7 @@ async def test_websocket_client_close_is_acknowledged_and_stream_ends(
                 writer.write(_encode_ws_client_frame(0x8, peer_payload))
                 await writer.drain()
                 frames = await _read_http1_ws_server_result(reader)
+                await asyncio.wait_for(app_finished.wait(), timeout=5)
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -3042,6 +3046,7 @@ async def test_websocket_send_after_disconnect_raises_oserror(
     state = {}
     try_open_send = asyncio.Event()
     open_send_finished = asyncio.Event()
+    app_finished = asyncio.Event()
 
     async def app(scope, receive, send):
         assert scope['type'] == 'websocket'
@@ -3068,6 +3073,7 @@ async def test_websocket_send_after_disconnect_raises_oserror(
             state['valid_send_after_close'] = type(exc)
         else:
             state['valid_send_after_close'] = None
+        app_finished.set()
 
     config = Config(port=0)
     async with running_server(app, config) as server:
@@ -3109,6 +3115,8 @@ async def test_websocket_send_after_disconnect_raises_oserror(
                 await _read_ws_server_result(reader, writer, conn, stream_id, handshake)
             else:
                 await _read_http1_ws_server_result(reader)
+            # H2 connection EOF cancels stream apps even after the close reply.
+            await asyncio.wait_for(app_finished.wait(), timeout=5)
         finally:
             writer.close()
             await writer.wait_closed()
