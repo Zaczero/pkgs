@@ -509,28 +509,43 @@ def test_configured_constructor_macro_uses_its_impl_doc_carrier(tmp_path):
     assert unregistered.issues == ()
 
 
-def test_h3_array_constructor_macro_recovers_each_authored_doc_from_source(tmp_path):
-    """The real H3 macro carries different constructor prose for each class."""
-    from pathlib import Path
-
+def test_h3_array_macro_recovers_each_authored_constructor_doc(tmp_path):
+    """Each configured macro invocation carries prose for its own class."""
     from pyo3stubs.rust_scan import constructor_doc_sources
 
-    root = Path(__file__).resolve().parents[2]
+    source = """\
+#[pyclass(name = "H3VertexArray")]
+pub struct PyH3VertexArray;
+#[pyclass(name = "H3EdgeArray")]
+pub struct PyH3EdgeArray;
+
+h3_index_array_common! {
+    /// Build an array of H3 vertices.
+    impl PyH3VertexArray {
+        class_name: "H3VertexArray",
+    }
+}
+
+h3_index_array_common! {
+    /// Build an array of H3 directed edges.
+    impl PyH3EdgeArray {
+        class_name: "H3EdgeArray",
+    }
+}
+"""
     cfg = make_config(
         tmp_path,
-        src_root=root / 'gometry' / 'src',
+        src_text=source,
         constructor_doc_macros=frozenset({'h3_index_array_common'}),
     )
     sources = constructor_doc_sources(cfg).by_class
     vertex = sources['H3VertexArray']
     edge = sources['H3EdgeArray']
 
-    assert vertex.path == 'src/py/cells/h3/vertex_edge_array.rs'
+    assert vertex.path == 'src/lib.rs'
     assert edge.path == vertex.path
-    assert vertex.prose is not None
-    assert edge.prose is not None
-    assert 'Build an array of H3 vertices' in vertex.prose
-    assert 'Build an array of H3 directed edges' in edge.prose
+    assert vertex.prose == 'Build an array of H3 vertices.'
+    assert edge.prose == 'Build an array of H3 directed edges.'
     assert vertex.prose != edge.prose
     assert vertex.line < edge.line
 
