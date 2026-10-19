@@ -25,9 +25,9 @@ def seam_box() -> gm.Polygon:
 def test_xy_predicate_batches_preserve_strict_and_inclusive_seam_membership() -> None:
     geometry = seam_box()
 
-    assert gm.intersects(geometry, x=np.array([180.0]), y=np.array([10.0])).tolist() == [
-        True
-    ]
+    assert gm.intersects(
+        geometry, x=np.array([180.0]), y=np.array([10.0])
+    ).tolist() == [True]
     assert gm.contains(geometry, x=np.array([180.0]), y=np.array([10.0])).tolist() == [
         False
     ]
