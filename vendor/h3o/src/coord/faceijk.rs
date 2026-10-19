@@ -37,11 +37,6 @@ fn hex2int(value: CoordIJK) -> Hex2Int {
 /// the individual lattice offsets: its certified consumer owns all numeric
 /// norms and projection bounds.
 // gometry: profiles real aperture, neighbor, and rotation operations for A3.
-#[expect(
-    clippy::too_many_lines,
-    clippy::large_stack_arrays,
-    reason = "One bounded profile build derives the fixed 60-seam table with shared face context"
-)]
 pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
     const ZERO_HEX: Hex2Int = Hex2Int::new(0, 0);
     const CII_VERTICES: [CoordIJK; 6] = [

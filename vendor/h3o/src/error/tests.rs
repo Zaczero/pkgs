@@ -14,30 +14,47 @@ use crate::error::{DissolutionError, InvalidGeometry, PlotterError};
 fn display() {
     let hex_grid = HexGridError::new("error");
 
-    assert_ne!(CompactionError::HeterogeneousResolution.to_string(), "");
-    assert_ne!(CompactionError::DuplicateInput.to_string(), "");
-
-    assert_ne!(hex_grid.to_string(), "");
-
-    assert_ne!(InvalidResolution::new(Some(32), "error").to_string(), "");
-    assert_ne!(InvalidCellIndex::new(Some(0), "error").to_string(), "");
-    assert_ne!(
-        InvalidDirectedEdgeIndex::new(Some(0), "error").to_string(),
-        ""
+    assert!(
+        !CompactionError::HeterogeneousResolution
+            .to_string()
+            .is_empty()
     );
-    assert_ne!(InvalidVertexIndex::new(Some(0), "error").to_string(), "");
-    assert_ne!(InvalidLatLng::new(f64::NAN, "error").to_string(), "");
-    assert_ne!(InvalidEdge::new(7, "error").to_string(), "");
-    assert_ne!(InvalidVertex::new(8, "error").to_string(), "");
-    assert_ne!(InvalidFace::new(33, "error").to_string(), "");
-    assert_ne!(InvalidBaseCell::new(128, "error").to_string(), "");
-    assert_ne!(InvalidDirection::new(9, "error").to_string(), "");
+    assert!(!CompactionError::DuplicateInput.to_string().is_empty());
 
-    assert_ne!(LocalIjError::ResolutionMismatch.to_string(), "");
-    assert_ne!(LocalIjError::Pentagon.to_string(), "");
-    assert_ne!(LocalIjError::HexGrid(hex_grid).to_string(), "");
+    assert!(!hex_grid.to_string().is_empty());
 
-    assert_ne!(ResolutionMismatch.to_string(), "");
+    assert!(
+        !InvalidResolution::new(Some(32), "error")
+            .to_string()
+            .is_empty()
+    );
+    assert!(
+        !InvalidCellIndex::new(Some(0), "error")
+            .to_string()
+            .is_empty()
+    );
+    assert!(
+        !InvalidDirectedEdgeIndex::new(Some(0), "error")
+            .to_string()
+            .is_empty()
+    );
+    assert!(
+        !InvalidVertexIndex::new(Some(0), "error")
+            .to_string()
+            .is_empty()
+    );
+    assert!(!InvalidLatLng::new(f64::NAN, "error").to_string().is_empty());
+    assert!(!InvalidEdge::new(7, "error").to_string().is_empty());
+    assert!(!InvalidVertex::new(8, "error").to_string().is_empty());
+    assert!(!InvalidFace::new(33, "error").to_string().is_empty());
+    assert!(!InvalidBaseCell::new(128, "error").to_string().is_empty());
+    assert!(!InvalidDirection::new(9, "error").to_string().is_empty());
+
+    assert!(!LocalIjError::ResolutionMismatch.to_string().is_empty());
+    assert!(!LocalIjError::Pentagon.to_string().is_empty());
+    assert!(!LocalIjError::HexGrid(hex_grid).to_string().is_empty());
+
+    assert!(!ResolutionMismatch.to_string().is_empty());
 
     #[cfg(feature = "geo")]
     {

@@ -56,10 +56,6 @@ impl Hex2Int {
     variant_size_differences,
     reason = "intersection seeds carry two exact native segments; fixed boundary sidecar avoids allocation"
 )]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "gometry's hidden projection carrier ABI matches both proof domains exhaustively"
-)]
 pub enum ProjectionSeed {
     /// A native lattice point on one icosahedral face.
     Point {
@@ -163,10 +159,6 @@ pub struct CapLatticeProfile {
 }
 
 impl CapLatticeProfile {
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "The profile owns these generated tables; borrowing would require copies to retain them"
-    )]
     pub(crate) const fn new(
         target: Resolution,
         adjusted_resolution: u8,

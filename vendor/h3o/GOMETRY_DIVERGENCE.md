@@ -34,16 +34,6 @@ in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 2 in `index/cell.rs`, 1 each in `ind
 `lib.rs`, and `grid/iterator_tests.rs`, 2 in `grid/iterator.rs`, and 2 in
 `resolution.rs`.
 
-## Clippy expectations
-
-The vendored manifest keeps h3o's crate-level deny groups without opting into
-the consuming workspace's lint table. Narrow expectations preserve these
-fork contracts:
-
-| Lint | Owner | Reason |
-| --- | --- | --- |
-| `cargo_common_metadata` | crate root | The gometry sdist packages `proj-sys` separately, and that package owns its metadata. |
-| `exhaustive_enums`, `variant_size_differences` | `ProjectionSeed` | Gometry's proof consumers exhaustively distinguish the two hidden carrier variants and retain exact intersection seeds in the fixed boundary sidecar. |
-| `large_types_passed_by_value` | `CapLatticeProfile::new` | The fixed arrays become owned profile fields; a borrowed constructor would still copy them into the owner. |
-| `too_many_lines`, `large_stack_arrays` | `cap_lattice_profile` | One bounded profile build constructs the fixed 60-seam table with shared face context. |
-| `suboptimal_flops` | `math::mul_add` | The fork's unfused `(a * b) + c` keeps exact H3 decisions independent of host FMA support on the x86-64-v2 baseline. |
+The source patch in `patches/h3o/` records the fork against this revision.
+The `ProjectionSeed` size expectation preserves the fixed boundary sidecar
+under upstream's compiler lint policy.
