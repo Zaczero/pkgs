@@ -100,6 +100,7 @@ mod tests {
     use super::sendfile_all_tcp;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri does not emulate SO_SNDBUF or sendfile")]
     fn sendfile_yields_for_backpressure_and_resumes_at_the_exact_offset() {
         const START: usize = 37;
         const LEN: usize = 2 * 1024 * 1024;
