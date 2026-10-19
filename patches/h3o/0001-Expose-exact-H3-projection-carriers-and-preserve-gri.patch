@@ -1,15 +1,15 @@
-From a5e45b309435b6e2f161bbb2f510a4b1740e756f Mon Sep 17 00:00:00 2001
+From c212905c7b9b13569380914bf8d46fdfa5ba5e22 Mon Sep 17 00:00:00 2001
 From: Kamil Monicz <kamil@monicz.dev>
-Date: Mon, 19 Oct 2026 06:42:37 +0000
+Date: Mon, 19 Oct 2026 06:50:48 +0000
 Subject: [PATCH] Expose exact H3 projection carriers and preserve grid
  traversal
 
 Based on HydroniumLabs/h3o fa1557fd1edd56f64e4da95b2fd294609ce2353e (0.11.0). Expose the unrounded lattice, projection and seam inputs consumed by Gometry certificates. Preserve unfused coordinate decisions on the x86-64-v2 baseline, account for accumulated unit-vector rounding in debug diagnostics, avoid excessive disk preallocation and correct fast-ring iterator length bounds. Keep upstream code and tests unchanged otherwise.
 ---
  Cargo.toml                 |   2 +
- GOMETRY_DIVERGENCE.md      |  39 +++++
- src/boundary.rs            | 315 ++++++++++++++++++++++++++++++++++++-
- src/coord/faceijk.rs       | 294 +++++++++++++++++++++++++++++++---
+ GOMETRY_DIVERGENCE.md      |  37 +++++
+ src/boundary.rs            | 311 ++++++++++++++++++++++++++++++++++++-
+ src/coord/faceijk.rs       | 294 ++++++++++++++++++++++++++++++++---
  src/coord/mod.rs           |  76 ++++++++-
  src/coord/vec2d.rs         |   7 +-
  src/coord/vec3d.rs         |  16 +-
@@ -21,7 +21,7 @@ Based on HydroniumLabs/h3o fa1557fd1edd56f64e4da95b2fd294609ce2353e (0.11.0). Ex
  src/lib.rs                 |   6 +-
  src/math/functions-std.rs  |   6 +-
  src/resolution.rs          |  15 +-
- 15 files changed, 1051 insertions(+), 50 deletions(-)
+ 15 files changed, 1045 insertions(+), 50 deletions(-)
  create mode 100644 GOMETRY_DIVERGENCE.md
 
 diff --git a/Cargo.toml b/Cargo.toml
@@ -38,10 +38,10 @@ index b3757e3..fc843fc 100644
  edition = "2024"
 diff --git a/GOMETRY_DIVERGENCE.md b/GOMETRY_DIVERGENCE.md
 new file mode 100644
-index 0000000..33a2db1
+index 0000000..b71ca85
 --- /dev/null
 +++ b/GOMETRY_DIVERGENCE.md
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,37 @@
 +# Gometry divergence
 +
 +This in-tree `h3o` 0.11.0 source is vendored from `HydroniumLabs/h3o` revision
@@ -79,13 +79,11 @@ index 0000000..33a2db1
 +`resolution.rs`.
 +
 +The source patch in `patches/h3o/` records the fork against this revision.
-+The `ProjectionSeed` size expectation preserves the fixed boundary sidecar
-+under upstream's compiler lint policy.
 diff --git a/src/boundary.rs b/src/boundary.rs
-index 83075cf..d64ddf1 100644
+index 83075cf..3655c5d 100644
 --- a/src/boundary.rs
 +++ b/src/boundary.rs
-@@ -1,15 +1,328 @@
+@@ -1,15 +1,324 @@
  use core::fmt;
  use core::ops::Deref;
  
@@ -141,10 +139,6 @@ index 83075cf..d64ddf1 100644
 +// gometry: raw boundary seed carrier; public LatLng cannot preserve its plane.
 +#[doc(hidden)]
 +#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-+#[expect(
-+    variant_size_differences,
-+    reason = "intersection seeds carry two exact native segments; fixed boundary sidecar avoids allocation"
-+)]
 +pub enum ProjectionSeed {
 +    /// A native lattice point on one icosahedral face.
 +    Point {

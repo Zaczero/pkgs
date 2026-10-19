@@ -35,5 +35,3 @@ in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 2 in `index/cell.rs`, 1 each in `ind
 `resolution.rs`.
 
 The source patch in `patches/h3o/` records the fork against this revision.
-The `ProjectionSeed` size expectation preserves the fixed boundary sidecar
-under upstream's compiler lint policy.

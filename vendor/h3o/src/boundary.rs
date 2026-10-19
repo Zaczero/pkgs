@@ -52,10 +52,6 @@ impl Hex2Int {
 // gometry: raw boundary seed carrier; public LatLng cannot preserve its plane.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    variant_size_differences,
-    reason = "intersection seeds carry two exact native segments; fixed boundary sidecar avoids allocation"
-)]
 pub enum ProjectionSeed {
     /// A native lattice point on one icosahedral face.
     Point {
