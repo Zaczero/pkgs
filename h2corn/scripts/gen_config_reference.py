@@ -22,7 +22,10 @@ from h2corn._config import (  # ruff: ignore[module-import-not-at-top-of-file]
     config_options,
 )
 
-from bench.report import alt_text, render_accessible_results  # ruff: ignore[module-import-not-at-top-of-file]
+from bench.report import (  # ruff: ignore[module-import-not-at-top-of-file]
+    alt_text,
+    render_accessible_results,
+)
 from tools.docs.config_reference import (  # ruff: ignore[module-import-not-at-top-of-file]
     format_type,
     python_constructor_description,

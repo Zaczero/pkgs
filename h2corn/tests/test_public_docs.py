@@ -10,7 +10,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from bench.report import render_accessible_results  # ruff: ignore[module-import-not-at-top-of-file]
+from bench.report import (  # ruff: ignore[module-import-not-at-top-of-file]
+    render_accessible_results,
+)
 from tools.docs.check import (  # ruff: ignore[module-import-not-at-top-of-file]
     _Anchors,
     check_api,
