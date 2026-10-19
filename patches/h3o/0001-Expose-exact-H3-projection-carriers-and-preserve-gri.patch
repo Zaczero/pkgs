@@ -1,0 +1,1627 @@
+From a5e45b309435b6e2f161bbb2f510a4b1740e756f Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Mon, 19 Oct 2026 06:42:37 +0000
+Subject: [PATCH] Expose exact H3 projection carriers and preserve grid
+ traversal
+
+Based on HydroniumLabs/h3o fa1557fd1edd56f64e4da95b2fd294609ce2353e (0.11.0). Expose the unrounded lattice, projection and seam inputs consumed by Gometry certificates. Preserve unfused coordinate decisions on the x86-64-v2 baseline, account for accumulated unit-vector rounding in debug diagnostics, avoid excessive disk preallocation and correct fast-ring iterator length bounds. Keep upstream code and tests unchanged otherwise.
+---
+ Cargo.toml                 |   2 +
+ GOMETRY_DIVERGENCE.md      |  39 +++++
+ src/boundary.rs            | 315 ++++++++++++++++++++++++++++++++++++-
+ src/coord/faceijk.rs       | 294 +++++++++++++++++++++++++++++++---
+ src/coord/mod.rs           |  76 ++++++++-
+ src/coord/vec2d.rs         |   7 +-
+ src/coord/vec3d.rs         |  16 +-
+ src/coord/vec3d_tests.rs   |  20 ++-
+ src/grid/iterator.rs       |  25 ++-
+ src/grid/iterator_tests.rs |  15 ++
+ src/index/cell.rs          |  28 +++-
+ src/index/cell_tests.rs    | 237 ++++++++++++++++++++++++++++
+ src/lib.rs                 |   6 +-
+ src/math/functions-std.rs  |   6 +-
+ src/resolution.rs          |  15 +-
+ 15 files changed, 1051 insertions(+), 50 deletions(-)
+ create mode 100644 GOMETRY_DIVERGENCE.md
+
+diff --git a/Cargo.toml b/Cargo.toml
+index b3757e3..fc843fc 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,5 +1,7 @@
++# Vendored from HydroniumLabs/h3o revision fa1557fd1edd56f64e4da95b2fd294609ce2353e.
++# See GOMETRY_DIVERGENCE.md for local changes; LICENSE retains BSD-3-Clause terms.
+ [package]
+ name = "h3o"
+ version = "0.11.0"
+ authors = ["Sylvain Laperche <sylvain.laperche@gmail.com>"]
+ edition = "2024"
+diff --git a/GOMETRY_DIVERGENCE.md b/GOMETRY_DIVERGENCE.md
+new file mode 100644
+index 0000000..33a2db1
+--- /dev/null
++++ b/GOMETRY_DIVERGENCE.md
+@@ -0,0 +1,39 @@
++# Gometry divergence
++
++This in-tree `h3o` 0.11.0 source is vendored from `HydroniumLabs/h3o` revision
++`fa1557fd1edd56f64e4da95b2fd294609ce2353e`. Its BSD-3-Clause license is
++retained in `LICENSE`.
++
++This checkout carries the exact H3 projection carriers needed by gometry's
++private certified grid predicates.  They are not upstream API proposals: keep
++them when updating h3o, or port the consuming certificate at the same time.
++
++| File | Item | Exposed invariant unavailable upstream |
++| --- | --- | --- |
++| `src/boundary.rs` | `Hex2Int`, `normalized_ijk_sum` | Exact doubled lattice coordinates and checked normalized-domain sum for cap centers. |
++| `src/boundary.rs` | `ProjectionSeed`, `ProjectionFrame`, `ProjectionSeam` | Raw rational boundary/projection inputs and paired pre-normalization face seams; public `LatLng` is rounded. |
++| `src/boundary.rs` | `CapLatticeProfile` | Real suffix, vertex, rotation, and 60-seam finite target lattice profile for certified descendant caps. |
++| `src/boundary.rs` | `ProjectedBoundary` | Keeps public boundary ABI unchanged while pairing every point with its raw seed and source edge. |
++| `src/coord/faceijk.rs` | `cap_lattice_profile` and seed boundary builders | Reuses H3 aperture/overage/neighbor operations to emit exact carrier data instead of reconstructed tables. |
++| `src/coord/faceijk.rs` | `target_substrate_center_seed` | Gives each ancestor its center in the target substrate frame shared by descendants. |
++| `src/coord/mod.rs` | projection constants and `native_projection_point` | Central canonical constants plus a diagnostic raw-seed projector; predicates replay the seed outward. |
++| `src/coord/vec3d.rs` | shared `ONE_THIRD` use | Prevents a second substrate-scale literal from drifting from the raw projector. |
++| `src/coord/vec3d.rs`, `src/coord/faceijk.rs`, `src/coord/vec2d.rs` | unit-norm diagnostics | Allows accumulated transcendental, product, dot-product, and square-root rounding without changing coordinates or geometric decisions. All indexing consumers and unit-sphere tests use the same diagnostic allowance. |
++| `src/index/cell.rs` | `boundary_with_seeds`, target center | Native boundary and target-frame center carriers, neither represented by public rounded boundary/LatLng APIs. |
++| `src/index/cell_tests.rs` | projected-boundary/profile/raw-carrier tests | Pins public ABI preservation and every raw-carrier ordering/identity invariant. |
++| `src/lib.rs` | hidden carrier re-exports | Makes the private carrier usable by gometry without widening ordinary h3o public APIs. |
++| `src/resolution.rs` | `ExtendedResolution::new_unchecked`, `From` | Preserves the native adjusted-resolution carrier without lossy conversion. |
++| `src/grid/iterator.rs` | safe disk storage growth | Keeps the existing radius-bound reserve through 65,536 cells; for larger bounds, seeds from the origin resolution with a 65,536-cell ceiling on initial reservation only. Both containers keep growing for the full traversal. |
++| `src/grid/iterator.rs` | `RingUnsafe::size_hint` | Does not claim a disk bound as a ring's exact length or as a valid lower bound when distortion can stop traversal. |
++| `src/grid/iterator_tests.rs` | fast-ring size-hint regression | Checks the standard iterator length-hint bounds against a concrete undistorted ring. |
++
++Every source divergence above has a nearby `gometry:` marker.  Update this
++table and its marker together when the carrier changes.  Current audit: 27
++markers — 6 in `boundary.rs`, 6 in `coord/faceijk.rs`, 3 in `coord/mod.rs`, 2
++in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 2 in `index/cell.rs`, 1 each in `index/cell_tests.rs`,
++`lib.rs`, and `grid/iterator_tests.rs`, 2 in `grid/iterator.rs`, and 2 in
++`resolution.rs`.
++
++The source patch in `patches/h3o/` records the fork against this revision.
++The `ProjectionSeed` size expectation preserves the fixed boundary sidecar
++under upstream's compiler lint policy.
+diff --git a/src/boundary.rs b/src/boundary.rs
+index 83075cf..d64ddf1 100644
+--- a/src/boundary.rs
++++ b/src/boundary.rs
+@@ -1,15 +1,328 @@
+ use core::fmt;
+ use core::ops::Deref;
+ 
+-use crate::LatLng;
++use crate::{LatLng, Resolution};
+ 
+ /// Maximum number of cell boundary vertices.
+ ///
+ /// Worst case is pentagon: 5 original verts + 5 edge crossings.
+ const MAX_BNDRY_VERTS: usize = 10;
+ 
++/// Exact doubled native-plane coordinates.
++///
++/// `x = x2 / 2` and `y = y_sqrt3 * SQRT3_2`.  The sidecar carrier keeps the
++/// H3 lattice data which produced a boundary point; deriving it back from a
++/// rounded [`LatLng`] would move the supporting great-circle plane.
++// gometry: exact doubled lattice carrier for certified projection and cap-domain proofs.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct Hex2Int {
++    /// Twice the native x coordinate.
++    pub x2: i64,
++    /// Native y coefficient of the exact binary `SQRT3_2` literal.
++    pub y_sqrt3: i64,
++}
++
++impl Hex2Int {
++    /// Creates a native doubled coordinate.
++    #[must_use]
++    pub const fn new(x2: i64, y_sqrt3: i64) -> Self {
++        Self { x2, y_sqrt3 }
++    }
++
++    /// Returns the normalized `i + j + k` coordinate sum represented by this
++    /// doubled native point.  The inverse is exact only when both recovered
++    /// numerators are even; malformed sidecars are rejected rather than
++    /// rounded into a face-domain certificate.
++    #[must_use]
++    pub fn normalized_ijk_sum(self) -> Option<i64> {
++        let x2 = i128::from(self.x2);
++        let y3 = i128::from(self.y_sqrt3);
++        let first = x2.checked_sub(3_i128.checked_mul(y3)?)?;
++        let second = x2.checked_add(3_i128.checked_mul(y3)?)?;
++        if first % 2 != 0 || second % 2 != 0 {
++            return None;
++        }
++        let maximum = (-x2).max(first / 2).max(second / 2).max(0);
++        i64::try_from(maximum).ok()
++    }
++}
++
++/// Raw projection input for a public boundary point.
++// gometry: raw boundary seed carrier; public LatLng cannot preserve its plane.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++#[expect(
++    variant_size_differences,
++    reason = "intersection seeds carry two exact native segments; fixed boundary sidecar avoids allocation"
++)]
++pub enum ProjectionSeed {
++    /// A native lattice point on one icosahedral face.
++    Point {
++        /// Compact face id.
++        face: u8,
++        /// Native lattice point.
++        point: Hex2Int,
++        /// Extended (possibly substrate) resolution.
++        resolution: u8,
++        /// Whether the point is in the substrate lattice.
++        substrate: bool,
++    },
++    /// Exact rational intersection of two native lattice segments.
++    Intersection {
++        /// Compact face id.
++        face: u8,
++        /// Source lattice segment.
++        segment: [Hex2Int; 2],
++        /// Icosahedron face-edge lattice segment.
++        face_edge: [Hex2Int; 2],
++        /// Extended (possibly substrate) resolution.
++        resolution: u8,
++        /// Whether the point is in the substrate lattice.
++        substrate: bool,
++    },
++}
++
++/// Native constants and face data required to replay one H3 raw projection.
++///
++/// This is deliberately a value snapshot rather than a reference into the
++/// vendor tables: gometry may consume a compact [`ProjectionSeed`] after the
++/// boundary call has returned, while the canonical tables remain owned here.
++// gometry: canonical raw face frame for outward seed replay.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct ProjectionFrame {
++    /// Compact icosahedron face id.
++    pub face: u8,
++    /// Raw face-centre n-vector bits, not re-normalized.
++    pub center: [f64; 3],
++    /// Native Class-II axis azimuth in radians.
++    pub axis_az_rads_cii: f64,
++    /// Native inverse square-seven scale for this extended resolution.
++    pub inv_sqrt7: f64,
++    /// Resolution-zero gnomonic scale.
++    pub res0_u_gnomonic: f64,
++    /// Exact binary native one-third substrate scale.
++    pub one_third: f64,
++    /// Native Class-III rotation.
++    pub ap7_rot_rads: f64,
++    /// Exact binary native square-root-three-over-two literal.
++    pub sqrt3_2: f64,
++}
++
++/// One directed icosahedral face seam in both native projection frames.
++///
++/// The endpoints are raw substrate-lattice seeds rather than rounded
++/// latitude/longitude values.  Consumers compare the two unnormalised
++/// projection carriers before the chart-normalisation step.
++// gometry: paired directed seams for the normalization discrepancy bound.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct ProjectionSeam {
++    left: [ProjectionSeed; 2],
++    right: [ProjectionSeed; 2],
++}
++
++impl ProjectionSeam {
++    pub(crate) const fn new(left: [ProjectionSeed; 2], right: [ProjectionSeed; 2]) -> Self {
++        Self { left, right }
++    }
++
++    /// Returns the two seam endpoints in the source face's native frame.
++    #[must_use]
++    pub const fn left(self) -> [ProjectionSeed; 2] {
++        self.left
++    }
++
++    /// Returns the same physical endpoints in the adjacent native frame.
++    #[must_use]
++    pub const fn right(self) -> [ProjectionSeed; 2] {
++        self.right
++    }
++}
++
++/// Finite target-resolution lattice data used to bound all descendants.
++///
++/// The profile contains raw native coordinates only.  It deliberately does
++/// not turn any lattice norm, projection, or seam discrepancy into a rounded
++/// scalar: the consuming certified layer encloses those operations outward.
++// gometry: finite target lattice profile for descendant-cap certification.
++#[doc(hidden)]
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct CapLatticeProfile {
++    target: Resolution,
++    adjusted_resolution: u8,
++    max_dim: i64,
++    suffixes: [[Hex2Int; 42]; 15],
++    vertices: [Hex2Int; 36],
++    seams: [ProjectionSeam; 60],
++}
++
++impl CapLatticeProfile {
++    pub(crate) const fn new(
++        target: Resolution,
++        adjusted_resolution: u8,
++        max_dim: i64,
++        suffixes: [[Hex2Int; 42]; 15],
++        vertices: [Hex2Int; 36],
++        seams: [ProjectionSeam; 60],
++    ) -> Self {
++        Self {
++            target,
++            adjusted_resolution,
++            max_dim,
++            suffixes,
++            vertices,
++            seams,
++        }
++    }
++
++    /// Builds the exact finite lattice profile for one H3 target resolution.
++    #[must_use]
++    pub fn for_target(target: Resolution) -> Self {
++        crate::coord::cap_lattice_profile(target)
++    }
++
++    /// Returns the requested H3 target resolution.
++    #[must_use]
++    pub const fn target(&self) -> Resolution {
++        self.target
++    }
++
++    /// Returns the Class-II adjusted substrate resolution (0 through 16).
++    #[must_use]
++    pub const fn adjusted_resolution(&self) -> u8 {
++        self.adjusted_resolution
++    }
++
++    /// Returns the native face dimension for the adjusted resolution.
++    #[must_use]
++    pub const fn max_dim(&self) -> i64 {
++        self.max_dim
++    }
++
++    /// Returns all real direction and 60-degree-rotation offsets contributed
++    /// by the digit at the given one-based H3 resolution.
++    #[must_use]
++    pub fn suffix_offsets(&self, resolution: Resolution) -> Option<&[Hex2Int; 42]> {
++        let index = usize::from(resolution);
++        (index != 0 && index <= usize::from(self.target)).then(|| &self.suffixes[index - 1])
++    }
++
++    /// Returns every actual target vertex offset under all native rotations.
++    #[must_use]
++    pub const fn vertex_offsets(&self) -> &[Hex2Int; 36] {
++        &self.vertices
++    }
++
++    /// Returns all sixty directed icosahedral face seams in paired frames.
++    #[must_use]
++    pub const fn seams(&self) -> &[ProjectionSeam; 60] {
++        &self.seams
++    }
++}
++
++impl ProjectionSeed {
++    /// Returns the compact icosahedron face id.
++    #[must_use]
++    pub const fn face(self) -> u8 {
++        match self {
++            Self::Point { face, .. } | Self::Intersection { face, .. } => face,
++        }
++    }
++
++    /// Resolves this compact seed through the canonical native face tables.
++    #[must_use]
++    pub fn projection_frame(self) -> ProjectionFrame {
++        let face = usize::from(self.face());
++        let center = crate::face::CENTER_POINT[face];
++        let resolution = match self {
++            Self::Point { resolution, .. } | Self::Intersection { resolution, .. } => resolution,
++        };
++        ProjectionFrame {
++            face: self.face(),
++            center: [center.x, center.y, center.z],
++            axis_az_rads_cii: crate::face::AXES_AZ_RADS_CII[face],
++            inv_sqrt7: crate::coord::INV_SQRT7_POWERS[usize::from(resolution)],
++            res0_u_gnomonic: crate::coord::RES0_U_GNOMONIC,
++            one_third: crate::coord::ONE_THIRD,
++            ap7_rot_rads: crate::coord::AP7_ROT_RADS,
++            sqrt3_2: crate::coord::SQRT3_2,
++        }
++    }
++
++    /// Replays this seed through h3o's native floating-point projector.
++    ///
++    /// This is a doc-hidden diagnostic oracle for the raw-carrier fixtures.
++    /// Consumers must retain [`Self`] and replay it with their certified
++    /// arithmetic; this rounded latitude/longitude is not a predicate
++    /// carrier.
++    #[doc(hidden)]
++    #[must_use]
++    pub fn native_projection_point(self) -> LatLng {
++        crate::coord::native_projection_point(self)
++    }
++}
++
++/// Public boundary plus the private raw projection sidecar.
++///
++/// [`Boundary`] remains bit-for-bit unchanged.  Only `CellIndex` constructs
++/// this type, keeping manually pushed test boundaries free of accidental seed
++/// semantics.
++// gometry: sidecar pairs public boundary points with raw native input.
++#[doc(hidden)]
++#[derive(Clone, Debug)]
++pub struct ProjectedBoundary {
++    /// The ordinary public latitude/longitude boundary.
++    pub public: Boundary,
++    seeds: [Option<ProjectionSeed>; MAX_BNDRY_VERTS],
++    /// The original topological H3 edge which produced each raw push.
++    ///
++    /// Only insertion points consume this later, but recording it beside the
++    /// push prevents an output ordinal from being confused with an edge after
++    /// an earlier face-crossing insertion shifted that ordinal.
++    source_edges: [u8; MAX_BNDRY_VERTS],
++    count: u8,
++}
++
++impl ProjectedBoundary {
++    pub(crate) fn new() -> Self {
++        Self {
++            public: Boundary::default(),
++            seeds: [None; MAX_BNDRY_VERTS],
++            source_edges: [0; MAX_BNDRY_VERTS],
++            count: 0,
++        }
++    }
++
++    pub(crate) fn push(&mut self, point: LatLng, seed: ProjectionSeed, source_edge: u8) {
++        let index = usize::from(self.count);
++        self.public.points[index] = point;
++        self.public.count += 1;
++        self.seeds[index] = Some(seed);
++        self.source_edges[index] = source_edge;
++        self.count += 1;
++    }
++
++    /// Returns the raw seeds in the same order as [`Self::public`].
++    pub fn projection_seeds(&self) -> impl ExactSizeIterator<Item = &ProjectionSeed> {
++        self.seeds[..usize::from(self.count)]
++            .iter()
++            .map(|seed| seed.as_ref().expect("paired boundary seed"))
++    }
++
++    /// Returns the original topological edge recorded with each raw seed.
++    ///
++    /// A point seed's value is informational.  For an insertion seed it is
++    /// the edge identity required to distinguish inserted vertices from a
++    /// shifted boundary ordinal.
++    pub fn projection_seed_edges(&self) -> impl ExactSizeIterator<Item = u8> + '_ {
++        self.source_edges[..usize::from(self.count)].iter().copied()
++    }
++}
++
+ /// Boundary in latitude/longitude.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+ pub struct Boundary {
+     /// Vertices in CCW order.
+     points: [LatLng; MAX_BNDRY_VERTS],
+diff --git a/src/coord/faceijk.rs b/src/coord/faceijk.rs
+index 94da359..955d338 100644
+--- a/src/coord/faceijk.rs
++++ b/src/coord/faceijk.rs
+@@ -11,18 +11,184 @@
+ 
+ use super::{CoordIJK, SQRT3_2, Vec2d, Vec3d};
+ use crate::face::{self, FaceOrientIJK};
+ use crate::index::bits;
+ use crate::{
+-    BaseCell, Boundary, CCW, CW, CellIndex, DEFAULT_CELL_INDEX, Direction, ExtendedResolution,
+-    Face, NUM_HEX_VERTS, NUM_ICOSA_FACES, NUM_PENT_VERTS, Resolution, Vertex,
++    BaseCell, Boundary, CCW, CW, CapLatticeProfile, CellIndex, DEFAULT_CELL_INDEX, Direction,
++    ExtendedResolution, Face, Hex2Int, NUM_HEX_VERTS, NUM_ICOSA_FACES, NUM_PENT_VERTS,
++    ProjectedBoundary, ProjectionSeam, ProjectionSeed, Resolution, Vertex,
+ };
+ 
+ static ZERO: CoordIJK = CoordIJK::new(0, 0, 0);
+ 
+ // -----------------------------------------------------------------------------
+ 
++// gometry: converts native IJK results into the exact doubled carrier.
++fn hex2int(value: CoordIJK) -> Hex2Int {
++    let i = i64::from(value.i());
++    let j = i64::from(value.j());
++    let k = i64::from(value.k());
++    Hex2Int::new(2 * i - j - k, j - k)
++}
++
++/// Builds the finite native data set which bounds all target descendants.
++///
++/// Every entry is made with the same aperture, neighbour, and rotation
++/// operators used by H3 index decoding.  The profile intentionally preserves
++/// the individual lattice offsets: its certified consumer owns all numeric
++/// norms and projection bounds.
++// gometry: profiles real aperture, neighbor, and rotation operations for A3.
++pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
++    const ZERO_HEX: Hex2Int = Hex2Int::new(0, 0);
++    const CII_VERTICES: [CoordIJK; 6] = [
++        CoordIJK::new(2, 1, 0),
++        CoordIJK::new(1, 2, 0),
++        CoordIJK::new(0, 2, 1),
++        CoordIJK::new(0, 1, 2),
++        CoordIJK::new(1, 0, 2),
++        CoordIJK::new(2, 0, 1),
++    ];
++    const CIII_VERTICES: [CoordIJK; 6] = [
++        CoordIJK::new(5, 4, 0),
++        CoordIJK::new(1, 5, 0),
++        CoordIJK::new(0, 5, 4),
++        CoordIJK::new(0, 1, 5),
++        CoordIJK::new(4, 0, 5),
++        CoordIJK::new(5, 0, 1),
++    ];
++
++    let target_value = u8::from(target);
++    let adjusted_resolution = target_value + u8::from(target.is_class3());
++    let adjusted_index = usize::from(adjusted_resolution);
++    let max_dim_i32 = MAX_DIM_BY_CII_RES[adjusted_index];
++    let max_dim = i64::from(max_dim_i32);
++    debug_assert!(max_dim > 0);
++
++    let zero_seed = ProjectionSeed::Point {
++        face: 0,
++        point: ZERO_HEX,
++        resolution: adjusted_resolution,
++        substrate: true,
++    };
++    let empty_seam = ProjectionSeam::new([zero_seed; 2], [zero_seed; 2]);
++    let mut suffixes = [[ZERO_HEX; 42]; 15];
++    for digit_value in 1..=target_value {
++        for (direction_index, direction) in Direction::iter().enumerate() {
++            let mut coordinate = direction.coordinate();
++            for finer_value in (digit_value + 1)..=target_value {
++                let finer =
++                    Resolution::try_from(finer_value).expect("target suffix is an H3 resolution");
++                coordinate = if finer.is_class3() {
++                    coordinate.down_aperture7::<{ CCW }>()
++                } else {
++                    coordinate.down_aperture7::<{ CW }>()
++                };
++            }
++            let coordinate = target_substrate_coordinate(coordinate, target);
++            for rotation in 0..6 {
++                suffixes[usize::from(digit_value - 1)][direction_index * 6 + rotation] =
++                    hex2int(rotate_ccw(coordinate, rotation));
++            }
++        }
++    }
++
++    let mut vertices = [ZERO_HEX; 36];
++    let vertex_table = if target.is_class3() {
++        &CIII_VERTICES
++    } else {
++        &CII_VERTICES
++    };
++    for (vertex_index, vertex) in vertex_table.iter().copied().enumerate() {
++        for rotation in 0..6 {
++            vertices[vertex_index * 6 + rotation] = hex2int(rotate_ccw(vertex, rotation));
++        }
++    }
++
++    let mut seams = [empty_seam; 60];
++    let face_vertices = [
++        CoordIJK::new(3 * max_dim_i32, 0, 0),
++        CoordIJK::new(0, 3 * max_dim_i32, 0),
++        CoordIJK::new(0, 0, 3 * max_dim_i32),
++    ];
++    let mut seam_index = 0;
++    for face_index in 0..NUM_ICOSA_FACES {
++        let left_face = Face::new_unchecked(face_index);
++        for edge in [face::IJ, face::KI, face::JK] {
++            let (first, second) = match edge {
++                face::IJ => (face_vertices[0], face_vertices[1]),
++                face::KI => (face_vertices[2], face_vertices[0]),
++                face::JK => (face_vertices[1], face_vertices[2]),
++                _ => unreachable!("only directed face seams are profiled"),
++            };
++            let orientation = face::NEIGHBORS[face_index][edge];
++            let right_first = transform_to_neighbor(first, orientation, adjusted_index);
++            let right_second = transform_to_neighbor(second, orientation, adjusted_index);
++            seams[seam_index] = ProjectionSeam::new(
++                [
++                    projection_seed(left_face, first, adjusted_resolution),
++                    projection_seed(left_face, second, adjusted_resolution),
++                ],
++                [
++                    projection_seed(orientation.face, right_first, adjusted_resolution),
++                    projection_seed(orientation.face, right_second, adjusted_resolution),
++                ],
++            );
++            seam_index += 1;
++        }
++    }
++    debug_assert_eq!(seam_index, seams.len());
++
++    CapLatticeProfile::new(
++        target,
++        adjusted_resolution,
++        max_dim,
++        suffixes,
++        vertices,
++        seams,
++    )
++}
++
++fn target_substrate_coordinate(mut coordinate: CoordIJK, target: Resolution) -> CoordIJK {
++    coordinate = coordinate.down_aperture3::<{ CCW }>();
++    coordinate = coordinate.down_aperture3::<{ CW }>();
++    if target.is_class3() {
++        coordinate = coordinate.down_aperture7::<{ CW }>();
++    }
++    coordinate
++}
++
++fn rotate_ccw(mut coordinate: CoordIJK, rotations: usize) -> CoordIJK {
++    for _ in 0..rotations {
++        coordinate = coordinate.rotate60::<{ CCW }>();
++    }
++    coordinate
++}
++
++fn transform_to_neighbor(
++    mut coordinate: CoordIJK,
++    orientation: FaceOrientIJK,
++    adjusted_resolution: usize,
++) -> CoordIJK {
++    for _ in 0..orientation.ccw_rot60 {
++        coordinate = coordinate.rotate60::<{ CCW }>();
++    }
++    let mut translation = orientation.translate;
++    translation *= UNIT_SCALE_BY_CII_RES[adjusted_resolution] * 3;
++    (coordinate + translation).normalize()
++}
++
++fn projection_seed(face: Face, point: CoordIJK, resolution: u8) -> ProjectionSeed {
++    ProjectionSeed::Point {
++        face: u8::from(face),
++        point: hex2int(point),
++        resolution,
++        substrate: true,
++    }
++}
++
++// -----------------------------------------------------------------------------
++
+ /// Face number and `IJK` coordinates on that face-centered coordinate system.
+ #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+ pub struct FaceIJK {
+     /// Face number.
+     pub face: Face,
+@@ -45,11 +211,16 @@ impl FaceIJK {
+     /// # Arguments
+     ///
+     /// * `value` - The n-vector to encode.
+     /// * `resolution` - The desired H3 resolution for the encoding.
+     pub fn from_vec3d(value: Vec3d, resolution: Resolution) -> Self {
+-        float_eq::debug_assert_float_eq!(value.norm(), 1., abs <= f64::EPSILON);
++        // gometry: share the accumulated unit-vector diagnostic allowance.
++        float_eq::debug_assert_float_eq!(
++            value.norm(),
++            1.,
++            abs <= super::vec3d::UNIT_NORM_TOLERANCE
++        );
+ 
+         let (face, distance) = value.closest_face();
+         let coord = Vec2d::from_vec3d(value, resolution, face, distance).into();
+ 
+         Self::new(face, coord)
+@@ -244,11 +415,23 @@ impl FaceIJK {
+     ///
+     /// * `resolution` - The H3 resolution of the cell.
+     /// * `start` - The first topological vertex to return.
+     /// * `length` - The number of topological vertexes to return.
+     pub fn pentagon_boundary(&self, resolution: Resolution, start: Vertex, length: u8) -> Boundary {
+-        let mut boundary = Boundary::new();
++        self.pentagon_boundary_with_seeds(resolution, start, length)
++            .public
++    }
++
++    /// Generates the cell boundary and its raw native projection inputs.
++    // gometry: pentagon boundary paired with exact raw seeds.
++    pub(crate) fn pentagon_boundary_with_seeds(
++        &self,
++        resolution: Resolution,
++        start: Vertex,
++        length: u8,
++    ) -> ProjectedBoundary {
++        let mut boundary = ProjectedBoundary::new();
+         let start = u8::from(start);
+         let mut center = *self;
+         let mut vertices = [Self::default(); NUM_PENT_VERTS as usize];
+         let adjusted_resolution = center.vertices(resolution, &mut vertices);
+ 
+@@ -290,44 +473,67 @@ impl FaceIJK {
+ 
+                 let orig2d1 = Vec2d::from(tmp_fijk.coord);
+ 
+                 // Find the appropriate icosahedron face edge vertexes.
+                 let max_dim = f64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
++                let max_dim_i64 = i64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
+                 let v0 = Vec2d::new(3.0 * max_dim, 0.0);
+                 let v1 = Vec2d::new(-1.5 * max_dim, 3.0 * SQRT3_2 * max_dim);
+                 let v2 = Vec2d::new(-1.5 * max_dim, -3.0 * SQRT3_2 * max_dim);
++                let h0 = Hex2Int::new(6 * max_dim_i64, 0);
++                let h1 = Hex2Int::new(-3 * max_dim_i64, 3 * max_dim_i64);
++                let h2 = Hex2Int::new(-3 * max_dim_i64, -3 * max_dim_i64);
+ 
+-                let (edge0, edge1) =
++                let (edge0, edge1, edge0_seed, edge1_seed) =
+                     match usize::from(get_adjacent_face_dir(tmp_fijk.face, fijk.face)) {
+-                        face::IJ => (v0, v1),
+-                        face::JK => (v1, v2),
+-                        face::KI => (v2, v0),
++                        face::IJ => (v0, v1, h0, h1),
++                        face::JK => (v1, v2, h1, h2),
++                        face::KI => (v2, v0, h2, h0),
+                         _ => unreachable!("invalid face direction"),
+                     };
+ 
+                 // Find the intersection and add the lat/lng point to the
+                 // result.
+                 let nvec = Vec3d::from_vec2d(
+                     Vec2d::intersection((orig2d0, orig2d1), (edge0, edge1)),
+                     tmp_fijk.face,
+                     adjusted_resolution,
+                     true,
+                 );
+-                boundary.push(nvec.into());
++                boundary.push(
++                    nvec.into(),
++                    ProjectionSeed::Intersection {
++                        face: u8::from(tmp_fijk.face),
++                        segment: [hex2int(last_fijk.coord), hex2int(tmp_fijk.coord)],
++                        face_edge: [edge0_seed, edge1_seed],
++                        resolution: u8::from(adjusted_resolution),
++                        substrate: true,
++                    },
++                    (vert - 1) % NUM_PENT_VERTS,
++                );
+             }
+ 
+             // convert vertex to lat/lng and add to the result
+             // vert == start + NUM_PENT_VERTS is only used to test for possible
+             // intersection on last edge
+             if vert < start + NUM_PENT_VERTS {
+                 let nvec = Vec3d::from_vec2d(
+                     Vec2d::from(fijk.coord),
+                     fijk.face,
+                     adjusted_resolution,
+                     true,
+                 );
+-                boundary.push(nvec.into());
++                boundary.push(
++                    nvec.into(),
++                    ProjectionSeed::Point {
++                        face: u8::from(fijk.face),
++                        point: hex2int(fijk.coord),
++                        resolution: u8::from(adjusted_resolution),
++                        substrate: true,
++                    },
++                    vert % NUM_PENT_VERTS,
++                );
+             }
+ 
+             last_fijk = fijk;
+         }
+ 
+@@ -341,11 +547,23 @@ impl FaceIJK {
+     ///
+     /// * `resolution` - The H3 resolution of the cell.
+     /// * `start` - The first topological vertex to return.
+     /// * `length` - The number of topological vertexes to return.
+     pub fn hexagon_boundary(&self, resolution: Resolution, start: Vertex, length: u8) -> Boundary {
+-        let mut boundary = Boundary::new();
++        self.hexagon_boundary_with_seeds(resolution, start, length)
++            .public
++    }
++
++    /// Generates the cell boundary and its raw native projection inputs.
++    // gometry: hexagon boundary paired with exact raw seeds.
++    pub(crate) fn hexagon_boundary_with_seeds(
++        &self,
++        resolution: Resolution,
++        start: Vertex,
++        length: u8,
++    ) -> ProjectedBoundary {
++        let mut boundary = ProjectedBoundary::new();
+         let start = u8::from(start);
+         let mut center = *self;
+         let mut vertices = [Self::default(); NUM_HEX_VERTS as usize];
+         let adjusted_resolution = center.vertices(resolution, &mut vertices);
+ 
+@@ -384,35 +602,50 @@ impl FaceIJK {
+                 let orig2d0 = Vec2d::from(vertices[last_v].coord);
+                 let orig2d1 = Vec2d::from(vertices[v].coord);
+ 
+                 // Find the appropriate icosahedron face edge vertexes.
+                 let max_dim = f64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
++                let max_dim_i64 = i64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
+                 let v0 = Vec2d::new(3.0 * max_dim, 0.0);
+                 let v1 = Vec2d::new(-1.5 * max_dim, 3.0 * SQRT3_2 * max_dim);
+                 let v2 = Vec2d::new(-1.5 * max_dim, -3.0 * SQRT3_2 * max_dim);
++                let h0 = Hex2Int::new(6 * max_dim_i64, 0);
++                let h1 = Hex2Int::new(-3 * max_dim_i64, 3 * max_dim_i64);
++                let h2 = Hex2Int::new(-3 * max_dim_i64, -3 * max_dim_i64);
+ 
+                 let face2 = if last_face == usize::from(center.face) {
+                     fijk.face
+                 } else {
+                     Face::new_unchecked(last_face)
+                 };
+-                let (edge0, edge1) = match usize::from(get_adjacent_face_dir(center.face, face2)) {
+-                    face::IJ => (v0, v1),
+-                    face::JK => (v1, v2),
+-                    face::KI => (v2, v0),
+-                    _ => unreachable!("invalid adjacent face direction"),
+-                };
++                let (edge0, edge1, edge0_seed, edge1_seed) =
++                    match usize::from(get_adjacent_face_dir(center.face, face2)) {
++                        face::IJ => (v0, v1, h0, h1),
++                        face::JK => (v1, v2, h1, h2),
++                        face::KI => (v2, v0, h2, h0),
++                        _ => unreachable!("invalid adjacent face direction"),
++                    };
+ 
+                 // Find the intersection and add the lat/lng point to the result
+                 let intersection = Vec2d::intersection((orig2d0, orig2d1), (edge0, edge1));
+                 // If a point of intersection occurs at a hexagon vertex, then
+                 // each adjacent hexagon edge will lie completely on a single
+                 // icosahedron face, and no additional vertex is required.
+                 if !(orig2d0 == intersection || orig2d1 == intersection) {
+                     let nvec =
+                         Vec3d::from_vec2d(intersection, center.face, adjusted_resolution, true);
+-                    boundary.push(nvec.into());
++                    boundary.push(
++                        nvec.into(),
++                        ProjectionSeed::Intersection {
++                            face: u8::from(center.face),
++                            segment: [hex2int(vertices[last_v].coord), hex2int(vertices[v].coord)],
++                            face_edge: [edge0_seed, edge1_seed],
++                            resolution: u8::from(adjusted_resolution),
++                            substrate: true,
++                        },
++                        u8::try_from(last_v).expect("hexagon vertex ordinal"),
++                    );
+                 }
+             }
+ 
+             // Convert vertex to lat/lng and add to the result.
+             //
+@@ -423,11 +656,20 @@ impl FaceIJK {
+                     Vec2d::from(fijk.coord),
+                     fijk.face,
+                     adjusted_resolution,
+                     true,
+                 );
+-                boundary.push(nvec.into());
++                boundary.push(
++                    nvec.into(),
++                    ProjectionSeed::Point {
++                        face: u8::from(fijk.face),
++                        point: hex2int(fijk.coord),
++                        resolution: u8::from(adjusted_resolution),
++                        substrate: true,
++                    },
++                    u8::try_from(v).expect("hexagon vertex ordinal"),
++                );
+             }
+ 
+             last_face = fijk.face.into();
+             last_overage = overage;
+         }
+@@ -497,10 +739,24 @@ impl FaceIJK {
+             vertex.coord = (self.coord + verts[i]).normalize();
+         }
+ 
+         adjusted_resolution
+     }
++
++    /// Returns this cell centre in the target substrate frame used by all of
++    /// that target's boundary seeds.
++    // gometry: target-frame center shared by every descendant boundary seed.
++    pub(crate) fn target_substrate_center_seed(mut self, resolution: Resolution) -> ProjectionSeed {
++        let mut vertices = [Self::default(); NUM_HEX_VERTS as usize];
++        let adjusted_resolution = self.vertices(resolution, &mut vertices);
++        ProjectionSeed::Point {
++            face: u8::from(self.face),
++            point: hex2int(self.coord),
++            resolution: u8::from(adjusted_resolution),
++            substrate: true,
++        }
++    }
+ }
+ 
+ /// Set the directions of a cell index (in-place) from finest resolution up.
+ ///
+ /// IJK coordinates are adjusted during the traversal so that, at the end, they
+diff --git a/src/coord/mod.rs b/src/coord/mod.rs
+index 89f387a..4834853 100644
+--- a/src/coord/mod.rs
++++ b/src/coord/mod.rs
+@@ -9,39 +9,45 @@ mod latlng;
+ mod localij;
+ mod vec2d;
+ mod vec3d;
+ 
+ pub use cube::CoordCube;
++// gometry: exact projection carrier plumbing.
++pub use faceijk::cap_lattice_profile;
+ pub use faceijk::{FaceIJK, Overage};
+ pub use ijk::{CoordIJ, CoordIJK};
+ pub use latlng::LatLng;
+ pub use localij::{LocalIJ, LocalIJK};
+ use vec2d::Vec2d;
+ pub use vec3d::Vec3d;
+ 
+-use crate::TWO_PI;
++use crate::{ExtendedResolution, Face, ProjectionSeed, TWO_PI};
+ 
+ // -----------------------------------------------------------------------------
+ 
+ /// Threshold epsilon.
+ const EPSILON: f64 = 0.0000000000000001_f64;
+ 
+ /// Epsilon of ~0.1mm.
+ const EPSILON_RAD: f64 = 0.000000001_f64.to_radians();
+ 
+ /// Scaling factor from `hex2d` resolution 0 unit length (or distance between
+ /// adjacent cell center points on the plane) to gnomonic unit length.
+-const RES0_U_GNOMONIC: f64 = 0.381966011250105_f64;
++// gometry: canonical raw-projector constants; do not duplicate downstream.
++pub const RES0_U_GNOMONIC: f64 = 0.381966011250105_f64;
+ const INV_RES0_U_GNOMONIC: f64 = 2.618033988749896;
+ 
+ /// Rotation angle between Class II and Class III resolution axes.
+ ///
+ /// `asin(sqrt(3/28))`
+-const AP7_ROT_RADS: f64 = 0.3334731722518321_f64;
++pub const AP7_ROT_RADS: f64 = 0.3334731722518321_f64;
+ 
+ /// √3/2
+-const SQRT3_2: f64 = 0.8660254037844386_f64;
++pub const SQRT3_2: f64 = 0.8660254037844386_f64;
++
++/// Exact binary literal used by the native substrate projection.
++pub const ONE_THIRD: f64 = 0.3333333333333333;
+ 
+ /// Power of √7 for each resolution.
+ const SQRT7_POWERS: &[f64] = &[
+     1.0,
+     2.6457513110645907,
+@@ -61,11 +67,11 @@ const SQRT7_POWERS: &[f64] = &[
+     2178889.971968068,
+     5764801_f64,
+ ];
+ 
+ /// Precomputed `1/SQRT7_POWERS`.
+-const INV_SQRT7_POWERS: &[f64] = &[
++pub const INV_SQRT7_POWERS: &[f64] = &[
+     1.,
+     0.3779644730092272,
+     0.14285714285714285,
+     0.05399492471560388,
+     0.02040816326530612,
+@@ -94,5 +100,65 @@ pub fn to_positive_angle(mut angle: f64) -> f64 {
+     }
+     debug_assert!((0.0..=TWO_PI).contains(&angle), "{angle}");
+ 
+     angle
+ }
++
++/// Native rounded projection used only by the doc-hidden raw-seed fixture
++/// oracle.  The production carrier is the unrounded [`ProjectionSeed`].
++// gometry: diagnostic raw-seed projector; predicates use certified replay.
++pub fn native_projection_point(seed: ProjectionSeed) -> LatLng {
++    let (point, face, resolution, substrate) = match seed {
++        ProjectionSeed::Point {
++            face,
++            point,
++            resolution,
++            substrate,
++        } => (
++            Vec2d::new(
++                seed_coordinate(point.x2) * 0.5,
++                seed_coordinate(point.y_sqrt3) * SQRT3_2,
++            ),
++            face,
++            resolution,
++            substrate,
++        ),
++        ProjectionSeed::Intersection {
++            face,
++            segment,
++            face_edge,
++            resolution,
++            substrate,
++        } => {
++            let point = |value: crate::Hex2Int| {
++                Vec2d::new(
++                    seed_coordinate(value.x2) * 0.5,
++                    seed_coordinate(value.y_sqrt3) * SQRT3_2,
++                )
++            };
++            (
++                Vec2d::intersection(
++                    (point(segment[0]), point(segment[1])),
++                    (point(face_edge[0]), point(face_edge[1])),
++                ),
++                face,
++                resolution,
++                substrate,
++            )
++        },
++    };
++    Vec3d::from_vec2d(
++        point,
++        Face::new_unchecked(usize::from(face)),
++        ExtendedResolution::new_unchecked(resolution),
++        substrate,
++    )
++    .into()
++}
++
++#[expect(
++    clippy::cast_precision_loss,
++    reason = "H3's bounded lattice coordinates are exactly representable here; this intentionally mirrors Vec2d::from(CoordIJK)"
++)]
++const fn seed_coordinate(value: i64) -> f64 {
++    value as f64
++}
+diff --git a/src/coord/vec2d.rs b/src/coord/vec2d.rs
+index 6aff79e..33f746b 100644
+--- a/src/coord/vec2d.rs
++++ b/src/coord/vec2d.rs
+@@ -58,11 +58,16 @@ impl Vec2d {
+     /// * `value` - The n-vector to encode.
+     /// * `resolution` -  The desired H3 resolution for the encoding.
+     /// * `face` -  The icosahedral face of the coordinate.
+     /// * `distance` - The squared euclidean distance from the face center.
+     pub fn from_vec3d(value: Vec3d, resolution: Resolution, face: Face, distance: f64) -> Self {
+-        float_eq::debug_assert_float_eq!(value.norm(), 1., abs <= f64::EPSILON);
++        // gometry: share the accumulated unit-vector diagnostic allowance.
++        float_eq::debug_assert_float_eq!(
++            value.norm(),
++            1.,
++            abs <= super::vec3d::UNIT_NORM_TOLERANCE
++        );
+ 
+         let face = usize::from(face);
+ 
+         let r = {
+             // cos(r) = 1 - 2 * sin^2(r/2) = 1 - 2 * (sqd / 4) = 1 - sqd/2
+diff --git a/src/coord/vec3d.rs b/src/coord/vec3d.rs
+index 9c9e776..1743736 100644
+--- a/src/coord/vec3d.rs
++++ b/src/coord/vec3d.rs
+@@ -1,21 +1,24 @@
+ use super::{
+-    AP7_ROT_RADS, EPSILON, FaceIJK, INV_SQRT7_POWERS, RES0_U_GNOMONIC, Vec2d, to_positive_angle,
++    AP7_ROT_RADS, EPSILON, FaceIJK, INV_SQRT7_POWERS, ONE_THIRD, RES0_U_GNOMONIC, Vec2d,
++    to_positive_angle,
+ };
+ use crate::math::{atan2, mul_add, sin_cos, sqrt};
+ use crate::resolution::ExtendedResolution;
+ use crate::{CellIndex, Face, LatLng, Resolution, face};
+ 
+-/// 1/3
+-const ONE_THIRD: f64 = 0.3333333333333333;
+-
+ const NORTH_POLE: Vec3d = Vec3d {
+     x: 0.,
+     y: 0.,
+     z: 1.,
+ };
+ 
++// gometry: four-ULP sine/cosine errors contribute at most ten EPSILON to
++// either product coordinate; leave room for the dot product and square root.
++// This is a diagnostic unit-vector check, not a geometric decision tolerance.
++pub(super) const UNIT_NORM_TOLERANCE: f64 = 16. * f64::EPSILON;
++
+ /// A 3D normal vector to the Earth ellipsoid, represented as a n-vector.
+ ///
+ /// See: `<https://www.ffi.no/en/research/n-vector/n-vector-explained>`
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct Vec3d {
+@@ -61,10 +64,11 @@ impl Vec3d {
+         // Scale for current resolution length `u`.
+         let mut scale = INV_SQRT7_POWERS[usize::from(resolution)];
+ 
+         // Scale accordingly if this is a substrate grid.
+         if is_substrate {
++            // gometry: consume the shared substrate scale used by raw seeds.
+             scale *= ONE_THIRD;
+             // Substrate grid are always adjusted to the next class II.
+             debug_assert!(!resolution.is_class3());
+         }
+ 
+@@ -110,11 +114,11 @@ impl Vec3d {
+     ///
+     /// # Preconditions
+     ///
+     /// `self` is expected to be on the unit sphere.
+     pub fn to_cell(self, resolution: Resolution) -> CellIndex {
+-        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= f64::EPSILON);
++        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
+         FaceIJK::from_vec3d(self, resolution).to_cell(resolution)
+     }
+ 
+     /// Calculates the azimuth, in radians, from `self` to `other`.
+     #[inline]
+@@ -141,11 +145,11 @@ impl Vec3d {
+         // The distance between two farthest points is 2.0, therefore the square
+         // of the distance between two points should always be less or equal
+         // than 4.
+         const MAX_DIST: f64 = 5.0;
+ 
+-        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= f64::EPSILON);
++        float_eq::debug_assert_float_eq!(self.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
+ 
+         let (face, distance) = face::CENTER_POINT.iter().enumerate().fold(
+             (0, MAX_DIST),
+             |(face, distance), (i, center)| {
+                 let dist = self.distance_squared(center);
+diff --git a/src/coord/vec3d_tests.rs b/src/coord/vec3d_tests.rs
+index 19e5632..75374bd 100644
+--- a/src/coord/vec3d_tests.rs
++++ b/src/coord/vec3d_tests.rs
+@@ -152,34 +152,42 @@ fn normalize_and_magnitude() {
+     let mut v = Vec3d::new(3., -4., 12.);
+     assert_float_eq!(v.norm_squared(), 169., abs <= f64::EPSILON, "squared norm");
+     assert_float_eq!(v.norm(), 13., abs <= f64::EPSILON, "norm");
+ 
+     v.normalize();
+-    assert_float_eq!(v.norm(), 1., abs <= f64::EPSILON, "normalized norm is unit");
++    assert_float_eq!(
++        v.norm(),
++        1.,
++        abs <= UNIT_NORM_TOLERANCE,
++        "normalized norm is unit"
++    );
+ 
+     let mut zero = Vec3d::new(0., 0., 0.);
+     zero.normalize();
+     assert!(
+         zero.x == 0.0 && zero.y == 0.0 && zero.z == 0.0,
+         "zero vector remains unchanged when normalizing"
+     );
+ }
+ 
+ #[test]
+ fn from_latlng_unit_sphere() {
+-    let ll = LatLng::new_unchecked(0.5, -1.3);
+-    let res = Vec3d::from(ll);
+-
+-    assert_float_eq!(res.norm(), 1., abs <= f64::EPSILON);
++    for (lat, lng) in [(0.5, -1.3), (FRAC_PI_2 / 2., PI), (80_f64.to_radians(), 0.)] {
++        let res = Vec3d::from(LatLng::new_unchecked(lat, lng));
++        assert_float_eq!(res.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
++        let (_, distance) = res.closest_face();
++        assert!(distance.is_finite() && distance >= 0.);
++        let _ = res.to_cell(Resolution::Nine);
++    }
+ }
+ 
+ #[test]
+ fn from_cell_unit_sphere() {
+     let cell = LatLng::new_unchecked(0.6, -1.2).to_cell(Resolution::Five);
+     let res = Vec3d::from(cell);
+ 
+-    assert_float_eq!(res.norm(), 1., abs <= f64::EPSILON);
++    assert_float_eq!(res.norm(), 1., abs <= UNIT_NORM_TOLERANCE);
+ }
+ 
+ #[test]
+ fn cell_to_vec3d_roundtrip() {
+     let cell = LatLng::new_unchecked(-0.4, 0.8).to_cell(Resolution::Nine);
+diff --git a/src/grid/iterator.rs b/src/grid/iterator.rs
+index 15a1610..169e19b 100644
+--- a/src/grid/iterator.rs
++++ b/src/grid/iterator.rs
+@@ -35,28 +35,38 @@ const DIRECTIONS: [Direction; 6] = [
+     Direction::IK,
+     Direction::I,
+     Direction::IJ,
+ ];
+ 
++const MAX_INITIAL_RESERVATION: u64 = 65_536;
++
+ /// Iterator over indexes within k distance of the origin.
+ pub struct DiskDistancesSafe {
+     /// Max distance.
+     k: u32,
+ 
+     /// Already visited neighbors.
+     seen: Set<CellIndex>,
+     /// Next set of neighbors to visit.
+     candidates: VecDeque<(CellIndex, u32)>,
+ }
+ 
+ impl DiskDistancesSafe {
+     pub fn new(origin: CellIndex, k: u32) -> Self {
+-        let size = usize::try_from(crate::max_grid_disk_size(k)).expect("grid too large");
+-        // Empirically found that `candidates` usually peak at ~2`k`, so
+-        // allocate 2.5 to be safe.
+-        // We got this number by tracing peak size of `candidates` within the
+-        // test suite.
++        // gometry: Keep the radius-derived seed through the initial cap. For
++        // larger bounds, tighten it to this resolution and cap only the initial
++        // reservation. Both containers remain growable for the full traversal.
++        let global_size = crate::max_grid_disk_size(k);
++        let size = if global_size <= MAX_INITIAL_RESERVATION {
++            global_size
++        } else {
++            origin
++                .resolution()
++                .cell_count()
++                .min(MAX_INITIAL_RESERVATION)
++        };
++        let size = usize::try_from(size).expect("initial H3 reservation fits usize");
+         let mut candidates = VecDeque::with_capacity(size * 5 / 2);
+         candidates.push_back((origin, 0));
+         Self {
+             k,
+             #[cfg(feature = "std")]
+@@ -288,12 +298,13 @@ impl Iterator for RingUnsafe {
+         }
+         Some(Some(item))
+     }
+ 
+     fn size_hint(&self) -> (usize, Option<usize>) {
+-        let count = usize::try_from(crate::max_grid_disk_size(self.k)).unwrap_or(usize::MAX);
+-        (count, Some(count))
++        // gometry: The fast ring can continue reporting distortion markers;
++        // a disk bound is not a ring length or a valid lower bound.
++        (0, None)
+     }
+ }
+ 
+ impl FusedIterator for RingUnsafe {}
+ 
+diff --git a/src/grid/iterator_tests.rs b/src/grid/iterator_tests.rs
+index 8bf4ad1..df5e76e 100644
+--- a/src/grid/iterator_tests.rs
++++ b/src/grid/iterator_tests.rs
+@@ -22,10 +22,25 @@ fn disk_distance_unsafe_stop_after_none() {
+ 
+     // Only 5 because a pentagon was encountered.
+     assert_eq!(iter.count(), 5);
+ }
+ 
++#[test]
++fn fast_ring_size_hint_obeys_the_iterator_lower_bound() {
++    // gometry: A disk bound is not a valid lower bound for fast ring output.
++    let origin = CellIndex::try_from(0x8A1FB46622DFFFF).expect("origin");
++    let mut ring = RingUnsafe::new(origin, 2).expect("ring avoids pentagonal distortion");
++    let (lower, upper) = ring.size_hint();
++    let count = ring.by_ref().take(13).count();
++
++    assert_eq!(count, 12);
++    assert!(lower <= count);
++    if let Some(upper) = upper {
++        assert!(count <= upper);
++    }
++}
++
+ #[test]
+ fn disk_distance_unsafe_is_fused() {
+     let origin = CellIndex::try_from(0x85002C27FFFFFFF).unwrap();
+     let mut iter = DiskDistancesUnsafe::new(origin, 1);
+ 
+diff --git a/src/index/cell.rs b/src/index/cell.rs
+index f3ca3da..c1633fb 100644
+--- a/src/index/cell.rs
++++ b/src/index/cell.rs
+@@ -476,10 +476,25 @@ impl CellIndex {
+             let bits = bits::set_resolution(self.0.get(), resolution);
+             Self::new_unchecked(bits & !(mask << stop))
+         })
+     }
+ 
++    /// Returns the raw native target-substrate centre seed for this cell's
++    /// centre child.  The result shares the projection frame used by every
++    /// target descendant boundary seed.
++    #[doc(hidden)]
++    #[must_use]
++    // gometry: exact target-frame center for descendant-cap certificates.
++    pub fn target_substrate_center_seed(
++        self,
++        resolution: Resolution,
++    ) -> Option<crate::ProjectionSeed> {
++        self.center_child(resolution)
++            .map(FaceIJK::from)
++            .map(|fijk| fijk.target_substrate_center_seed(resolution))
++    }
++
+     /// Returns the exact number of children for a cell at a given resolution.
+     ///
+     /// # Example
+     ///
+     /// ```
+@@ -786,17 +801,26 @@ impl CellIndex {
+     /// let boundary = index.boundary().iter().collect::<Vec<_>>();
+     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
+     /// ```
+     #[must_use]
+     pub fn boundary(self) -> Boundary {
++        self.boundary_with_seeds().public
++    }
++
++    /// Computes the cell boundary together with the raw native projection
++    /// inputs that produced every ordered point.
++    #[doc(hidden)]
++    #[must_use]
++    // gometry: public boundary with paired raw projection seeds.
++    pub fn boundary_with_seeds(self) -> crate::ProjectedBoundary {
+         let fijk = FaceIJK::from(self);
+         // SAFETY: 0 is always a valid vertex.
+         let start = Vertex::new_unchecked(0);
+         if self.is_pentagon() {
+-            fijk.pentagon_boundary(self.resolution(), start, NUM_PENT_VERTS)
++            fijk.pentagon_boundary_with_seeds(self.resolution(), start, NUM_PENT_VERTS)
+         } else {
+-            fijk.hexagon_boundary(self.resolution(), start, NUM_HEX_VERTS)
++            fijk.hexagon_boundary_with_seeds(self.resolution(), start, NUM_HEX_VERTS)
+         }
+     }
+ 
+     /// Returns all the base cell indexes.
+     ///
+diff --git a/src/index/cell_tests.rs b/src/index/cell_tests.rs
+index bf77e2c..ec92e87 100644
+--- a/src/index/cell_tests.rs
++++ b/src/index/cell_tests.rs
+@@ -63,5 +63,242 @@ fn debug_impl() {
+     assert_eq!(
+         format!("{:?}", CellIndex::new_unchecked(0x8F2834782B9C2AB)),
+         "20-064360256341253 (8f2834782b9c2ab)"
+     );
+ }
++
++#[test]
++// gometry: pins public-boundary ABI while exercising the raw carrier.
++fn projected_boundary_keeps_public_boundary_and_paired_raw_seeds() {
++    use core::mem::size_of;
++
++    use crate::{Boundary, LatLng};
++
++    let cell = CellIndex::new_unchecked(0x8101BFFFFFFFFFF);
++    let projected = cell.boundary_with_seeds();
++
++    // This is the frozen pre-sidecar layout.  The projection carrier must not
++    // enlarge the public `Boundary` value copied by `CellIndex::boundary()`.
++    assert_eq!(size_of::<Boundary>(), 168);
++
++    // A manual public boundary built from frozen stored doubles proves that
++    // the paired carrier did not change the public result.  Comparing
++    // `boundary()` to `boundary_with_seeds().public` alone would be
++    // tautological because the former delegates to the latter.
++    let mut expected = Boundary::new();
++    for (lat, lng) in [
++        (4608065448697526987, 4606117890866068563),
++        (4608133339173069226, 4607579327983253324),
++        (4608437835581619178, 4607948982609115469),
++        (4608705082211284320, 4606924285960815223),
++        (4608574985539229724, 4604465222861442637),
++        (4608256833593926307, 4604635963253136447),
++        (4608167527875997405, 4605480909246894239),
++    ] {
++        expected.push(
++            LatLng::from_radians(f64::from_bits(lat), f64::from_bits(lng))
++                .expect("frozen finite boundary point"),
++        );
++    }
++    assert_eq!(cell.boundary(), expected);
++    assert_eq!(projected.projection_seeds().len(), projected.public.len());
++    assert!(projected.projection_seeds().all(|seed| matches!(
++        seed,
++        crate::ProjectionSeed::Point { .. } | crate::ProjectionSeed::Intersection { .. }
++    )));
++    for (seed, point) in projected.projection_seeds().zip(projected.public.iter()) {
++        let replay = seed.native_projection_point();
++        assert_eq!(
++            replay.lat_radians().to_bits(),
++            point.lat_radians().to_bits()
++        );
++        assert_eq!(
++            replay.lng_radians().to_bits(),
++            point.lng_radians().to_bits()
++        );
++    }
++}
++
++#[test]
++fn target_cap_profile_carries_all_native_suffixes_vertices_and_directed_seams() {
++    use crate::{CapLatticeProfile, ProjectionSeed, Resolution};
++
++    let profile = CapLatticeProfile::for_target(Resolution::Fifteen);
++    assert_eq!(profile.target(), Resolution::Fifteen);
++    assert_eq!(profile.adjusted_resolution(), 16);
++    assert_eq!(profile.max_dim(), 11_529_602);
++    assert!(profile.suffix_offsets(Resolution::Zero).is_none());
++    assert_eq!(profile.suffix_offsets(Resolution::One).unwrap().len(), 42);
++    assert_eq!(
++        profile.suffix_offsets(Resolution::Fifteen).unwrap().len(),
++        42
++    );
++    assert_eq!(profile.vertex_offsets().len(), 36);
++    assert!(
++        profile
++            .vertex_offsets()
++            .iter()
++            .all(|offset| offset.x2 != 0 || offset.y_sqrt3 != 0)
++    );
++    assert_eq!(profile.seams().len(), 60);
++    for seam in profile.seams() {
++        let left = seam.left();
++        let right = seam.right();
++        for seed in [left[0], right[0]] {
++            assert!(matches!(seed, ProjectionSeed::Point {
++                resolution: 16,
++                substrate: true,
++                ..
++            }));
++        }
++        assert_eq!(left[0].face(), left[1].face());
++        assert_eq!(right[0].face(), right[1].face());
++        assert_ne!(left[0].face(), right[0].face());
++    }
++}
++
++#[test]
++#[expect(
++    clippy::too_many_lines,
++    reason = "the table keeps raw point and inserted seam carriers beside their expected edge identities"
++)]
++fn projected_boundary_pins_raw_seed_order_and_insertion_edge_identity() {
++    use crate::{Hex2Int, ProjectionSeed};
++
++    let point = |face, x2, y_sqrt3, resolution| ProjectionSeed::Point {
++        face,
++        point: Hex2Int::new(x2, y_sqrt3),
++        resolution,
++        substrate: true,
++    };
++    let insertion = |face, segment, face_edge, resolution| ProjectionSeed::Intersection {
++        face,
++        segment,
++        face_edge,
++        resolution,
++        substrate: true,
++    };
++    for (cell, expected, expected_edges) in [
++        (
++            0x82754FFFFFFFFFF,
++            vec![
++                point(9, -30, -32, 2),
++                point(9, -33, -31, 2),
++                point(9, -36, -32, 2),
++                point(9, -36, -34, 2),
++                point(9, -33, -35, 2),
++                point(9, -30, -34, 2),
++            ],
++            vec![0, 1, 2, 3, 4, 5],
++        ),
++        (
++            0x8101BFFFFFFFFFF,
++            vec![
++                point(0, 48, -10, 2),
++                point(1, 42, 14, 2),
++                point(1, 36, 10, 2),
++                point(1, 39, 5, 2),
++                point(1, 48, 4, 2),
++                point(1, 54, 8, 2),
++                insertion(
++                    1,
++                    [Hex2Int::new(54, 8), Hex2Int::new(51, 13)],
++                    [Hex2Int::new(84, 0), Hex2Int::new(-42, 42)],
++                    2,
++                ),
++            ],
++            vec![0, 1, 2, 3, 4, 5, 5],
++        ),
++        (
++            0x830136FFFFFFFFF,
++            vec![
++                point(0, 426, -52, 4),
++                point(1, 420, 56, 4),
++                point(1, 414, 52, 4),
++                point(1, 417, 47, 4),
++                point(1, 426, 46, 4),
++                point(1, 432, 50, 4),
++                insertion(
++                    1,
++                    [Hex2Int::new(432, 50), Hex2Int::new(429, 55)],
++                    [Hex2Int::new(588, 0), Hex2Int::new(-294, 294)],
++                    4,
++                ),
++            ],
++            vec![0, 1, 2, 3, 4, 5, 5],
++        ),
++        (
++            0x81083FFFFFFFFFF,
++            vec![
++                point(3, 75, 1, 2),
++                insertion(
++                    3,
++                    [Hex2Int::new(75, 1), Hex2Int::new(78, -4)],
++                    [Hex2Int::new(-42, -42), Hex2Int::new(84, 0)],
++                    2,
++                ),
++                point(4, 75, 1, 2),
++                insertion(
++                    4,
++                    [Hex2Int::new(75, 1), Hex2Int::new(78, -4)],
++                    [Hex2Int::new(-42, -42), Hex2Int::new(84, 0)],
++                    2,
++                ),
++                point(0, 75, 1, 2),
++                insertion(
++                    0,
++                    [Hex2Int::new(75, 1), Hex2Int::new(78, -4)],
++                    [Hex2Int::new(-42, -42), Hex2Int::new(84, 0)],
++                    2,
++                ),
++                point(1, 75, 1, 2),
++                insertion(
++                    1,
++                    [Hex2Int::new(75, 1), Hex2Int::new(78, -4)],
++                    [Hex2Int::new(-42, -42), Hex2Int::new(84, 0)],
++                    2,
++                ),
++                point(2, 75, 1, 2),
++                insertion(
++                    2,
++                    [Hex2Int::new(75, 1), Hex2Int::new(78, -4)],
++                    [Hex2Int::new(-42, -42), Hex2Int::new(84, 0)],
++                    2,
++                ),
++            ],
++            vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4],
++        ),
++        (
++            0x820807FFFFFFFFF,
++            vec![
++                point(3, 81, 1, 2),
++                point(4, 81, 1, 2),
++                point(0, 81, 1, 2),
++                point(0, 81, -1, 2),
++                point(1, 81, -1, 2),
++            ],
++            vec![0, 1, 2, 3, 4],
++        ),
++    ] {
++        let actual = CellIndex::new_unchecked(cell).boundary_with_seeds();
++        assert_eq!(
++            actual.projection_seeds().copied().collect::<Vec<_>>(),
++            expected
++        );
++        assert_eq!(
++            actual.projection_seed_edges().collect::<Vec<_>>(),
++            expected_edges
++        );
++    }
++}
++
++#[test]
++fn raw_target_seed_and_pole_owner_use_native_carriers() {
++    let cell = CellIndex::new_unchecked(0x8101BFFFFFFFFFF);
++    let seed = cell
++        .target_substrate_center_seed(Resolution::Two)
++        .expect("target is not coarser than source");
++    assert!(matches!(seed, crate::ProjectionSeed::Point {
++        substrate: true,
++        ..
++    }));
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 14c7f28..4c68828 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -261,11 +261,15 @@ mod grid;
+ mod index;
+ mod math;
+ mod resolution;
+ 
+ pub use base_cell::BaseCell;
+-pub use boundary::Boundary;
++// gometry: hidden raw projection carriers for the certified grid kernel.
++pub use boundary::{
++    Boundary, CapLatticeProfile, Hex2Int, ProjectedBoundary, ProjectionFrame, ProjectionSeam,
++    ProjectionSeed,
++};
+ pub use coord::{CoordIJ, LatLng, LocalIJ};
+ pub use direction::Direction;
+ pub use face::{Face, FaceSet};
+ pub use index::{CellIndex, DirectedEdgeIndex, Edge, IndexMode, Vertex, VertexIndex};
+ use resolution::ExtendedResolution;
+diff --git a/src/math/functions-std.rs b/src/math/functions-std.rs
+index b29ead8..b04c7f0 100644
+--- a/src/math/functions-std.rs
++++ b/src/math/functions-std.rs
+@@ -48,7 +48,11 @@ pub const fn round(x: f64) -> f64 {
+     x.round()
+ }
+ 
+ #[inline]
+ pub const fn mul_add(a: f64, b: f64, c: f64) -> f64 {
+-    a.mul_add(b, c)
++    // Gometry targets the fixed x86-64-v2 baseline. Scalar `f64::mul_add`
++    // otherwise dispatches through compiler-builtins to FMA/FMA4 at runtime,
++    // making exact H3 decisions host-feature-dependent and paying an indirect
++    // call on v2-only CPUs. H3 does not require fused rounding here.
++    (a * b) + c
+ }
+diff --git a/src/resolution.rs b/src/resolution.rs
+index 247c5de..95fa737 100644
+--- a/src/resolution.rs
++++ b/src/resolution.rs
+@@ -129,11 +129,10 @@ impl Resolution {
+     ///               .rev()
+     ///               .collect::<Vec<_>>();
+     /// assert_eq!(res, vec![Resolution::Two, Resolution::One, Resolution::Zero]);
+     /// ```
+     #[expect(unsafe_code, reason = "safe because of the iterator")]
+-    #[must_use]
+     pub fn range(start: Self, end: Self) -> impl DoubleEndedIterator<Item = Self> {
+         (u8::from(start)..=u8::from(end))
+             // SAFETY: values between two resolutions are valid resolutions.
+             .map(|value| unsafe { core::mem::transmute::<u8, Self>(value) })
+     }
+@@ -492,10 +491,17 @@ impl<'a> arbitrary::Arbitrary<'a> for Resolution {
+ /// This extended range is required for some intermediate calculation.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+ pub struct ExtendedResolution(u8);
+ 
+ impl ExtendedResolution {
++    /// Constructs an adjusted resolution used only by native projection paths.
++    // gometry: preserves the native adjusted-resolution carrier exactly.
++    pub const fn new_unchecked(value: u8) -> Self {
++        assert!(value <= 16, "extended resolution out of range");
++        Self(value)
++    }
++
+     /// Returns true if the resolution is a Class III resolution.
+     pub const fn is_class3(self) -> bool {
+         self.0 % 2 == 1
+     }
+ 
+@@ -510,10 +516,17 @@ impl From<ExtendedResolution> for usize {
+     fn from(value: ExtendedResolution) -> Self {
+         value.0.into()
+     }
+ }
+ 
++// gometry: exposes the adjusted carrier without lossy reconstruction.
++impl From<ExtendedResolution> for u8 {
++    fn from(value: ExtendedResolution) -> Self {
++        value.0
++    }
++}
++
+ impl From<Resolution> for ExtendedResolution {
+     fn from(value: Resolution) -> Self {
+         Self(value.into())
+     }
+ }
+-- 
+2.54.0
+
