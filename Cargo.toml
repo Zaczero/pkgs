@@ -15,17 +15,7 @@ members = [
   "totp-rs",
   "zid",
 ]
-exclude = [
-  "vendor/pyo3/pyo3",
-  "vendor/pyo3/pyo3-build-config",
-  "vendor/pyo3/pyo3-ffi",
-  "vendor/pyo3/pyo3-macros",
-  "vendor/pyo3/pyo3-macros-backend",
-  "vendor/rust-numpy",
-  "vendor/cmake-rs/cmake",
-  "vendor/h3o",
-  "vendor/proj-sys",
-]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
