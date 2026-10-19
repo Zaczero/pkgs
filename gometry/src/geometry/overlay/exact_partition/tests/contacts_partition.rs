@@ -1147,17 +1147,58 @@ fn star_crossings_keep_one_recipe_per_constructed_node() {
 }
 
 #[test]
-fn disjoint_thirty_two_thousand_segments_are_not_capped_as_pairs() {
-    let mut segments = Vec::with_capacity(32_000);
-    for index in 0..32_000 {
-        let x = f64::from(index);
-        segments.push(seg(x, 0.0, x, 1.0));
+fn partition_admission_does_not_cap_input_counts_as_pairs() {
+    construction::partition_endpoint_capacity(32_000, 0).unwrap();
+    construction::partition_endpoint_capacity(32_000, 32_000).unwrap();
+}
+
+#[test]
+fn disjoint_partition_candidate_work_is_bounded_by_input_size() {
+    #[derive(Default)]
+    struct CandidateWork {
+        ticks: u64,
     }
+
+    impl Work for CandidateWork {
+        type Error = crate::error::Error;
+
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            self.ticks = self.ticks.checked_add(ticks).expect("test work fits u64");
+            Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::work::work_product_ticks(count, ticks_per_item)?)
+        }
+    }
+
+    let segments = (0..1024)
+        .map(|index| {
+            let x = f64::from(index);
+            seg(x, 0.0, x, 1.0)
+        })
+        .collect::<Vec<_>>();
     let case = run(&segments);
-    let partition = case.partition();
-    assert_eq!(partition.node_count(), 64_000);
-    assert_eq!(partition.spans.len(), 32_000);
+    let mut budget = ExpansionBudget::new("exact_partition", "items");
+    let mut work = CandidateWork::default();
+    let partition = construction::partition_unique_segments_with_budget::<true>(
+        &case.unique,
+        &case.provenance,
+        &case.isolated,
+        None,
+        Some(&mut budget),
+        &mut work,
+    )
+    .unwrap();
+    assert_eq!(partition.node_count(), 2048);
+    assert_eq!(partition.spans.len(), 1024);
     assert_eq!(constructed_count(&partition), 0);
+    assert!(work.ticks > 0, "the partition charges its candidate work");
+    assert!(
+        work.ticks <= 64 * 1024,
+        "disjoint candidates used {} work ticks",
+        work.ticks
+    );
 }
 
 #[test]

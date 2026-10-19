@@ -22,6 +22,7 @@ use crate::geometry::graph::{RayAxis as Axis, RayPointsWithWork, prefix_contact_
 use crate::geometry::numerics::product::ExactSign;
 pub(super) use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
+use crate::geometry::segment_index::sweep::for_each_candidate_pair_with_work;
 use crate::geometry::segments::clip::{SegmentClipInterval, SegmentClipPoint};
 #[cfg(test)]
 use crate::geometry::segments::contact::TouchEndpoint;
@@ -34,8 +35,8 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
-    for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
+    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY, same_point,
+    same_topological_coordinate, single_chain,
 };
 use crate::work::{Unmetered, Work};
 
@@ -504,6 +505,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a, const ORDINATES: bool>(
         isolated,
         None,
         Some(budget),
+        &mut Unmetered,
     )
 }
 
@@ -521,6 +523,7 @@ pub(in crate::geometry) fn partition_unique_segments_in_window<'a, const ORDINAT
         isolated,
         Some((intervals, window)),
         Some(budget),
+        &mut Unmetered,
     )
 }
 
@@ -529,25 +532,36 @@ pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a, const ORDINA
     provenance: &SegmentProvenance,
     isolated: &[XY],
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget::<ORDINATES>(unique, provenance, isolated, None, None)
+    partition_unique_segments_with_budget::<ORDINATES>(
+        unique,
+        provenance,
+        isolated,
+        None,
+        None,
+        &mut Unmetered,
+    )
 }
 
-fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
+pub(super) fn partition_endpoint_capacity(unique: usize, isolated: usize) -> Result<usize> {
+    unique
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(isolated))
+        .ok_or_else(|| ResourceError::SizeOverflow.into())
+}
+
+pub(super) fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
     windowed: Option<(&[SegmentClipInterval], Bounds)>,
     mut budget: Option<&mut ExpansionBudget>,
+    candidate_work: &mut impl Work,
 ) -> Result<ExactPartition<'a>> {
     debug_assert_eq!(provenance.len(), unique.len());
     if let Some((intervals, _)) = windowed {
         debug_assert_eq!(intervals.len(), unique.len());
     }
-    let endpoint_capacity = unique
-        .len()
-        .checked_mul(2)
-        .and_then(|count| count.checked_add(isolated.len()))
-        .ok_or(ResourceError::SizeOverflow)?;
+    let endpoint_capacity = partition_endpoint_capacity(unique.len(), isolated.len())?;
     let mut endpoint_of: HashMap<PointKey, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     endpoint_of.reserve(endpoint_capacity);
@@ -693,29 +707,36 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     #[cfg(test)]
     let candidate_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::CandidatePairs);
-    if for_each_candidate_pair(&pool, single_chain, |left, right| {
-        #[cfg(test)]
-        record_candidate_pair();
-        match visit_pool_pair(
-            unique,
-            &pool,
-            left,
-            right,
-            &handles,
-            &mut contacts,
-            &mut forest,
-            windowed.map(|(_, bounds)| bounds),
-        ) {
-            Ok(overlap) => {
-                has_overlaps |= overlap;
-                ControlFlow::Continue(())
-            },
-            Err(error) => {
-                pair_error = Some(error);
-                ControlFlow::Break(())
-            },
-        }
-    })?
+    if for_each_candidate_pair_with_work(
+        &pool,
+        single_chain,
+        candidate_work,
+        |left, right, _work| {
+            #[cfg(test)]
+            record_candidate_pair();
+            Ok(
+                match visit_pool_pair(
+                    unique,
+                    &pool,
+                    left,
+                    right,
+                    &handles,
+                    &mut contacts,
+                    &mut forest,
+                    windowed.map(|(_, bounds)| bounds),
+                ) {
+                    Ok(overlap) => {
+                        has_overlaps |= overlap;
+                        ControlFlow::Continue(())
+                    },
+                    Err(error) => {
+                        pair_error = Some(error);
+                        ControlFlow::Break(())
+                    },
+                },
+            )
+        },
+    )?
     .is_break()
         && let Some(error) = pair_error
     {
