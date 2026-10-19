@@ -1043,57 +1043,6 @@ def required_source_records(
         ):
             raise AssertionError(f'cargo metadata feature list for {name} is malformed')
         selected_features = set(selected)
-        if name == 'h3o':
-            # Cargo metadata unions features from the workspace's implicit
-            # h3o path member with the gometry dependency edge. The member's
-            # default feature is only the std alias; attest the consumer edge
-            # separately and normalize that workspace-only alias.
-            h3o_default = package.get('features')
-            if not isinstance(h3o_default, dict) or h3o_default.get('default') != [
-                'std'
-            ]:
-                raise AssertionError(
-                    'vendored h3o default feature must remain the std alias'
-                )
-            consumers = [
-                candidate
-                for candidate in packages
-                if isinstance(candidate, dict) and candidate.get('name') == 'gometry'
-            ]
-            if root is not None:
-                expected_consumer = (root / 'gometry' / 'Cargo.toml').resolve()
-                consumers = [
-                    candidate
-                    for candidate in consumers
-                    if isinstance(candidate.get('manifest_path'), str)
-                    and Path(candidate['manifest_path']).resolve() == expected_consumer
-                ]
-            if len(consumers) != 1:
-                raise AssertionError('cargo metadata has no unique gometry manifest')
-            h3o_edges = [
-                dependency
-                for dependency in consumers[0].get('dependencies', [])
-                if isinstance(dependency, dict) and dependency.get('name') == 'h3o'
-            ]
-            if (
-                len(h3o_edges) != 1
-                or h3o_edges[0].get('uses_default_features') is not False
-                or h3o_edges[0].get('features') != ['std']
-            ):
-                raise AssertionError(
-                    'gometry must select only the vendored h3o std feature'
-                )
-            if root is not None:
-                h3o_path = h3o_edges[0].get('path')
-                expected_h3o = (root / 'vendor' / 'h3o').resolve()
-                if (
-                    not isinstance(h3o_path, str)
-                    or Path(h3o_path).resolve() != expected_h3o
-                ):
-                    raise AssertionError(
-                        'gometry must use the bundled h3o package path'
-                    )
-            selected_features.discard('default')
         expected_features = set(features)
         if selected_features != expected_features:
             raise AssertionError(
