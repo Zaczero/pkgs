@@ -1,5 +1,5 @@
 use pyo3::PyRef;
-use pyo3::types::PyAnyMethods as _;
+use pyo3::types::{PyAnyMethods as _, PyString};
 
 use crate::html_text_escape;
 use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python};
@@ -46,10 +46,7 @@ impl PyCrs {
     }
 
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        py.import("builtins")?
-            .getattr("hash")?
-            .call1((self.definition.as_str(),))?
-            .extract()
+        PyString::new(py, self.definition.as_str()).hash()
     }
 
     fn __str__(&self) -> String {
