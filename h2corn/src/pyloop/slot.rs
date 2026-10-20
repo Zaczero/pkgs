@@ -66,10 +66,6 @@ impl SlotValue for PyResult<Py<PyAny>> {
 /// order (see `runtime::RequestTaskGuard`).
 pub(crate) struct TaskSlot<T: SlotValue, Guard = ()> {
     state: Mutex<SlotState<T>>,
-    #[expect(
-        dead_code,
-        reason = "RAII: retains request ownership until the slot releases"
-    )]
     guard: Guard,
 }
 
@@ -80,6 +76,10 @@ impl<T: SlotValue> TaskSlot<T> {
 }
 
 impl<T: SlotValue, Guard> TaskSlot<T, Guard> {
+    pub(crate) const fn guard(&self) -> &Guard {
+        &self.guard
+    }
+
     pub(crate) fn with_guard(guard: Guard) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(SlotState::Pending {
