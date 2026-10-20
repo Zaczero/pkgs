@@ -291,16 +291,16 @@ def _run_suite(impl: str, pyperf_args: list[str]) -> int:
         'Pillow images; encode RGB square-size, landscape/portrait, component-count, '
         'RGBA and grayscale cases; decode RGB square-size, aspect-ratio and '
         'component-count cases. The blurhash adapter uses NumPy arrays; '
-        'blurhash-python receives a copied Pillow image because its encoder closes '
-        'its input. Encoding preserves caller images and decoding returns RGB '
-        'Pillow images.'
+        'blurhash-python receives an RGB image copy because its encoder closes '
+        'RGB inputs; other modes are converted internally. Encoding preserves '
+        'caller images and decoding returns RGB Pillow images.'
     )
     runner.parse_args(pyperf_args)
 
     def encode_image(image, x_components, y_components):
         if impl == 'blurhash-python':
             return blurhash_encode(
-                image.copy(),
+                image.copy() if image.mode == 'RGB' else image,
                 x_components,
                 y_components,
             )

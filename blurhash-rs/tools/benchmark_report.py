@@ -206,8 +206,8 @@ def _markdown(results: Report, definitions: tuple[dict, ...], metadata: dict) ->
         rows.append('')
     rows.extend([
         'All three implementations use the same image dimensions and component counts. '
-        'Pillow-to-NumPy conversion, the image copy required by blurhash-python, and '
-        'Pillow output construction are included where their interfaces require them.',
+        'Pillow-to-NumPy conversion, the RGB image copy required by blurhash-python, '
+        'and Pillow output construction are included where their interfaces require them.',
         '',
     ])
     return '\n'.join(rows)
