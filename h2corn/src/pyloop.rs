@@ -565,6 +565,9 @@ impl ShardHandle {
         let application = owner
             .as_ref()
             .expect("application prepared before request admission");
+        let app = application.app.clone_ref(py);
+        let state = application.state.as_ref().map(|state| state.clone_ref(py));
+        drop(owner);
         // Copied even when empty. The lifespan spec says the namespace is
         // shallow-copied into every connection scope, and an application that
         // reads `scope["state"]` directly — rather than through Starlette,
@@ -572,13 +575,7 @@ impl ShardHandle {
         // get a `KeyError` purely because startup happened to store nothing.
         // Costs a measured ~430 instructions per request; a compatibility
         // break is not worth that.
-        let state = application
-            .state
-            .as_ref()
-            .map(|state| state.bind(py).copy())
-            .transpose()?;
-        let app = application.app.clone_ref(py);
-        drop(owner);
+        let state = state.map(|state| state.bind(py).copy()).transpose()?;
         Ok((app, state))
     }
 
