@@ -218,7 +218,10 @@ def render() -> str:
 def render_benchmark_results() -> str:
     raw_directory = ROOT / 'bench' / 'results' / 'raw'
     plot_directory = ROOT / 'bench' / 'results' / 'plots'
-    records = sorted(raw_directory.glob('*.json'))
+    records = {
+        path: json.loads(path.read_text(encoding='utf-8'))
+        for path in sorted(raw_directory.glob('*.json'))
+    }
     if not records:
         raise RuntimeError('benchmark results are missing; populate bench/results/raw')
 
@@ -228,11 +231,51 @@ def render_benchmark_results() -> str:
         ) as handle:
             handle.write(plot_path.read_bytes())
 
-    sections: list[str] = ['## Results\n\n']
-    for raw_path in records:
-        record = json.loads(raw_path.read_text(encoding='utf-8'))
+    servers = tuple(
+        dict.fromkeys(
+            name
+            for record in records.values()
+            if record.get('status') != 'skipped'
+            for name in record['requested_servers']
+        )
+    )
+    environment = next(
+        record for record in records.values() if record.get('status') != 'skipped'
+    )
+    sections: list[str] = [
+        '## Environment\n\n',
+        environment['system_summary'].replace('\n', ' · ') + '\n\n',
+        ', '.join(
+            f'{name} {version}'
+            for name, version in environment['package_versions'].items()
+            if version is not None
+        )
+        + '.\n\n',
+        '## Results\n\n',
+        '| Workload | Network | ' + ' | '.join(servers) + ' |\n',
+        '| --- | --- | ' + ' | '.join('---' for _ in servers) + ' |\n',
+    ]
+    for path, record in records.items():
+        network = record['network_profile']
+        if (measured_rtt := record.get('measured_rtt_ms')) is not None:
+            network = f'{measured_rtt:.1f} ms RTT'
+        states = [
+            'timed'
+            if name in record.get('aggregate', {})
+            else 'failed'
+            if name in record.get('failures', {})
+            else 'unsupported'
+            for name in servers
+        ]
+        sections.append(
+            f'| [{record["scenario"]}](#result-{path.stem}) '
+            f'| {network} | ' + ' | '.join(states) + ' |\n',
+        )
+    sections.append('\n')
+    for raw_path, record in records.items():
         scenario = record.get('scenario', raw_path.stem)
         profile = record.get('network_profile')
+        sections.append(f'<a id="result-{raw_path.stem}"></a>\n\n')
         if record.get('status') == 'skipped':
             excluded = record.get('excluded', {})
             reason = record.get('reason') or next(

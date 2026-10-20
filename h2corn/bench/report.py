@@ -41,160 +41,52 @@ def alt_text(
         )
         for name, result in ordered
     ]
-    parts.extend(
-        f'{name}: timing unavailable; response validation failed during {failure["phase"]}'
-        for name, failure in (failures or {}).items()
-    )
+    parts.extend(f'{name}: failed' for name in (failures or {}))
     return f'{title}. ' + ', '.join(parts) + '.'
 
 
 def render_accessible_results(record: dict[str, Any]) -> str:
-    """Render the measured aggregate as a conclusion and an exact data table."""
+    """Render compact results with throughput classifications."""
     results = record['aggregate']
     failures = record.get('failures', {})
     websocket = record['type'] == 'ws'
-    unit = 'sessions/s' if websocket else 'requests/s'
-    ordered = sorted(results.items(), key=lambda item: item[1]['rps'], reverse=True)
-    conclusion = (
-        f'{ordered[0][0]} has the highest observed median rate. '
-        'Paired comparisons below describe rate ratios within the same trial blocks; '
-        'an interval including 1 does not establish equivalence.'
-    )
-    if failures:
-        conclusion = (
-            'This workload has failed response-validation cells, so no complete '
-            'cross-server timing comparison is available. Numeric results cover '
-            'only complete passing trial sequences; failed cells have no rate or ratio.'
-        )
-    elif len(ordered) == 1:
-        conclusion = (
-            f'Only {ordered[0][0]} produced an eligible result, so no cross-server '
-            'comparison is available.'
-        )
-
-    headers = ['Server (version)', 'Measure', 'Value', 'Observed rate range']
-    percentile_names = sorted(
-        {name for result in results.values() for name in result['latency_percentiles']},
-        key=lambda name: float(name.removeprefix('p')),
-    )
+    duration = 'session' if websocket else 'latency'
+    headers = [
+        'Server',
+        'Sessions/s' if websocket else 'Requests/s',
+        f'p50 {duration} (ms)',
+        f'p99 {duration} (ms)',
+        'PSS (MB)',
+        'Throughput vs h2corn',
+    ]
     rows = [
         '| ' + ' | '.join(headers) + ' |',
         '| ' + ' | '.join('---' for _ in headers) + ' |',
     ]
-    versions = record['package_versions']
-    for name, result in ordered:
-        low, high = result['rps_range']
-        server = f'{name} ({versions.get(name) or "unknown"})'
-        duration_name = 'session duration' if websocket else 'latency'
-        measurements = [
-            ('Measured trials', str(len(result['rps_samples'])), '-'),
-            (
-                'Median completed sessions per trial'
-                if websocket
-                else 'Median completed responses per trial',
-                f'{result["completed"]:,.1f}'.removesuffix('.0'),
-                '-',
-            ),
-            (
-                f'Median rate ({unit})',
-                format_rate(result['rps']),
-                f'{format_rate(low)}-{format_rate(high)}',
-            ),
-            (
-                'Maximum sampled PSS (MB)',
-                f'{result["peak_memory_bytes"] / 1e6:,.1f}',
-                '-',
-            ),
-            *(
-                (
-                    f'Median {percentile} {duration_name} (ms)',
-                    f'{result["latency_percentiles"][percentile] * 1000:,.3f}',
-                    '-',
-                )
-                for percentile in percentile_names
-                if percentile in result['latency_percentiles']
-            ),
-        ]
-        rows.extend(
-            f'| {server} | {measure} | {value} | {range_} |'
-            for measure, value, range_ in measurements
-        )
-    for name, failure in sorted(failures.items()):
-        rows.append(
-            f'| {name} ({versions[name]}) | Timing unavailable '
-            f'| Failed {failure["phase"]} | - |'
-        )
-
-    profile = record['network_profile']
-    environment = record['system_summary'].replace('\n', '; ')
-    measured_rtt = record.get('measured_rtt_ms')
-    if measured_rtt is not None:
-        profile += f' ({measured_rtt:.1f} ms measured RTT)'
-    plan = record.get('load_plan', {})
-    load_description = (
-        f'{plan["requests"]} completed requests after {plan["warmup_requests"]} warmup requests'
-        if plan.get('mode') == 'fixed-count'
-        else f'{record["duration"]} load after {record["warmup_duration"]} warmup'
-    )
-    text = [
-        f'**Conclusion:** {conclusion}',
-        '',
-        f'**Workload:** {record.get("workload", record["scenario"])}.',
-        '',
-        f'**Environment:** {environment}; {profile}; {load_description}.',
-        '',
-        *rows,
-        '',
-        'Rates are medians across fresh-start trials; the observed rate range is '
-        'the trial minimum-maximum, not a confidence interval. A dash means no '
-        'range is reported for that measure. Latency percentiles are medians '
-        'across trials and have no interval shown. Peak proportional set size '
-        '(PSS) is the maximum sampled value across the supervisor and workers; '
-        'MB uses decimal units.',
-    ]
-    if build := record.get('source_build'):
-        text.extend((
-            '',
-            f'**h2corn source build:** `{build["revision"][:12]}`; release profile. '
-            f'Wheel prefix: `{build["wheel_sha256"][:16]}`. '
-            'The retained build receipt provides full identifiers and the source input inventory.',
-        ))
     contrasts = record.get('paired_contrasts', {})
-    if contrasts:
-        text.extend((
-            '',
-            '| Paired rate comparison | Median h2corn / competitor | 95% interval |',
-            '| --- | --- | --- |',
-        ))
-        for name, contrast in contrasts.items():
-            low, high = contrast['interval_95']
-            text.append(
-                f'| h2corn / {name} | {contrast["h2corn_over_competitor"]:.3f} '
-                f'| {low:.3f}-{high:.3f} |'
+    names = record.get('requested_servers', list(results))
+    for name in names:
+        if name not in results:
+            status = 'failed' if name in failures else 'unsupported'
+            rows.append(f'| {name} | {status} | - | - | - | - |')
+            continue
+        result = results[name]
+        comparison = '-'
+        if name in contrasts:
+            low, high = contrasts[name]['interval_95']
+            comparison = (
+                'slower' if low > 1 else 'faster' if high < 1 else 'inconclusive'
             )
-        text.extend((
-            '',
-            'Intervals use a percentile bootstrap of complete paired trial blocks. '
-            'Each ratio compares the same block, with rotated server order. '
-            'These are per-comparison intervals, without a simultaneous ranking claim. '
-            'Load is closed-loop: clients wait for a response before issuing more work, '
-            'so the latency percentiles are not an open-arrival service-level estimate.',
-        ))
-    if failures:
-        text.extend(('', '**Failed cells (not performance results):**'))
-        for name, failure in sorted(failures.items()):
-            text.append(
-                f'- **{name}, block {failure["block"]}, {failure["phase"]}:** {failure["error"]} '
-                'Later trial blocks are not repeated after a verified response failure. '
-                'Any earlier partial timing observations remain diagnostics only.'
-            )
-    if record['excluded']:
-        text.extend((
-            '',
-            '**Excluded servers:** '
-            + '; '.join(
-                f'{name}: {reason}'
-                for name, reason in sorted(record['excluded'].items())
+        percentiles = result['latency_percentiles']
+        cells = [
+            name,
+            format_rate(result['rps']),
+            *(
+                f'{percentiles[key] * 1000:,.3f}' if key in percentiles else '-'
+                for key in ('p50', 'p99')
             ),
-        ))
-    return '\n'.join(text) + '\n'
+            f'{result["peak_memory_bytes"] / 1e6:,.1f}',
+            comparison,
+        ]
+        rows.append('| ' + ' | '.join(cells) + ' |')
+    return '\n'.join(rows) + '\n'

@@ -63,8 +63,8 @@ class _BenchmarkContent(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
-        if tag == 'img' and 'assets/benchmarks/' in attributes.get('src', ''):
-            source = attributes['src'] or ''
+        source = attributes.get('src') or ''
+        if tag == 'img' and 'assets/benchmarks/' in source:
             alternative = attributes.get('alt') or ''
             self.images.append((source, alternative))
             kind = (
@@ -295,8 +295,6 @@ def check_benchmark_results() -> None:
             if not pending_figure or description != pending_figure:
                 raise AssertionError('a dark figure has no matching light alternative')
         elif kind == 'table-start':
-            if not pending_figure:
-                raise AssertionError('a benchmark data table has no preceding figure')
             if in_table:
                 raise AssertionError('benchmark data tables must not be nested')
             in_table = True

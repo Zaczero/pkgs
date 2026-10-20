@@ -86,12 +86,11 @@ Moving an existing deployment? See the
 
 Compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette
 application with standard asyncio. HTTP/1.1 uses the controlled pure-Python
-parser configurations for Uvicorn and Gunicorn; these results do not rank
-their optional accelerated deployments.
+parser configurations for Uvicorn and Gunicorn.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-dark.svg">
-  <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for h2corn, Uvicorn, Hypercorn, and Gunicorn. Exact values and paired rate comparisons are available on the benchmark page.">
+  <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for h2corn, Uvicorn, Hypercorn, and Gunicorn.">
 </picture>
 
 See [the measured environment, exact data, server configuration, and workloads](https://h2corn.monicz.dev/benchmarks/),

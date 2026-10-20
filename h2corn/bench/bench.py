@@ -505,7 +505,7 @@ def server_command(
 
 def package_versions() -> dict[str, str | None]:
     versions: dict[str, str | None] = {}
-    for package in SERVERS:
+    for package in (*SERVERS, 'starlette', 'h11', 'h2', 'zttp', 'websockets'):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -1029,35 +1029,29 @@ def plot_results(
 def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     results = record['aggregate']
     title = record['scenario']
-    summary = record['system_summary']
     websocket = record['type'] == 'ws'
-    excluded = record['excluded']
     failures = record.get('failures', {})
     figure, axes = plt.subplots(1, 3, figsize=(15, 6), layout='constrained')
     figure.suptitle(title, fontsize=17, fontweight='bold')
 
     names = sorted(
-        {*results, *failures},
+        record.get('requested_servers', [*results, *failures]),
         key=lambda name: list(SERVER_COLORS).index(name),
     )
-    versions = record['package_versions']
-    labels = [
-        f'{name}\n{versions.get(name)}'
-        + (' (source)' if name == 'h2corn' and record.get('source_build') else '')
-        for name in names
-    ]
+    labels = names
     rates = [results[name]['rps'] if name in results else math.nan for name in names]
     colors = [SERVER_COLORS[name][dark] for name in names]
     foreground = mpl.rcParams['text.color']
 
     throughput = axes[0]
     bars = throughput.bar(labels, rates, color=colors)
+    throughput.set_xlim(-0.6, len(names) - 0.4)
     for bar, name in zip(bars, names, strict=True):
-        if name in failures:
+        if name not in results:
             throughput.text(
                 bar.get_x() + bar.get_width() / 2,
                 0.05,
-                f'Failed\n{failures[name]["phase"]}',
+                'failed' if name in failures else 'unsupported',
                 ha='center',
                 va='bottom',
                 transform=throughput.get_xaxis_transform(),
@@ -1099,7 +1093,7 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     figure.canvas.draw()
     baseline = throughput.transData.transform((0, 0))[1]
     for bar, name in zip(bars, names, strict=True):
-        if name in failures:
+        if name not in results:
             continue
         _, high = results[name]['rps_range']
         value = results[name]['rps']
@@ -1122,10 +1116,11 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
         for name in names
     ]
     memory_bars = memory.bar(labels, memory_values, color=colors)
+    memory.set_xlim(-0.6, len(names) - 0.4)
     memory.bar_label(
         memory_bars,
         labels=[
-            '' if name in failures else f'{value:.1f}'
+            '' if name not in results else f'{value:.1f}'
             for name, value in zip(names, memory_values, strict=True)
         ],
         padding=4,
@@ -1137,7 +1132,7 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     latency = axes[1]
     plotted = False
     for name, label in zip(names, labels, strict=True):
-        if name in failures:
+        if name not in results:
             continue
         percentiles = results[name]['latency_percentiles']
         if not percentiles:
@@ -1170,30 +1165,10 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
         latency.set_title('Latency data unavailable')
 
     footer = (
-        summary.replace('\n', ' · ')
-        + '\nBars: median rate · Dots: fresh-start trials · Whiskers: observed range'
-        + f'\nTrials per timed server: {record["trials"]} · Fresh server starts'
-        + '\nLatency: median trial percentiles · Failed cells have no timing'
-        + '\n'
-        + textwrap.fill(record.get('workload', ''), width=145)
+        'Bars: median rate · Dots: fresh-start trials · Whiskers: observed range'
+        '\nLatency: median trial percentiles'
+        '\n' + textwrap.fill(record.get('workload', ''), width=145)
     )
-    if excluded:
-        # A missing bar has to explain itself, or the plot silently implies the
-        # server was never in the comparison.
-        footer += '\n' + textwrap.fill(
-            'Excluded: '
-            + '; '.join(
-                f'{name} ({reason})' for name, reason in sorted(excluded.items())
-            ),
-            width=135,
-        )
-    if failures:
-        footer += '\nTiming unavailable: ' + '; '.join(
-            f'{name} failed {failure["phase"]}'
-            for name, failure in sorted(failures.items())
-        )
-    if build := record.get('source_build'):
-        footer += f'\nh2corn: source {build["revision"][:12]} · release profile'
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
     plt.close(figure)

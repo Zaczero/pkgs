@@ -154,9 +154,13 @@ def test_rendered_benchmark_table_resolves_relative_figure_assets(
     asset.parent.mkdir(parents=True)
     asset.write_text('<svg></svg>', encoding='utf-8')
     page.write_text(
+        '<table><thead><tr><th>Comparison availability</th></tr></thead>'
+        '<tbody><tr><td>Timed</td></tr></tbody></table>'
         '<img alt="HTTP/1 request rate" src="../assets/benchmarks/chart.svg">'
         '<table><thead><tr><th>Server</th></tr></thead>'
-        '<tbody><tr><td>h2corn</td></tr></tbody></table>',
+        '<tbody><tr><td>h2corn</td></tr></tbody></table>'
+        '<table><thead><tr><th>Paired comparison</th></tr></thead>'
+        '<tbody><tr><td>1.5 (1.4-1.6)</td></tr></tbody></table>',
         encoding='utf-8',
     )
     monkeypatch.setattr(docs_check, 'SITE', tmp_path)
@@ -245,21 +249,37 @@ def test_benchmark_publication_rejects_missing_results(tmp_path: Path) -> None:
         assert_publishable([tmp_path])
 
 
-def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
+def test_benchmark_table_reports_rates_latency_memory_and_comparison() -> None:
     markdown = render_accessible_results(_benchmark_record())
 
-    assert 'Observed rate range' in markdown
-    assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98.00-102 |' in markdown
-    assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
-    assert '| h2corn / uvicorn | 2.500 | 2.300-2.700 |' in markdown
-    assert 'not a confidence interval' in markdown
+    assert '| h2corn | 100 | 0.800 | 4.000 | 1.5 | - |' in markdown
+    assert '| uvicorn | 40.00 | 2.000 | 10.000 | 2.5 | slower |' in markdown
 
 
 def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
     markdown = render_accessible_results(_benchmark_record('ws'))
 
-    assert 'Median rate (sessions/s)' in markdown
-    assert 'Median p99 session duration (ms)' in markdown
+    assert 'Sessions/s' in markdown
+    assert 'p99 session (ms)' in markdown
+
+
+@pytest.mark.parametrize(
+    ('interval', 'classification'),
+    [
+        ([0.7, 0.9], 'faster'),
+        ([0.9, 1.1], 'inconclusive'),
+        ([1.0, 1.2], 'inconclusive'),
+    ],
+)
+def test_benchmark_table_classifies_paired_uncertainty(
+    interval: list[float], classification: str
+) -> None:
+    record = _benchmark_record()
+    record['paired_contrasts']['uvicorn']['interval_95'] = interval
+
+    markdown = render_accessible_results(record)
+
+    assert f'| uvicorn | 40.00 | 2.000 | 10.000 | 2.5 | {classification} |' in markdown
 
 
 def test_benchmark_table_preserves_sub_request_per_second_rates() -> None:
@@ -269,7 +289,7 @@ def test_benchmark_table_preserves_sub_request_per_second_rates() -> None:
     result = record['aggregate']['h2corn']
     result.update(rps=0.25, rps_range=[0.24, 0.26], rps_samples=[0.24, 0.25, 0.26])
     markdown = render_accessible_results(record)
-    assert '| Median rate (requests/s) | 0.25 | 0.24-0.26 |' in markdown
+    assert '| h2corn | 0.25 |' in markdown
 
 
 def test_benchmark_failed_response_has_no_numeric_rate_or_ratio() -> None:
@@ -284,13 +304,8 @@ def test_benchmark_failed_response_has_no_numeric_rate_or_ratio() -> None:
         }
     }
     markdown = render_accessible_results(record)
-    assert 'no complete cross-server timing comparison' in markdown
-    assert (
-        '| uvicorn (0.43.0) | Timing unavailable | Failed correctness-before | - |'
-        in markdown
-    )
-    assert '| h2corn / uvicorn |' not in markdown
-    assert 'Failed cells (not performance results)' in markdown
+    assert '| uvicorn | failed | - | - | - | - |' in markdown
+    assert 'response body mismatch' not in markdown
 
 
 def test_benchmark_table_does_not_claim_a_winner_without_a_comparator() -> None:
@@ -299,8 +314,7 @@ def test_benchmark_table_does_not_claim_a_winner_without_a_comparator() -> None:
 
     markdown = render_accessible_results(record)
 
-    assert 'Only h2corn produced an eligible result' in markdown
-    assert 'cross-server comparison is available' in markdown
+    assert '| uvicorn | unsupported | - | - | - | - |' in markdown
 
 
 def test_api_docs_partition_every_top_level_export_once() -> None:
