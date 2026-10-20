@@ -47,22 +47,45 @@ pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError
     let normalized_lat = lat + 90.0;
 
     // In-range inputs (virtually every call) need no modular wraparound:
-    // both `rem_euclid`s return their argument unchanged there, but each
-    // costs a soft-float `fmod` on the x86-64-v2 baseline. The fast arm
+    // a remainder calls `fmod` on the x86-64-v2 baseline. The fast arm
     // keeps the identical remaining operations, so it is bit-exact.
     let (wrapped_x, wrapped_y) =
         if (0.0..180.0).contains(&normalized_lat) && (-180.0..180.0).contains(&lon) {
             (lon + 180.0, 180.0 - (normalized_lat - 180.0).abs())
         } else {
-            // how many 180° half-turns (parity decides whether lon flips by
-            // 180°); `180 * parity` is exact (parity is 0.0 or 1.0), so the
-            // plain form matches the previous fused one bit-for-bit.
-            let half_turns = (normalized_lat / 180.0).floor() as i64;
-            let parity = (half_turns & 1) as f64;
-            (
-                (180.0 * parity + (lon + 180.0)).rem_euclid(360.0),
-                180.0 - (normalized_lat.rem_euclid(360.0) - 180.0).abs(),
-            )
+            // Reduce before adding offsets: large finite inputs can absorb
+            // those offsets, and their quotient no longer retains parity.
+            let lat = lat % 360.0;
+            let lat = if lat > 180.0 {
+                lat - 360.0
+            } else if lat < -180.0 {
+                lat + 360.0
+            } else {
+                lat
+            };
+            // Classify the pole before adding 90, which can round a nearby
+            // latitude onto it. The north pole includes the longitude flip.
+            let reflected = !(-90.0..90.0).contains(&lat);
+            let lat = if lat >= 90.0 {
+                180.0 - lat
+            } else if lat < -90.0 {
+                -180.0 - lat
+            } else {
+                lat
+            };
+            let lon = lon % 360.0;
+            // A final modulo would wrap a value rounded up to 360 onto the
+            // wrong seam; the u32 projection keeps it in the final column.
+            let wrapped_x = if reflected {
+                if lon < 0.0 { lon + 360.0 } else { lon }
+            } else if lon < -180.0 {
+                lon + 540.0
+            } else if lon >= 180.0 {
+                lon - 180.0
+            } else {
+                lon + 180.0
+            };
+            (wrapped_x, 180.0 - ((lat + 90.0) - 180.0).abs())
         };
     let encoded_x = (wrapped_x * X_SCALE) as u32;
     let encoded_y = (wrapped_y * Y_SCALE) as u32;

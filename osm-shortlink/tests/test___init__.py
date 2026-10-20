@@ -1,4 +1,5 @@
-from math import isclose, sqrt
+from fractions import Fraction
+from math import isclose, nextafter, sqrt
 
 import pytest
 from osm_shortlink import shortlink_decode, shortlink_encode
@@ -60,6 +61,90 @@ def test_encode_rejects_zoom_outside_unsigned_byte(zoom):
 def test_encode_lat_wrapping(lon, lat, expected_lon, expected_lat):
     assert shortlink_encode(lon, lat, 5) == shortlink_encode(
         expected_lon, expected_lat, 5
+    )
+
+
+def _exact_normalized_shortlink(lon: float, lat: float, zoom: int) -> str:
+    # Fractions preserve the actual input floats through modular reduction and
+    # pole classification. Quantization retains the codec's binary64 projection.
+    latitude_phase = (Fraction(lat) + 90) % 360
+    longitude_phase = (Fraction(lon) + 180 + 180 * (latitude_phase >= 180)) % 360
+    latitude_phase = min(latitude_phase, 360 - latitude_phase)
+    x = min(int(float(longitude_phase) * (2**32 / 360)), 2**32 - 1)
+    y = 180 - abs(float(latitude_phase) - 180)
+    y = min(int(y * (2**32 / 180)), 2**32 - 1)
+    bits = ''.join(a + b for a, b in zip(f'{x:032b}', f'{y:032b}', strict=True))
+    alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~'
+    digits = (zoom + 10) // 3
+    return ''.join(
+        alphabet[int(bits[offset : offset + 6], 2)]
+        for offset in range(0, digits * 6, 6)
+    ) + '-' * ((zoom + 8) % 3)
+
+
+@pytest.mark.parametrize('zoom', [0, 5, 22])
+@pytest.mark.parametrize(
+    ('lon', 'lat'),
+    [
+        pytest.param(0.0, 1e20, id='large-latitude'),
+        pytest.param(1e20, 0.0, id='large-longitude'),
+        pytest.param(0.0, -1e20, id='negative-large-latitude'),
+        pytest.param(-1e20, 0.0, id='negative-large-longitude'),
+        pytest.param(0.0, 1e30, id='saturated-positive-quotient'),
+        pytest.param(0.0, -1e30, id='saturated-negative-quotient'),
+        pytest.param(1e20, 1e30, id='both-large'),
+        pytest.param(float.fromhex('0x1.fffffffffffffp+1023'), 0.0, id='max-longitude'),
+        pytest.param(0.0, float.fromhex('0x1.fffffffffffffp+1023'), id='max-latitude'),
+        pytest.param(
+            -float.fromhex('0x1.fffffffffffffp+1023'), 0.0, id='min-longitude'
+        ),
+        pytest.param(0.0, -float.fromhex('0x1.fffffffffffffp+1023'), id='min-latitude'),
+        pytest.param(
+            0.0, float.fromhex('0x1.fffffffffffffp+52'), id='latitude-unit-ulp'
+        ),
+        pytest.param(0.0, float.fromhex('0x1p+53'), id='latitude-two-degree-ulp'),
+        pytest.param(0.0, float.fromhex('0x1p+54'), id='latitude-four-degree-ulp'),
+        pytest.param(float.fromhex('0x1p+55'), 0.0, id='longitude-eight-degree-ulp'),
+        pytest.param(
+            float.fromhex('0x1p+60'), 0.0, id='longitude-offset-below-half-ulp'
+        ),
+        pytest.param(0.0, float.fromhex('0x1.68p+70'), id='quotient-cast-boundary'),
+        pytest.param(17.0, nextafter(90.0, 0.0), id='below-north-pole'),
+        pytest.param(17.0, 90.0, id='north-pole'),
+        pytest.param(17.0, nextafter(90.0, 180.0), id='above-north-pole'),
+        pytest.param(17.0, nextafter(-90.0, 0.0), id='above-south-pole'),
+        pytest.param(17.0, -90.0, id='south-pole'),
+        pytest.param(17.0, nextafter(-90.0, -180.0), id='below-south-pole'),
+        pytest.param(17.0, nextafter(270.0, 0.0), id='below-reflected-south-pole'),
+        pytest.param(17.0, 270.0, id='reflected-south-pole'),
+        pytest.param(17.0, nextafter(270.0, 360.0), id='above-reflected-south-pole'),
+        pytest.param(17.0, nextafter(-270.0, 0.0), id='above-reflected-north-pole'),
+        pytest.param(17.0, -270.0, id='reflected-north-pole'),
+        pytest.param(17.0, nextafter(-270.0, -360.0), id='below-reflected-north-pole'),
+        pytest.param(nextafter(180.0, 0.0), 100.0, id='reflected-before-positive-seam'),
+        pytest.param(
+            nextafter(-180.0, 0.0), 100.0, id='reflected-before-negative-seam'
+        ),
+        pytest.param(nextafter(-180.0, -360.0), 360.0, id='wrapped-negative-seam'),
+        pytest.param(nextafter(180.0, 0.0), 360.0, id='wrapped-before-positive-seam'),
+        pytest.param(
+            -float.fromhex('0x0.0000000000001p-1022'),
+            100.0,
+            id='tiny-negative-reflected-longitude',
+        ),
+        pytest.param(
+            float.fromhex('0x0.0000000000001p-1022'),
+            -360.0,
+            id='tiny-positive-longitude',
+        ),
+        pytest.param(0.055, 51.511, id='ordinary-openstreetmap-vector'),
+        pytest.param(-31.113, 64.13, id='ordinary-negative-longitude'),
+        pytest.param(0.0, -0.0, id='signed-zero'),
+    ],
+)
+def test_encode_normalizes_actual_float_coordinates(lon, lat, zoom):
+    assert shortlink_encode(lon, lat, zoom) == _exact_normalized_shortlink(
+        lon, lat, zoom
     )
 
 
