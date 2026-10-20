@@ -1668,29 +1668,15 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let config = config_stub(py);
-            config
-                .setattr("request_policies", PyTuple::empty(py))
-                .unwrap();
             set_core_options(&config);
             set_http_options(&config);
             set_timeout_and_limit_options(&config);
             set_websocket_and_proxy_options(&config, py);
-            let request_policy_type = PyModule::import(py, "h2corn")
-                .unwrap()
-                .getattr("RequestPolicy")
-                .unwrap();
-            let policy_kwargs = PyDict::new(py);
-            policy_kwargs.set_item("path", "/example.Chat/*").unwrap();
-            policy_kwargs
-                .set_item("max_request_body_size", 123_456)
-                .unwrap();
-            policy_kwargs
-                .set_item("timeout_request_body_idle", 1.25)
-                .unwrap();
-            policy_kwargs
-                .set_item("h2_timeout_response_stall", 2.5)
-                .unwrap();
-            let policy = request_policy_type.call((), Some(&policy_kwargs)).unwrap();
+            let policy = config_stub(py);
+            policy.setattr("path", "/example.Chat/*").unwrap();
+            policy.setattr("max_request_body_size", 123_456).unwrap();
+            policy.setattr("timeout_request_body_idle", 1.25).unwrap();
+            policy.setattr("h2_timeout_response_stall", 2.5).unwrap();
             config
                 .setattr("request_policies", PyTuple::new(py, [policy]).unwrap())
                 .unwrap();
