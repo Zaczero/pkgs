@@ -209,7 +209,7 @@ def _oracle_command(
             seen.add(name)
             ordered.append(name)
     command = [
-        '.venv/bin/python',
+        sys.executable,
         'benches/python/bench_oracle.py',
     ]
     if not ordered:
@@ -268,7 +268,7 @@ def _paired_command(
         'taskset',
         '--cpu-list',
         str(cpu),
-        '.venv/bin/python',
+        sys.executable,
         f'benches/python/{PAIR_WORKER}',
         '--gometry',
         gometry,
@@ -479,7 +479,7 @@ def _resource_plans(
                 'taskset',
                 '--cpu-list',
                 str(cpu),
-                '.venv/bin/python',
+                sys.executable,
                 'benches/cases/case_resource_tail.py',
                 '--mode',
                 mode,

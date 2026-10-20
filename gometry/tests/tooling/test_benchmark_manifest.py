@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
+import os
+import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -149,6 +153,62 @@ def test_release_uses_one_typed_paired_worker() -> None:
 def test_release_paired_worker_imports_before_a_release_run() -> None:
     script = EXPECTED_PAIR_WORKER
     importlib.import_module(Path(script).stem)
+
+
+def test_all_child_commands_use_the_selected_interpreter_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = tmp_path / 'isolated'
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = str(environment / 'bin' / 'python')
+    monkeypatch.setattr(sys, 'executable', interpreter)
+    for script in (
+        'benches/python/bench_oracle.py',
+        'benches/python/bench_paired.py',
+        'benches/cases/case_resource_tail.py',
+    ):
+        path = tmp_path / script
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            'import json, sys\n'
+            'print(json.dumps({"executable": sys.executable, "prefix": sys.prefix}))\n'
+        )
+    cpu = min(os.sched_getaffinity(0))
+    binding = {'path': str(tmp_path / 'wheel.whl'), 'receipt_sha256': '0' * 64}
+    commands = [
+        _bench_driver._oracle_command({'competitors': RELEASE_OPERATIONS[0].rows}),
+        _bench_driver._paired_command(
+            gometry=RELEASE_OPERATIONS[0].gometry,
+            pair_id='pair',
+            block_id='block',
+            lead='ab',
+            output=tmp_path / 'paired.json',
+            profile=SMOKE,
+            cpu=cpu,
+            receipt_binding=binding,
+        ),
+        _bench_driver._resource_plans(
+            output_dir=tmp_path,
+            timestamp='run',
+            cpu=cpu,
+            receipt_binding=binding,
+            package_root=tmp_path,
+        )[0]['command'],
+    ]
+    observed = [
+        json.loads(
+            subprocess.run(
+                command,
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout
+        )
+        for command in commands
+    ]
+    assert observed == [{'executable': interpreter, 'prefix': str(environment)}] * 3
 
 
 def test_all_public_rows_are_unique_and_fully_paired() -> None:
