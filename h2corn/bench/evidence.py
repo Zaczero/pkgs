@@ -161,9 +161,6 @@ def run_identity(root: Path, wheel: Path | None) -> dict[str, Any]:
         packages[distribution.metadata['Name']] = {
             'version': distribution.version,
             'files': files,
-            'direct_url': json.loads(value)
-            if (value := distribution.read_text('direct_url.json'))
-            else None,
         }
     commands = {}
     for name in ('h2corn', 'uvicorn', 'hypercorn', 'gunicorn'):

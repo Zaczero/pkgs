@@ -76,7 +76,7 @@ freethreaded = [
   "benchroom",
   "fastapi>=0.118.0",
   "griffe-inherited-docstrings>=1.0",
-  "gunicorn[http2]>=26.2.2",
+  "gunicorn[http2]>=26.2.0",
   "h2>=4.2.0",
   "h2corn[uvloop]",
   "hpack>=4.1.0",
@@ -122,8 +122,5 @@ extend-select = ["non-capitalized-section-name", "missing-new-line-after-section
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.uv.sources]
-benchroom = { path = "../benchroom", editable = true }
-# Remove this release-tag override once PyPI carries 26.2.2 or newer.
-gunicorn = { git = "https://github.com/benoitc/gunicorn", tag = "26.2.2" }
-pyo3stubs = { path = "../pyo3stubs", editable = true }
+[tool.uv]
+sources = { pyo3stubs = { path = "../pyo3stubs", editable = true }, benchroom = { path = "../benchroom", editable = true } }
