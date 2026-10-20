@@ -28,9 +28,9 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 ## Benchmarks
 
-h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette application
-on standard asyncio. The HTTP/1.1 comparison uses controlled pure-Python
-parsers for Uvicorn and Gunicorn, rather than their optional accelerators.
+**11–29× higher throughput** in the one-worker HTTP/1.1 GET benchmark.
+h2corn, Uvicorn, Hypercorn, and Gunicorn serve the same Starlette application
+on standard asyncio, with pure-Python HTTP/1.1 parsers for Uvicorn and Gunicorn.
 
 ![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
 ![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)

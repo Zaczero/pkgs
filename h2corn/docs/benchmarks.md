@@ -6,6 +6,9 @@ hide:
 
 # Benchmarks
 
+**h2corn delivered 11–29× higher throughput** in the one-worker HTTP/1.1 GET
+comparison, using standard asyncio and pure-Python parsers for Uvicorn and Gunicorn.
+
 These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
 same Starlette application, over loopback and a 50 ms round-trip network profile.
 Results cover throughput, latency, and memory.
