@@ -4,6 +4,8 @@ AMD Ryzen 9 5950X 16-Core Processor · Linux-7.2.9-x86_64-with-glibc2.42 · cpyt
 Fixed timestamp · SHA-1, SHA-256, and SHA-512 · six digits · 30-second period · verification window ±1
 12 independent worker-process means per workload
 
+Warmup-only runs remain in the raw JSON and are omitted from the table.
+
 Intervals are 95% percentile bootstrap intervals with 10,000 resamples across worker-process means.
 
 ## Matched PyOTP comparison

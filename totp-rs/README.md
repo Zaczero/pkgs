@@ -79,7 +79,9 @@ each after one warmup. Six-worker batches ran totp-rs then PyOTP, followed by
 PyOTP then totp-rs. The table reports medians and 95% percentile bootstrap
 intervals from 10,000 resamples of worker-process means. Native wheels used
 release builds with rustc 1.101.0-nightly (`4ebd25825`, LLVM 23.1.4) targeting
-x86-64-v2. Benchroom 0.1.0 and Matplotlib 3.11.2 generated the report.
+x86-64-v2. Warmup-only runs remain in the raw JSON but are excluded from the
+reported values and intervals. Benchroom 0.1.0 and Matplotlib 3.11.2 generated
+the report.
 
 [Full results, including native-only input forms](benchmarks/results.md), raw results
 ([totp-rs](benchmarks/totp-rs.json), [PyOTP](benchmarks/pyotp.json)), and the

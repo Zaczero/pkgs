@@ -150,6 +150,8 @@ def _markdown(
         '',
         _caption(metadata),
         '',
+        'Warmup-only runs remain in the raw JSON and are omitted from the table.',
+        '',
         'Intervals are 95% percentile bootstrap intervals with 10,000 resamples '
         'across worker-process means.',
         '',
