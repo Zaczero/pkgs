@@ -213,13 +213,19 @@ def _markdown(results: Report, definitions: tuple[dict, ...], metadata: dict) ->
     return '\n'.join(rows)
 
 
-def _caption(metadata: dict) -> str:
+def _environment_caption(metadata: dict) -> str:
     return (
         f'{metadata["cpu_model_name"]} · {metadata["python_implementation"]} '
         f'{metadata["python_version"]} · Pillow {metadata["pillow_version"]} · '
         f'NumPy {metadata["numpy_version"]}\n'
-        'Dots: medians · Whiskers: 95% bootstrap intervals across '
-        '12 independent worker-process means · lower is faster'
+        '12 independent worker-process means per workload'
+    )
+
+
+def _scaling_caption(metadata: dict) -> str:
+    return (
+        f'{_environment_caption(metadata)}\n'
+        'Dots: medians · Whiskers: 95% bootstrap intervals · lower is faster'
     )
 
 
@@ -271,7 +277,7 @@ def _save_scaling(
                 capsize=4,
             )
     figure.supxlabel(
-        _caption(metadata),
+        _scaling_caption(metadata),
         fontsize=9,
         color=axes.xaxis.label.get_color(),
     )
@@ -304,7 +310,7 @@ def _save_variants(
         f'BlurHash {operation} · other workloads',
         series,
         unit='seconds',
-        caption=_caption(metadata),
+        caption=_environment_caption(metadata),
     )
     figure = comparison.figure(dark=dark)
     figure.set_size_inches(11, max(4, 1.9 + len(comparison.results) * 0.42))
@@ -325,7 +331,7 @@ def report(paths: list[str], output_directory: str = 'benchmarks') -> None:
         'BlurHash image benchmarks',
         series,
         unit='seconds',
-        caption=_caption(metadata),
+        caption=_environment_caption(metadata),
     )
     root = Path(output_directory)
     root.mkdir(parents=True, exist_ok=True)
