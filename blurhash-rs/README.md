@@ -44,33 +44,64 @@ onto your chosen background first.
 
 ## Benchmarks
 
-**About 120–330× faster encoding and 16–23× faster decoding** than
-`blurhash-python` by median runtime in these Pillow-image benchmarks.
+These Pillow-image benchmarks compare `blurhash-rs` with the current
+`blurhash` and `blurhash-python` releases. Square-image charts show scaling;
+the workload charts compare image shapes, component counts, and input modes.
+On this workstation, blurhash-rs had the lowest measured median in all nine
+encoding and seven decoding cases. Lower time is faster; the full table reports
+per-case medians and worker-process intervals.
+
+For square RGB images using 4 by 3 components at 32, 64, and 128 pixels,
+blurhash-python took 127–378 times as long as blurhash-rs to encode, and
+20.5–29.1 times as long to decode, by the median worker-process means on this
+workstation.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/encode-dark.svg">
-  <img src="benchmarks/encode.svg" alt="Encoding 32, 64, and 128 pixel square images takes blurhash-rs 4.2, 7.8, and 23.4 microseconds, compared with 494, 1,938, and 7,762 microseconds for blurhash-python.">
+  <img src="benchmarks/encode.svg" alt="Median time to encode square RGB Pillow images at 32, 64, and 128 pixels with 4 by 3 components. blurhash-rs has the lowest measured median at each size compared with blurhash and blurhash-python; whiskers show 95% intervals across worker-process means.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/encode-workloads-dark.svg">
+  <img src="benchmarks/encode-workloads.svg" alt="Median encoding time for landscape and portrait images, 1 by 1 and 9 by 9 component counts, and RGBA or grayscale inputs. blurhash-rs has the lowest measured median versus blurhash and blurhash-python in these workload variants.">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/decode-dark.svg">
-  <img src="benchmarks/decode.svg" alt="Decoding to 32, 64, and 128 pixel square images takes blurhash-rs 10.4, 31.5, and 111.6 microseconds, compared with 162, 635, and 2,552 microseconds for blurhash-python.">
+  <img src="benchmarks/decode.svg" alt="Median time to decode BlurHash values into 32, 64, and 128 pixel square RGB Pillow images using 4 by 3 components. blurhash-rs has the lowest measured median at each size compared with blurhash and blurhash-python; whiskers show 95% intervals across worker-process means.">
 </picture>
 
-The workload preserves caller-owned RGB Pillow images, uses 4 × 3 components,
-and returns RGB images on decode. Required copies and Pillow/list conversions
-are included. All three libraries produced identical hashes; decoded channels
-differed by at most one 8-bit level.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/decode-workloads-dark.svg">
+  <img src="benchmarks/decode-workloads.svg" alt="Median decoding time for landscape and portrait output sizes and 1 by 1 or 9 by 9 component counts. blurhash-rs has the lowest measured median versus blurhash and blurhash-python in these workload variants.">
+</picture>
 
-Measured on a Ryzen 9 5950X shared workstation with CPython 3.14.8,
-Pillow 12.3.0, and Linux 7.2.9. Each case uses twelve worker processes and
-three readings after warmup per process. Six-process batches run in
-A–B–C–C–B–A order.
+Encoding preserves caller-owned Pillow images. The benchmark includes the
+Pillow-to-NumPy conversion used by `blurhash`, the RGB image copy required by
+`blurhash-python`, and output-image construction where those interfaces require
+them. All three libraries produced identical hashes; decoded channels differed
+by at most one 8-bit level.
+
+The measured versions are blurhash-rs 1.1.0, [`blurhash` 1.1.5](https://pypi.org/project/blurhash/1.1.5/),
+and [`blurhash-python` 1.2.2](https://pypi.org/project/blurhash-python/1.2.2/),
+with Pillow 13.0.0, NumPy 2.5.4, and CFFI 2.1.1 for blurhash-python. pyperf
+2.10.0 collected the measurements; benchroom 0.1.0 and Matplotlib 3.11.2
+generated the reports. Runs used CPython 3.15.0 (Clang 23.1.3) on a shared
+Ryzen 9 5950X workstation (Linux 7.2.9, microcode `0xa201213`). Each workload
+has twelve independent worker-process means from three calibrated readings of
+at least 0.1 seconds each after one warmup. Six-worker batches ran blurhash-rs,
+blurhash, blurhash-python and then the reverse order. The table reports medians
+and 95% percentile bootstrap intervals from 10,000 resamples of
+worker-process means.
+Native wheels used release builds with rustc 1.101.0-nightly
+(`4ebd25825`, LLVM 23.1.4) targeting x86-64-v2.
+
 [Full table and intervals](benchmarks/results.md), raw results
 ([blurhash-rs](benchmarks/blurhash-rs.json),
 [blurhash-python](benchmarks/blurhash-python.json),
 [blurhash](benchmarks/blurhash.json)), and the [benchmark](benchmark.py)
-retain the measurement details.
+and [report generator](tools/benchmark_report.py) retain the measurement
+details.
 
 ## API reference
 
