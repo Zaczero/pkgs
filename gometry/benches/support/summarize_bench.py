@@ -24,7 +24,7 @@ if str(_TOOLS) not in sys.path:
 from _bench_registry import public_api_symbols
 from benchmark_observation import measurement_summary, validate_observation
 from benchroom.stats import median_interval
-from benchmark_identity import common_identity
+from benchmark_identity import common_identity, harness_commits_match
 from benchmark_runtime import identity_sha256
 from public_inventory import unknown_public_symbols
 
@@ -651,6 +651,7 @@ def _build_rows(
     expected_leads: tuple[str, ...] | None = None,
 ) -> list[OpRow]:
     rows: list[OpRow] = []
+    harness_equivalence: dict[tuple[str, str], bool] = {}
     missing: list[str] = []
     for meta in operations:
         gometry = stats.get(meta.gometry)
@@ -702,9 +703,26 @@ def _build_rows(
             raise SystemExit(
                 f'{meta.gometry} has inconsistent pair identity across blocks'
             )
-        identities = [
-            json.dumps(block.arm_identities, sort_keys=True) for block in blocks
-        ]
+        reference_commit = blocks[0].arm_identities['A']['harness_commit']
+        identities = []
+        for block in blocks:
+            comparable = {}
+            for side, identity in block.arm_identities.items():
+                commit = identity['harness_commit']
+                if commit != reference_commit:
+                    key = (commit, reference_commit)
+                    if key not in harness_equivalence:
+                        harness_equivalence[key] = harness_commits_match(*key)
+                    if not harness_equivalence[key]:
+                        raise SystemExit(
+                            f'{meta.gometry} has inconsistent harness inputs across blocks'
+                        )
+                comparable[side] = {
+                    key: value
+                    for key, value in identity.items()
+                    if key != 'harness_commit'
+                }
+            identities.append(json.dumps(comparable, sort_keys=True))
         if len(set(identities)) != 1:
             raise SystemExit(
                 f'{meta.gometry} has inconsistent producer identities across blocks'

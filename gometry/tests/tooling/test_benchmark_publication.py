@@ -20,6 +20,7 @@ for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
 
 import bench as bench_driver  # ruff: ignore[module-import-not-at-top-of-file]
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
+import summarize_bench  # ruff: ignore[module-import-not-at-top-of-file]
 from _bench_registry import (  # ruff: ignore[module-import-not-at-top-of-file]
     ALL_PUBLIC_OPERATIONS,
     scaling_record,
@@ -392,7 +393,7 @@ def prevalidated_receipt_boundary(
     monkeypatch.setattr(
         bench_driver,
         '_benchmark_harness_matches_commit',
-        lambda _commit: True,
+        lambda _commit, _reference: True,
     )
     monkeypatch.setattr(
         bench_driver.source_artifact,
@@ -469,22 +470,24 @@ def _mutate_first_block(run_manifest: Path, mutate) -> None:
     raise AssertionError('fixture has no paired block artifact')
 
 
+def _set_block_harness_commit(payload: dict[str, object], commit: str) -> None:
+    for side in ('A', 'B'):
+        arm = payload['arms'][side]
+        identity = arm['provenance_before']
+        identity['harness_commit'] = commit
+        arm['provenance_after'] = identity
+        case_process = arm['case_process']
+        case_process['identity_sha256'] = benchmark_runtime.identity_sha256(identity)
+        arm['observation']['producer_identity'] = identity
+        arm['observation']['case_process'] = case_process
+
+
 def _set_harness_commit(run_manifest: Path, commit: str) -> None:
     result = json.loads(run_manifest.read_text(encoding='utf-8'))
     result['doctor']['metadata']['harness_commit'] = commit
     for artifact in sorted((run_manifest.parent / 'raw').glob('block-*.json')):
         payload = json.loads(artifact.read_text(encoding='utf-8'))
-        for side in ('A', 'B'):
-            arm = payload['arms'][side]
-            identity = arm['provenance_before']
-            identity['harness_commit'] = commit
-            arm['provenance_after'] = identity
-            case_process = arm['case_process']
-            case_process['identity_sha256'] = benchmark_runtime.identity_sha256(
-                identity
-            )
-            arm['observation']['producer_identity'] = identity
-            arm['observation']['case_process'] = case_process
+        _set_block_harness_commit(payload, commit)
         _replace_artifact(artifact, json.dumps(payload))
     run_manifest.write_text(
         json.dumps(result, indent=2, sort_keys=True) + '\n',
@@ -957,6 +960,9 @@ def test_publication_accepts_docs_and_summary_commit_with_unchanged_harness(
         'updated benchmark result\n',
         encoding='utf-8',
     )
+    sibling = package_root.parent / 'h2corn'
+    sibling.mkdir()
+    (sibling / 'server.py').write_text('unrelated = 2\n', encoding='utf-8')
     subprocess.run(['git', 'add', '--all'], cwd=package_root.parent, check=True)
     subprocess.run(
         [
@@ -977,12 +983,32 @@ def test_publication_accepts_docs_and_summary_commit_with_unchanged_harness(
     monkeypatch.setattr(
         bench_driver,
         '_benchmark_harness_matches_commit',
-        lambda commit: _BENCHMARK_HARNESS_MATCHES_COMMIT(
-            commit, package_root=package_root
+        lambda commit, reference: _BENCHMARK_HARNESS_MATCHES_COMMIT(
+            commit, reference, package_root=package_root
         ),
+    )
+    monkeypatch.setattr(
+        summarize_bench,
+        'harness_commits_match',
+        bench_driver._benchmark_harness_matches_commit,
     )
     run_manifest = _run_manifest(tmp_path, publication_baseline)
     _set_harness_commit(run_manifest, harness_commit)
+    measured_commit = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        cwd=package_root.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _mutate_first_block(
+        run_manifest,
+        lambda block: _set_block_harness_commit(block, measured_commit),
+    )
+    # Publication may use newer tooling without changing historical evidence.
+    (package_root / 'benches' / 'drivers' / 'bench.py').write_text(
+        'publication_validator = 2\n', encoding='utf-8'
+    )
 
     published = _publish(run_manifest, tmp_path)
 
@@ -990,18 +1016,40 @@ def test_publication_accepts_docs_and_summary_commit_with_unchanged_harness(
     assert f'Benchmark harness commit: `{harness_commit[:8]}`.' in summary
     assert '../assets/benchmark-runs/' in summary
     assert '/receipts/index.json' in summary
+    evidence = next((tmp_path / 'docs' / 'assets' / 'benchmark-runs').glob('*'))
+    retained = json.loads((evidence / 'raw' / 'block-00-00.json').read_text())
+    assert (
+        retained['arms']['A']['provenance_before']['harness_commit'] == measured_commit
+    )
 
 
-def test_publication_rejects_changed_benchmark_harness_bytes(
+@pytest.mark.parametrize(
+    ('changed_path', 'change'),
+    [
+        ('benches/drivers/bench.py', 'modify'),
+        ('benches/drivers/bench.py', 'delete'),
+        ('benches/support/new_input.py', 'add'),
+        ('tools/artifact_release.py', 'add'),
+        ('../benchroom/benchroom/stats.py', 'add'),
+    ],
+)
+def test_publication_rejects_changed_recorded_benchmark_harness_bytes(
     tmp_path: Path,
     publication_baseline: str,
     monkeypatch: pytest.MonkeyPatch,
+    changed_path: str,
+    change: str,
 ) -> None:
     package_root, harness_commit = _harness_git_fixture(tmp_path)
-    (package_root / 'benches' / 'drivers' / 'bench.py').write_text(
-        'measurement = 2\n',
-        encoding='utf-8',
-    )
+    changed = package_root / changed_path
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    if change == 'delete':
+        changed.unlink()
+    else:
+        changed.write_text(
+            'measurement = 2\n',
+            encoding='utf-8',
+        )
     subprocess.run(['git', 'add', '--all'], cwd=package_root.parent, check=True)
     subprocess.run(
         [
@@ -1022,16 +1070,65 @@ def test_publication_rejects_changed_benchmark_harness_bytes(
     monkeypatch.setattr(
         bench_driver,
         '_benchmark_harness_matches_commit',
-        lambda commit: _BENCHMARK_HARNESS_MATCHES_COMMIT(
-            commit, package_root=package_root
+        lambda commit, reference: _BENCHMARK_HARNESS_MATCHES_COMMIT(
+            commit, reference, package_root=package_root
         ),
+    )
+    monkeypatch.setattr(
+        summarize_bench,
+        'harness_commits_match',
+        bench_driver._benchmark_harness_matches_commit,
     )
     run_manifest = _run_manifest(tmp_path, publication_baseline)
     _set_harness_commit(run_manifest, harness_commit)
+    measured_commit = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        cwd=package_root.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _mutate_first_block(
+        run_manifest,
+        lambda block: _set_block_harness_commit(block, measured_commit),
+    )
 
     with pytest.raises(SystemExit, match='harness inputs differ'):
         _publish(run_manifest, tmp_path)
 
+    assert not (tmp_path / 'current' / 'summary.md').exists()
+    result = json.loads(run_manifest.read_text())
+    artifacts = summarize_bench.load_run_artifacts(result, run_manifest)
+    stats = summarize_bench._load_all_blocks(artifacts)
+    with pytest.raises(SystemExit, match='inconsistent harness inputs'):
+        summarize_bench._build_rows(
+            summarize_bench._parse_public_operations(result['public_operations']),
+            stats,
+            equivalence_margin=0.03,
+        )
+
+
+def test_publication_rejects_unavailable_recorded_harness_commit(
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root, harness_commit = _harness_git_fixture(tmp_path)
+    monkeypatch.setattr(
+        bench_driver,
+        '_benchmark_harness_matches_commit',
+        lambda commit, reference: _BENCHMARK_HARNESS_MATCHES_COMMIT(
+            commit, reference, package_root=package_root
+        ),
+    )
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
+    _set_harness_commit(run_manifest, harness_commit)
+    _mutate_first_block(
+        run_manifest,
+        lambda block: _set_block_harness_commit(block, 'b' * 40),
+    )
+    with pytest.raises(SystemExit, match='cannot compare benchmark harness content'):
+        _publish(run_manifest, tmp_path)
     assert not (tmp_path / 'current' / 'summary.md').exists()
 
 
@@ -1131,7 +1228,7 @@ def test_publication_retains_portable_evidence_and_reuses_its_summary(
     )
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
-    assert '#### union_all: n-ary overlay input count' in summary_md
+    assert '#### Union of edge-matched areas' in summary_md
     assert '/run.json)' in summary_md
     assert '/receipts/index.json)' in summary_md
 

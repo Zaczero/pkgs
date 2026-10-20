@@ -10,11 +10,66 @@ from __future__ import annotations
 
 import copy
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
 IDENTITY_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
+
+
+def harness_commits_match(
+    commit: str,
+    reference_commit: str,
+    *,
+    package_root: Path = Path(__file__).resolve().parents[2],
+) -> bool:
+    """Compare recorded measurement trees independently of publication tooling."""
+    if any(
+        not isinstance(value, str)
+        or re.fullmatch(r'[0-9a-f]{40,64}', value) is None
+        or len(value) not in (40, 64)
+        for value in (commit, reference_commit)
+    ):
+        return False
+    package_name = package_root.name
+    try:
+        diff = subprocess.run(
+            [
+                'git',
+                'diff',
+                '--quiet',
+                '--no-ext-diff',
+                '--no-renames',
+                '--ignore-submodules=none',
+                reference_commit,
+                commit,
+                '--',
+                f'{package_name}/benches',
+                f'{package_name}/tools',
+                f'{package_name}/pyproject.toml',
+                f'{package_name}/uv.lock',
+                'benchroom/benchroom',
+                'benchroom/pyproject.toml',
+                'pyproject.toml',
+                'uv.lock',
+                f':(exclude){package_name}/benches/results',
+            ],
+            cwd=package_root.parent,
+            check=False,
+            capture_output=True,
+        )
+    except OSError as error:
+        raise SystemExit(
+            f'publication rejected: cannot inspect benchmark harness content: {error}'
+        ) from error
+    if diff.returncode not in (0, 1):
+        raise SystemExit(
+            'publication rejected: cannot compare benchmark harness content '
+            f'with recorded commit {commit}: '
+            f'{diff.stderr.decode("utf-8", errors="replace").strip()}'
+        )
+    return diff.returncode == 0
 
 
 def _fail(message: str) -> ValueError:

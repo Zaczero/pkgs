@@ -52,7 +52,10 @@ from bench_doctor import (
     selected_cpu_governor,
 )
 import benchmark_runtime
-from benchmark_identity import validate_producer_identity
+from benchmark_identity import (
+    harness_commits_match as _benchmark_harness_matches_commit,
+    validate_producer_identity,
+)
 import artifact_content
 import release_artifact as artifact_release
 import source_artifact
@@ -577,76 +580,6 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _generated_harness_output(relative: str, package_name: str) -> bool:
-    path = PurePosixPath(relative)
-    return (
-        '__pycache__' in path.parts
-        or path.suffix in {'.pyc', '.pyo'}
-        or path.parts[:3] == (package_name, 'benches', 'results')
-    )
-
-
-def _benchmark_harness_matches_commit(
-    commit: str,
-    *,
-    package_root: Path = GOMETRY_ROOT,
-) -> bool:
-    """Compare benchmark inputs with their recorded tree, not its later commits."""
-    repository = package_root.parent
-    package_name = package_root.name
-    try:
-        diff = subprocess.run(
-            [
-                'git',
-                'diff',
-                '--quiet',
-                '--no-ext-diff',
-                '--no-renames',
-                '--ignore-submodules=none',
-                commit,
-                '--',
-                f'{package_name}/benches',
-                f':(exclude){package_name}/benches/results',
-            ],
-            cwd=repository,
-            check=False,
-            capture_output=True,
-        )
-        if diff.returncode not in (0, 1):
-            raise SystemExit(
-                'publication rejected: cannot compare benchmark harness content '
-                f'with recorded commit {commit}: '
-                f'{diff.stderr.decode("utf-8", errors="replace").strip()}'
-            )
-        if diff.returncode:
-            return False
-        untracked = subprocess.run(
-            [
-                'git',
-                'ls-files',
-                '--others',
-                '--full-name',
-                '-z',
-                '--',
-                f'{package_name}/benches',
-            ],
-            cwd=repository,
-            check=True,
-            capture_output=True,
-        )
-        untracked_paths = [
-            item.decode('utf-8') for item in untracked.stdout.split(b'\0') if item
-        ]
-    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as error:
-        raise SystemExit(
-            f'publication rejected: cannot inspect benchmark harness content: {error}'
-        ) from error
-    return not any(
-        not _generated_harness_output(relative, package_name)
-        for relative in untracked_paths
-    )
-
-
 def _confined_run_artifact(
     run_directory: Path,
     relative: str,
@@ -1070,6 +1003,7 @@ def _validate_block_identity(
     metadata: dict[str, Any],
     *,
     receipt_cache: dict[tuple[str, str], dict[str, Any]],
+    harness_commit_cache: dict[str, bool],
     source_commit_cache: dict[str | None, bool],
     current_python_members: dict[str, str],
 ) -> None:
@@ -1101,8 +1035,16 @@ def _validate_block_identity(
         )
     }
     expected_packages = metadata['packages']
-    if expected_commit and identity.get('harness_commit') != expected_commit:
-        raise SystemExit('publication rejected: paired block harness identity mismatch')
+    observed_commit = identity['harness_commit']
+    if observed_commit not in harness_commit_cache:
+        harness_commit_cache[observed_commit] = _benchmark_harness_matches_commit(
+            observed_commit, expected_commit
+        )
+    if not harness_commit_cache[observed_commit]:
+        raise SystemExit(
+            'publication rejected: paired block harness inputs differ from '
+            'the recorded harness commit'
+        )
     if expected_source and identity.get('source_inputs_sha256') != expected_source:
         raise SystemExit('publication rejected: paired block source identity mismatch')
     observed_extension = identity.get('extension')
@@ -1416,6 +1358,7 @@ def _render_publication(
     _validate_oracle_artifact(result, run_directory)
     stats = _load_all_blocks(artifacts)
     receipt_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    harness_commit_cache: dict[str, bool] = {}
     source_commit_cache: dict[str | None, bool] = {}
     for operation_stats in stats.values():
         for block in operation_stats.blocks:
@@ -1424,6 +1367,7 @@ def _render_publication(
                     identity,
                     metadata,
                     receipt_cache=receipt_cache,
+                    harness_commit_cache=harness_commit_cache,
                     source_commit_cache=source_commit_cache,
                     current_python_members=current_python_members,
                 )
@@ -1483,11 +1427,6 @@ def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
     ):
         raise SystemExit(
             'publication rejected: benchmark harness commit identity is malformed'
-        )
-    if not _benchmark_harness_matches_commit(harness_commit):
-        raise SystemExit(
-            'publication rejected: benchmark harness inputs differ from the '
-            'recorded harness commit'
         )
     stage = _stage_run_evidence(
         run_manifest,
