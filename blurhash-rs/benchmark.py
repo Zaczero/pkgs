@@ -257,6 +257,8 @@ def _run_suite(impl: str, pyperf_args: list[str]) -> int:
     # workers can parse them too.
     runner = pyperf.Runner(program_args=(sys.argv[0], '--impl', impl))
     runner.metadata['implementation'] = f'{impl} {version(impl)}'
+    runner.metadata['implementation_name'] = impl
+    runner.metadata['implementation_version'] = version(impl)
     runner.metadata['benchmark_sha256'] = hashlib.sha256(
         Path(__file__).read_bytes()
     ).hexdigest()
