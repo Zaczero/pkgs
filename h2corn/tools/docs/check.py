@@ -319,7 +319,7 @@ def check_examples() -> None:
     """Compile examples and exercise the deterministic embedded lifecycle."""
     import h2corn
 
-    for path in sorted(EXAMPLES.glob('*.py')):
+    for path in sorted(EXAMPLES.rglob('*.py')):
         compile(path.read_text(encoding='utf-8'), str(path), 'exec')
     with (EXAMPLES / 'h2corn.toml').open('rb') as handle:
         h2corn.Config.from_mapping(tomllib.load(handle))

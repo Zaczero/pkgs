@@ -488,7 +488,7 @@ def test_start_budget_gate_rejects_a_unit_that_kills_startup_mid_lifespan() -> N
 
 
 def test_examples_compile_and_embedded_example_requests_then_stops() -> None:
-    for path in sorted((ROOT / 'examples').glob('*.py')):
+    for path in sorted((ROOT / 'examples').rglob('*.py')):
         compile(path.read_text(encoding='utf-8'), str(path), 'exec')
     result = subprocess.run(
         [sys.executable, str(ROOT / 'examples/embedded.py')],

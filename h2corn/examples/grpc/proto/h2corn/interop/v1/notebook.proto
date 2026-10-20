@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package h2corn.interop.v1;
+
+service NotebookService {
+  rpc GetNote(GetNoteRequest) returns (Note);
+  rpc ListRevisions(GetNoteRequest) returns (stream NoteRevision);
+  rpc UploadNote(stream NoteChunk) returns (UploadSummary);
+  rpc Collaborate(stream Edit) returns (stream EditAck);
+}
+
+message GetNoteRequest {
+  string note_id = 1;
+  uint32 after_revision = 2;
+}
+
+message Note {
+  string note_id = 1;
+  string title = 2;
+  string body = 3;
+  string author = 4;
+}
+
+message NoteRevision {
+  string note_id = 1;
+  uint32 revision = 2;
+  string summary = 3;
+}
+
+message NoteChunk {
+  string note_id = 1;
+  uint32 sequence = 2;
+  bytes content = 3;
+}
+
+message UploadSummary {
+  string note_id = 1;
+  uint32 chunks_received = 2;
+  uint64 bytes_received = 3;
+}
+
+message Edit {
+  string note_id = 1;
+  uint32 base_revision = 2;
+  string text = 3;
+}
+
+message EditAck {
+  string note_id = 1;
+  uint32 revision = 2;
+  string accepted_text = 3;
+}

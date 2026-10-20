@@ -1,0 +1,10 @@
+version: v2
+plugins:
+  - local: protoc-gen-py
+    out: gen
+  - local: protoc-gen-connectrpc
+    out: gen
+    opt: io=async
+  - local: protoc-gen-grpc-py
+    out: gen
+    opt: io=async

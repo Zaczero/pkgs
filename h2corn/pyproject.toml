@@ -91,6 +91,16 @@ freethreaded = [
   "websockets>=16.0",
 ]
 
+# Optional real-socket gRPC interoperability tests and protobuf generation.
+grpc-interop = [
+  "buf-bin>=1.72.0",
+  "grpcio>=1.83.1",
+  "protoc-gen-connectrpc>=0.12.1",
+  "protoc-gen-grpc-py>=0.3.0",
+  "protoc-gen-py>=0.3.0",
+  "types-grpcio>=1.83.0.20260730",
+]
+
 [build-system]
 requires = ["maturin~=1.14"]
 build-backend = "maturin"
