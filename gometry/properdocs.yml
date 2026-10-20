@@ -77,7 +77,6 @@ extra:
       pyarrow: '\b(?:to|from)_arrow\b'
       polars: '\b(?:to|from)_polars\b'
       geopandas: '\b(?:to|from)_geopandas\b'
-    wheels: [dist/wasm/*.whl]
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Zaczero/pkgs/tree/main/gometry

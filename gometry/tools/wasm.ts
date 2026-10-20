@@ -1,4 +1,4 @@
-import { mkdir, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -46,13 +46,13 @@ if (await receipt.exists()) {
             .update(await wheel.arrayBuffer())
             .digest("hex") === previous.sha256
     ) {
+        console.log(JSON.stringify({ wheels: [wheel.name] }));
         process.exit(0);
     }
 }
 
-const staging = join(root, "dist/wasm-build");
-await rm(staging, { recursive: true, force: true });
-await mkdir(staging, { recursive: true });
+await mkdir(output, { recursive: true });
+const staging = await mkdtemp(join(root, "dist/wasm-build-"));
 const tool = [
     "uv",
     "tool",
@@ -67,46 +67,55 @@ const tool = [
     "maturin==1.15.0",
     "pyodide",
 ];
-for (const arguments_ of [
-    ["xbuildenv", "install", version],
-    [
-        "build",
-        root,
-        "--no-isolation",
-        "-C",
-        "build-args=--profile release",
-        "--outdir",
-        staging,
-    ],
-]) {
-    const child = Bun.spawn([...tool, ...arguments_], {
-        cwd: root,
-        env: {
-            ...process.env,
-            PYTHONPATH: undefined,
-            CARGO_UNSTABLE_BUILD_STD: "std,panic_abort",
-            CARGO_TARGET_DIR: join(repository, "target-pyodide"),
-            EM_FROZEN_CACHE: "1",
-        },
-        stdout: "inherit",
-        stderr: "inherit",
-    });
-    if (await child.exited)
-        throw new Error(`WebAssembly build failed: ${arguments_[0]}`);
+try {
+    for (const arguments_ of [
+        ["xbuildenv", "install", version],
+        [
+            "build",
+            root,
+            "--no-isolation",
+            "-C",
+            "build-args=--profile release",
+            "--outdir",
+            staging,
+        ],
+    ]) {
+        const child = Bun.spawn([...tool, ...arguments_], {
+            cwd: root,
+            env: {
+                ...process.env,
+                PYTHONPATH: undefined,
+                CARGO_UNSTABLE_BUILD_STD: "std,panic_abort",
+                CARGO_TARGET_DIR: join(repository, "target-pyodide"),
+                EM_FROZEN_CACHE: "1",
+            },
+            stdout: Bun.stderr,
+            stderr: "inherit",
+        });
+        if (await child.exited)
+            throw new Error(`WebAssembly build failed: ${arguments_[0]}`);
+    }
+    const wheels = [...new Bun.Glob("*.whl").scanSync({ cwd: staging })];
+    if (wheels.length !== 1)
+        throw new Error("The WebAssembly build must produce one wheel");
+    const wheel = wheels[0];
+    const sha256 = new Bun.CryptoHasher("sha256")
+        .update(await Bun.file(join(staging, wheel)).arrayBuffer())
+        .digest("hex");
+    const artifact = join(sha256, wheel);
+    await mkdir(join(output, sha256), { recursive: true });
+    // A concurrent publisher at this path can only publish the same wheel bytes.
+    await rename(join(staging, wheel), join(output, artifact));
+    await Bun.write(
+        join(staging, "build.json"),
+        JSON.stringify({
+            source: fingerprint,
+            wheel: artifact,
+            sha256,
+        }),
+    );
+    await rename(join(staging, "build.json"), join(output, "build.json"));
+    console.log(JSON.stringify({ wheels: [join(output, artifact)] }));
+} finally {
+    await rm(staging, { recursive: true, force: true });
 }
-const wheels = [...new Bun.Glob("*.whl").scanSync({ cwd: staging })];
-if (wheels.length !== 1)
-    throw new Error("The WebAssembly build must produce one wheel");
-const wheel = wheels[0];
-await Bun.write(
-    join(staging, "build.json"),
-    JSON.stringify({
-        source: fingerprint,
-        wheel,
-        sha256: new Bun.CryptoHasher("sha256")
-            .update(await Bun.file(join(staging, wheel)).arrayBuffer())
-            .digest("hex"),
-    }),
-);
-await rm(output, { recursive: true, force: true });
-await rename(staging, output);

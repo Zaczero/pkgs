@@ -110,11 +110,14 @@ def on_post_build(config, **_kwargs):
     }
     subprocess.run(['bun', 'install', '--frozen-lockfile'], cwd=_ROOT, check=True)
     if python := config.extra.get('browser_python'):
-        if command := python.get('build'):
-            subprocess.run(command, cwd=_ROOT, check=True)
-        package = Path(config.config_file_path).resolve().parent
         wheels = []
-        for pattern in python['wheels']:
+        if command := python.get('build'):
+            result = subprocess.run(
+                command, cwd=_ROOT, check=True, stdout=subprocess.PIPE, text=True
+            )
+            wheels.extend(json.loads(result.stdout)['wheels'])
+        package = Path(config.config_file_path).resolve().parent
+        for pattern in python.get('wheels', []):
             matches = list(package.glob(pattern))
             if len(matches) != 1:
                 raise FileNotFoundError(
