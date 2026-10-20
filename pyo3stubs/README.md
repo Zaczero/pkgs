@@ -90,8 +90,7 @@ Configure `surface`, `duality`, and `tokens` with the corresponding record
 classes. Their accepted values and defaults are listed under their field
 headings in the [configuration reference](REFERENCE.md).
 
-`validity` and `stubtest` use mypy. Source-scanning and documentation gates also
-inspect the extension and configuration being checked.
+`validity` and `stubtest` use mypy.
 
 ## CLI
 
@@ -106,9 +105,8 @@ uv run pyo3stubs --help
 `check-all` runs gates concurrently and reports every outcome in registry order.
 A disabled, inactive, or `nothing to check` result is visible but does not change its exit
 status; a collector crash is reported as a violation, and the remaining gates
-still run. The pytest adapter skips non-violation outcomes that did not examine
-subjects, with the reason. `reference` prints the configuration and gate
-reference to standard output.
+still run. `reference` prints the configuration and gate reference to standard
+output.
 
 <a id="operator-loop"></a>
 
