@@ -1,0 +1,469 @@
+{
+  "command": [
+    "/tmp/opencode/h2corn-benchmark-server-315/bin/hypercorn",
+    "bench.bench_app:app",
+    "-k",
+    "asyncio",
+    "--access-logfile",
+    "-",
+    "--backlog",
+    "2048",
+    "-b",
+    "fd://8",
+    "--config",
+    "/tmp/opencode/h2corn-selected-final/runs/20261020T071524Z-0713ad/loopback/hypercorn.toml",
+    "--workers",
+    "4"
+  ],
+  "correctness_after": "passed",
+  "correctness_before": "passed",
+  "elapsed_seconds": 12.554718739935197,
+  "load_plan": {
+    "duration": "10s",
+    "mode": "time-window",
+    "warmup_duration": "2s"
+  },
+  "metrics": {
+    "completed": 135566,
+    "latency_percentiles": {
+      "p50": 0.005813691,
+      "p75": 0.013948322,
+      "p90": 0.014191736,
+      "p95": 0.014575992,
+      "p99": 0.015834485,
+      "p99.9": 0.018209506
+    },
+    "peak_memory_bytes": 121835520,
+    "rps": 13553.33400295797
+  },
+  "phase": "completed",
+  "port": 60939,
+  "server": "hypercorn",
+  "socket_path": "None",
+  "started_at": "2026-10-20T07:27:12.169206+00:00",
+  "status": "completed",
+  "supervisor_pid": 3168655,
+  "tcp_nodelay": true,
+  "workers": {
+    "3168664": {
+      "event_loop": "asyncio.unix_events",
+      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "gil_enabled": true,
+      "modules": {
+        "hypercorn": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__init__.py",
+          "sha256": "265cf343b2e7576bfb4fa4be0a91e7a4ef6b8c6ce587eb5376f08683957f4239"
+        },
+        "hypercorn.__main__": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__main__.py",
+          "sha256": "721ecd5ff4837c2075cc51749adc8f2829ba1016d30e49e419b96be6ba7d8549"
+        },
+        "hypercorn.app_wrappers": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/app_wrappers.py",
+          "sha256": "73b5284c2188169234c8bb0251638e03ada96e4e24ecf9732c0053d038689aa4"
+        },
+        "hypercorn.asyncio": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/__init__.py",
+          "sha256": "17a5ced0d841194b19f67d56d40c361c7223270619e9075dfef70bf7efdaa850"
+        },
+        "hypercorn.asyncio.lifespan": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/lifespan.py",
+          "sha256": "3598275bc5f05de01eccafee23bf37d71370da1a71070145c65a7fca0143aa5d"
+        },
+        "hypercorn.asyncio.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/run.py",
+          "sha256": "bf2ccecd84affc35ec69c243248347a5b50bf61ba44247e2a83e13517874456f"
+        },
+        "hypercorn.asyncio.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/statsd.py",
+          "sha256": "05e0f79015f1be276bf311806653234be56bb79394a8316bd9fd2a3d4c8b6654"
+        },
+        "hypercorn.asyncio.task_group": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py",
+          "sha256": "71257bea26162a3e4198812ae906f66e9a923adbdf47e4e0af251732d9ca9c0f"
+        },
+        "hypercorn.asyncio.tcp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py",
+          "sha256": "a1919b81b107506829ca9d13f2a10df31da21cc86e83e3fc49a94f902d1b4fa4"
+        },
+        "hypercorn.asyncio.udp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/udp_server.py",
+          "sha256": "5bff07270042fc30f31af9ecc65490831833083e1e6a9ad299c28f2c43b2b70f"
+        },
+        "hypercorn.asyncio.worker_context": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py",
+          "sha256": "b1f2929943535272f9c70d75abe966bff6597ce539b77eb42262efafc5bf136e"
+        },
+        "hypercorn.config": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/config.py",
+          "sha256": "a10e8c834fefe6bcaa65156ee33ec02773b90c6f8b3de3bca4ef589ff57e3af3"
+        },
+        "hypercorn.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/events.py",
+          "sha256": "d62b2f03f0ed7f787dc4e2da98db0df6a88039633ee2cdfeef19f1d68fd5dccb"
+        },
+        "hypercorn.logging": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/logging.py",
+          "sha256": "7947f4d8c23963f9e636c5f80b4a03f2c5ea94c91a8f5e16ab6b0cbe324a4063"
+        },
+        "hypercorn.protocol": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/__init__.py",
+          "sha256": "c34f9d102bb597417f113a144fa529a5053b4e103ea3cdc0d993608f7dc1dc1c"
+        },
+        "hypercorn.protocol.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/events.py",
+          "sha256": "d22d1846c7821b3f71292e683ff0763224e5b5c86ab4e636efdc8bad0a3eab2e"
+        },
+        "hypercorn.protocol.h11": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h11.py",
+          "sha256": "5d2cfe635578adc65941fd5dc7b35ad1d89a61a9beff3e97742dd94f359ee9e0"
+        },
+        "hypercorn.protocol.h2": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h2.py",
+          "sha256": "4023f69abd2239e53927fd38a2fe8008cffd45450add2cb075a3e217e7ede740"
+        },
+        "hypercorn.protocol.http_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py",
+          "sha256": "b28bb59de67f2f2813642846cc089fc52bf771f2270f813d039456ba4fe34f7f"
+        },
+        "hypercorn.protocol.ws_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/ws_stream.py",
+          "sha256": "5eb34e4ac40b06f546154181246bc3d3fe10ab906f3eb7afa06c61167e281e68"
+        },
+        "hypercorn.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/run.py",
+          "sha256": "d5404f4dc5a3cff92d74ca9bd599b1f92cf05cad928d0ea228b227fa23d7b5ed"
+        },
+        "hypercorn.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/statsd.py",
+          "sha256": "27336593c9bb42e1e3a80ff1592601eec59754c4e79193c98d9c5639371f7b4d"
+        },
+        "hypercorn.typing": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/typing.py",
+          "sha256": "bad548d2aee2b9cbc6ea0eb3491654cbec58f6648013db451e42818bfc47c155"
+        },
+        "hypercorn.utils": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/utils.py",
+          "sha256": "e359430514f0de8302f3f0d823070f46caaf7e81d94063c4e98d85ea7020025a"
+        }
+      },
+      "pid": 3168664,
+      "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+    },
+    "3168665": {
+      "event_loop": "asyncio.unix_events",
+      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "gil_enabled": true,
+      "modules": {
+        "hypercorn": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__init__.py",
+          "sha256": "265cf343b2e7576bfb4fa4be0a91e7a4ef6b8c6ce587eb5376f08683957f4239"
+        },
+        "hypercorn.__main__": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__main__.py",
+          "sha256": "721ecd5ff4837c2075cc51749adc8f2829ba1016d30e49e419b96be6ba7d8549"
+        },
+        "hypercorn.app_wrappers": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/app_wrappers.py",
+          "sha256": "73b5284c2188169234c8bb0251638e03ada96e4e24ecf9732c0053d038689aa4"
+        },
+        "hypercorn.asyncio": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/__init__.py",
+          "sha256": "17a5ced0d841194b19f67d56d40c361c7223270619e9075dfef70bf7efdaa850"
+        },
+        "hypercorn.asyncio.lifespan": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/lifespan.py",
+          "sha256": "3598275bc5f05de01eccafee23bf37d71370da1a71070145c65a7fca0143aa5d"
+        },
+        "hypercorn.asyncio.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/run.py",
+          "sha256": "bf2ccecd84affc35ec69c243248347a5b50bf61ba44247e2a83e13517874456f"
+        },
+        "hypercorn.asyncio.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/statsd.py",
+          "sha256": "05e0f79015f1be276bf311806653234be56bb79394a8316bd9fd2a3d4c8b6654"
+        },
+        "hypercorn.asyncio.task_group": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py",
+          "sha256": "71257bea26162a3e4198812ae906f66e9a923adbdf47e4e0af251732d9ca9c0f"
+        },
+        "hypercorn.asyncio.tcp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py",
+          "sha256": "a1919b81b107506829ca9d13f2a10df31da21cc86e83e3fc49a94f902d1b4fa4"
+        },
+        "hypercorn.asyncio.udp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/udp_server.py",
+          "sha256": "5bff07270042fc30f31af9ecc65490831833083e1e6a9ad299c28f2c43b2b70f"
+        },
+        "hypercorn.asyncio.worker_context": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py",
+          "sha256": "b1f2929943535272f9c70d75abe966bff6597ce539b77eb42262efafc5bf136e"
+        },
+        "hypercorn.config": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/config.py",
+          "sha256": "a10e8c834fefe6bcaa65156ee33ec02773b90c6f8b3de3bca4ef589ff57e3af3"
+        },
+        "hypercorn.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/events.py",
+          "sha256": "d62b2f03f0ed7f787dc4e2da98db0df6a88039633ee2cdfeef19f1d68fd5dccb"
+        },
+        "hypercorn.logging": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/logging.py",
+          "sha256": "7947f4d8c23963f9e636c5f80b4a03f2c5ea94c91a8f5e16ab6b0cbe324a4063"
+        },
+        "hypercorn.protocol": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/__init__.py",
+          "sha256": "c34f9d102bb597417f113a144fa529a5053b4e103ea3cdc0d993608f7dc1dc1c"
+        },
+        "hypercorn.protocol.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/events.py",
+          "sha256": "d22d1846c7821b3f71292e683ff0763224e5b5c86ab4e636efdc8bad0a3eab2e"
+        },
+        "hypercorn.protocol.h11": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h11.py",
+          "sha256": "5d2cfe635578adc65941fd5dc7b35ad1d89a61a9beff3e97742dd94f359ee9e0"
+        },
+        "hypercorn.protocol.h2": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h2.py",
+          "sha256": "4023f69abd2239e53927fd38a2fe8008cffd45450add2cb075a3e217e7ede740"
+        },
+        "hypercorn.protocol.http_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py",
+          "sha256": "b28bb59de67f2f2813642846cc089fc52bf771f2270f813d039456ba4fe34f7f"
+        },
+        "hypercorn.protocol.ws_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/ws_stream.py",
+          "sha256": "5eb34e4ac40b06f546154181246bc3d3fe10ab906f3eb7afa06c61167e281e68"
+        },
+        "hypercorn.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/run.py",
+          "sha256": "d5404f4dc5a3cff92d74ca9bd599b1f92cf05cad928d0ea228b227fa23d7b5ed"
+        },
+        "hypercorn.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/statsd.py",
+          "sha256": "27336593c9bb42e1e3a80ff1592601eec59754c4e79193c98d9c5639371f7b4d"
+        },
+        "hypercorn.typing": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/typing.py",
+          "sha256": "bad548d2aee2b9cbc6ea0eb3491654cbec58f6648013db451e42818bfc47c155"
+        },
+        "hypercorn.utils": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/utils.py",
+          "sha256": "e359430514f0de8302f3f0d823070f46caaf7e81d94063c4e98d85ea7020025a"
+        }
+      },
+      "pid": 3168665,
+      "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+    },
+    "3168666": {
+      "event_loop": "asyncio.unix_events",
+      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "gil_enabled": true,
+      "modules": {
+        "hypercorn": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__init__.py",
+          "sha256": "265cf343b2e7576bfb4fa4be0a91e7a4ef6b8c6ce587eb5376f08683957f4239"
+        },
+        "hypercorn.__main__": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__main__.py",
+          "sha256": "721ecd5ff4837c2075cc51749adc8f2829ba1016d30e49e419b96be6ba7d8549"
+        },
+        "hypercorn.app_wrappers": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/app_wrappers.py",
+          "sha256": "73b5284c2188169234c8bb0251638e03ada96e4e24ecf9732c0053d038689aa4"
+        },
+        "hypercorn.asyncio": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/__init__.py",
+          "sha256": "17a5ced0d841194b19f67d56d40c361c7223270619e9075dfef70bf7efdaa850"
+        },
+        "hypercorn.asyncio.lifespan": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/lifespan.py",
+          "sha256": "3598275bc5f05de01eccafee23bf37d71370da1a71070145c65a7fca0143aa5d"
+        },
+        "hypercorn.asyncio.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/run.py",
+          "sha256": "bf2ccecd84affc35ec69c243248347a5b50bf61ba44247e2a83e13517874456f"
+        },
+        "hypercorn.asyncio.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/statsd.py",
+          "sha256": "05e0f79015f1be276bf311806653234be56bb79394a8316bd9fd2a3d4c8b6654"
+        },
+        "hypercorn.asyncio.task_group": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py",
+          "sha256": "71257bea26162a3e4198812ae906f66e9a923adbdf47e4e0af251732d9ca9c0f"
+        },
+        "hypercorn.asyncio.tcp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py",
+          "sha256": "a1919b81b107506829ca9d13f2a10df31da21cc86e83e3fc49a94f902d1b4fa4"
+        },
+        "hypercorn.asyncio.udp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/udp_server.py",
+          "sha256": "5bff07270042fc30f31af9ecc65490831833083e1e6a9ad299c28f2c43b2b70f"
+        },
+        "hypercorn.asyncio.worker_context": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py",
+          "sha256": "b1f2929943535272f9c70d75abe966bff6597ce539b77eb42262efafc5bf136e"
+        },
+        "hypercorn.config": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/config.py",
+          "sha256": "a10e8c834fefe6bcaa65156ee33ec02773b90c6f8b3de3bca4ef589ff57e3af3"
+        },
+        "hypercorn.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/events.py",
+          "sha256": "d62b2f03f0ed7f787dc4e2da98db0df6a88039633ee2cdfeef19f1d68fd5dccb"
+        },
+        "hypercorn.logging": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/logging.py",
+          "sha256": "7947f4d8c23963f9e636c5f80b4a03f2c5ea94c91a8f5e16ab6b0cbe324a4063"
+        },
+        "hypercorn.protocol": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/__init__.py",
+          "sha256": "c34f9d102bb597417f113a144fa529a5053b4e103ea3cdc0d993608f7dc1dc1c"
+        },
+        "hypercorn.protocol.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/events.py",
+          "sha256": "d22d1846c7821b3f71292e683ff0763224e5b5c86ab4e636efdc8bad0a3eab2e"
+        },
+        "hypercorn.protocol.h11": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h11.py",
+          "sha256": "5d2cfe635578adc65941fd5dc7b35ad1d89a61a9beff3e97742dd94f359ee9e0"
+        },
+        "hypercorn.protocol.h2": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h2.py",
+          "sha256": "4023f69abd2239e53927fd38a2fe8008cffd45450add2cb075a3e217e7ede740"
+        },
+        "hypercorn.protocol.http_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py",
+          "sha256": "b28bb59de67f2f2813642846cc089fc52bf771f2270f813d039456ba4fe34f7f"
+        },
+        "hypercorn.protocol.ws_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/ws_stream.py",
+          "sha256": "5eb34e4ac40b06f546154181246bc3d3fe10ab906f3eb7afa06c61167e281e68"
+        },
+        "hypercorn.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/run.py",
+          "sha256": "d5404f4dc5a3cff92d74ca9bd599b1f92cf05cad928d0ea228b227fa23d7b5ed"
+        },
+        "hypercorn.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/statsd.py",
+          "sha256": "27336593c9bb42e1e3a80ff1592601eec59754c4e79193c98d9c5639371f7b4d"
+        },
+        "hypercorn.typing": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/typing.py",
+          "sha256": "bad548d2aee2b9cbc6ea0eb3491654cbec58f6648013db451e42818bfc47c155"
+        },
+        "hypercorn.utils": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/utils.py",
+          "sha256": "e359430514f0de8302f3f0d823070f46caaf7e81d94063c4e98d85ea7020025a"
+        }
+      },
+      "pid": 3168666,
+      "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+    },
+    "3168667": {
+      "event_loop": "asyncio.unix_events",
+      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "gil_enabled": true,
+      "modules": {
+        "hypercorn": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__init__.py",
+          "sha256": "265cf343b2e7576bfb4fa4be0a91e7a4ef6b8c6ce587eb5376f08683957f4239"
+        },
+        "hypercorn.__main__": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/__main__.py",
+          "sha256": "721ecd5ff4837c2075cc51749adc8f2829ba1016d30e49e419b96be6ba7d8549"
+        },
+        "hypercorn.app_wrappers": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/app_wrappers.py",
+          "sha256": "73b5284c2188169234c8bb0251638e03ada96e4e24ecf9732c0053d038689aa4"
+        },
+        "hypercorn.asyncio": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/__init__.py",
+          "sha256": "17a5ced0d841194b19f67d56d40c361c7223270619e9075dfef70bf7efdaa850"
+        },
+        "hypercorn.asyncio.lifespan": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/lifespan.py",
+          "sha256": "3598275bc5f05de01eccafee23bf37d71370da1a71070145c65a7fca0143aa5d"
+        },
+        "hypercorn.asyncio.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/run.py",
+          "sha256": "bf2ccecd84affc35ec69c243248347a5b50bf61ba44247e2a83e13517874456f"
+        },
+        "hypercorn.asyncio.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/statsd.py",
+          "sha256": "05e0f79015f1be276bf311806653234be56bb79394a8316bd9fd2a3d4c8b6654"
+        },
+        "hypercorn.asyncio.task_group": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py",
+          "sha256": "71257bea26162a3e4198812ae906f66e9a923adbdf47e4e0af251732d9ca9c0f"
+        },
+        "hypercorn.asyncio.tcp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py",
+          "sha256": "a1919b81b107506829ca9d13f2a10df31da21cc86e83e3fc49a94f902d1b4fa4"
+        },
+        "hypercorn.asyncio.udp_server": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/udp_server.py",
+          "sha256": "5bff07270042fc30f31af9ecc65490831833083e1e6a9ad299c28f2c43b2b70f"
+        },
+        "hypercorn.asyncio.worker_context": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py",
+          "sha256": "b1f2929943535272f9c70d75abe966bff6597ce539b77eb42262efafc5bf136e"
+        },
+        "hypercorn.config": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/config.py",
+          "sha256": "a10e8c834fefe6bcaa65156ee33ec02773b90c6f8b3de3bca4ef589ff57e3af3"
+        },
+        "hypercorn.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/events.py",
+          "sha256": "d62b2f03f0ed7f787dc4e2da98db0df6a88039633ee2cdfeef19f1d68fd5dccb"
+        },
+        "hypercorn.logging": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/logging.py",
+          "sha256": "7947f4d8c23963f9e636c5f80b4a03f2c5ea94c91a8f5e16ab6b0cbe324a4063"
+        },
+        "hypercorn.protocol": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/__init__.py",
+          "sha256": "c34f9d102bb597417f113a144fa529a5053b4e103ea3cdc0d993608f7dc1dc1c"
+        },
+        "hypercorn.protocol.events": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/events.py",
+          "sha256": "d22d1846c7821b3f71292e683ff0763224e5b5c86ab4e636efdc8bad0a3eab2e"
+        },
+        "hypercorn.protocol.h11": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h11.py",
+          "sha256": "5d2cfe635578adc65941fd5dc7b35ad1d89a61a9beff3e97742dd94f359ee9e0"
+        },
+        "hypercorn.protocol.h2": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/h2.py",
+          "sha256": "4023f69abd2239e53927fd38a2fe8008cffd45450add2cb075a3e217e7ede740"
+        },
+        "hypercorn.protocol.http_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py",
+          "sha256": "b28bb59de67f2f2813642846cc089fc52bf771f2270f813d039456ba4fe34f7f"
+        },
+        "hypercorn.protocol.ws_stream": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/protocol/ws_stream.py",
+          "sha256": "5eb34e4ac40b06f546154181246bc3d3fe10ab906f3eb7afa06c61167e281e68"
+        },
+        "hypercorn.run": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/run.py",
+          "sha256": "d5404f4dc5a3cff92d74ca9bd599b1f92cf05cad928d0ea228b227fa23d7b5ed"
+        },
+        "hypercorn.statsd": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/statsd.py",
+          "sha256": "27336593c9bb42e1e3a80ff1592601eec59754c4e79193c98d9c5639371f7b4d"
+        },
+        "hypercorn.typing": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/typing.py",
+          "sha256": "bad548d2aee2b9cbc6ea0eb3491654cbec58f6648013db451e42818bfc47c155"
+        },
+        "hypercorn.utils": {
+          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/hypercorn/utils.py",
+          "sha256": "e359430514f0de8302f3f0d823070f46caaf7e81d94063c4e98d85ea7020025a"
+        }
+      },
+      "pid": 3168667,
+      "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+    }
+  }
+}

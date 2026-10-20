@@ -1,0 +1,22 @@
+{
+  "command": [
+    "k6",
+    "run",
+    "--duration",
+    "10s",
+    "--vus",
+    "100",
+    "--summary-export",
+    "/tmp/h2c-k6-rj71m981/summary.json",
+    "--summary-trend-stats",
+    "med,p(90),p(95),p(99)",
+    "-e",
+    "WS_URL=ws://127.0.0.1:35469/ws",
+    "bench/k6/ws.js"
+  ],
+  "elapsed_seconds": 10.056654779007658,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 40s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 10s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 7307 complete and 0 interrupted iterations\ndefault   [  10% ] 100 VUs  01.0s/10s\n\nrunning (02.0s), 100/100 VUs, 14707 complete and 0 interrupted iterations\ndefault   [  20% ] 100 VUs  02.0s/10s\n\nrunning (03.0s), 100/100 VUs, 22569 complete and 0 interrupted iterations\ndefault   [  30% ] 100 VUs  03.0s/10s\n\nrunning (04.0s), 100/100 VUs, 30412 complete and 0 interrupted iterations\ndefault   [  40% ] 100 VUs  04.0s/10s\n\nrunning (05.0s), 100/100 VUs, 38375 complete and 0 interrupted iterations\ndefault   [  50% ] 100 VUs  05.0s/10s\n\nrunning (06.0s), 100/100 VUs, 46149 complete and 0 interrupted iterations\ndefault   [  60% ] 100 VUs  06.0s/10s\n\nrunning (07.0s), 100/100 VUs, 53278 complete and 0 interrupted iterations\ndefault   [  70% ] 100 VUs  07.0s/10s\n\nrunning (08.0s), 100/100 VUs, 61280 complete and 0 interrupted iterations\ndefault   [  80% ] 100 VUs  08.0s/10s\n\nrunning (09.0s), 100/100 VUs, 69338 complete and 0 interrupted iterations\ndefault   [  90% ] 100 VUs  09.0s/10s\n\nrunning (10.0s), 100/100 VUs, 77268 complete and 0 interrupted iterations\ndefault   [ 100% ] 100 VUs  10.0s/10s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 154814  15469.254/s\n    checks_succeeded...: 100.00% 154814 out of 154814\n    checks_failed......: 0.00%   0 out of 154814\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 77407 out of 77407\n\n    EXECUTION\n    iteration_duration....: med=12.14ms p(90)=19.37ms p(95)=22.43ms p(99)=30.74ms\n    iterations............: 77407   7734.627/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 15 MB   1.5 MB/s\n    data_sent.............: 18 MB   1.8 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=8.23ms  p(90)=13.84ms p(95)=15.84ms p(99)=21.95ms\n    ws_msgs_received......: 77407   7734.627/s\n    ws_msgs_sent..........: 77407   7734.627/s\n    ws_session_duration...: med=12.08ms p(90)=19.32ms p(95)=22.37ms p(99)=30.67ms\n    ws_sessions...........: 77407   7734.627/s\n\n\n\n\nrunning (10.0s), 000/100 VUs, 77407 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  10s\n",
+  "timeout_seconds": 40.0
+}

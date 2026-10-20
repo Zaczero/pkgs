@@ -1,0 +1,22 @@
+{
+  "command": [
+    "k6",
+    "run",
+    "--duration",
+    "2s",
+    "--vus",
+    "100",
+    "--summary-export",
+    "/tmp/h2c-k6-lo8wbek0/summary.json",
+    "--summary-trend-stats",
+    "med,p(90),p(95),p(99)",
+    "-e",
+    "WS_URL=ws://127.0.0.1:39629/ws",
+    "bench/k6/ws.js"
+  ],
+  "elapsed_seconds": 2.055231183068827,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 32s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 2s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 22019 complete and 0 interrupted iterations\ndefault   [  50% ] 100 VUs  1.0s/2s\n\nrunning (02.0s), 100/100 VUs, 44652 complete and 0 interrupted iterations\ndefault   [ 100% ] 100 VUs  2.0s/2s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 89772   44793.177361/s\n    checks_succeeded...: 100.00% 89772 out of 89772\n    checks_failed......: 0.00%   0 out of 89772\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 44886 out of 44886\n\n    EXECUTION\n    iteration_duration....: med=4.34ms p(90)=5.29ms p(95)=5.64ms p(99)=7.33ms\n    iterations............: 44886   22396.58868/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 8.7 MB  4.4 MB/s\n    data_sent.............: 10 MB   5.1 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=2.39ms p(90)=3.07ms p(95)=3.3ms  p(99)=3.9ms \n    ws_msgs_received......: 44886   22396.58868/s\n    ws_msgs_sent..........: 44886   22396.58868/s\n    ws_session_duration...: med=4.29ms p(90)=5.22ms p(95)=5.56ms p(99)=7ms   \n    ws_sessions...........: 44886   22396.58868/s\n\n\n\n\nrunning (02.0s), 000/100 VUs, 44886 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  2s\n",
+  "timeout_seconds": 32.0
+}

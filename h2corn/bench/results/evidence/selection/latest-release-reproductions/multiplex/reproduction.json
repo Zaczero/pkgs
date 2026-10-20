@@ -1,0 +1,32 @@
+{
+  "case": "multiplex",
+  "versions": {
+    "uvicorn": "0.54.0",
+    "zttp": "0.0.34",
+    "gunicorn": "26.2.0",
+    "h2": "4.4.1",
+    "starlette": "1.9.0"
+  },
+  "command": [
+    "/tmp/opencode/h2corn-benchmark-server-315/bin/uvicorn",
+    "bench.bench_app:app",
+    "--loop",
+    "asyncio",
+    "--http",
+    "zttp",
+    "--no-proxy-headers",
+    "--timeout-keep-alive",
+    "120",
+    "--no-server-header",
+    "--date-header",
+    "--backlog",
+    "2048",
+    "--http2",
+    "--ws",
+    "none",
+    "--fd",
+    "4",
+    "--workers",
+    "1"
+  ]
+}

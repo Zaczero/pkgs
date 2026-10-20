@@ -1,0 +1,198 @@
+usage: gunicorn [OPTIONS] [APP_MODULE]
+
+options:
+  -h, --help            show this help message and exit
+  -v, --version         show program's version number and exit
+  -c, --config CONFIG   :ref:`The Gunicorn config file<configuration_file>`.
+                        [./gunicorn.conf.py]
+  -b, --bind ADDRESS    The socket to bind. [['127.0.0.1:8000']]
+  --backlog INT         The maximum number of pending connections. [2048]
+  -w, --workers INT     The number of worker processes for handling requests.
+                        [1]
+  -k, --worker-class STRING
+                        The type of workers to use. [sync]
+  --threads INT         The number of worker threads for handling requests.
+                        [1]
+  --worker-connections INT
+                        The maximum number of simultaneous clients. [1000]
+  --max-requests INT    The maximum number of requests a worker will process
+                        before restarting. [0]
+  --max-requests-jitter INT
+                        The maximum jitter to add to the *max_requests*
+                        setting. [0]
+  -t, --timeout INT     Workers silent for more than this many seconds are
+                        killed and restarted. [30]
+  --graceful-timeout INT
+                        Timeout for graceful workers restart in seconds. [30]
+  --keep-alive INT      The number of seconds to wait for requests on a Keep-
+                        Alive connection. [2]
+  --limit-request-line INT
+                        The maximum size of HTTP request line in bytes. [4094]
+  --limit-request-fields INT
+                        Limit the number of HTTP headers fields in a request.
+                        [100]
+  --limit-request-field_size INT
+                        Limit the allowed size of an HTTP request header
+                        field. [8190]
+  --reload              Restart workers when code changes. [False]
+  --reload-engine STRING
+                        The implementation that should be used to power
+                        :ref:`reload`. [auto]
+  --reload-extra-file FILES
+                        Extends :ref:`reload` option to also watch and reload
+                        on additional files [[]]
+  --spew                Install a trace function that spews every line
+                        executed by the server. [False]
+  --check-config        Check the configuration and exit. The exit status is 0
+                        if the [False]
+  --print-config        Print the configuration settings as fully resolved.
+                        Implies :ref:`check-config`. [False]
+  --preload             Load application code before the worker processes are
+                        forked. [False]
+  --no-sendfile         Disables the use of ``sendfile()``. [None]
+  --reuse-port          Set the ``SO_REUSEPORT`` flag on the listening socket.
+                        [False]
+  --chdir CHDIR         Change directory to specified directory before loading
+                        apps. [/home/user/Source/pkgs.worktrees/benchmark-
+                        server/h2corn]
+  -D, --daemon          Daemonize the Gunicorn process. [False]
+  -e, --env ENV         Set environment variables in the execution
+                        environment. [[]]
+  -p, --pid FILE        A filename to use for the PID file. [None]
+  --worker-tmp-dir DIR  A directory to use for the worker heartbeat temporary
+                        file. [None]
+  -u, --user USER       Switch worker processes to run as this user. [0]
+  -g, --group GROUP     Switch worker process to run as this group. [0]
+  -m, --umask INT       A bit mask for the file mode on files written by
+                        Gunicorn. [0]
+  --initgroups          If true, set the worker process's group access list
+                        with all of the [False]
+  --forwarded-allow-ips STRING
+                        Front-end's IP addresses or networks from which
+                        allowed to handle [127.0.0.1,::1]
+  --access-logfile FILE
+                        The Access log file to write to. [None]
+  --disable-redirect-access-to-syslog
+                        Disable redirect access logs to syslog. [False]
+  --access-logformat STRING
+                        The access log format. [%(h)s %(l)s %(u)s %(t)s
+                        "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"]
+  --error-logfile, --log-file FILE
+                        The Error log file to write to. [-]
+  --log-level LEVEL     The granularity of Error log outputs. [info]
+  --capture-output      Redirect stdout/stderr to specified file in
+                        :ref:`errorlog`. [False]
+  --logger-class STRING
+                        The logger you want to use to log events in Gunicorn.
+                        [gunicorn.glogging.Logger]
+  --log-config FILE     The log config file to use. [None]
+  --log-config-json FILE
+                        The log config to read config from a JSON file [None]
+  --log-syslog-to SYSLOG_ADDR
+                        Address to send syslog messages. [udp://localhost:514]
+  --log-syslog          Send *Gunicorn* logs to syslog. [False]
+  --log-syslog-prefix SYSLOG_PREFIX
+                        Makes Gunicorn use the parameter as program-name in
+                        the syslog entries. [None]
+  --log-syslog-facility SYSLOG_FACILITY
+                        Syslog facility name [user]
+  -R, --enable-stdio-inheritance
+                        Enable stdio inheritance. [False]
+  --statsd-host STATSD_ADDR
+                        The address of the StatsD server to log to. [None]
+  --dogstatsd-tags DOGSTATSD_TAGS
+                        A comma-delimited list of datadog statsd (dogstatsd)
+                        tags to append to []
+  --statsd-prefix STATSD_PREFIX
+                        Prefix to use when emitting statsd metrics (a trailing
+                        ``.`` is added, []
+  --enable-backlog-metric
+                        Enable socket backlog metric (only supported on
+                        Linux). [False]
+  -n, --name STRING     A base to use with setproctitle for process naming.
+                        [None]
+  --pythonpath STRING   A comma-separated list of directories to add to the
+                        Python path. [None]
+  --paste, --paster STRING
+                        Load a PasteDeploy config file. The argument may
+                        contain a ``#`` [None]
+  --proxy-protocol [MODE]
+                        Enable PROXY protocol support. [off]
+  --proxy-allow-from PROXY_ALLOW_IPS
+                        Front-end's IP addresses or networks from which
+                        allowed accept [127.0.0.1,::1]
+  --protocol STRING     The protocol for incoming connections. [http]
+  --uwsgi-allow-from UWSGI_ALLOW_IPS
+                        IPs allowed to send uWSGI protocol requests (comma
+                        separated). [127.0.0.1,::1]
+  --keyfile FILE        SSL key file [None]
+  --certfile FILE       SSL certificate file [None]
+  --ssl-version SSL_VERSION
+                        SSL version to use (see stdlib ssl module's). [2]
+  --cert-reqs CERT_REQS
+                        Whether client certificate is required (see stdlib ssl
+                        module's) [0]
+  --ca-certs FILE       CA certificates file [None]
+  --suppress-ragged-eofs
+                        Suppress ragged EOFs (see stdlib ssl module's) [True]
+  --do-handshake-on-connect
+                        Whether to perform SSL handshake on socket connect
+                        (see stdlib ssl module's) [False]
+  --ciphers CIPHERS     SSL Cipher suite to use, in the format of an OpenSSL
+                        cipher list. [None]
+  --http-protocols STRING
+                        HTTP protocol versions to support (comma-separated,
+                        order = preference). [h1]
+  --http2-max-concurrent-streams INT
+                        Maximum number of concurrent HTTP/2 streams per
+                        connection. [100]
+  --http2-initial-window-size INT
+                        Initial HTTP/2 flow control window size in bytes.
+                        [65535]
+  --http2-max-frame-size INT
+                        Maximum HTTP/2 frame payload size in bytes. [16384]
+  --http2-max-header-list-size INT
+                        Maximum size of HTTP/2 header list in bytes (HPACK
+                        protection). [65536]
+  --paste-global CONF   Set a PasteDeploy global config variable in
+                        ``key=value`` form. [[]]
+  --permit-obsolete-folding
+                        Permit requests employing obsolete HTTP line folding
+                        mechanism [False]
+  --strip-header-spaces
+                        Strip spaces present between the header name and the
+                        the ``:``. [False]
+  --permit-unconventional-http-method
+                        Permit HTTP methods not matching conventions, such as
+                        IANA registration guidelines [False]
+  --permit-unconventional-http-version
+                        Permit HTTP version not matching conventions of 2023
+                        [False]
+  --casefold-http-method
+                        Transform received HTTP methods to uppercase [False]
+  --forwarder-headers FORWARDER_HEADERS
+                        A list containing upper-case header field names that
+                        the front-end proxy [SCRIPT_NAME,PATH_INFO]
+  --header-map HEADER_MAP
+                        Configure how header field names are mapped into
+                        environ [drop]
+  --asgi-loop STRING    Event loop implementation for ASGI workers. [auto]
+  --asgi-lifespan STRING
+                        Control ASGI lifespan protocol handling. [auto]
+  --asgi-disconnect-grace-period INT
+                        Grace period (seconds) for ASGI apps to handle client
+                        disconnects. [3]
+  --root-path STRING    The root path for ASGI applications. []
+  --dirty-app STRING    Dirty applications to load in the dirty worker pool.
+                        [[]]
+  --dirty-workers INT   The number of dirty worker processes. [0]
+  --dirty-timeout INT   Timeout for dirty task execution in seconds. [300]
+  --dirty-threads INT   The number of threads per dirty worker. [1]
+  --dirty-graceful-timeout INT
+                        Timeout for graceful dirty worker shutdown in seconds.
+                        [30]
+  --control-socket PATH
+                        Unix socket path for control interface. [gunicorn.ctl]
+  --control-socket-mode INT
+                        Permission mode for control socket. [384]
+  --no-control-socket   Disable control socket. [False]

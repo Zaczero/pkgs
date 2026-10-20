@@ -1,0 +1,57 @@
+{
+  "errors": [],
+  "sample_interval_seconds": 1.0,
+  "samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "pss_bytes": 212284416
+    },
+    {
+      "elapsed_seconds": 1.0065655329963192,
+      "pss_bytes": 226085888
+    },
+    {
+      "elapsed_seconds": 2.01211168395821,
+      "pss_bytes": 228912128
+    },
+    {
+      "elapsed_seconds": 3.0183264049701393,
+      "pss_bytes": 231074816
+    },
+    {
+      "elapsed_seconds": 4.023410622961819,
+      "pss_bytes": 232074240
+    },
+    {
+      "elapsed_seconds": 5.029115331009962,
+      "pss_bytes": 232999936
+    },
+    {
+      "elapsed_seconds": 6.034611757961102,
+      "pss_bytes": 235322368
+    },
+    {
+      "elapsed_seconds": 7.039163512992673,
+      "pss_bytes": 239299584
+    },
+    {
+      "elapsed_seconds": 8.057062142994255,
+      "pss_bytes": 240364544
+    },
+    {
+      "elapsed_seconds": 9.062224279972725,
+      "pss_bytes": 243379200
+    },
+    {
+      "elapsed_seconds": 10.031570237013511,
+      "pss_bytes": 244293632
+    }
+  ],
+  "unique_pids": [
+    3245889,
+    3245891,
+    3245892,
+    3245893,
+    3245894
+  ]
+}

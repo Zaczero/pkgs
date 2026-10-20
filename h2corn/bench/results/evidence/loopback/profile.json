@@ -1,0 +1,9 @@
+{
+  "description": "loopback",
+  "failed_cells": {},
+  "measured_rtt_ms": null,
+  "profile": "loopback",
+  "reason": null,
+  "status": "completed",
+  "target_rtt_ms": null
+}

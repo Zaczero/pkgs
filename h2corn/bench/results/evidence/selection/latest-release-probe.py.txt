@@ -1,0 +1,132 @@
+"""Run from h2corn; upload mode requires an unshared user/network namespace."""
+
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+ROOT = Path('/home/user/Source/pkgs.worktrees/benchmark-server/h2corn')
+sys.path.insert(0, str(ROOT))
+
+import h2.config
+import h2.connection
+import h2.events
+from bench._core import (
+    Scenario, _http2_response, _run, allocated_listener,
+    ensure_large_upload_payload, running_server,
+)
+from bench.bench import configure_rtt50_profile, server_command, write_hypercorn_config
+
+parser = argparse.ArgumentParser()
+parser.add_argument('case', choices=['multiplex', 'upload', 'stream', 'file'])
+parser.add_argument('--output', type=Path, required=True)
+args = parser.parse_args()
+args.output.mkdir(parents=True, exist_ok=True)
+record = {'case': args.case, 'versions': {
+    name: importlib.metadata.version(name)
+    for name in ('uvicorn', 'zttp', 'gunicorn', 'h2', 'starlette')
+}}
+if args.case == 'upload':
+    record['network'] = configure_rtt50_profile()
+    ensure_large_upload_payload()
+scenario = Scenario(
+    'Competitor correctness reproduction',
+    4 if args.case == 'upload' else 1,
+    'h2_upload' if args.case == 'upload' else 'h2_stream' if args.case == 'stream'
+    else 'h1_file' if args.case == 'file' else 'h2',
+)
+config = args.output / 'hypercorn.toml'
+write_hypercorn_config(config)
+with allocated_listener(scenario) as (live, listener), (args.output / 'server.log').open('w') as log:
+    command = server_command(
+        'uvicorn' if args.case == 'multiplex' else 'gunicorn',
+        live, hypercorn_config=config, listener_fd=listener.fileno(),
+    )
+    record['command'] = command
+    with running_server(
+        command, workers=live.workers, scenario=live,
+        listener_fd=listener.fileno(), output=log.fileno(),
+    ):
+        if args.case == 'multiplex':
+            _run([
+                'oha', '-n', '20000', '-c', '1', '-p', '10',
+                '--http-version', '2', '--output-format', 'json',
+                f'http://127.0.0.1:{live.port}/',
+            ], 30, evidence_path=args.output / 'load.process.json')
+        elif args.case == 'upload':
+            contract = replace(
+                live.contract, request_body=live.contract.request_body_path.read_bytes(),
+            )
+            headers, body = _http2_response(contract, live.port, timeout=60)
+            record.update(
+                headers=headers, response_body=body.decode(),
+                expected_response='8388608',
+                response_sha256=hashlib.sha256(body).hexdigest(),
+            )
+        elif args.case == 'file':
+            import http.client
+            connection = http.client.HTTPConnection('127.0.0.1', live.port, timeout=5)
+            responses = []
+            try:
+                for number in (1, 2):
+                    try:
+                        connection.request('GET', '/static-file')
+                        response = connection.getresponse()
+                        body = response.read()
+                        responses.append({
+                            'request': number, 'status': response.status,
+                            'headers': dict(response.getheaders()), 'body_size': len(body),
+                            'body_sha256': hashlib.sha256(body).hexdigest(),
+                        })
+                    except Exception as error:
+                        responses.append({'request': number, 'error': repr(error)})
+                        break
+            finally:
+                connection.close()
+            record['persistent_responses'] = responses
+        else:
+            import socket
+            connection = h2.connection.H2Connection(
+                h2.config.H2Configuration(header_encoding='utf-8'),
+            )
+            connection.initiate_connection()
+            connection.send_headers(1, [
+                (':method', 'POST'), (':scheme', 'http'),
+                (':authority', f'127.0.0.1:{live.port}'),
+                (':path', '/streaming-post'), ('content-length', '1024'),
+            ])
+            connection.send_data(1, b'x' * 1024, end_stream=True)
+            events = []
+            body = bytearray()
+            ended = False
+            with socket.create_connection(('127.0.0.1', live.port), timeout=5) as transport:
+                transport.sendall(connection.data_to_send())
+                while True:
+                    try:
+                        data = transport.recv(65536)
+                    except TimeoutError:
+                        record['terminal'] = 'timeout'
+                        break
+                    if not data:
+                        record['terminal'] = 'connection EOF'
+                        break
+                    for event in connection.receive_data(data):
+                        events.append(repr(event))
+                        if isinstance(event, h2.events.DataReceived):
+                            body.extend(event.data)
+                            connection.acknowledge_received_data(
+                                event.flow_controlled_length, event.stream_id,
+                            )
+                        elif isinstance(event, h2.events.StreamEnded):
+                            ended = True
+                    if outbound := connection.data_to_send():
+                        transport.sendall(outbound)
+                    if ended:
+                        record['terminal'] = 'stream ended'
+                        break
+            record.update(events=events, received_body=body.decode())
+(args.output / 'reproduction.json').write_text(json.dumps(record, indent=2) + '\n')
+print(json.dumps(record, indent=2))

@@ -1,0 +1,61 @@
+{
+  "case": "upload",
+  "versions": {
+    "uvicorn": "0.54.0",
+    "zttp": "0.0.34",
+    "gunicorn": "26.2.0",
+    "h2": "4.4.1",
+    "starlette": "1.9.0"
+  },
+  "network": {
+    "name": "rtt50",
+    "description": "50 ms RTT, 1gbit netem",
+    "status": "ready",
+    "target_rtt_ms": 50.0,
+    "measured_rtt_ms": 50.09616905590519,
+    "one_way_delay_ms": 25.0,
+    "rate": "1gbit",
+    "qdisc": "qdisc netem 8004: root refcnt 2 limit 1000 delay 25ms rate 1Gbit seed 4924051542462050213"
+  },
+  "command": [
+    "/tmp/opencode/h2corn-benchmark-server-315/bin/gunicorn",
+    "bench.bench_app:app",
+    "-k",
+    "asgi",
+    "--asgi-loop",
+    "asyncio",
+    "--http-parser",
+    "python",
+    "--no-control-socket",
+    "--access-logfile",
+    "-",
+    "--backlog",
+    "2048",
+    "--keep-alive",
+    "120",
+    "--http-protocols",
+    "h2",
+    "--http2-cleartext",
+    "prior-knowledge",
+    "--http2-max-concurrent-streams",
+    "256",
+    "--http2-initial-window-size",
+    "8388608",
+    "--http2-max-frame-size",
+    "65536",
+    "--http2-max-header-list-size",
+    "1048576",
+    "-b",
+    "fd://4",
+    "-w",
+    "4"
+  ],
+  "headers": {
+    ":status": "200",
+    "content-length": "5",
+    "content-type": "text/plain; charset=utf-8"
+  },
+  "response_body": "16384",
+  "expected_response": "8388608",
+  "response_sha256": "ca902d4a8acbdea132ada81a004081f51c5c9279d409cee414de5a39a139fab6"
+}
