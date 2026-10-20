@@ -111,11 +111,15 @@ impl HttpSendPhase {
 type FinishedWaiter = Box<dyn FnOnce() + Send + pyo3::marker::Ungil>;
 
 struct HttpSendControl {
-    failure: Option<Arc<dyn ApplicationFailure>>,
     mode: HttpSendMode,
     phase: HttpSendPhase,
     close_signal: Option<watch::Sender<()>>,
     finished_waiters: SmallVec<[FinishedWaiter; 1]>,
+}
+
+struct HttpSendShared {
+    events: BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>,
+    failure: Option<Arc<dyn ApplicationFailure>>,
 }
 
 /// An ASGI event that has already paid its connection-wide body credit. The
@@ -185,12 +189,12 @@ pub(crate) struct HttpSendWaiter {
 
 #[derive(Clone)]
 pub(crate) struct HttpSendState {
-    shared: Arc<BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>>,
+    shared: Arc<HttpSendShared>,
     budget: Option<ResponseByteBudget>,
 }
 
 pub(crate) struct HttpSendBuffer {
-    shared: Arc<BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>>,
+    shared: Arc<HttpSendShared>,
     stream_rx: Option<mpsc::Receiver<AdmittedHttpOutboundEvent>>,
 }
 
@@ -201,26 +205,23 @@ impl HttpSendState {
     }
 
     pub(crate) fn unbounded() -> (Self, HttpSendBuffer) {
-        Self::with_optional_response_budget(None)
+        Self::with_control(None, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_response_budget(budget: ResponseByteBudget) -> (Self, HttpSendBuffer) {
-        Self::with_optional_response_budget(Some(budget))
+        Self::with_control(Some(budget), None)
     }
 
     pub(crate) fn with_response_failure(
         budget: ResponseByteBudget,
         failure: Option<Arc<dyn ApplicationFailure>>,
     ) -> (Self, HttpSendBuffer) {
-        let pair = Self::with_response_budget(budget);
-        pair.0.shared.lock().state.failure = failure;
-        pair
+        Self::with_control(Some(budget), failure)
     }
 
     pub(crate) fn failure_notification(&self) -> Option<Arc<dyn ApplicationFailure>> {
         self.shared
-            .lock()
-            .state
             .failure
             .as_ref()
             .map(|_| Arc::clone(&self.shared) as Arc<dyn ApplicationFailure>)
@@ -230,14 +231,19 @@ impl HttpSendState {
     /// minted again: they share one inline queue and one streaming receiver,
     /// and a second buffer would both compete for those and close the outbound
     /// side out from under the first when it dropped.
-    fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> (Self, HttpSendBuffer) {
-        let shared = Arc::new(BufferedState::new(HttpSendControl {
-            failure: None,
-            mode: HttpSendMode::Inline { accepted: 0 },
-            phase: HttpSendPhase::AwaitingStart,
-            close_signal: None,
-            finished_waiters: SmallVec::new(),
-        }));
+    fn with_control(
+        budget: Option<ResponseByteBudget>,
+        failure: Option<Arc<dyn ApplicationFailure>>,
+    ) -> (Self, HttpSendBuffer) {
+        let shared = Arc::new(HttpSendShared {
+            events: BufferedState::new(HttpSendControl {
+                mode: HttpSendMode::Inline { accepted: 0 },
+                phase: HttpSendPhase::AwaitingStart,
+                close_signal: None,
+                finished_waiters: SmallVec::new(),
+            }),
+            failure,
+        });
         let buffer = HttpSendBuffer {
             shared: Arc::clone(&shared),
             stream_rx: None,
@@ -249,7 +255,7 @@ impl HttpSendState {
         let admitted = match self.try_admit(event) {
             Ok(event) => event,
             Err(event) => {
-                let inner = self.shared.lock();
+                let inner = self.shared.events.lock();
                 if matches!(inner.state.phase, HttpSendPhase::Terminal)
                     || matches!(inner.state.mode, HttpSendMode::Closed)
                 {
@@ -277,7 +283,7 @@ impl HttpSendState {
         &self,
         waiter: impl FnOnce() + Send + pyo3::marker::Ungil + 'static,
     ) {
-        let mut inner = self.shared.lock();
+        let mut inner = self.shared.events.lock();
         if matches!(inner.state.mode, HttpSendMode::Closed) {
             drop(inner);
             waiter();
@@ -312,13 +318,13 @@ impl HttpSendState {
     /// Only the malformed-message path asks. A well-formed send learns the same
     /// thing from `admit`, under the lock it was taking anyway.
     pub(crate) fn is_closed(&self) -> bool {
-        let inner = self.shared.lock();
+        let inner = self.shared.events.lock();
         matches!(inner.state.phase, HttpSendPhase::Terminal)
             || matches!(inner.state.mode, HttpSendMode::Closed)
     }
 
     fn admit(&self, event: AdmittedHttpOutboundEvent) -> Admission {
-        let mut inner = self.shared.lock();
+        let mut inner = self.shared.events.lock();
         if matches!(inner.state.phase, HttpSendPhase::Terminal) {
             return Admission::Closed;
         }
@@ -356,7 +362,7 @@ impl HttpSendState {
         };
         Self::publish_phase(&mut inner.state, next_phase);
         drop(inner);
-        self.shared.notify_ready();
+        self.shared.events.notify_ready();
         admission
     }
 
@@ -393,7 +399,7 @@ impl HttpSendState {
                     credit
                 } else {
                     let mut closed = {
-                        let mut inner = self.shared.lock();
+                        let mut inner = self.shared.events.lock();
                         if matches!(inner.state.phase, HttpSendPhase::Terminal)
                             || matches!(&inner.state.mode, HttpSendMode::Closed)
                         {
@@ -423,7 +429,7 @@ impl HttpSendState {
             Admission::Buffered | Admission::Started | Admission::Sent => true,
             Admission::Full(tx, event) => {
                 let mut closed = {
-                    let mut inner = self.shared.lock();
+                    let mut inner = self.shared.events.lock();
                     if matches!(inner.state.phase, HttpSendPhase::Terminal)
                         || matches!(inner.state.mode, HttpSendMode::Closed)
                     {
@@ -444,7 +450,7 @@ impl HttpSendState {
                         return false;
                     }
                 };
-                let mut inner = self.shared.lock();
+                let mut inner = self.shared.events.lock();
                 if matches!(inner.state.phase, HttpSendPhase::Terminal)
                     || matches!(inner.state.mode, HttpSendMode::Closed)
                 {
@@ -460,9 +466,9 @@ impl HttpSendState {
     }
 }
 
-impl ApplicationFailure for BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2> {
+impl ApplicationFailure for HttpSendShared {
     fn application_failed(&self) {
-        let mut inner = self.lock();
+        let mut inner = self.events.lock();
         let committed = matches!(
             inner.state.phase,
             HttpSendPhase::Terminal
@@ -476,9 +482,8 @@ impl ApplicationFailure for BufferedState<HttpSendControl, AdmittedHttpOutboundE
             return;
         }
         HttpSendState::publish_phase(&mut inner.state, HttpSendPhase::Terminal);
-        let failure = inner.state.failure.clone();
         drop(inner);
-        if let Some(failure) = failure {
+        if let Some(failure) = &self.failure {
             failure.application_failed();
         }
     }
@@ -498,7 +503,7 @@ impl HttpSendBuffer {
     /// request-finished observers. Finalization may await transport work, but
     /// no send that begins after finalization starts can belong to the response.
     pub(super) fn close_send_gate(&self) {
-        let mut inner = self.shared.lock();
+        let mut inner = self.shared.events.lock();
         HttpSendState::publish_phase(&mut inner.state, HttpSendPhase::Terminal);
     }
 
@@ -506,11 +511,17 @@ impl HttpSendBuffer {
     /// streaming channel. Events accepted before closure remain available so
     /// the response driver can report their original ASGI contract error.
     pub(super) fn close_outbound(&mut self) {
-        let mut inner = self.shared.lock();
+        self.close(false);
+    }
+
+    fn close(&mut self, discard_queued: bool) {
+        let mut inner = self.shared.events.lock();
         inner.state.phase = HttpSendPhase::Terminal;
         let state = std::mem::replace(&mut inner.state.mode, HttpSendMode::Closed);
         let close_signal = inner.state.close_signal.take();
         let finished_waiters = std::mem::take(&mut inner.state.finished_waiters);
+        let queued =
+            (discard_queued && !inner.queue.is_empty()).then(|| std::mem::take(&mut inner.queue));
         if let HttpSendMode::Streaming { rx, .. } = state
             && self.stream_rx.is_none()
         {
@@ -526,11 +537,12 @@ impl HttpSendBuffer {
         for waiter in finished_waiters {
             waiter();
         }
-        self.shared.notify_ready();
+        self.shared.events.notify_ready();
+        drop(queued);
     }
 
     pub(super) fn take_ready(&mut self) -> Option<AdmittedHttpOutboundEvent> {
-        let mut inner = self.shared.lock();
+        let mut inner = self.shared.events.lock();
         if let Some(event) = inner.queue.pop_front() {
             return Some(event);
         }
@@ -552,16 +564,14 @@ impl HttpSendBuffer {
             if let Some(rx) = &mut self.stream_rx {
                 return rx.recv().await;
             }
-            self.shared.wait_ready().await;
+            self.shared.events.wait_ready().await;
         }
     }
 }
 
 impl Drop for HttpSendBuffer {
     fn drop(&mut self) {
-        self.close_outbound();
-        let queued = std::mem::take(&mut self.shared.lock().queue);
-        drop(queued);
+        self.close(true);
     }
 }
 
@@ -606,6 +616,7 @@ mod tests {
     use crate::http::header::ResponseConnectionDirective;
     use crate::http::response::ResponseByteBudget;
     use crate::http::types::{FinalResponseStatus, ResponseHeaders, ResponseTrailers, status_code};
+    use crate::runtime::ApplicationFailure;
 
     fn body_event(body: &'static [u8]) -> HttpOutboundEvent {
         HttpOutboundEvent::Body {
@@ -635,6 +646,42 @@ mod tests {
             headers: ResponseTrailers::new(),
             more_trailers,
         }
+    }
+
+    #[rstest::rstest]
+    #[case::start_only(false, false)]
+    #[case::body_started(true, true)]
+    fn failure_notification_preserves_the_response_commit_boundary(
+        #[case] body_started: bool,
+        #[case] expected_notification: bool,
+    ) {
+        struct FailureSignal(AtomicBool);
+
+        impl ApplicationFailure for FailureSignal {
+            fn application_failed(&self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let signal = Arc::new(FailureSignal(AtomicBool::new(false)));
+        let (send, _buffer) = HttpSendState::with_response_failure(
+            ResponseByteBudget::new(64),
+            Some(Arc::clone(&signal) as Arc<dyn ApplicationFailure>),
+        );
+        assert!(matches!(
+            send.push_or_forward(start_event(false)),
+            HttpSendDisposition::Buffered
+        ));
+        if body_started {
+            assert!(matches!(
+                send.push_or_forward(body_event(b"body")),
+                HttpSendDisposition::Buffered
+            ));
+        }
+        send.failure_notification()
+            .expect("the response has a failure observer")
+            .application_failed();
+        assert_eq!(signal.0.load(Ordering::Relaxed), expected_notification);
     }
 
     fn assert_admitted(disposition: HttpSendDisposition) {
@@ -789,7 +836,7 @@ mod tests {
         );
 
         let internal_count = || {
-            let inner = send_state.shared.lock();
+            let inner = send_state.shared.events.lock();
             match &inner.state.mode {
                 super::HttpSendMode::Streaming { tx, .. } => tx.strong_count(),
                 super::HttpSendMode::Inline { .. } | super::HttpSendMode::Closed => {
@@ -863,7 +910,7 @@ mod tests {
     fn unbounded_sends_never_arm_a_close_signal() {
         let (send_state, _send_buffer) = HttpSendState::new();
         assert!(
-            send_state.shared.lock().state.close_signal.is_none(),
+            send_state.shared.events.lock().state.close_signal.is_none(),
             "unbounded HTTP/1 sends have no byte waiter to wake"
         );
     }
@@ -887,7 +934,7 @@ mod tests {
 
         send_buffer.close_outbound();
         assert!(
-            send_state.shared.lock().state.close_signal.is_none(),
+            send_state.shared.events.lock().state.close_signal.is_none(),
             "closing before the wait leaves no signal to allocate"
         );
         assert!(
@@ -921,7 +968,7 @@ mod tests {
         }
         tokio::task::yield_now().await;
         assert!(
-            send_state.shared.lock().state.close_signal.is_some(),
+            send_state.shared.events.lock().state.close_signal.is_some(),
             "the first blocked byte acquisition arms the shared close signal"
         );
 
@@ -1023,7 +1070,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!blocked.is_finished(), "no byte credit is available yet");
         assert!(
-            send_state.shared.lock().state.close_signal.is_some(),
+            send_state.shared.events.lock().state.close_signal.is_some(),
             "a blocked byte acquisition arms the close signal"
         );
 
@@ -1096,7 +1143,7 @@ mod tests {
         let blocked = tokio::spawn(waiter.send());
         tokio::task::yield_now().await;
         assert!(!blocked.is_finished());
-        assert!(send_state.shared.lock().state.close_signal.is_some());
+        assert!(send_state.shared.events.lock().state.close_signal.is_some());
 
         drop(send_buffer);
         assert!(
