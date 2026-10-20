@@ -31,7 +31,6 @@ _COMMON_METADATA = (
     'python_config_args',
     'python_implementation',
     'python_version',
-    'report_sha256',
     'source_revision',
     'workload',
 )
@@ -54,7 +53,6 @@ def _metadata(path: str) -> tuple[dict, tuple[Series, ...]]:
         'benchmark_sha256': hashlib.sha256(
             (package_root / 'benchmark.py').read_bytes()
         ).hexdigest(),
-        'report_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
     for field, expected_hash in expected_hashes.items():
         if metadata[field] != expected_hash:
@@ -167,7 +165,7 @@ def _markdown(results: Report, definitions: tuple[dict, ...], metadata: dict) ->
         f'{metadata["python_implementation"]} {metadata["python_version"]}\n'
         f'Pillow {metadata["pillow_version"]} · NumPy {metadata["numpy_version"]}\n'
         'Each value is a median of 12 independent worker-process means; '
-        'intervals are 95% percentile bootstrap intervals across those workers.'
+        '95% percentile bootstrap intervals use 10,000 resamples across those workers.'
     )
     summaries = {(item.case, item.name): item for item in results.results}
     rows = [f'# {results.title}', '', captions, '']
