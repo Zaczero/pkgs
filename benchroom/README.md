@@ -39,8 +39,6 @@ report.save("comparison.svg")
 This writes a chart and `comparison.md`, a table of the same values. Use
 `dark=True` for dark backgrounds, or a `.png` filename for raster output.
 `report.figure()` returns a Matplotlib figure for further customization.
-Statistics are calculated once when the report is created and exposed through
-`report.results`; rendering another format or theme reuses them.
 
 Dots show medians. Lines show 95% bootstrap intervals across runs, not the
 range of individual operation times. A single run has no interval. The report
@@ -98,8 +96,8 @@ between requests. Label the population the plot actually shows.
 - `Report(title, series, unit, better="lower", caption="")` groups comparable
   measurements. Use `better="higher"` for throughput. `figure()`, `markdown()`
   and `save()` share the same estimates.
-- `Summary` holds each result's case, implementation name, median, interval,
-  run count and optional size. Reports retain summaries rather than raw samples.
+- `Report.results` contains `Summary` records with each result's case,
+  implementation name, median, interval, run count, and optional size.
 - `benchroom.stats.percentile(values, fraction)` interpolates a percentile.
 - `benchroom.stats.median_interval(values, seed=0)` estimates the median's
   95% bootstrap interval.
