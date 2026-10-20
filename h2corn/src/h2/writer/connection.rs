@@ -486,6 +486,7 @@ impl<W: WriteTarget> WriterState<W> {
     }
 
     fn retire_response(&mut self, stream_id: StreamId, kind: ResponseClose) {
+        self.drained_app_writes.retain(|(id, _)| *id != stream_id);
         let owned = self.ingress.gate(stream_id).is_some()
             || self.streams.contains_key(&stream_id)
             || self.unflushed_closes.contains(&stream_id);
@@ -509,11 +510,13 @@ impl<W: WriteTarget> WriterState<W> {
             return Ok(false);
         }
         let mut drained = mem::take(&mut self.drained_app_writes);
-        self.ingress.drain_into(&mut drained);
-        let had_writes = !drained.is_empty();
-        'streams: for index in 0..drained.len() {
-            while let Some(mut batch) = drained.get_mut(index).and_then(|entry| entry.1.pop_front())
-            {
+        if drained.is_empty() {
+            self.ingress.drain_into(&mut drained);
+            drained.reverse();
+        }
+        let mut progressed = false;
+        'streams: while let Some((stream_id, mut queued)) = drained.pop() {
+            while let Some(mut batch) = queued.pop_front() {
                 while let Some(command) = batch.commands.pop_front() {
                     if let WriterCommand::FlushStream(id) = command {
                         let pending = self
@@ -530,10 +533,9 @@ impl<W: WriteTarget> WriterState<W> {
                                 commands.push_back(next);
                             }
                             batch.commands = commands;
-                            prepend_batch(
-                                &mut drained.get_mut(index).expect("drained stream exists").1,
-                                batch,
-                            );
+                            prepend_batch(&mut queued, batch);
+                            self.ingress
+                                .restore_drained(std::iter::once((stream_id, queued)));
                             continue 'streams;
                         }
                     }
@@ -542,29 +544,23 @@ impl<W: WriteTarget> WriterState<W> {
                         .is_none_or(|id| self.streams.contains_key(&id))
                     {
                         self.apply_command(command)?;
+                        progressed = true;
                     }
                     if self.active.is_some() || self.flushing {
                         if !batch.commands.is_empty() {
-                            prepend_batch(
-                                &mut drained.get_mut(index).expect("drained stream exists").1,
-                                batch,
-                            );
+                            prepend_batch(&mut queued, batch);
                         }
-                        self.restore_app_writes(&mut drained);
+                        if !queued.is_empty() {
+                            drained.push((stream_id, queued));
+                        }
                         self.drained_app_writes = drained;
-                        return Ok(had_writes);
+                        return Ok(progressed);
                     }
                 }
             }
         }
-        self.restore_app_writes(&mut drained);
         self.drained_app_writes = drained;
-        Ok(had_writes)
-    }
-
-    fn restore_app_writes(&self, drained: &mut Vec<(StreamId, QueuedStreamCommands)>) {
-        drained.retain(|(_, commands)| !commands.is_empty());
-        self.ingress.restore_drained(drained.drain(..));
+        Ok(progressed)
     }
 
     fn apply_aborts(&mut self) -> Result<(), H2CornError> {
@@ -873,7 +869,12 @@ impl<W: WriteTarget> WriterState<W> {
                         return Poll::Pending;
                     },
                     BodyPreparation::Blocked => {
-                        if self.dirty {
+                        if self.drain_app_writes()? {
+                            turns = turns.wrapping_add(1);
+                            if turns >= FRAME_QUANTUM {
+                                self.flushing = true;
+                            }
+                        } else if self.dirty {
                             self.flushing = true;
                         } else {
                             self.output_started = None;
@@ -890,6 +891,7 @@ impl<W: WriteTarget> WriterState<W> {
         if matches!(result, Poll::Ready(Err(_))) {
             self.ingress.close();
             self.commands.clear();
+            self.drained_app_writes.clear();
             self.active = None;
             self.dirty = false;
             self.flushing = false;
@@ -914,11 +916,15 @@ impl<W: WriteTarget> WriterState<W> {
         !self.ready_streams.is_empty()
     }
     pub(crate) fn needs_flush(&self) -> bool {
-        self.dirty || self.flushing || self.active.is_some() || !self.commands.is_empty()
+        self.dirty
+            || self.flushing
+            || self.active.is_some()
+            || !self.commands.is_empty()
+            || !self.drained_app_writes.is_empty()
     }
     #[cfg(test)]
     pub(crate) fn has_queued_app_writes(&self) -> bool {
-        self.ingress.has_pending()
+        !self.drained_app_writes.is_empty() || self.ingress.has_pending()
     }
     pub(crate) fn next_response_stall_deadline(&self) -> Option<(StreamId, Instant)> {
         self.response_deadlines.next()

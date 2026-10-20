@@ -572,6 +572,93 @@ async fn response_stall_policy_does_not_enable_a_disabled_socket_timer() {
 }
 
 #[tokio::test]
+async fn admitted_responses_finish_across_output_quanta() {
+    let target = GatedWriter::new(usize::MAX, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let ids: Vec<_> = (0_u32..40)
+        .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+        .collect();
+    for &id in &ids {
+        writer.register_stream(id, None);
+        writer
+            .ingress
+            .enqueue(id, WriterCommand::SendFinal {
+                stream_id: id,
+                status: status_code::OK,
+                headers: ResponseHeaders::new(),
+                data: bytes::Bytes::from_static(b"response").into(),
+                credit: None,
+            })
+            .await
+            .unwrap();
+    }
+    writer.drain_app_writes().unwrap();
+    writer.flush().await.unwrap();
+    let output = frames(&gate.lock().bytes);
+    let closed = writer.take_response_closes();
+    for id in ids {
+        assert!(closed.contains(&(ResponseClose::Clean, id)));
+        assert_eq!(
+            output
+                .iter()
+                .filter(|frame| frame.0 == 0 && frame.2 == id.get())
+                .flat_map(|frame| frame.3.iter().copied())
+                .collect::<Vec<_>>(),
+            b"response"
+        );
+    }
+    assert!(!writer.has_queued_app_writes());
+    drop(writer);
+}
+
+#[tokio::test]
+async fn producer_failure_discards_admitted_sibling_before_output_starts() {
+    let target = GatedWriter::new(0, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let first = StreamId::new(1).unwrap();
+    let sibling = StreamId::new(3).unwrap();
+    for id in [first, sibling] {
+        writer.register_stream(id, None);
+        writer
+            .ingress
+            .enqueue(id, WriterCommand::SendFinal {
+                stream_id: id,
+                status: status_code::OK,
+                headers: ResponseHeaders::new(),
+                data: bytes::Bytes::from(vec![b'x'; 16 * 1024]).into(),
+                credit: None,
+            })
+            .await
+            .unwrap();
+    }
+    writer.drain_app_writes().unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    writer.ingress.gate(sibling).unwrap().application_failed();
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    release(&gate);
+    writer.flush().await.unwrap();
+    let output = frames(&gate.lock().bytes);
+    assert!(
+        output
+            .iter()
+            .filter(|frame| frame.2 == sibling.get())
+            .all(|frame| frame.0 == 3)
+    );
+    assert!(
+        output
+            .iter()
+            .any(|frame| frame.0 == 3 && frame.2 == sibling.get())
+    );
+    let closed = writer.take_response_closes();
+    assert!(closed.contains(&(ResponseClose::ProducerFailed, sibling)));
+    assert!(closed.contains(&(ResponseClose::Clean, first)));
+    drop(writer);
+}
+
+#[tokio::test]
 async fn application_failure_retires_terminal_output_before_flush() {
     let target = GatedWriter::new(usize::MAX, false);
     let gate = Arc::clone(&target.0);

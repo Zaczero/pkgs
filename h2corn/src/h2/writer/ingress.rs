@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -64,6 +64,7 @@ impl ApplicationFailure for StreamGate {
             {
                 discarded = Some(std::mem::take(&mut stream.commands));
                 queue.aborts.push_back(self.stream_id);
+                ingress.aborted.store(true, Ordering::Release);
             }
             drop(queue);
             drop(discarded);
@@ -102,6 +103,7 @@ pub(super) struct WriterIngress {
     queue: Mutex<WriterIngressQueue>,
     pub(super) notify: Notify,
     permits: Arc<Semaphore>,
+    aborted: AtomicBool,
 }
 
 impl OpenWriterIngressQueue {
@@ -209,6 +211,7 @@ impl WriterIngress {
             })),
             notify: Notify::new(),
             permits: Arc::new(Semaphore::new(WRITER_CHANNEL_CAPACITY)),
+            aborted: AtomicBool::new(false),
         })
     }
 
@@ -242,7 +245,12 @@ impl WriterIngress {
     }
 
     pub(super) fn take_aborts(&self) -> VecDeque<StreamId> {
-        match &mut *self.queue.lock() {
+        if !self.aborted.load(Ordering::Acquire) {
+            return VecDeque::new();
+        }
+        let mut queue = self.queue.lock();
+        self.aborted.store(false, Ordering::Release);
+        match &mut *queue {
             WriterIngressQueue::Open(queue) => std::mem::take(&mut queue.aborts),
             WriterIngressQueue::Closed => VecDeque::new(),
         }
