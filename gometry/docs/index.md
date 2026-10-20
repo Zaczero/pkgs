@@ -29,28 +29,22 @@ import gometry as gm
 
 origin = gm.Point(2.2945, 48.8584, crs=4326)
 landmarks = {
-    "Arc de Triomphe": gm.Point(2.2950, 48.8738, crs=4326),
-    "Louvre": gm.Point(2.3376, 48.8606, crs=4326),
-    "Notre-Dame": gm.Point(2.3499, 48.8530, crs=4326),
-    "Palace of Versailles": gm.Point(2.1204, 48.8049, crs=4326),
+    "Arc de Triomphe": (2.2950, 48.8738),
+    "Louvre": (2.3376, 48.8606),
+    "Notre-Dame": (2.3499, 48.8530),
+    "Versailles": (2.1204, 48.8049),
 }
-nearby = sorted(
-    (
-        (name, gm.distance(origin, place))
-        for name, place in landmarks.items()
-        if gm.dwithin(origin, place, 5_000)
-    ),
-    key=lambda item: item[1],
-)
 
 print("Within 5 km of the Eiffel Tower")
-for name, distance in nearby:
-    print(f"{name:<18} {distance / 1_000:>4.1f} km")
+for name, coordinates in landmarks.items():
+    distance = gm.distance(origin, gm.Point(*coordinates, crs=4326))
+    if distance <= 5_000:
+        print(f"{name:<18} {distance / 1_000:>4.1f} km")
 ```
 
 Find Paris landmarks within 5 km of the Eiffel Tower. With EPSG:4326 attached,
-[`dwithin`][gometry.dwithin] filters by geodesic distance and
-[`distance`][gometry.distance] reports that distance in metres.
+[`distance`][gometry.distance] measures the geodesic distance in metres, so the
+filter works directly in familiar units.
 
 <div class="grid cards" markdown>
 
