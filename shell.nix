@@ -126,6 +126,11 @@ let
     export PYO3_PYTHON="${python}/bin/python3"
     python_libdir="$(${python}/bin/python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
     export NIX_LD_LIBRARY_PATH="$python_libdir''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
+    ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+      # FHS interpreters must load extensions with the shell compiler's libc.
+      export NIX_LD="${pkgs.stdenv.cc.bintools.dynamicLinker}"
+      export NIX_LD_LIBRARY_PATH="${pkgs.stdenv.cc.libc}/lib:$NIX_LD_LIBRARY_PATH"
+    ''}
     export COVERAGE_CORE=sysmon
 
     # `uv sync` builds through maturin's PEP 517 backend, which defaults to
