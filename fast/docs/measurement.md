@@ -32,7 +32,6 @@ reports its launch-time RSS high-water mark over the existing release channel,
 before command execution. The default report shows mean peak and mean launch
 values together. This exposes a parent-memory floor without subtracting one
 high-water mark from another: such a subtraction cannot recover workload memory.
-It adds no extra command execution, memory scan, or helper process.
 
 Hardware instructions, cycles, and branch misses use separate ungrouped
 events with inheritance, user-space-only privilege scope, and enable-on-exec.
@@ -127,9 +126,7 @@ at least 3 runs, the fewest that usually bound an interval. An explicit `--time`
 is a strict budget, so the plan may stop after the first run.
 
 Planning uses run costs and the pilot's variation, never a comparison's outcome.
-Choosing the run count from the variance is an internal pilot design, and the
-automatic calibration cells below include this selection step; fixed-count
-coverage alone does not validate the planner. An interrupted experiment analyzes
+The automatic-plan calibration includes this selection step. An interrupted experiment analyzes
 its completed runs. No estimates are shown while runs continue, but stopping
 because of an externally observed result can still bias the comparison. A failed
 run can depend on the measured behavior, so a failure leaves the completed runs
@@ -222,8 +219,6 @@ the truth; with equal means, every directional verdict is false. Across all 118
 supported cells, from two runs to 1,000, the one-sided 95% lower coverage bound
 is at least 94.15% and the upper false-direction bound at most 5.80%. Automatic
 cells include the pilot, the warmup decision, and the variance-dependent run count.
-
-The limitations matter just as much:
 
 - Command-specific AR(1) correlation 0.5 between consecutive runs covered 62.59%
   at 10 runs and 88.41% at 37, then 93.85% at 100 and 95.27% at 1,000. Below
