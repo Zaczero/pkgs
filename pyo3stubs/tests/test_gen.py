@@ -13,20 +13,17 @@ import types
 from array import array
 from typing import Self
 
+import libcst as cst
 import pytest
 
 from pyo3stubs.ast_util import annotated_data_descriptors
-from tests._support import make_config
-
-cst = pytest.importorskip('libcst', reason='stub generation requires LibCST')
-
-# The generator imports LibCST, so admit its optional provider first.
-from pyo3stubs.gen import (  # ruff: ignore[module-import-not-at-top-of-file]
+from pyo3stubs.gen import (
     DocInjector,
     _def_totals,
     _descriptor_docs,
     _docstring_statement,
 )
+from tests._support import make_config
 
 Q = '"'
 

@@ -37,17 +37,15 @@ from pyo3stubs.doc_structure import (
     iter_doc_subjects,
 )
 from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
+from pyo3stubs.leaked_types import collect_errors as leaked_types
+from pyo3stubs.rust_nullability import collect_errors as rust_nullability
+from pyo3stubs.rust_scan import iter_sources, pyclass_names, rust_class_map
 from pyo3stubs.structural import collect_errors as structural
+from pyo3stubs.text_signature import collect_errors as text_signature
 from tests._support import make_config, seeded
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-if importlib.util.find_spec('tree_sitter_rust') is not None:
-    from pyo3stubs.leaked_types import collect_errors as leaked_types
-    from pyo3stubs.rust_nullability import collect_errors as rust_nullability
-    from pyo3stubs.rust_scan import iter_sources, pyclass_names, rust_class_map
-    from pyo3stubs.text_signature import collect_errors as text_signature
 
 #: ``(tmp_path, pristine stub, pristine Rust) -> StubConfig``.
 Build = Callable[['Path', str, str], StubConfig]

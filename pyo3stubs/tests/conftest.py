@@ -1,5 +1,7 @@
 """Fixture wiring: importable fake runtime + a StubConfig factory."""
 
+from importlib import import_module
+
 import pytest
 
 from tests._support import FIXTURES
@@ -7,20 +9,18 @@ from tests._support import FIXTURES
 
 @pytest.fixture
 def libcst_provider() -> None:
-    pytest.importorskip('libcst', reason='stub generation requires LibCST')
+    import_module('libcst')
 
 
 @pytest.fixture
 def mypy_provider() -> None:
-    pytest.importorskip('mypy', reason='type-checking requires mypy')
+    import_module('mypy')
 
 
 @pytest.fixture
 def rust_parser() -> None:
-    pytest.importorskip('tree_sitter', reason='Rust source checks require tree-sitter')
-    pytest.importorskip(
-        'tree_sitter_rust', reason='Rust source checks require the Rust grammar'
-    )
+    import_module('tree_sitter')
+    import_module('tree_sitter_rust')
 
 
 @pytest.fixture
