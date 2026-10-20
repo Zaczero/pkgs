@@ -299,7 +299,7 @@ def render_benchmark_results() -> str:
         if table_path.read_text(encoding='utf-8') != table:
             raise RuntimeError(f'{table_path.name} does not match its aggregate record')
 
-        relative_plot = f'assets/benchmarks/{plot_path.name}'
+        relative_plot = f'../assets/benchmarks/{plot_path.name}'
         dark_plot = plot_path.with_stem(plot_path.stem + '-dark')
         narrow_plot = plot_path.with_stem(plot_path.stem + '-narrow')
         narrow_dark_plot = plot_path.with_stem(plot_path.stem + '-narrow-dark')
@@ -314,12 +314,12 @@ def render_benchmark_results() -> str:
         sections.extend((
             f'### {scenario} — {profile}\n\n',
             '<picture>\n'
-            f'  <source media="(max-width: 600px)" srcset="assets/benchmarks/{narrow_plot.name}">\n'
+            f'  <source media="(max-width: 600px)" srcset="../assets/benchmarks/{narrow_plot.name}">\n'
             f'  <img src="{relative_plot}#only-light" alt="{description}">\n'
             '</picture>\n'
             '<picture>\n'
-            f'  <source media="(max-width: 600px)" srcset="assets/benchmarks/{narrow_dark_plot.name}">\n'
-            f'  <img src="assets/benchmarks/{dark_plot.name}#only-dark" alt="{description}">\n'
+            f'  <source media="(max-width: 600px)" srcset="../assets/benchmarks/{narrow_dark_plot.name}">\n'
+            f'  <img src="../assets/benchmarks/{dark_plot.name}#only-dark" alt="{description}">\n'
             '</picture>\n\n',
             '<details markdown="1">\n<summary>Detailed results</summary>\n\n',
             table,
