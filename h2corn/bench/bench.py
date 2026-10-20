@@ -1073,7 +1073,9 @@ def _plot_results(
     foreground = mpl.rcParams['text.color']
 
     throughput = axes[0]
-    bars = throughput.bar(labels, rates, color=colors)
+    bars = throughput.bar(
+        [label.replace(' / ', ' /\n') for label in labels], rates, color=colors
+    )
     throughput.set_xlim(-0.6, len(names) - 0.4)
     for bar, name in zip(bars, names, strict=True):
         if name not in results:
@@ -1192,8 +1194,12 @@ def _plot_results(
             else '\nLatency: median trial percentiles'
         )
         + ' · PSS: maximum sampled, decimal MB\n'
-        + textwrap.fill(record.get('workload', ''), width=65 if narrow else 110)
+        + textwrap.fill(record.get('workload', ''), width=55 if narrow else 110)
     )
+    if narrow:
+        footer = '\n'.join(
+            textwrap.fill(line, width=55) for line in footer.splitlines()
+        )
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
     plt.close(figure)
