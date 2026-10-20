@@ -293,7 +293,7 @@ impl DataCursor {
     }
 
     pub(super) fn consume(&mut self) {
-        if self.retired {
+        if self.retired || self.end_stream {
             return;
         }
         if matches!(self.transport, DataTransport::Sendfile { .. }) {

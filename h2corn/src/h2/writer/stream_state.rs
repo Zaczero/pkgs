@@ -5,8 +5,8 @@ use tokio::time::Instant;
 
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt as _, H2CornError, H2Error};
-use crate::h2::StreamMap;
 use crate::h2::writer::WebSocketData;
+use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::FileStreamer;
 use crate::http::response::ResponseBytePermit;
@@ -52,6 +52,106 @@ pub(super) enum BodyItem {
 // client can make an application queue. Sixteen bytes per open stream is the
 // price of turning an unbounded descriptor leak into backpressure.
 pub(super) type PendingBody = InlineFifo<BodyItem, 2>;
+
+#[derive(Debug)]
+pub(super) struct StreamWriteStates {
+    first: Option<(StreamId, StreamWriteState)>,
+    others: StreamMap<StreamWriteState>,
+}
+
+impl StreamWriteStates {
+    pub(super) fn new() -> Self {
+        Self {
+            first: None,
+            others: new_stream_map(),
+        }
+    }
+
+    pub(super) fn get(&self, id: StreamId) -> Option<&StreamWriteState> {
+        if let Some((first, stream)) = &self.first
+            && *first == id
+        {
+            return Some(stream);
+        }
+        self.others.get(&id)
+    }
+
+    pub(super) fn get_mut(&mut self, id: StreamId) -> Option<&mut StreamWriteState> {
+        if let Some((first, stream)) = &mut self.first
+            && *first == id
+        {
+            return Some(stream);
+        }
+        self.others.get_mut(&id)
+    }
+
+    pub(super) fn contains_key(&self, id: StreamId) -> bool {
+        self.get(id).is_some()
+    }
+
+    pub(super) fn get_or_insert_with(
+        &mut self,
+        id: StreamId,
+        create: impl FnOnce() -> StreamWriteState,
+    ) -> &mut StreamWriteState {
+        if self.first.is_none() && !self.others.contains_key(&id) {
+            self.first = Some((id, create()));
+            return &mut self.first.as_mut().expect("stream was inserted").1;
+        }
+        if let Some((first, stream)) = &mut self.first
+            && *first == id
+        {
+            return stream;
+        }
+        self.others.entry(id).or_insert_with(create)
+    }
+
+    pub(super) fn remove(&mut self, id: StreamId) -> Option<StreamWriteState> {
+        if self.first.as_ref().is_some_and(|(first, _)| *first == id) {
+            return self.first.take().map(|(_, stream)| stream);
+        }
+        self.others.remove(&id)
+    }
+
+    pub(super) fn keys(&self) -> impl Iterator<Item = &StreamId> {
+        self.first
+            .iter()
+            .map(|(id, _)| id)
+            .chain(self.others.keys())
+    }
+
+    pub(super) fn values(&self) -> impl Iterator<Item = &StreamWriteState> {
+        self.first
+            .iter()
+            .map(|(_, stream)| stream)
+            .chain(self.others.values())
+    }
+
+    pub(super) fn values_mut(&mut self) -> impl Iterator<Item = &mut StreamWriteState> {
+        self.first
+            .iter_mut()
+            .map(|(_, stream)| stream)
+            .chain(self.others.values_mut())
+    }
+
+    pub(super) fn drain(&mut self) -> impl Iterator<Item = (StreamId, StreamWriteState)> {
+        self.first.take().into_iter().chain(self.others.drain())
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert(&mut self, id: StreamId, value: StreamWriteState) {
+        if let Some(existing) = self.get_mut(id) {
+            *existing = value;
+        } else {
+            self.get_or_insert_with(id, || value);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.first.is_none() && self.others.is_empty()
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct ReadyStreamQueue {
@@ -111,17 +211,14 @@ impl ReadyStreamQueue {
         self.queue.push_back(stream_id);
     }
 
-    pub(super) fn pop_scheduled(
-        &mut self,
-        streams: &mut StreamMap<StreamWriteState>,
-    ) -> Option<StreamId> {
+    pub(super) fn pop_scheduled(&mut self, streams: &mut StreamWriteStates) -> Option<StreamId> {
         while self.unexamined != 0 {
             let Some(stream_id) = self.queue.pop_front() else {
                 self.unexamined = 0;
                 break;
             };
             self.unexamined = self.unexamined.wrapping_sub(1);
-            let Some(stream) = streams.get_mut(&stream_id) else {
+            let Some(stream) = streams.get_mut(stream_id) else {
                 continue;
             };
             debug_assert!(
@@ -432,42 +529,41 @@ impl PendingChunk {
 }
 
 pub(super) fn writer_stream(
-    streams: &mut StreamMap<StreamWriteState>,
+    streams: &mut StreamWriteStates,
     stream_id: StreamId,
     initial_stream_send_window: i64,
 ) -> &mut StreamWriteState {
-    streams
-        .entry(stream_id)
-        .or_insert_with(|| StreamWriteState::new(initial_stream_send_window))
+    streams.get_or_insert_with(stream_id, || {
+        StreamWriteState::new(initial_stream_send_window)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ReadyStreamQueue, StreamWriteState};
-    use crate::h2::new_stream_map;
+    use super::{ReadyStreamQueue, StreamWriteState, StreamWriteStates};
     use crate::h2_frame::StreamId;
 
     #[test]
     fn ready_queue_owns_schedule_membership_transitions() {
         let stream_id = StreamId::new(1).expect("test stream id is valid");
-        let mut streams = new_stream_map();
+        let mut streams = StreamWriteStates::new();
         streams.insert(stream_id, StreamWriteState::new(0xFFFF));
         let mut ready = ReadyStreamQueue::new();
 
         ready.schedule(
-            streams.get_mut(&stream_id).expect("stream exists"),
+            streams.get_mut(stream_id).expect("stream exists"),
             stream_id,
             false,
         );
         ready.schedule(
-            streams.get_mut(&stream_id).expect("stream exists"),
+            streams.get_mut(stream_id).expect("stream exists"),
             stream_id,
             true,
         );
         assert_eq!(ready.iter().collect::<Vec<_>>(), [stream_id]);
 
         assert_eq!(ready.pop_scheduled(&mut streams), Some(stream_id));
-        assert!(!streams.get(&stream_id).expect("stream exists").scheduled);
+        assert!(!streams.get(stream_id).expect("stream exists").scheduled);
         assert!(ready.is_empty());
     }
 }

@@ -244,6 +244,22 @@ impl WriterIngress {
         }
     }
 
+    pub(super) fn complete_stream(&self, stream_id: StreamId) -> bool {
+        let mut guard = self.queue.lock();
+        let WriterIngressQueue::Open(queue) = &mut *guard else {
+            return false;
+        };
+        if !queue
+            .streams
+            .get(&stream_id)
+            .is_some_and(|stream| stream.gate.complete())
+        {
+            return false;
+        }
+        queue.streams.remove(&stream_id);
+        true
+    }
+
     pub(super) fn take_aborts(&self) -> VecDeque<StreamId> {
         if !self.aborted.load(Ordering::Acquire) {
             return VecDeque::new();

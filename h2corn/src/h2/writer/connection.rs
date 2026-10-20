@@ -21,7 +21,7 @@ use crate::h2::deadline::DeadlineQueue;
 use crate::h2::writer::header_encode::HeaderEncodeState;
 use crate::h2::writer::ingress::{QueuedCommandBatch, QueuedStreamCommands, WriterIngress};
 use crate::h2::writer::stream_state::{
-    BodyItem, ReadyStreamQueue, StreamBodyState, StreamWriteState, writer_stream,
+    BodyItem, ReadyStreamQueue, StreamBodyState, StreamWriteState, StreamWriteStates, writer_stream,
 };
 use crate::h2::writer::wire::{
     ActiveOutput, BYTE_QUANTUM, DataCursor, DataFrame, FRAME_QUANTUM, HeaderCursor, poll_control,
@@ -31,7 +31,6 @@ use crate::h2::writer::{
     H2_WRITER_BUFFER_CAPACITY, ResponseClose, ResponseCloseBatch, WRITER_CHANNEL_CAPACITY,
     WindowTarget, WriterCommand, WriterCommandBatch,
 };
-use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::{
     self, ErrorCode, FramePayloadLen, PeerSettings, Settings, StreamId, WindowIncrement,
 };
@@ -53,7 +52,7 @@ pub(crate) struct WriterState<W> {
     ingress: Arc<WriterIngress>,
     writer: BufWriter<W>,
     config: Arc<ServerConfig>,
-    streams: StreamMap<StreamWriteState>,
+    streams: StreamWriteStates,
     ready_streams: ReadyStreamQueue,
     file_read_wake: Option<Arc<FileReadWake>>,
     drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
@@ -211,7 +210,7 @@ impl<W: WriteTarget> WriterState<W> {
             ingress: WriterIngress::new(),
             writer: BufWriter::with_capacity(H2_WRITER_BUFFER_CAPACITY, writer),
             config,
-            streams: new_stream_map(),
+            streams: StreamWriteStates::new(),
             ready_streams: ReadyStreamQueue::new(),
             file_read_wake: None,
             drained_app_writes: Vec::new(),
@@ -248,7 +247,7 @@ impl<W: WriteTarget> WriterState<W> {
         timeout_response_stall: Option<std::time::Duration>,
     ) {
         self.ingress.register(stream_id);
-        self.streams.entry(stream_id).or_insert_with(|| {
+        self.streams.get_or_insert_with(stream_id, || {
             let mut stream = StreamWriteState::new(self.initial_stream_send_window);
             stream.timeout_response_stall = timeout_response_stall;
             stream
@@ -256,7 +255,7 @@ impl<W: WriteTarget> WriterState<W> {
     }
 
     fn refresh_response_deadline(&mut self, stream_id: StreamId) {
-        if let Some(stream) = self.streams.get(&stream_id)
+        if let Some(stream) = self.streams.get(stream_id)
             && let Some(timeout) = stream.timeout_response_stall
             && stream.has_pending_output()
             && (self.connection_send_window <= 0 || stream.send_window <= 0)
@@ -278,6 +277,11 @@ impl<W: WriteTarget> WriterState<W> {
     }
 
     fn process_command(&mut self, command: WriterCommand) -> Result<(), H2CornError> {
+        if let WriterCommand::SendHeaders { stream_id, .. }
+        | WriterCommand::SendFinal { stream_id, .. } = &command
+        {
+            self.ingress.register(*stream_id);
+        }
         if self.active.is_some() {
             self.queue_command(command)?;
         } else {
@@ -303,7 +307,6 @@ impl<W: WriteTarget> WriterState<W> {
                 headers,
                 end_stream,
             } => {
-                self.ingress.register(stream_id);
                 let stream = writer_stream(
                     &mut self.streams,
                     stream_id,
@@ -335,7 +338,7 @@ impl<W: WriteTarget> WriterState<W> {
                 })?;
                 if !end_stream {
                     self.streams
-                        .get_mut(&stream_id)
+                        .get_mut(stream_id)
                         .expect("response has headers")
                         .queue_data(data, credit, true)?;
                     self.schedule(stream_id, false);
@@ -351,7 +354,7 @@ impl<W: WriteTarget> WriterState<W> {
                 credit,
                 end_stream,
             } => {
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                if let Some(stream) = self.streams.get_mut(stream_id) {
                     if stream.queue_data(data, credit, end_stream).is_err() {
                         self.retire_stream(stream_id);
                         return self.queue_command(WriterCommand::SendReset {
@@ -367,7 +370,7 @@ impl<W: WriteTarget> WriterState<W> {
                 data,
                 credit,
             } => {
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                if let Some(stream) = self.streams.get_mut(stream_id) {
                     stream.queue_websocket_data(data, credit)?;
                     self.schedule(stream_id, false);
                 }
@@ -377,7 +380,7 @@ impl<W: WriteTarget> WriterState<W> {
                 segment,
                 end_stream,
             } => {
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                if let Some(stream) = self.streams.get_mut(stream_id) {
                     stream.queue_file(FileStreamer::with_credit(
                         segment.file,
                         segment.start,
@@ -389,7 +392,7 @@ impl<W: WriteTarget> WriterState<W> {
                 }
             },
             WriterCommand::SendTrailers { stream_id, headers } => {
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                if let Some(stream) = self.streams.get_mut(stream_id) {
                     stream.queue_trailers(headers)?;
                     self.schedule(stream_id, true);
                 }
@@ -475,7 +478,7 @@ impl<W: WriteTarget> WriterState<W> {
     }
 
     fn schedule(&mut self, stream_id: StreamId, front: bool) {
-        if let Some(stream) = self.streams.get_mut(&stream_id) {
+        if let Some(stream) = self.streams.get_mut(stream_id) {
             self.ready_streams.schedule(stream, stream_id, front);
         }
         self.refresh_response_deadline(stream_id);
@@ -488,10 +491,10 @@ impl<W: WriteTarget> WriterState<W> {
     fn retire_response(&mut self, stream_id: StreamId, kind: ResponseClose) {
         self.drained_app_writes.retain(|(id, _)| *id != stream_id);
         let owned = self.ingress.gate(stream_id).is_some()
-            || self.streams.contains_key(&stream_id)
+            || self.streams.contains_key(stream_id)
             || self.unflushed_closes.contains(&stream_id);
         self.ingress.drop_stream(stream_id);
-        self.streams.remove(&stream_id);
+        self.streams.remove(stream_id);
         self.response_deadlines.cancel(stream_id);
         self.unflushed_closes.retain(|id| *id != stream_id);
         self.commands
@@ -515,13 +518,13 @@ impl<W: WriteTarget> WriterState<W> {
             drained.reverse();
         }
         let mut progressed = false;
-        'streams: while let Some((stream_id, mut queued)) = drained.pop() {
-            while let Some(mut batch) = queued.pop_front() {
+        'streams: while !drained.is_empty() {
+            while let Some(mut batch) = drained.last_mut().and_then(|entry| entry.1.pop_front()) {
                 while let Some(command) = batch.commands.pop_front() {
                     if let WriterCommand::FlushStream(id) = command {
                         let pending = self
                             .streams
-                            .get(&id)
+                            .get(id)
                             .is_some_and(StreamWriteState::has_pending_output);
                         if pending || self.dirty {
                             if !pending {
@@ -533,6 +536,8 @@ impl<W: WriteTarget> WriterState<W> {
                                 commands.push_back(next);
                             }
                             batch.commands = commands;
+                            let (stream_id, mut queued) =
+                                drained.pop().expect("drained stream exists");
                             prepend_batch(&mut queued, batch);
                             self.ingress
                                 .restore_drained(std::iter::once((stream_id, queued)));
@@ -541,23 +546,27 @@ impl<W: WriteTarget> WriterState<W> {
                     }
                     if command
                         .response_stream_id()
-                        .is_none_or(|id| self.streams.contains_key(&id))
+                        .is_none_or(|id| self.streams.contains_key(id))
                     {
                         self.apply_command(command)?;
                         progressed = true;
                     }
                     if self.active.is_some() || self.flushing {
                         if !batch.commands.is_empty() {
-                            prepend_batch(&mut queued, batch);
+                            prepend_batch(
+                                &mut drained.last_mut().expect("drained stream exists").1,
+                                batch,
+                            );
                         }
-                        if !queued.is_empty() {
-                            drained.push((stream_id, queued));
+                        if drained.last().is_some_and(|entry| entry.1.is_empty()) {
+                            drained.pop();
                         }
                         self.drained_app_writes = drained;
                         return Ok(progressed);
                     }
                 }
             }
+            drained.pop();
         }
         self.drained_app_writes = drained;
         Ok(progressed)
@@ -565,7 +574,7 @@ impl<W: WriteTarget> WriterState<W> {
 
     fn apply_aborts(&mut self) -> Result<(), H2CornError> {
         for stream_id in self.ingress.take_aborts() {
-            if self.streams.contains_key(&stream_id) || self.unflushed_closes.contains(&stream_id) {
+            if self.streams.contains_key(stream_id) || self.unflushed_closes.contains(&stream_id) {
                 self.retire_response(stream_id, ResponseClose::ProducerFailed);
                 self.queue_command(WriterCommand::SendReset {
                     stream_id,
@@ -584,7 +593,7 @@ impl<W: WriteTarget> WriterState<W> {
             };
             let stream = self
                 .streams
-                .get_mut(&stream_id)
+                .get_mut(stream_id)
                 .expect("scheduled stream exists");
             let body = stream.take_body();
             let StreamBodyState::Body(mut queue) = body else {
@@ -704,23 +713,24 @@ impl<W: WriteTarget> WriterState<W> {
     }
 
     fn finish_active(&mut self) {
-        match self.active.take().expect("completed output exists") {
+        let mut resumed = None;
+        match self.active.as_mut().expect("completed output exists") {
             ActiveOutput::Headers(headers) => {
                 if headers.end_stream && !headers.retired {
-                    self.streams.remove(&headers.stream_id);
+                    self.streams.remove(headers.stream_id);
                     self.response_deadlines.cancel(headers.stream_id);
                     self.unflushed_closes.push(headers.stream_id);
                 }
             },
-            ActiveOutput::Data(mut data) => {
+            ActiveOutput::Data(data) => {
                 data.consume();
                 if !data.retired {
                     if data.end_stream {
-                        self.streams.remove(&data.stream_id);
+                        self.streams.remove(data.stream_id);
                         self.response_deadlines.cancel(data.stream_id);
                         self.unflushed_closes.push(data.stream_id);
-                    } else if let Some(stream) = self.streams.get_mut(&data.stream_id) {
-                        stream.restore_body(StreamBodyState::Body(data.body));
+                    } else if let Some(stream) = self.streams.get_mut(data.stream_id) {
+                        stream.restore_body(StreamBodyState::Body(mem::take(&mut data.body)));
                         stream.note_body_progress(Instant::now());
                         let ready = stream.has_pending_output()
                             && ((self.connection_send_window > 0 && stream.send_window > 0)
@@ -728,20 +738,24 @@ impl<W: WriteTarget> WriterState<W> {
                         if ready {
                             self.ready_streams.schedule(stream, data.stream_id, false);
                         }
-                        if let Some(trailers) = stream.take_trailers_if_body_idle() {
-                            self.header_state.encode_trailers(&trailers);
-                            self.begin_headers(data.stream_id, true);
-                        }
-                        self.refresh_response_deadline(data.stream_id);
+                        resumed = Some((data.stream_id, stream.take_trailers_if_body_idle()));
                     }
                 }
             },
             ActiveOutput::Control { input_credit, .. } => {
-                if let Some(credit) = input_credit {
+                if let Some(credit) = input_credit.take() {
                     self.input_credits.push(credit);
                 }
                 self.frame_buf.clear();
             },
+        }
+        self.active = None;
+        if let Some((stream_id, trailers)) = resumed {
+            if let Some(trailers) = trailers {
+                self.header_state.encode_trailers(&trailers);
+                self.begin_headers(stream_id, true);
+            }
+            self.refresh_response_deadline(stream_id);
         }
     }
 
@@ -773,12 +787,7 @@ impl<W: WriteTarget> WriterState<W> {
                 }
                 let terminal = mem::take(&mut self.unflushed_closes);
                 for stream_id in terminal {
-                    if self
-                        .ingress
-                        .gate(stream_id)
-                        .is_some_and(|gate| gate.complete())
-                    {
-                        self.ingress.drop_stream(stream_id);
+                    if self.ingress.complete_stream(stream_id) {
                         self.response_closes.push((ResponseClose::Clean, stream_id));
                     } else {
                         self.retire_response(stream_id, ResponseClose::ProducerFailed);
@@ -791,7 +800,7 @@ impl<W: WriteTarget> WriterState<W> {
                 return Poll::Ready(Ok(()));
             }
             let replan = if let Some(ActiveOutput::Data(data)) = &mut self.active {
-                let available = self.streams.get(&data.stream_id).map_or(0, |stream| {
+                let available = self.streams.get(data.stream_id).map_or(0, |stream| {
                     self.connection_send_window
                         .min(i64::from(stream.send_window))
                 });
@@ -803,7 +812,7 @@ impl<W: WriteTarget> WriterState<W> {
                 let Some(ActiveOutput::Data(data)) = self.active.take() else {
                     unreachable!()
                 };
-                if let Some(stream) = self.streams.get_mut(&data.stream_id) {
+                if let Some(stream) = self.streams.get_mut(data.stream_id) {
                     stream.restore_body(StreamBodyState::Body(data.body));
                     stream.note_body_progress(Instant::now());
                     if self.connection_send_window > 0 && stream.send_window > 0 {
@@ -841,7 +850,7 @@ impl<W: WriteTarget> WriterState<W> {
                         self.connection_send_window = self
                             .connection_send_window
                             .wrapping_sub(progress.flow_bytes as i64);
-                        if let Some(stream) = data_stream.and_then(|id| self.streams.get_mut(&id)) {
+                        if let Some(stream) = data_stream.and_then(|id| self.streams.get_mut(id)) {
                             stream.send_window = stream.send_window.wrapping_sub(
                                 i32::try_from(progress.flow_bytes)
                                     .expect("one DATA batch fits the send window"),
@@ -869,7 +878,7 @@ impl<W: WriteTarget> WriterState<W> {
                         return Poll::Pending;
                     },
                     BodyPreparation::Blocked => {
-                        if self.drain_app_writes()? {
+                        if !self.drained_app_writes.is_empty() && self.drain_app_writes()? {
                             turns = turns.wrapping_add(1);
                             if turns >= FRAME_QUANTUM {
                                 self.flushing = true;
@@ -901,10 +910,6 @@ impl<W: WriteTarget> WriterState<W> {
                     .drain(..)
                     .map(|id| (ResponseClose::Abort, id)),
             );
-            #[expect(
-                clippy::iter_over_hash_type,
-                reason = "each failed stream independently loses its output owner"
-            )]
             for (id, _) in self.streams.drain() {
                 self.response_closes.push((ResponseClose::Abort, id));
             }
@@ -1068,10 +1073,6 @@ impl<W: WriteTarget> WriterState<W> {
         {
             return Err(InitialWindowAdjustmentOverflow);
         }
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "uniform independent window adjustment"
-        )]
         for stream in self.streams.values_mut() {
             stream.send_window = i32::try_from(i64::from(stream.send_window).wrapping_add(delta))
                 .expect("SETTINGS window adjustment was preflighted");
@@ -1093,7 +1094,7 @@ impl<W: WriteTarget> WriterState<W> {
         let mut ids: SmallVec<[StreamId; 8]> = self.streams.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
-            let stream = self.streams.get_mut(&id).expect("collected stream exists");
+            let stream = self.streams.get_mut(id).expect("collected stream exists");
             if stream.has_pending_output() && !stream.is_closed() {
                 self.ready_streams.schedule(stream, id, false);
             }
@@ -1120,7 +1121,7 @@ impl<W: WriteTarget> WriterState<W> {
         stream_id: StreamId,
         increment: WindowIncrement,
     ) -> Result<(), WindowOverflow> {
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
+        let Some(stream) = self.streams.get_mut(stream_id) else {
             return Ok(());
         };
         stream.send_window = stream

@@ -9,9 +9,12 @@ use std::time::Duration;
 
 use tokio::io::{AsyncWrite, BufWriter};
 
-use super::{PeerSettings, StreamWriteState, WriterCommand, WriterCommandBatch, WriterState};
+use super::{
+    PeerSettings, StreamWriteState, StreamWriteStates, WriterCommand, WriterCommandBatch,
+    WriterState,
+};
 use crate::bridge::PayloadBytes;
-use crate::h2::{ResponseClose, new_stream_map};
+use crate::h2::ResponseClose;
 use crate::h2_frame::{self, ErrorCode, FramePayloadLen, StreamId, WindowIncrement};
 use crate::http::pathsend::FileStreamer;
 use crate::http::response::ResponseByteBudget;
@@ -104,7 +107,7 @@ async fn bounded_ready_scan_wakes_unexamined_writable_tail() {
     gate.lock().bytes.clear();
     writer.connection_send_window = 0;
     for &id in &ids {
-        writer.streams.get_mut(&id).unwrap().send_window = 0;
+        writer.streams.get_mut(id).unwrap().send_window = 0;
         writer
             .process_command(WriterCommand::SendData {
                 stream_id: id,
@@ -183,7 +186,7 @@ fn bounded_ready_scan_sleeps_after_all_file_reads_are_pending() {
         for &id in &ids {
             writer
                 .streams
-                .get_mut(&id)
+                .get_mut(id)
                 .unwrap()
                 .queue_file(FileStreamer::new(file.reopen().unwrap(), 0, 5, true))
                 .unwrap();
@@ -258,7 +261,7 @@ async fn settings_credit_resumes_parked_body_and_cancels_stall_deadline(#[case] 
     assert_eq!(
         writer
             .streams
-            .get(&id)
+            .get(id)
             .expect("registered response stream")
             .send_window,
         if negative { -3 } else { 0 }
@@ -491,7 +494,7 @@ async fn empty_terminal_file_finishes_after_the_last_connection_credit() {
     writer.flush().await.unwrap();
     gate.lock().bytes.clear();
     writer.connection_send_window = 4;
-    writer.streams.get_mut(&id).unwrap().send_window = 4;
+    writer.streams.get_mut(id).unwrap().send_window = 4;
     writer
         .process_command(WriterCommand::SendData {
             stream_id: id,
@@ -503,7 +506,7 @@ async fn empty_terminal_file_finishes_after_the_last_connection_credit() {
     let file = tempfile::NamedTempFile::new().unwrap();
     writer
         .streams
-        .get_mut(&id)
+        .get_mut(id)
         .unwrap()
         .queue_file(FileStreamer::new(file.reopen().unwrap(), 0, 0, true))
         .unwrap();
@@ -964,7 +967,7 @@ async fn stream_flush_orders_close_after_all_data_without_blocking_siblings() {
         .send_headers(first, status_code::OK, ResponseHeaders::new(), false)
         .unwrap();
     writer.flush().await.unwrap();
-    writer.streams.get_mut(&first).unwrap().send_window = 4;
+    writer.streams.get_mut(first).unwrap().send_window = 4;
     gate.lock().bytes.clear();
     let mut commands = WriterCommandBatch::new();
     commands.push_back(WriterCommand::SendData {
@@ -1139,7 +1142,7 @@ async fn response_byte_credit_survives_ingress_drain_until_data_is_written() {
     writer.connection_send_window = 0;
     writer
         .streams
-        .get_mut(&stream_id)
+        .get_mut(stream_id)
         .expect("headers create stream state")
         .send_window = 0;
 
@@ -1333,7 +1336,7 @@ fn settings_initial_window_update_is_atomic_at_every_boundary() {
     let max = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
     let default_stream = i32::try_from(default).expect("HTTP/2 window fits i32");
     let max_stream = i32::try_from(max).expect("HTTP/2 window fits i32");
-    writer.streams = new_stream_map();
+    writer.streams = StreamWriteStates::new();
     writer
         .streams
         .insert(first, StreamWriteState::new(default + 1));
@@ -1349,13 +1352,27 @@ fn settings_initial_window_update_is_atomic_at_every_boundary() {
     };
     assert!(writer.update_peer_settings(overflow).is_err());
     assert_eq!(writer.initial_stream_send_window, default);
-    assert_eq!(writer.streams[&first].send_window, default_stream + 1);
-    assert_eq!(writer.streams[&second].send_window, default_stream);
+    assert_eq!(
+        writer
+            .streams
+            .get(first)
+            .expect("test stream exists")
+            .send_window,
+        default_stream + 1
+    );
+    assert_eq!(
+        writer
+            .streams
+            .get(second)
+            .expect("test stream exists")
+            .send_window,
+        default_stream
+    );
     assert_eq!(writer.peer_max_frame_size, unchanged_frame_size);
 
     writer
         .streams
-        .get_mut(&first)
+        .get_mut(first)
         .expect("first stream exists")
         .send_window = default_stream;
     writer
@@ -1366,8 +1383,22 @@ fn settings_initial_window_update_is_atomic_at_every_boundary() {
         })
         .expect("the exact maximum is legal");
     assert_eq!(writer.initial_stream_send_window, max);
-    assert_eq!(writer.streams[&first].send_window, max_stream);
-    assert_eq!(writer.streams[&second].send_window, max_stream);
+    assert_eq!(
+        writer
+            .streams
+            .get(first)
+            .expect("test stream exists")
+            .send_window,
+        max_stream
+    );
+    assert_eq!(
+        writer
+            .streams
+            .get(second)
+            .expect("test stream exists")
+            .send_window,
+        max_stream
+    );
 
     writer
         .update_peer_settings(PeerSettings {
@@ -1377,8 +1408,22 @@ fn settings_initial_window_update_is_atomic_at_every_boundary() {
         })
         .expect("zero is legal");
     assert_eq!(writer.initial_stream_send_window, 0);
-    assert_eq!(writer.streams[&first].send_window, 0);
-    assert_eq!(writer.streams[&second].send_window, 0);
+    assert_eq!(
+        writer
+            .streams
+            .get(first)
+            .expect("test stream exists")
+            .send_window,
+        0
+    );
+    assert_eq!(
+        writer
+            .streams
+            .get(second)
+            .expect("test stream exists")
+            .send_window,
+        0
+    );
 }
 
 #[test]
@@ -1391,7 +1436,7 @@ fn settings_changes_preserve_signed_stream_window_debt() {
     writer.streams.insert(stream_id, StreamWriteState::new(max));
     writer
         .streams
-        .get_mut(&stream_id)
+        .get_mut(stream_id)
         .expect("stream exists")
         .send_window = 0;
 
@@ -1402,7 +1447,14 @@ fn settings_changes_preserve_signed_stream_window_debt() {
             max_frame_size: None,
         })
         .expect("lowering SETTINGS_INITIAL_WINDOW_SIZE is valid");
-    assert_eq!(writer.streams[&stream_id].send_window, -max_stream);
+    assert_eq!(
+        writer
+            .streams
+            .get(stream_id)
+            .expect("test stream exists")
+            .send_window,
+        -max_stream
+    );
 
     writer
         .update_peer_settings(PeerSettings {
@@ -1411,5 +1463,12 @@ fn settings_changes_preserve_signed_stream_window_debt() {
             max_frame_size: None,
         })
         .expect("restoring SETTINGS_INITIAL_WINDOW_SIZE is valid");
-    assert_eq!(writer.streams[&stream_id].send_window, 0);
+    assert_eq!(
+        writer
+            .streams
+            .get(stream_id)
+            .expect("test stream exists")
+            .send_window,
+        0
+    );
 }

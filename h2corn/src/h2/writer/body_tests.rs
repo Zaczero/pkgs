@@ -6,14 +6,13 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _, BufWriter};
 
-use super::WriterState;
+use super::{StreamWriteStates, WriterState};
 use crate::bridge::PayloadBytes;
 use crate::error::H2CornError;
 use crate::h2::writer::header_encode::HeaderEncodeState;
-use crate::h2::writer::stream_state::{ReadyStreamQueue, StreamWriteState, writer_stream};
+use crate::h2::writer::stream_state::{ReadyStreamQueue, writer_stream};
 use crate::h2::writer::wire::BYTE_QUANTUM;
 use crate::h2::writer::{ResponseClose, ResponseCloseBatch, WebSocketData};
-use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::{self, FrameFlags, FramePayloadLen, StreamId};
 use crate::http::pathsend::FileStreamer;
 use crate::sendfile::WriteTarget;
@@ -29,7 +28,7 @@ const FAIR_WRITE_QUANTUM: usize = BYTE_QUANTUM;
 )]
 async fn flush_pending_data(
     writer: &mut BufWriter<RecordingWriter>,
-    streams: &mut StreamMap<StreamWriteState>,
+    streams: &mut StreamWriteStates,
     ready_streams: &mut ReadyStreamQueue,
     connection_send_window: &mut i64,
     peer_max_frame_size: FramePayloadLen,
@@ -39,7 +38,7 @@ async fn flush_pending_data(
     let buffered = std::mem::replace(writer, BufWriter::new(RecordingWriter::default()));
     let mut state = WriterState::new_test(RecordingWriter::default());
     state.writer = buffered;
-    state.streams = std::mem::replace(streams, new_stream_map());
+    state.streams = std::mem::replace(streams, StreamWriteStates::new());
     let mut ids: Vec<_> = state.streams.keys().copied().collect();
     ids.sort_unstable();
     for id in ids {
@@ -142,7 +141,7 @@ fn binary_websocket_frame(payload: &'static [u8]) -> WebSocketData {
 #[tokio::test]
 async fn websocket_data_is_one_h2_data_frame_without_joining_buffers() {
     let stream_id = StreamId::new(1).unwrap();
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -191,7 +190,7 @@ async fn websocket_data_is_one_h2_data_frame_without_joining_buffers() {
 #[tokio::test]
 async fn websocket_data_resumes_across_header_window_boundary_without_end_stream() {
     let stream_id = StreamId::new(1).unwrap();
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -219,7 +218,7 @@ async fn websocket_data_resumes_across_header_window_boundary_without_end_stream
     writer.flush().await.unwrap();
     assert_eq!(parse_data_frames(&writer.get_ref().bytes), vec![(1, 0, 1)]);
 
-    let stream = streams.get_mut(&stream_id).unwrap();
+    let stream = streams.get_mut(stream_id).unwrap();
     stream.send_window += 8;
     ready_streams.schedule(stream, stream_id, false);
     flush_pending_data(
@@ -251,7 +250,7 @@ async fn pathsend_final_buffered_chunk_carries_end_stream() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     file.write_all(b"abc").unwrap();
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -326,7 +325,7 @@ async fn multi_chunk_body_flushes_in_one_cross_chunk_batch() {
     let stream_id = StreamId::new(1).unwrap();
     let frame_size = 16 * 1024;
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -395,7 +394,7 @@ async fn multi_chunk_body_flushes_in_one_cross_chunk_batch() {
 async fn empty_chunks_emit_empty_data_frames_in_batch() {
     let stream_id = StreamId::new(1).unwrap();
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -454,7 +453,7 @@ async fn stream_window_limits_batch_and_resumes_after_grant() {
     let window = 8 * 1024_i64;
     let body = vec![b'z'; 12 * 1024];
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
@@ -491,7 +490,7 @@ async fn stream_window_limits_batch_and_resumes_after_grant() {
     assert!(response_closes.as_slice().is_empty());
 
     // Window grant -> the remaining 4 KiB flushes with END_STREAM.
-    let stream = streams.get_mut(&stream_id).unwrap();
+    let stream = streams.get_mut(stream_id).unwrap();
     stream.send_window += i32::try_from(window).expect("test window fits i32");
     ready_streams.schedule(stream, stream_id, false);
 
@@ -531,7 +530,7 @@ async fn a_chunk_that_exactly_drains_the_connection_window_stays_wakeable() {
     // can move it, so that update has to be what wakes it.
     let stream_id = StreamId::new(1).unwrap();
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = 4_i64;
@@ -571,7 +570,12 @@ async fn a_chunk_that_exactly_drains_the_connection_window_stays_wakeable() {
     // The four chunk bytes consumed the whole shared window, and the file
     // is still pending.
     assert_eq!(connection_send_window, 0);
-    assert!(streams[&stream_id].has_pending_output());
+    assert!(
+        streams
+            .get(stream_id)
+            .expect("test stream exists")
+            .has_pending_output()
+    );
     // And it is NOT left in the ready queue: requeueing a stream with no
     // shared credit makes the writer spin against zero, retrying a flush
     // that cannot make progress until the peer grants more.
@@ -583,7 +587,7 @@ async fn flush_pending_data_requeues_after_fair_write_quantum() {
     let stream_a = StreamId::new(1).unwrap();
     let stream_b = StreamId::new(3).unwrap();
 
-    let mut streams = new_stream_map();
+    let mut streams = StreamWriteStates::new();
     let mut ready_streams = ReadyStreamQueue::new();
     let mut response_closes = ResponseCloseBatch::new();
     let mut connection_send_window = i64::from(INITIAL_CONNECTION_WINDOW_SIZE);
