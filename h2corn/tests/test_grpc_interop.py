@@ -16,6 +16,7 @@ if sysconfig.get_config_var('Py_GIL_DISABLED'):
 grpc = pytest.importorskip('grpc')
 pytest.importorskip('connectrpc')
 
+from asgi_lifespan import LifespanManager  # ruff: ignore[module-import-not-at-top-of-file]
 from connectrpc.code import Code  # ruff: ignore[module-import-not-at-top-of-file]
 from connectrpc.errors import ConnectError  # ruff: ignore[module-import-not-at-top-of-file]
 from h2corn import Config, Server  # ruff: ignore[module-import-not-at-top-of-file]
@@ -173,8 +174,8 @@ async def _health(_request: Request) -> PlainTextResponse:
 
 
 def _app(
-    service: NotebookService,
-    lifecycle: list[tuple[str, asyncio.AbstractEventLoop]] | None = None,
+    service: NotebookService | AsyncGenerator[NotebookService, None],
+    lifecycle: list[tuple[str, asyncio.AbstractEventLoop, bool | None]] | None = None,
 ) -> Starlette:
     rpc = NotebookServiceASGIApplication(service)
     routes = [
@@ -187,11 +188,13 @@ def _app(
 
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncGenerator[None, None]:
-        lifecycle.append(('startup', asyncio.get_running_loop()))
+        loop = asyncio.get_running_loop()
+        lifecycle.append(('starlette_startup', loop, None))
         try:
-            yield
+            async with LifespanManager(rpc):
+                yield
         finally:
-            lifecycle.append(('shutdown', asyncio.get_running_loop()))
+            lifecycle.append(('starlette_shutdown', loop, None))
 
     return Starlette(
         lifespan=lifespan,
@@ -374,6 +377,110 @@ async def test_grpc_duplex_response_arrives_before_the_next_request() -> None:
         )
 
 
+async def test_grpc_duplex_reads_multiple_inputs_while_responses_are_held() -> None:
+    class ConcurrentService(_NotebookService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.request_sequences: list[int] = []
+            self.all_requests_received = asyncio.Event()
+            self.allow_responses = asyncio.Event()
+            self.responses_started = asyncio.Event()
+
+        async def collaborate(
+            self,
+            request: AsyncIterator[Edit],
+            _ctx: RequestContext[Edit, EditAck],
+            /,
+        ) -> AsyncIterator[EditAck]:
+            responses: asyncio.Queue[EditAck | None] = asyncio.Queue()
+
+            async def read_requests() -> None:
+                async for edit in request:
+                    self.request_sequences.append(edit.base_revision)
+                    self.collaboration_started.set()
+                    responses.put_nowait(
+                        EditAck(
+                            note_id=edit.note_id,
+                            revision=edit.base_revision + 1,
+                            accepted_text=edit.text,
+                        )
+                    )
+                    if len(self.request_sequences) == 3:
+                        self.all_requests_received.set()
+                responses.put_nowait(None)
+
+            reader = asyncio.create_task(read_requests())
+            try:
+                await self.allow_responses.wait()
+                self.responses_started.set()
+                while (response := await responses.get()) is not None:
+                    yield response
+                await reader
+            finally:
+                if not reader.done():
+                    reader.cancel()
+                await asyncio.gather(reader, return_exceptions=True)
+                self.collaboration_cleaned.set()
+
+    service = ConcurrentService()
+    app, config = _connect_app(service)
+
+    async with (
+        running_server(app, config) as server,
+        _grpc_client(server_port(server)) as client,
+    ):
+        client_producer_finished = asyncio.Event()
+
+        async def edits() -> AsyncIterator[Edit]:
+            for sequence in (1, 2, 3):
+                yield Edit(
+                    note_id='note-17',
+                    base_revision=sequence,
+                    text=f'edit {sequence}',
+                )
+            client_producer_finished.set()
+
+        call = client.collaborate(edits())
+
+        async def read_responses() -> list[EditAck]:
+            result = []
+            while (response := await call.read()) is not grpc.aio.EOF:
+                result.append(cast('EditAck', response))
+            return result
+
+        reader = asyncio.create_task(read_responses())
+        try:
+            await asyncio.wait_for(
+                client_producer_finished.wait(),
+                timeout=HANG_BOUND,
+            )
+            await asyncio.wait_for(
+                service.all_requests_received.wait(),
+                timeout=HANG_BOUND,
+            )
+            assert service.request_sequences == [1, 2, 3]
+            assert not service.responses_started.is_set()
+
+            service.allow_responses.set()
+            responses = await asyncio.wait_for(reader, timeout=HANG_BOUND)
+        finally:
+            service.allow_responses.set()
+            if not reader.done():
+                call.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+        await asyncio.wait_for(
+            service.collaboration_cleaned.wait(),
+            timeout=HANG_BOUND,
+        )
+
+    assert [(response.revision, response.accepted_text) for response in responses] == [
+        (2, 'edit 1'),
+        (3, 'edit 2'),
+        (4, 'edit 3'),
+    ]
+
+
 async def test_grpc_deadline_cancels_stream_and_settles_handler_cleanup() -> None:
     service = _NotebookService()
     app, config = _connect_app(service)
@@ -425,6 +532,7 @@ async def test_grpc_cancellation_closes_the_bidi_handler() -> None:
         assert first.accepted_text == 'leave the stream open'
 
         call.cancel()
+        hold_stream_open.set()
         assert await asyncio.wait_for(call.code(), timeout=HANG_BOUND) == (
             grpc.StatusCode.CANCELLED
         )
@@ -436,42 +544,136 @@ async def test_grpc_cancellation_closes_the_bidi_handler() -> None:
 
 async def test_factory_and_lifespan_use_the_serving_loop() -> None:
     factory_calls: list[tuple[asyncio.AbstractEventLoop, bool]] = []
-    lifecycle: list[tuple[str, asyncio.AbstractEventLoop]] = []
-    requests: list[str] = []
+    lifecycle: list[tuple[str, asyncio.AbstractEventLoop, bool | None]] = []
 
-    class Service(_NotebookService):
-        async def get_note(
+    class LoopBoundService(_NotebookService):
+        def __init__(self, owner_loop: asyncio.AbstractEventLoop) -> None:
+            super().__init__()
+            self.resource_open = True
+            self.stop_resource = asyncio.Event()
+            self.resource_task = asyncio.create_task(self._run_resource())
+            lifecycle.append(('service_construct', owner_loop, True))
+
+        async def _run_resource(self) -> None:
+            await self.stop_resource.wait()
+            self.resource_open = False
+            lifecycle.append((
+                'resource_closed',
+                asyncio.get_running_loop(),
+                self.resource_open,
+            ))
+
+        async def close(self) -> None:
+            lifecycle.append((
+                'service_shutdown',
+                asyncio.get_running_loop(),
+                self.resource_open,
+            ))
+            self.stop_resource.set()
+            await self.resource_task
+
+        async def collaborate(
             self,
-            request: GetNoteRequest,
-            ctx: RequestContext[GetNoteRequest, Note],
+            request: AsyncIterator[Edit],
+            _ctx: RequestContext[Edit, EditAck],
             /,
-        ) -> Note:
-            requests.append(request.note_id)
-            return await super().get_note(request, ctx)
+        ) -> AsyncIterator[EditAck]:
+            loop = asyncio.get_running_loop()
+            lifecycle.append(('request', loop, self.resource_open))
+            try:
+                async for edit in request:
+                    self.collaboration_started.set()
+                    yield EditAck(
+                        note_id=edit.note_id,
+                        revision=edit.base_revision + 1,
+                        accepted_text=edit.text,
+                    )
+            finally:
+                lifecycle.append(('handler_cleanup', loop, self.resource_open))
+                self.collaboration_cleaned.set()
+
+    services: list[LoopBoundService] = []
+
+    async def service_source() -> AsyncGenerator[NotebookService, None]:
+        loop = asyncio.get_running_loop()
+        service = LoopBoundService(loop)
+        services.append(service)
+        lifecycle.append(('service_startup', loop, service.resource_open))
+        try:
+            yield service
+        finally:
+            await service.close()
 
     def create_app() -> Starlette:
         loop = asyncio.get_running_loop()
         factory_calls.append((loop, loop.is_running()))
-        return _app(Service(), lifecycle)
+        lifecycle.append(('factory', loop, None))
+        return _app(service_source(), lifecycle)
 
     async with (
         _running_factory_server(
             create_app,
-            Config(port=0, lifespan='on'),
+            Config(
+                port=0,
+                lifespan='on',
+                timeout_graceful_shutdown=2.0,
+            ),
         ) as server,
         _grpc_client(server_port(server)) as client,
     ):
-        note = await client.get_note(GetNoteRequest(note_id='note-17'))
-        assert note.note_id == 'note-17'
+        service = services[0]
+        hold_input_open = asyncio.Event()
 
+        async def edits() -> AsyncIterator[Edit]:
+            yield Edit(
+                note_id='note-17',
+                base_revision=1,
+                text='hold the service resource',
+            )
+            await hold_input_open.wait()
+
+        call = client.collaborate(edits())
+        await asyncio.wait_for(
+            service.collaboration_started.wait(),
+            timeout=HANG_BOUND,
+        )
+        response = await asyncio.wait_for(call.read(), timeout=HANG_BOUND)
+        assert response is not grpc.aio.EOF
+        response = cast('EditAck', response)
+        assert response.accepted_text == 'hold the service resource'
+
+        call.cancel()
+        hold_input_open.set()
+        assert await asyncio.wait_for(call.code(), timeout=HANG_BOUND) == (
+            grpc.StatusCode.CANCELLED
+        )
+        await asyncio.wait_for(
+            service.collaboration_cleaned.wait(),
+            timeout=HANG_BOUND,
+        )
+        assert service.resource_open
+
+    assert not server.releasing
     assert len(factory_calls) == 1
     factory_loop, was_running = factory_calls[0]
     assert was_running
-    assert lifecycle == [
-        ('startup', factory_loop),
-        ('shutdown', factory_loop),
+    assert service.resource_task.get_loop() is factory_loop
+    assert not service.resource_open
+    assert [name for name, _, _ in lifecycle] == [
+        'factory',
+        'starlette_startup',
+        'service_construct',
+        'service_startup',
+        'request',
+        'handler_cleanup',
+        'service_shutdown',
+        'resource_closed',
+        'starlette_shutdown',
     ]
-    assert requests == ['note-17']
+    assert all(loop is factory_loop for _, loop, _ in lifecycle)
+    assert ('handler_cleanup', factory_loop, True) in lifecycle
+    assert ('service_shutdown', factory_loop, True) in lifecycle
+    assert ('resource_closed', factory_loop, False) in lifecycle
 
 
 async def test_rpc_and_ordinary_http_share_one_listener() -> None:

@@ -93,6 +93,7 @@ freethreaded = [
 
 # Optional real-socket gRPC interoperability tests and protobuf generation.
 grpc-interop = [
+  "asgi-lifespan>=2.1.0",
   "buf-bin>=1.72.0",
   "grpcio>=1.83.1",
   "protoc-gen-connectrpc>=0.12.1",

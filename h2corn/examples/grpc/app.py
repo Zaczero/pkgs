@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
 
+from asgi_lifespan import LifespanManager
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from h2corn import Config, serve
@@ -26,7 +28,7 @@ from examples.grpc.gen.h2corn.interop.v1.notebook_pb import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from connectrpc.request import RequestContext
     from starlette.requests import Request
@@ -114,14 +116,24 @@ async def _health(_request: Request) -> PlainTextResponse:
 
 
 def create_app() -> Starlette:
-    notebook = Notebook()
-    rpc = NotebookServiceASGIApplication(notebook)
+    rpc = NotebookServiceASGIApplication(_notebook_service())
+
+    @asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncGenerator[None, None]:
+        async with LifespanManager(rpc):
+            yield
+
     return Starlette(
+        lifespan=lifespan,
         routes=[
             Route('/healthz', _health),
             Mount(rpc.path, cast('ASGIApp', rpc)),
         ],
     )
+
+
+async def _notebook_service() -> AsyncGenerator[Notebook, None]:
+    yield Notebook()
 
 
 if __name__ == '__main__':
