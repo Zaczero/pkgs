@@ -1023,10 +1023,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         _unpickle_spatial_index_v1
     );
     crate::add_classes!(m; PySpatialIndex, PySpatialIndexIter);
-    m.py()
-        .import("collections.abc")?
-        .getattr("Mapping")?
-        .call_method1("register", (m.getattr("SpatialIndex")?,))?;
+    pyo3::types::PyMapping::register::<PySpatialIndex>(m.py())?;
     Ok(())
 }
 /// Whether a CRS84 point must reach exact metric refinement before an

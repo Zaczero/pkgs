@@ -9,10 +9,8 @@ pub(crate) fn python_sizeof(
     heap_bytes: usize,
 ) -> PyResult<isize> {
     let base_bytes = py
-        .import("builtins")?
-        .getattr("object")?
-        .getattr("__sizeof__")?
-        .call1((instance,))?
+        .get_type::<PyAny>()
+        .call_method1(pyo3::intern!(py, "__sizeof__"), (instance,))?
         .extract::<isize>()?;
     checked_sizeof(base_bytes, heap_bytes)
 }

@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyMappingProxy, PyTuple};
 
 use crate::crs;
 
@@ -134,10 +134,7 @@ fn freeze_nested<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Py
         for (key, item) in dict.iter() {
             inner.set_item(key, freeze_nested(py, &item)?)?;
         }
-        let proxy = py
-            .import("types")?
-            .getattr("MappingProxyType")?
-            .call1((inner,))?;
+        let proxy = py.get_type::<PyMappingProxy>().call1((inner,))?;
         return Ok(proxy.unbind());
     }
     if let Ok(list) = value.cast::<PyList>() {

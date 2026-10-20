@@ -1652,8 +1652,9 @@ impl RawJsonToPy<'_, '_> {
             .get(start..self.position)
             .ok_or_else(|| self.invalid("invalid JSON number boundary"))?;
         if integer {
-            return PyModule::import(self.py, "builtins")?
-                .getattr("int")?
+            return self
+                .py
+                .get_type::<PyInt>()
                 .call1((text,))
                 .map(Bound::unbind);
         }

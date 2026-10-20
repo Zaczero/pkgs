@@ -40,11 +40,7 @@ fn pickle_bytes_like<'py>(
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(bytes.clone());
     }
-    Ok(py
-        .import("builtins")?
-        .getattr("bytes")?
-        .call1((value,))?
-        .cast_into()?)
+    Ok(py.get_type::<PyBytes>().call1((value,))?.cast_into()?)
 }
 
 // --- Pickle support ----------------------------------------------------------

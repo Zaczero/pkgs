@@ -1,5 +1,5 @@
 use pyo3::exceptions::{PyKeyError, PyTypeError};
-use pyo3::types::{PyBool, PyDict, PyTuple, PyTupleMethods as _};
+use pyo3::types::{PyBool, PyDict, PyMapping, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use crate::parse_spatial_index_handle;
@@ -262,8 +262,7 @@ impl PySpatialIndex {
 
     /// Compare live handles and geometries using mapping value semantics.
     pub(crate) fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let mapping = py.import("collections.abc")?.getattr("Mapping")?;
-        if !other.is_instance(&mapping)? {
+        if !other.is_instance(&py.get_type::<PyMapping>())? {
             return Ok(false);
         }
         if other.len()? != self.__len__() {

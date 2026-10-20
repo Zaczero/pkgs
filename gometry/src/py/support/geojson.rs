@@ -298,11 +298,7 @@ fn py_int_to_json_number(value: &Bound<'_, PyAny>) -> PyResult<Value> {
         ))
         .into());
     }
-    let as_int = value
-        .py()
-        .import(pyo3::intern!(value.py(), "builtins"))?
-        .getattr(pyo3::intern!(value.py(), "int"))?
-        .call1((float,))?;
+    let as_int = value.py().get_type::<PyInt>().call1((float,))?;
     if value.eq(&as_int)? {
         serde_json::Number::from_f64(float)
             .map(Value::Number)
