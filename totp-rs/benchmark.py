@@ -1,6 +1,8 @@
 import argparse
 import base64
 import hashlib
+import json
+import subprocess
 import sys
 from functools import partial
 from importlib.metadata import version
@@ -8,6 +10,8 @@ from pathlib import Path
 
 import pyperf
 from totp_rs import _lib, totp_generate, totp_time_window, totp_verify
+
+from benchmark_cases import ALGORITHMS, case_definitions
 
 
 def main():
@@ -19,36 +23,49 @@ def main():
     prev = now - 30
     runner = pyperf.Runner(program_args=(sys.argv[0], '--impl', args.impl))
     runner.metadata['implementation'] = f'{args.impl} {version(args.impl)}'
+    runner.metadata['implementation_name'] = args.impl
+    runner.metadata['implementation_version'] = version(args.impl)
     runner.metadata['benchmark_sha256'] = hashlib.sha256(
         Path(__file__).read_bytes()
     ).hexdigest()
     runner.metadata['native_extension_sha256'] = hashlib.sha256(
         Path(_lib.__file__).read_bytes()
     ).hexdigest()
-    runner.metadata['workload'] = (
-        'SHA-1/SHA-256/SHA-512, Base32 keys, timestamp input; '
-        '6 digits, 30-second period, verification window ±1'
+    runner.metadata['native_package_version'] = version('totp-rs')
+    runner.metadata['pyotp_version'] = version('pyotp')
+    runner.metadata['pyperf_version'] = pyperf.__version__
+    runner.metadata['source_revision'] = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], text=True
+    ).strip()
+    runner.metadata['report_sha256'] = hashlib.sha256(
+        Path(__file__).with_name('tools').joinpath('benchmark_report.py').read_bytes()
+    ).hexdigest()
+    runner.metadata['case_definitions'] = json.dumps(
+        case_definitions(args.impl), separators=(',', ':'), sort_keys=True
     )
+    runner.metadata['comparison_workload'] = (
+        'Fixed Unix timestamp 1,700,000,000; SHA-1/SHA-256/SHA-512; '
+        'Base32 secrets; six-digit codes; 30-second period; verification '
+        'window ±1. Shared cases compare the same generation and verification '
+        'operations.'
+    )
+    runner.metadata['workload'] = runner.metadata['comparison_workload']
     if args.impl == 'totp-rs':
-        runner.metadata['workload'] += '; raw-key and explicit-counter generation'
+        runner.metadata['workload'] += (
+            ' Native-only cases measure raw-key and time-counter generation '
+            'and time-counter extraction.'
+        )
     runner.parse_args(pyperf_args)
     if args.impl == 'pyotp':
         import pyotp
 
-    algorithms = (
-        ('sha1', b'12345678901234567890', hashlib.sha1),
-        ('sha256', b'12345678901234567890123456789012', hashlib.sha256),
-        (
-            'sha512',
-            b'1234567890123456789012345678901234567890123456789012345678901234',
-            hashlib.sha512,
-        ),
-    )
-    for algorithm, raw_secret, digest in algorithms:
+    definitions = case_definitions(args.impl)
+    for algorithm, raw_secret in ALGORITHMS:
         secret = base64.b32encode(raw_secret).decode('ascii')
         expected = totp_generate(secret, algorithm=algorithm, time=now)
         expected_prev = totp_generate(secret, algorithm=algorithm, time=prev)
         if args.impl == 'pyotp':
+            digest = getattr(hashlib, algorithm)
             provider = pyotp.TOTP(secret, digits=6, interval=30, digest=digest)
             generate = partial(provider.at, now)
             verify = partial(provider.verify, for_time=now, valid_window=1)
@@ -61,14 +78,16 @@ def main():
         assert verify(expected)
         assert verify(expected_prev)
         assert not verify('999999')
-        prefix = '' if algorithm == 'sha1' else f'{algorithm} '
-        for name, call in (
-            ('generate', generate),
-            ('verify ok', partial(verify, expected)),
-            ('verify prev ok', partial(verify, expected_prev)),
-            ('verify bad', partial(verify, '999999')),
-        ):
-            runner.bench_func(prefix + name, call)
+        comparison_calls = {
+            'generate': generate,
+            'verify-current': partial(verify, expected),
+            'verify-previous': partial(verify, expected_prev),
+            'verify-invalid': partial(verify, '999999'),
+        }
+        for case in definitions:
+            if case['group'] != 'comparison' or case['algorithm'] != algorithm:
+                continue
+            runner.bench_func(case['name'], comparison_calls[case['operation']])
         if args.impl == 'totp-rs':
             counter = totp_time_window(now)
             generate_raw = partial(
@@ -79,10 +98,16 @@ def main():
             )
             assert generate_raw() == expected
             assert generate_counter() == expected
-            runner.bench_func(prefix + 'generate raw key', generate_raw)
-            runner.bench_func(prefix + 'generate from counter', generate_counter)
+            native_calls = {
+                'generate-raw-key': generate_raw,
+                'generate-counter': generate_counter,
+            }
+            for case in definitions:
+                if case['group'] != 'native-only' or case['algorithm'] != algorithm:
+                    continue
+                runner.bench_func(case['name'], native_calls[case['operation']])
     if args.impl == 'totp-rs':
-        runner.bench_func('time window', totp_time_window, now)
+        runner.bench_func('Extract time counter', totp_time_window, now)
 
 
 if __name__ == '__main__':
