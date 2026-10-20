@@ -1,5 +1,5 @@
 site_name: h2corn
-site_description: The fastest Python ASGI server. Built in Rust, with HTTP/2 end to end.
+site_description: HTTP/2 ASGI for Python. Built in Rust, with HTTP/2 end to end.
 site_url: https://h2corn.monicz.dev/
 repo_url: https://github.com/Zaczero/pkgs/tree/main/h2corn
 repo_name: Zaczero/pkgs

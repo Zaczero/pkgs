@@ -8,14 +8,10 @@ hide:
 
 These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
 same Starlette application, over loopback and a 50 ms round-trip network profile.
-Results are medians across four fresh server starts on a Ryzen 9 5950X with
-CPython 3.14.8 and Linux 7.2.9.
-
-In the one-worker HTTP/1.1 GET case, **h2corn was 9.3–29.2× faster,
-with 86–97% lower p50–p99 latency** than the compared servers.
-The speed ratio compares median throughput: 95,389 requests/s for h2corn
-against 3,267–10,280 requests/s for the other servers. Several servers have
-similar throughput in the network-limited cases.
+Each result identifies the measured runtime, server versions, network profile,
+payload, concurrency, and fresh-start trial count. Read the rate, latency,
+and memory measures together: a network-limited workload can have similar
+throughput across servers despite different processing costs.
 
 --8<-- "bench/results/_generated/benchmark-results.md"
 
@@ -23,16 +19,37 @@ similar throughput in the network-limited cases.
 
 Connections go directly to each server, without a reverse proxy or TLS.
 Each trial checks status, content type, response body, and worker readiness
-before and after load. A server that cannot serve a scenario is excluded with
-its reason.
-All servers use standard asyncio; Uvicorn uses h11 and Gunicorn its Python HTTP parser.
+before and after load. A failed response or load trial retains its diagnostics
+and prevents publishing an incomplete comparison.
+All servers use standard asyncio. HTTP/1.1 uses Uvicorn's h11 parser and
+Gunicorn's Python HTTP parser. This controlled profile does not rank their
+optional native-parser or uvloop configurations. HTTP/2 uses Uvicorn's
+experimental zttp backend and Gunicorn's h2 backend in explicit prior-knowledge
+mode; the exact backend versions and applicable limits are retained with
+the results. Settings without an exposed equivalent are recorded rather
+than silently described as equal.
+TCP listeners are shared by inheritance and have `TCP_NODELAY` enabled for
+every server, avoiding a listener-construction difference in asyncio's
+accepted-socket handling. Hypercorn's per-connection request-retirement limit
+is raised beyond the bounded trial workload; its default of 1,000 requests
+otherwise closes connections during the sustained multiplexing case.
 
-Trials use two seconds of warmup followed by ten seconds of load, with four
-fresh server starts, rotated server order, and no CPU pinning. Published rate
+Trials use fresh server starts, rotated server order, and no CPU pinning.
+Each result states its warmup and load durations. Published rate
 ranges are the observed minimum and maximum across trials; they are not
-confidence intervals. Comparisons use 95% bootstrap intervals to distinguish
-the highest median from the runner-up. Peak proportional set size (PSS) is the maximum
-sampled across the supervisor and workers.
+confidence intervals. Rate comparisons resample paired trial blocks and report
+the median h2corn-to-competitor rate ratio with a per-comparison 95% bootstrap
+interval. An interval including 1 leaves the ordering unresolved; it does not
+establish equivalent performance. Latencies are medians of the per-trial
+percentiles, not pooled percentiles. Load is closed-loop, so these are not
+latency guarantees under an independent arrival rate.
+
+Peak proportional set size (PSS) is the maximum sampled simultaneous sum
+across unique supervisor and worker processes. PSS shares mapped-page cost
+between processes; one-second sampling can miss shorter peaks. Missing PSS,
+a failed correctness probe, or a measurement failure prevents publication
+of that comparison. Raw load-generator output, trial order, sampled memory,
+worker module identities, and source/wheel identities accompany the results.
 
 ### Workloads {#workloads-and-limits}
 
@@ -42,5 +59,9 @@ sampled across the supervisor and workers.
 - A 128 KiB Starlette `FileResponse`, using the ASGI
   [`http.response.pathsend`](asgi.md#sending-a-file) extension where supported.
 - Streaming downloads that yield eight 16 KiB chunks.
-- Streaming POSTs that upload a 1 KiB body and receive a chunked response.
-- HTTP/1.1 WebSocket echo sessions.
+- POSTs that upload 1 KiB, then receive three response chunks with 20 ms of
+  application delay.
+- An 8 MiB HTTP/2 upload on the shaped network, with the complete upload
+  verified before and after load.
+- HTTP/1.1 WebSocket sessions that connect, echo one text message, and
+  disconnect. They measure session turnover, not sustained message throughput.

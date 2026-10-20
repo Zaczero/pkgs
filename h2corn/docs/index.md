@@ -1,5 +1,5 @@
 ---
-description: The fastest Python ASGI server. Built in Rust, with HTTP/2 end to end.
+description: HTTP/2 ASGI for Python. Built in Rust, with HTTP/2 end to end.
 hide:
   - navigation
   - toc
@@ -10,14 +10,12 @@ hide:
 <img src="assets/logo.svg" alt="h2corn" class="hero-logo">
 
 <a id="http2-asgi-server-for-python"></a>
+<a id="the-fastest-python-asgi-server"></a>
 
-# The fastest Python ASGI server
+# HTTP/2 ASGI for Python
 
 Rust handles the wire. Python handles your application.
 HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
-
-**<span class="nowrap">9.3–29.2× faster.</span> <span class="nowrap">86–97%</span> lower request latency.** In our
-[benchmarks](benchmarks.md).
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [User guide](guide.md){ .md-button }
@@ -30,13 +28,14 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 ## Benchmarks
 
-h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette application.
+h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette application
+on standard asyncio. The HTTP/1.1 comparison uses controlled pure-Python
+parsers for Uvicorn and Gunicorn, rather than their optional accelerators.
 
-![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
-![HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)
+![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
+![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)
 
-Measured on a Ryzen 9 5950X with CPython 3.14.8.
-[See the data, configuration, and all 27 workloads](benchmarks.md).
+[See the measured environment, exact data, configuration, and workloads](benchmarks.md).
 
 </div>
 

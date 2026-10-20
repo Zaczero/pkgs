@@ -5,7 +5,7 @@
 <h1 align="center">h2corn</h1>
 
 <p align="center">
-  <strong>The fastest Python ASGI server</strong>
+  <strong>HTTP/2 ASGI for Python</strong>
 </p>
 
 <p align="center">
@@ -84,16 +84,17 @@ Moving an existing deployment? See the
 
 ## Benchmarks
 
-**9.3–29.2× faster. 86–97% lower request latency.** In the one-worker
-HTTP/1.1 GET benchmark, using the same Starlette application and standard asyncio.
+Compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the same Starlette
+application with standard asyncio. HTTP/1.1 uses the controlled pure-Python
+parser configurations for Uvicorn and Gunicorn; these results do not rank
+their optional accelerated deployments.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-dark.svg">
-  <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="HTTP/1.1 GET: h2corn serves 95,389 requests/s with p50–p99 latency of 0.995–1.671 ms; the compared servers serve 3,267–10,280 requests/s with 9.458–38.665 ms latency.">
+  <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for h2corn, Uvicorn, Hypercorn, and Gunicorn. Exact values and paired rate comparisons are available on the benchmark page.">
 </picture>
 
-Four fresh starts per server over loopback, on a Ryzen 9 5950X with CPython 3.14.8.
-See [the data, server configuration, and all 27 workloads](https://h2corn.monicz.dev/benchmarks/),
+See [the measured environment, exact data, server configuration, and workloads](https://h2corn.monicz.dev/benchmarks/),
 including HTTP/2, streaming, WebSockets, and 50 ms round-trip latency.
 
 ## Support
