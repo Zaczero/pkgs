@@ -6,6 +6,8 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 
+from bench.evidence import worker_identity
+
 FILE_RESPONSE_SIZE = 128 * 1024
 FILE_RESPONSE_PATH = Path(__file__).with_name('_file_response_payload.bin')
 SMALL_STREAM_CHUNK = b'x' * 128
@@ -33,6 +35,12 @@ async def homepage(request):
 async def worker_pid(request):
     """Expose process identity so the harness can prove every worker is serving."""
     return Response(str(os.getpid()).encode(), media_type='text/plain')
+
+
+async def worker_receipt(request):
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(worker_identity())
 
 
 async def static_file(request):
@@ -104,6 +112,7 @@ app = Starlette(
     routes=[
         Route('/', homepage),
         Route('/__bench/worker-pid', worker_pid),
+        Route('/__bench/identity', worker_receipt),
         Route('/static-file', static_file),
         Route('/streaming-post', streaming_post, methods=['POST']),
         Route('/streaming-post-fast', streaming_post_fast, methods=['POST']),

@@ -18,6 +18,7 @@ import os
 import platform
 import secrets
 import shutil
+import signal
 import socket
 import statistics
 import subprocess
@@ -32,7 +33,6 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import matplotlib as mpl
 from benchroom.plot import save, theme
-from matplotlib import colors
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -43,18 +43,21 @@ try:
         BenchmarkError,
         MeasuredMetrics,
         Scenario,
+        allocated_listener,
+        bootstrap_median_ci,
         check_response,
+        deadline_bound,
         duration_seconds,
         ensure_large_upload_payload,
         ensure_static_file_payload,
-        leader_is_separated,
         measure_peak_memory,
-        relative_half_width,
+        request_response,
         rotations,
         run_load,
         running_server,
         write_json,
     )
+    from bench.evidence import build_wheel, run_identity, verify_workers
     from bench.report import (
         SERVER_COLORS,
         SERVER_LINESTYLES,
@@ -68,18 +71,21 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         BenchmarkError,
         MeasuredMetrics,
         Scenario,
+        allocated_listener,
+        bootstrap_median_ci,
         check_response,
+        deadline_bound,
         duration_seconds,
         ensure_large_upload_payload,
         ensure_static_file_payload,
-        leader_is_separated,
         measure_peak_memory,
-        relative_half_width,
+        request_response,
         rotations,
         run_load,
         running_server,
         write_json,
     )
+    from evidence import build_wheel, run_identity, verify_workers
     from report import (
         SERVER_COLORS,
         SERVER_LINESTYLES,
@@ -98,7 +104,6 @@ STREAMING_CONCURRENCY = 1000
 #: Fixed cold-start trials avoid stopping on a favourable confidence interval.
 MIN_TRIALS = 3
 MAX_TRIALS = 4
-TARGET_HALF_WIDTH = 0.03
 #: Hard wall-clock ceiling per scenario and for the whole suite. Trial duration
 #: is never shortened to fit — the suite reports what it measured and says which
 #: scenarios stopped on time rather than completing the trial count. The suite ceiling has to
@@ -195,9 +200,6 @@ SERVERS: dict[str, list[str]] = {
     ],
 }
 
-MEMORY_LABEL_LIGHT = '#FFFFFF'
-MEMORY_LABEL_DARK = '#000000'
-
 
 @dataclass(frozen=True, slots=True)
 class NetworkProfile:
@@ -237,7 +239,7 @@ def benchmark_scenarios() -> tuple[Scenario, ...]:
             'HTTP/2 GET multiplexed (1 Worker)',
             1,
             'h2',
-            concurrency=10,
+            concurrency=1,
             http2_parallelism=10,
         ),
         Scenario('HTTP/1 Static file (1 Worker)', 1, 'h1_file'),
@@ -309,7 +311,7 @@ def rtt50_scenarios() -> tuple[Scenario, ...]:
             'HTTP/2 GET multiplexed (1 Worker, 50 ms RTT)',
             1,
             'h2',
-            concurrency=10,
+            concurrency=1,
             http2_parallelism=10,
         ),
     )
@@ -317,9 +319,17 @@ def rtt50_scenarios() -> tuple[Scenario, ...]:
 
 def _run_checked(command: list[str]) -> str:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
     except OSError as error:
         raise BenchmarkError(f'failed to run {command[0]!r}: {error}') from error
+    except subprocess.TimeoutExpired as error:
+        raise BenchmarkError(f'setup command timed out: {" ".join(command)}') from error
     if result.returncode:
         detail = (
             result.stderr.strip() or result.stdout.strip() or 'no diagnostic output'
@@ -415,13 +425,6 @@ def configure_rtt50_profile() -> RTT50Netem:
     }
 
 
-def eligible_servers(scenario: Scenario, servers: Sequence[str]) -> list[str]:
-    """Only h2corn and hypercorn speak HTTP/2 directly."""
-    if scenario.contract.protocol == '2':
-        return [name for name in servers if name not in {'uvicorn', 'gunicorn'}]
-    return list(servers)
-
-
 def write_hypercorn_config(path: Path) -> None:
     """Write the exposed Hypercorn counterparts to h2corn's chosen settings."""
     path.write_text(
@@ -430,25 +433,58 @@ def write_hypercorn_config(path: Path) -> None:
         'h2_max_header_list_size = 1048576\n'
         'h2_max_inbound_frame_size = 65536\n'
         'keep_alive_timeout = 120\n'
+        'keep_alive_max_requests = 9223372036854775807\n'
         'include_server_header = false\n'
         'include_date_header = true\n'
     )
 
 
 def server_command(
-    name: str, scenario: Scenario, *, hypercorn_config: Path
+    name: str,
+    scenario: Scenario,
+    *,
+    hypercorn_config: Path,
+    listener_fd: int | None = None,
 ) -> list[str]:
     command = SERVERS[name].copy()
+    command[0] = str(Path(sys.executable).parent / name)
+    if scenario.contract.protocol == '2':
+        if name == 'uvicorn':
+            command[command.index('--http') + 1] = 'zttp'
+            command += ['--http2']
+        elif name == 'gunicorn':
+            command += [
+                '--http-protocols',
+                'h2',
+                '--http2-cleartext',
+                'prior-knowledge',
+                '--http2-max-concurrent-streams',
+                '256',
+                '--http2-initial-window-size',
+                '8388608',
+                '--http2-max-frame-size',
+                '65536',
+                '--http2-max-header-list-size',
+                '1048576',
+            ]
     socket_path = scenario.socket_path
     if name == 'uvicorn':
         command += ['--ws', 'websockets' if scenario.type == 'ws' else 'none']
         command += (
-            ['--uds', str(socket_path)]
+            ['--fd', str(listener_fd)]
+            if listener_fd is not None
+            else ['--uds', str(socket_path)]
             if socket_path is not None
-            else ['--host', '127.0.0.1', '--port', '8000']
+            else ['--host', '127.0.0.1', '--port', str(scenario.port)]
         )
+    elif listener_fd is not None:
+        command += ['-b', f'fd://{listener_fd}']
     else:
-        target = f'unix:{socket_path}' if socket_path is not None else '127.0.0.1:8000'
+        target = (
+            f'unix:{socket_path}'
+            if socket_path is not None
+            else f'127.0.0.1:{scenario.port}'
+        )
         command += ['-b', target]
     if name == 'hypercorn':
         command += ['--config', str(hypercorn_config)]
@@ -527,7 +563,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                 aligned_setting('timeout_keep_alive', 120, 120),
                 aligned_setting('server_header', 'off', 'off'),
                 aligned_setting('date_header', True, True),
-                aligned_setting('proxy_headers', False, True),
+                aligned_setting('proxy_headers', False, False),
                 *h2corn_http2,
             ],
             'no_equivalent': [],
@@ -538,6 +574,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                 aligned_setting('workers', workers, 1),
                 aligned_setting('backlog', 2_048, 100),
                 aligned_setting('keep_alive_timeout', 120, 5),
+                aligned_setting('keep_alive_max_requests', 2**63 - 1, 1000),
                 aligned_setting('include_server_header', False, True),
                 aligned_setting('include_date_header', True, True),
                 aligned_setting('h2_max_concurrent_streams', 256, 100),
@@ -584,13 +621,18 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                     'auto',
                 )
             ],
+            'http_backend': 'zttp (experimental HTTP/2)'
+            if scenario.contract.protocol == '2'
+            else 'h11',
             'no_equivalent': [
                 no_equivalent(
-                    'http2',
-                    'h2corn direct HTTP/2',
-                    'Uvicorn has no direct HTTP/2 server mode.',
+                    'http2_limits',
+                    '256 streams; 65536-byte frames; 1048576-byte headers',
+                    'Uvicorn exposes no zttp HTTP/2 limit overrides.',
                 ),
-            ],
+            ]
+            if scenario.contract.protocol == '2'
+            else [],
         },
         'gunicorn': {
             'aligned': [
@@ -615,12 +657,16 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                     False,
                     'Gunicorn has no ASGI proxy-header parsing counterpart.',
                 ),
-                no_equivalent(
-                    'http2',
-                    'h2corn direct HTTP/2',
-                    'Gunicorn ASGI has no direct HTTP/2 server mode.',
-                ),
             ],
+            'http_backend': 'h2' if scenario.contract.protocol == '2' else 'python',
+            'http2_limits': {
+                'max_concurrent_streams': 256,
+                'initial_window_size': 8_388_608,
+                'max_frame_size': 65_536,
+                'max_header_list_size': 1_048_576,
+            }
+            if scenario.contract.protocol == '2'
+            else None,
         },
     }
 
@@ -640,7 +686,6 @@ def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
         # only this count against the cell's concurrency reveals it.
         'completed': statistics.median([sample['completed'] for sample in samples]),
         'rps_range': [min(rates), max(rates)],
-        'relative_half_width': relative_half_width(rates, SEED),
         # Throughput is the median trial, but deployment capacity must cover
         # the largest sampled PSS high-water mark from every measured trial.
         'peak_memory_bytes': max(peak_memory),
@@ -662,21 +707,146 @@ def measure_cell(
     warmup: str,
     *,
     hypercorn_config: Path,
+    evidence_directory: Path,
+    identity: dict[str, Any] | None = None,
 ) -> MeasuredMetrics:
     """One cold-start trial: start, prove correctness, warm up, measure, prove again."""
     concurrency = scenario.concurrency or CONCURRENCY
-    command = server_command(name, scenario, hypercorn_config=hypercorn_config)
-    with running_server(
-        command, workers=scenario.workers, socket_path=scenario.socket_path
-    ) as server:
-        check_response(scenario)
-        run_load(scenario, duration=warmup, concurrency=concurrency)
-        metrics, peak_memory_bytes = measure_peak_memory(
-            server,
-            lambda: run_load(scenario, duration=duration, concurrency=concurrency),
+    evidence_directory.mkdir(parents=True)
+    started = time.monotonic()
+    trial: dict[str, Any] = {
+        'server': name,
+        'phase': 'listener',
+        'status': 'running',
+        'started_at': datetime.now(UTC).isoformat(),
+    }
+    try:
+        with allocated_listener(scenario) as (live, listener):
+            command = server_command(
+                name,
+                live,
+                hypercorn_config=hypercorn_config,
+                listener_fd=listener.fileno(),
+            )
+            trial.update(
+                command=command,
+                port=live.port,
+                socket_path=str(live.socket_path),
+                tcp_nodelay=not live.contract.unix_socket,
+                phase='startup',
+            )
+            write_json(evidence_directory / 'trial.json', trial)
+            with running_server(
+                command,
+                workers=live.workers,
+                socket_path=live.socket_path,
+                scenario=live,
+                listener_fd=listener.fileno(),
+            ) as server:
+                trial['phase'] = 'identity'
+                receipts = {}
+                deadline = time.monotonic() + 15
+                while len(receipts) < live.workers:
+                    receipt = json.loads(
+                        request_response(live, '/__bench/identity', timeout=5)
+                    )
+                    receipts[receipt['pid']] = receipt
+                    if time.monotonic() >= deadline:
+                        raise BenchmarkError(
+                            'worker identity collection exceeded 15 seconds'
+                        )
+                trial['workers'] = receipts
+                if identity is not None:
+                    verify_workers(trial, identity)
+                trial['supervisor_pid'] = server.pid
+                trial['phase'] = 'correctness-before'
+                check_response(live)
+                trial['correctness_before'] = 'passed'
+                trial['phase'] = 'warmup'
+                run_load(
+                    live,
+                    duration=warmup,
+                    concurrency=concurrency,
+                    evidence_path=evidence_directory / 'warmup.json',
+                )
+                trial['phase'] = 'load'
+                metrics, peak_memory_bytes = measure_peak_memory(
+                    server,
+                    lambda: run_load(
+                        live,
+                        duration=duration,
+                        concurrency=concurrency,
+                        evidence_path=evidence_directory / 'load.json',
+                    ),
+                    evidence_path=evidence_directory / 'memory.json',
+                )
+                trial['phase'] = 'correctness-after'
+                check_response(live)
+                trial['correctness_after'] = 'passed'
+                measured: MeasuredMetrics = {
+                    **metrics,
+                    'peak_memory_bytes': peak_memory_bytes,
+                }
+                trial['metrics'] = measured
+                trial['phase'] = 'cleanup'
+    except (OSError, ValueError, RuntimeError) as error:
+        trial.update(status='failed', error=str(error))
+        raise BenchmarkError(f'{name} {trial["phase"]} failed: {error}') from error
+    else:
+        trial.update(status='completed', phase='completed')
+        return measured
+    finally:
+        trial['elapsed_seconds'] = time.monotonic() - started
+        write_json(evidence_directory / 'trial.json', trial)
+
+
+def paired_contrasts(samples: dict[str, list[MeasuredMetrics]]) -> dict[str, Any]:
+    """Resample complete trial blocks, keeping each server pair together."""
+    if 'h2corn' not in samples:
+        return {}
+    candidate = samples['h2corn']
+    contrasts = {}
+    for name, values in samples.items():
+        if name == 'h2corn':
+            continue
+        ratios = [
+            first['rps'] / second['rps']
+            for first, second in zip(candidate, values, strict=True)
+        ]
+        low, high = bootstrap_median_ci(ratios, SEED)
+        contrasts[name] = {
+            'h2corn_over_competitor': statistics.median(ratios),
+            'interval_95': [low, high],
+            'block_ratios': ratios,
+            'method': 'percentile bootstrap of paired-block median rate ratios',
+        }
+    return contrasts
+
+
+def workload_description(scenario: Scenario) -> str:
+    descriptions = {
+        'h1': '13-byte text response',
+        'h1_uds': '13-byte text response over a Unix socket',
+        'h2': '13-byte text response',
+        'h1_file': '128 KiB file response; native file-send extension where supported',
+        'h2_file': '128 KiB file response; native file-send extension where supported',
+        'h1_download': '128 KiB download in eight 16 KiB ASGI chunks',
+        'h2_download': '128 KiB download in eight 16 KiB ASGI chunks',
+        'h1_stream': '1 KiB upload, then three response chunks with 20 ms application delay',
+        'h2_stream': '1 KiB upload, then three response chunks with 20 ms application delay',
+        'h2_upload': '8 MiB upload, then the received byte count',
+        'ws': 'Connect, echo one text message, disconnect; fresh sessions',
+    }
+    concurrency = scenario.concurrency or CONCURRENCY
+    return (
+        descriptions[scenario.type]
+        + f'; {concurrency} client connections'
+        + (
+            f' with {scenario.http2_parallelism} streams per connection'
+            if scenario.contract.protocol == '2'
+            else ''
         )
-        check_response(scenario)
-    return {**metrics, 'peak_memory_bytes': peak_memory_bytes}
+    )
 
 
 def run_scenario(
@@ -688,101 +858,79 @@ def run_scenario(
     max_trials: int,
     deadline: float,
     hypercorn_config: Path,
+    evidence_directory: Path,
+    identity: dict[str, Any],
 ) -> dict[str, Any]:
-    names = eligible_servers(scenario, servers)
+    names = list(servers)
     samples: dict[str, list[MeasuredMetrics]] = {name: [] for name in names}
     excluded: dict[str, str] = {}
     stopped = 'max-trials'
     trials = 0
+    blocks = []
     for trial, order in enumerate(rotations(names, max_trials, SEED), start=1):
+        blocks.append({'block': trial, 'order': order})
         for name in order:
-            if name in excluded:
-                continue
-            try:
-                samples[name].append(
-                    measure_cell(
-                        name,
-                        scenario,
-                        duration,
-                        warmup,
-                        hypercorn_config=hypercorn_config,
-                    )
+            if time.monotonic() >= deadline:
+                raise BenchmarkError(
+                    f'{scenario.name} deadline before block {trial}, {name}'
                 )
+            try:
+                with deadline_bound(deadline):
+                    samples[name].append(
+                        measure_cell(
+                            name,
+                            scenario,
+                            duration,
+                            warmup,
+                            hypercorn_config=hypercorn_config,
+                            evidence_directory=evidence_directory
+                            / f'block-{trial:02d}'
+                            / name,
+                            identity=identity,
+                        )
+                    )
             except BenchmarkError as error:
-                # h2corn failing is our bug and must stop the run. A competitor
-                # that cannot serve this workload is a fact about that server:
-                # drop it from this scenario, say so loudly, and keep the rest
-                # of the comparison rather than losing the whole suite.
-                if name == 'h2corn':
-                    raise
-                excluded[name] = str(error)
-                samples.pop(name)
-                print(f'  EXCLUDED {name} from {scenario.name}: {error}', flush=True)
+                write_json(
+                    evidence_directory / 'failure.json',
+                    {
+                        'scenario': scenario.name,
+                        'blocks': blocks,
+                        'failed_server': name,
+                        'error': str(error),
+                        'samples': samples,
+                    },
+                )
+                raise
         remaining = [name for name in names if name in samples]
         if not remaining:
             raise BenchmarkError(f'every server failed {scenario.name}')
         trials = trial
-        rates = [[sample['rps'] for sample in samples[name]] for name in remaining]
-        leader = relative_half_width(max(rates, key=statistics.median), SEED)
         medians = ', '.join(
             f'{name} {statistics.median([s["rps"] for s in samples[name]]):,.0f}'
             for name in remaining
         )
         print(
-            f'  after trial {trial}: median {medians} (leader CI ±{leader:.1%})',
+            f'  after block {trial}/{max_trials}: median {medians}',
             flush=True,
         )
         if trial < max_trials and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
-    final_rates = [
-        [sample['rps'] for sample in samples[name]] for name in names if name in samples
-    ]
-    leader_half_width = relative_half_width(
-        max(final_rates, key=statistics.median), SEED
-    )
     return {
-        'leader_separated': leader_is_separated(final_rates, SEED),
-        'leader_half_width': leader_half_width,
-        'target_half_width': TARGET_HALF_WIDTH,
         'scenario': scenario.name,
+        'workload': workload_description(scenario),
         'type': scenario.type,
         'workers': scenario.workers,
         'trials': trials,
+        'planned_trials': max_trials,
         'stopped': stopped,
         'excluded': excluded,
         'server_profiles': server_profiles(scenario),
+        'blocks': blocks,
+        'samples': samples,
+        'paired_contrasts': paired_contrasts(samples),
         'aggregate': {name: aggregate(values) for name, values in samples.items()},
     }
-
-
-def relative_luminance(color: str) -> float:
-    """Return the WCAG relative luminance for an sRGB colour."""
-    red, green, blue, _ = colors.to_rgba(color)
-
-    def linear(value: float) -> float:
-        return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
-
-    return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
-
-
-def contrast_ratio(first: str, second: str) -> float:
-    """Return the WCAG contrast ratio between two opaque sRGB colours."""
-    first_luminance = relative_luminance(first)
-    second_luminance = relative_luminance(second)
-    light, dark = (
-        max(first_luminance, second_luminance),
-        min(first_luminance, second_luminance),
-    )
-    return (light + 0.05) / (dark + 0.05)
-
-
-def bar_label_color(color: str) -> str:
-    """Choose the memory-label colour with the strongest WCAG contrast."""
-    return max(
-        (MEMORY_LABEL_LIGHT, MEMORY_LABEL_DARK),
-        key=lambda candidate: contrast_ratio(color, candidate),
-    )
 
 
 def plot_results(
@@ -812,7 +960,7 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     summary = record['system_summary']
     websocket = record['type'] == 'ws'
     excluded = record['excluded']
-    figure, axes = plt.subplots(1, 2, figsize=(12, 6), layout='constrained')
+    figure, axes = plt.subplots(1, 3, figsize=(15, 6), layout='constrained')
     figure.suptitle(title, fontsize=17, fontweight='bold')
 
     names = sorted(results, key=lambda name: list(SERVER_COLORS).index(name))
@@ -836,6 +984,19 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
                 color=foreground,
                 capsize=4,
             )
+        samples = results[name]['rps_samples']
+        throughput.scatter(
+            [
+                bar.get_x()
+                + bar.get_width() / 2
+                + (index - (len(samples) - 1) / 2) * 0.045
+                for index in range(len(samples))
+            ],
+            samples,
+            s=16,
+            color=foreground,
+            zorder=3,
+        )
     unit = 'sessions/s' if websocket else 'requests/s'
     throughput.set_title('Throughput · higher is better')
     throughput.set_ylabel(unit)
@@ -844,7 +1005,7 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     throughput.margins(y=0.16)
     figure.canvas.draw()
     baseline = throughput.transData.transform((0, 0))[1]
-    for bar, name, color in zip(bars, names, colors, strict=True):
+    for bar, name in zip(bars, names, strict=True):
         _, high = results[name]['rps_range']
         value = results[name]['rps']
         center = bar.get_x() + bar.get_width() / 2
@@ -859,34 +1020,14 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
             va='bottom',
             fontsize=10,
         )
-        memory = results[name].get('peak_memory_bytes')
-        if memory is None:
-            continue
-        memory_label = f'{memory / 1e6:.1f} MB'
-        if height_pixels >= 28:
-            # A fixed physical offset seats every in-bar label on solid fill
-            # near the baseline, rather than letting a tall leader's label
-            # float halfway up its otherwise empty bar.
-            throughput.annotate(
-                memory_label,
-                (center, 0),
-                xytext=(0, 8),
-                textcoords='offset points',
-                ha='center',
-                va='bottom',
-                color=bar_label_color(color),
-                fontsize=10,
-            )
-        else:
-            throughput.annotate(
-                memory_label,
-                (center, top),
-                xytext=(0, 4),
-                textcoords='offset points',
-                ha='center',
-                va='bottom',
-                fontsize=10,
-            )
+
+    memory = axes[2]
+    memory_values = [results[name]['peak_memory_bytes'] / 1e6 for name in names]
+    memory_bars = memory.bar(labels, memory_values, color=colors)
+    memory.bar_label(memory_bars, fmt='%.1f', padding=4)
+    memory.set_ylabel('Maximum sampled PSS (decimal MB)')
+    memory.set_title('Deployment memory · lower is better')
+    memory.margins(y=0.16)
 
     latency = axes[1]
     plotted = False
@@ -923,8 +1064,10 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
 
     footer = (
         summary.replace('\n', ' · ')
-        + '\nBars: median rate · Whiskers: trial range · Memory: peak PSS'
+        + '\nBars: median rate · Dots: fresh-start trials · Whiskers: observed range'
         + f'\n{record["trials"]} fresh starts · Latency: median trial percentiles'
+        + '\n'
+        + textwrap.fill(record.get('workload', ''), width=145)
     )
     if excluded:
         # A missing bar has to explain itself, or the plot silently implies the
@@ -1021,7 +1164,10 @@ def namespace_arguments(run_directory: Path) -> list[str]:
     ]
 
 
-def run_rtt50_namespace(run_directory: Path) -> tuple[int | None, str | None]:
+def run_rtt50_namespace(
+    run_directory: Path,
+    timeout: float = SUITE_BUDGET_SECONDS + 60,
+) -> tuple[int | None, str | None]:
     """Start the 50 ms profile in a throwaway unprivileged network namespace."""
     try:
         result = subprocess.run(
@@ -1037,9 +1183,14 @@ def run_rtt50_namespace(run_directory: Path) -> tuple[int | None, str | None]:
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            timeout=timeout,
         )
     except OSError as error:
         return None, str(error)
+    except subprocess.TimeoutExpired as error:
+        raise BenchmarkError(
+            '50 ms RTT namespace exceeded its suite deadline'
+        ) from error
     detail = result.stderr.strip() or None
     if result.returncode and detail:
         print(detail, file=sys.stderr)
@@ -1047,6 +1198,19 @@ def run_rtt50_namespace(run_directory: Path) -> tuple[int | None, str | None]:
 
 
 def publish(run_directories: Sequence[Path]) -> None:
+    evidence = RESULTS_DIRECTORY / 'evidence'
+    if evidence.exists():
+        shutil.rmtree(evidence)
+    evidence.mkdir(parents=True)
+    for directory in run_directories:
+        profile = json.loads((directory / 'profile.json').read_text())['profile']
+        destination = evidence / profile
+        destination.mkdir()
+        for name in ('identity.json', 'hypercorn.toml', 'build.log'):
+            if (directory / name).exists():
+                shutil.copy2(directory / name, destination / name)
+        if (directory / 'evidence').exists():
+            shutil.copytree(directory / 'evidence', destination / 'trials')
     for kind, suffix, destination in (
         ('raw', '.json', CHECKED_IN_RAW_DIRECTORY),
         ('plots', '.svg', CHECKED_IN_PLOT_DIRECTORY),
@@ -1080,12 +1244,41 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
         records = sorted((run_directory / 'raw').glob('*.json'))
         if not records:
             raise BenchmarkError(f'no benchmark results in {run_directory}')
+        identity_path = run_directory / 'identity.json'
+        if (
+            not identity_path.is_file()
+            or json.loads(identity_path.read_text()).get('build') is None
+        ):
+            raise BenchmarkError(f'no identified release build in {run_directory}')
         for record_path in records:
             record = json.loads(record_path.read_text())
             if record.get('status') == 'skipped':
+                incomplete.append(record['scenario'])
                 continue
             if record.get('stopped') == 'time-budget' or not record.get('aggregate'):
                 incomplete.append(record['scenario'])
+            for name, result in record.get('aggregate', {}).items():
+                if len(result['rps_samples']) != record['planned_trials']:
+                    incomplete.append(
+                        f'{record["scenario"]}: incomplete {name} samples'
+                    )
+                for block in range(1, record['planned_trials'] + 1):
+                    trial_path = (
+                        run_directory
+                        / 'evidence'
+                        / record_path.stem
+                        / f'block-{block:02d}'
+                        / name
+                        / 'trial.json'
+                    )
+                    if (
+                        not trial_path.is_file()
+                        or json.loads(trial_path.read_text()).get('status')
+                        != 'completed'
+                    ):
+                        incomplete.append(
+                            f'{record["scenario"]}: incomplete {name} block {block}'
+                        )
     if incomplete:
         raise BenchmarkError(
             f'incomplete benchmark scenarios: {", ".join(incomplete)}; '
@@ -1106,6 +1299,7 @@ def run_suite(
     profile: NetworkProfile,
     measured_rtt_ms: float | None = None,
     netem: RTT50Netem | None = None,
+    wheel: Path | None = None,
 ) -> Path:
     ensure_static_file_payload()
     if any(scenario.type == 'h2_upload' for scenario in scenarios):
@@ -1120,6 +1314,13 @@ def run_suite(
     (run_directory / 'plots').mkdir()
     hypercorn_config = run_directory / 'hypercorn.toml'
     write_hypercorn_config(hypercorn_config)
+    try:
+        identity = run_identity(Path(__file__).resolve().parents[2], wheel)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        raise BenchmarkError(f'cannot establish benchmark identity: {error}') from error
+    write_json(run_directory / 'identity.json', identity)
+    if identity['build'] is not None:
+        shutil.copy2(identity['build']['log']['path'], run_directory / 'build.log')
 
     summary = system_summary()
     versions = package_versions()
@@ -1143,6 +1344,8 @@ def run_suite(
             max_trials=max_trials,
             deadline=min(time.monotonic() + scenario_budget, suite_deadline),
             hypercorn_config=hypercorn_config,
+            evidence_directory=run_directory / 'evidence' / scenario.slug(),
+            identity=identity,
         )
         records.append(record)
         record['network_profile'] = profile.name
@@ -1152,7 +1355,11 @@ def run_suite(
         record['package_versions'] = versions
         record['duration'] = duration
         record['warmup_duration'] = warmup
+        record['identity'] = f'../evidence/{profile.name}/identity.json'
+        record['evidence'] = f'../evidence/{profile.name}/trials/{scenario.slug()}'
         write_json(run_directory / 'raw' / f'{scenario.slug()}.json', record)
+        if record['stopped'] != 'max-trials':
+            raise BenchmarkError(f'incomplete trial blocks for {scenario.name}')
         plot_results(
             record,
             run_directory / 'plots' / f'{scenario.slug()}.svg',
@@ -1163,15 +1370,6 @@ def run_suite(
                 'raise --suite-budget or select fewer scenarios'
             )
 
-    imprecise = [
-        f'{r["scenario"]} (leader ±{r["leader_half_width"]:.0%})'
-        for r in records
-        if r['leader_half_width'] > TARGET_HALF_WIDTH
-    ]
-    if imprecise:
-        print(f'\nBar heights not resolved to ±{TARGET_HALF_WIDTH:.0%}:')
-        for entry in imprecise:
-            print(f'  {entry}')
     write_json(
         run_directory / 'profile.json',
         profile_record(
@@ -1208,6 +1406,16 @@ def main() -> int:
     parser.add_argument('--warmup-duration', default=WARMUP_DURATION)
     parser.add_argument('--max-trials', type=int, default=MAX_TRIALS)
     parser.add_argument(
+        '--wheel',
+        type=Path,
+        help='Verify installed h2corn bytes against this explicitly built wheel',
+    )
+    parser.add_argument(
+        '--build-wheel',
+        type=Path,
+        help='Build an identified release wheel into an empty directory, then exit',
+    )
+    parser.add_argument(
         '--scenario-budget', type=float, default=SCENARIO_BUDGET_SECONDS
     )
     parser.add_argument('--suite-budget', type=float, default=SUITE_BUDGET_SECONDS)
@@ -1217,6 +1425,33 @@ def main() -> int:
         help='replace the checked-in plots and raw records with this run',
     )
     args = parser.parse_args()
+    if args.build_wheel is not None:
+        print(
+            f'Building release wheel; log: {args.build_wheel / "build.log"}',
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            wheel = build_wheel(
+                Path(__file__).resolve().parents[2],
+                args.build_wheel.resolve(),
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            print(f'release build failed: {error}', file=sys.stderr)
+            return 1
+        print(wheel)
+        return 0
+    if args.publish and args.wheel is None:
+        parser.error('--publish requires --wheel to establish native artifact identity')
+    if not sys.platform.startswith('linux'):
+        parser.error(
+            'this benchmark requires Linux PSS accounting and inherited listeners'
+        )
+
+    def interrupted(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
 
     if args.max_trials < MIN_TRIALS:
         parser.error(f'--max-trials must be at least {MIN_TRIALS}')
@@ -1272,6 +1507,7 @@ def main() -> int:
                         suite_budget=args.suite_budget,
                         run_directory=suite_directory / LOOPBACK_PROFILE.name,
                         profile=LOOPBACK_PROFILE,
+                        wheel=args.wheel,
                     )
                 )
             if shaped_scenarios:
@@ -1376,6 +1612,7 @@ def main() -> int:
                 profile=profile,
                 measured_rtt_ms=measured_rtt_ms,
                 netem=netem,
+                wheel=args.wheel,
             )
             if args.publish:
                 assert_publishable([completed])

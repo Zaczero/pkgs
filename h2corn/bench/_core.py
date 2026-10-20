@@ -2,9 +2,9 @@
 
 Nothing is pinned to a CPU. Server and load generator run the way a deployment
 runs them, and the noise of a shared development host is handled where it
-belongs — in the statistics: trials are rotation-balanced and the reported value
-is a median with a bootstrap confidence interval. Sampling uses the configured
-trial count, bounded by a hard time ceiling.
+belongs — in the statistics: trials are rotation-balanced and rate-ratio
+intervals resample paired blocks. Sampling uses the configured fixed trial
+count, bounded by a hard time ceiling.
 """
 
 from __future__ import annotations
@@ -16,16 +16,18 @@ import math
 import os
 import random
 import secrets
+import signal
 import socket
 import statistics
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -85,6 +87,25 @@ class BenchmarkError(RuntimeError):
     """A benchmark could not be measured, so no number may be reported."""
 
 
+@contextmanager
+def deadline_bound(deadline: float) -> Generator[None, None, None]:
+    """Interrupt a trial at its scenario deadline, then run bounded cleanup."""
+
+    def expired(_signum: int, _frame: Any) -> None:
+        raise BenchmarkError('scenario deadline expired')
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BenchmarkError('scenario deadline expired')
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, remaining)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 class Metrics(TypedDict):
     rps: float
     latency_percentiles: dict[str, float]
@@ -121,12 +142,12 @@ class ResponseContract:
     content_type: str = 'text/plain'
     response_content_length: int | None = None
 
-    def load_url(self) -> str:
+    def load_url(self, port: int = PORT) -> str:
         if self.driver == 'k6':
-            return f'ws://{HOST}:{PORT}{self.path}'
+            return f'ws://{HOST}:{port}{self.path}'
         if self.unix_socket:
             return f'http://localhost{self.path}'
-        return f'http://{HOST}:{PORT}{self.path}'
+        return f'http://{HOST}:{port}{self.path}'
 
 
 RESPONSE_CONTRACTS: dict[BenchmarkType, ResponseContract] = {
@@ -232,6 +253,8 @@ class Scenario:
     type: BenchmarkType
     concurrency: int | None = None
     http2_parallelism: int = 1
+    port: int = PORT
+    unix_socket: Path | None = None
 
     @property
     def contract(self) -> ResponseContract:
@@ -239,7 +262,9 @@ class Scenario:
 
     @property
     def socket_path(self) -> Path | None:
-        return UNIX_SOCKET_PATH if self.contract.unix_socket else None
+        return (
+            self.unix_socket or UNIX_SOCKET_PATH if self.contract.unix_socket else None
+        )
 
     def slug(self) -> str:
         cleaned = (
@@ -253,6 +278,29 @@ class Scenario:
             .replace(' ', '_')
         )
         return f'benchmark_{cleaned}'
+
+
+@contextmanager
+def allocated_listener(
+    scenario: Scenario,
+) -> Generator[tuple[Scenario, socket.socket], None, None]:
+    """Keep the OS-allocated listener owned until its server has stopped."""
+    with tempfile.TemporaryDirectory(prefix='h2c-bench-') as directory:
+        family = socket.AF_UNIX if scenario.contract.unix_socket else socket.AF_INET
+        protocol = socket.IPPROTO_TCP if family == socket.AF_INET else 0
+        with socket.socket(family, socket.SOCK_STREAM, protocol) as listener:
+            path = Path(directory) / 'server.sock'
+            if family == socket.AF_INET:
+                listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            listener.bind(str(path) if family == socket.AF_UNIX else (HOST, 0))
+            listener.listen(2048)
+            listener.setblocking(False)
+            yield (
+                replace(scenario, unix_socket=path)
+                if family == socket.AF_UNIX
+                else replace(scenario, port=listener.getsockname()[1]),
+                listener,
+            )
 
 
 def ensure_static_file_payload() -> None:
@@ -307,76 +355,6 @@ def bootstrap_median_ci(
         for _ in range(samples)
     ]
     return percentile(medians, 0.025), percentile(medians, 0.975)
-
-
-def relative_half_width(values: Sequence[float], seed: int) -> float:
-    """Half the median's 95 % CI width, relative to the median.
-
-    Scale-free, so one threshold works for every scenario.
-    """
-    if len(values) < 2:
-        return math.inf
-    median = statistics.median(values)
-    if median <= 0:
-        return math.inf
-    low, high = bootstrap_median_ci(values, seed)
-    return (high - low) / 2 / median
-
-
-def _ranked_intervals(
-    samples: Sequence[Sequence[float]], seed: int
-) -> list[tuple[float, float, float]] | None:
-    if any(len(values) < 2 for values in samples):
-        return None
-    return sorted(
-        (
-            (statistics.median(values), *bootstrap_median_ci(values, seed))
-            for values in samples
-        ),
-        reverse=True,
-    )
-
-
-def comparison_is_settled(
-    samples: Sequence[Sequence[float]], seed: int, target_half_width: float
-) -> bool:
-    """Is a comparison precise enough to stop sampling?
-
-    Both of the things the chart is read for: the leader is ahead of the field,
-    and its number is tight.
-
-    Two things deliberately *not* required. Every server reaching the same
-    precision never happens — the slowest is the noisiest in relative terms, so
-    a scenario burns its whole budget without the reported result improving.
-    Nor every adjacent pair separating: two rivals can be genuinely tied, and
-    no amount of sampling separates them. In the checked-in 21-scenario charts,
-    gunicorn and uvicorn tie for second in one cell and uvicorn and hypercorn
-    tie for third in another, while h2corn clears the field in both.
-    """
-    intervals = _ranked_intervals(samples, seed)
-    if intervals is None:
-        return False
-    leader_median, leader_low, leader_high = intervals[0]
-    if leader_median <= 0:
-        return False
-    if (leader_high - leader_low) / 2 / leader_median > target_half_width:
-        return False
-    return leader_is_separated(samples, seed)
-
-
-def leader_is_separated(samples: Sequence[Sequence[float]], seed: int) -> bool:
-    """Is the winner the chart draws actually ahead of the runner-up?
-
-    The winner a bar chart cannot walk back, and the one that survives a noisy
-    host. Ties further down are a fact about those servers, and overlapping
-    whiskers show them for what they are.
-    """
-    intervals = _ranked_intervals(samples, seed)
-    if intervals is None:
-        return False
-    if len(intervals) < 2:
-        return True
-    return intervals[0][1] > intervals[1][2]
 
 
 def rotations(names: Sequence[str], rounds: int, seed: int) -> list[list[str]]:
@@ -567,20 +545,27 @@ class ServerRun:
 
         """
         total = 0
-        for pid in (self.pid, *self.worker_pids):
+        for pid in sorted({self.pid, *self.worker_pids}):
             try:
                 rollup = Path(f'/proc/{pid}/smaps_rollup').read_text()
-            except OSError:
-                continue
+            except OSError as error:
+                raise BenchmarkError(
+                    f'PSS unavailable for required process {pid}'
+                ) from error
             for line in rollup.splitlines():
                 if line.startswith('Pss:'):
                     total += int(line.split()[1]) * 1024
                     break
+            else:
+                raise BenchmarkError(f'PSS missing for required process {pid}')
         return total
 
 
 def measure_peak_memory(
-    server: ServerRun, action: Callable[[], Metrics]
+    server: ServerRun,
+    action: Callable[[], Metrics],
+    *,
+    evidence_path: Path | None = None,
 ) -> tuple[Metrics, int]:
     """Run one measured action and return its maximum periodically sampled PSS.
 
@@ -590,12 +575,21 @@ def measure_peak_memory(
     A normal ten-second trial still receives an initial sample, about nine
     periodic samples, and a final sample.
     """
-    samples = [server.memory_bytes()]
+    started = time.monotonic()
+    samples = [{'elapsed_seconds': 0.0, 'pss_bytes': server.memory_bytes()}]
+    failures: list[BenchmarkError] = []
     stop = threading.Event()
 
     def sample() -> None:
         while not stop.wait(PSS_SAMPLE_INTERVAL_SECONDS):
-            samples.append(server.memory_bytes())
+            try:
+                samples.append({
+                    'elapsed_seconds': time.monotonic() - started,
+                    'pss_bytes': server.memory_bytes(),
+                })
+            except BenchmarkError as error:
+                failures.append(error)
+                return
 
     sampler = threading.Thread(target=sample, name='h2corn-bench-pss', daemon=True)
     sampler.start()
@@ -604,8 +598,23 @@ def measure_peak_memory(
     finally:
         stop.set()
         sampler.join()
-        samples.append(server.memory_bytes())
-    return metrics, max(samples)
+        samples.append({
+            'elapsed_seconds': time.monotonic() - started,
+            'pss_bytes': server.memory_bytes(),
+        })
+        if evidence_path is not None:
+            write_json(
+                evidence_path,
+                {
+                    'unique_pids': sorted({server.pid, *server.worker_pids}),
+                    'sample_interval_seconds': PSS_SAMPLE_INTERVAL_SECONDS,
+                    'samples': samples,
+                    'errors': [str(error) for error in failures],
+                },
+            )
+    if failures:
+        raise failures[0]
+    return metrics, max(int(sample['pss_bytes']) for sample in samples)
 
 
 @contextmanager
@@ -615,6 +624,8 @@ def running_server(
     workers: int,
     socket_path: Path | None = None,
     output: int = subprocess.DEVNULL,
+    scenario: Scenario | None = None,
+    listener_fd: int | None = None,
 ) -> Generator[ServerRun, None, None]:
     """Run a server for the duration of the block.
 
@@ -625,7 +636,7 @@ def running_server(
     subject of the measurement.
     """
     argv = list(command)
-    if socket_path is not None:
+    if socket_path is not None and listener_fd is None:
         socket_path.unlink(missing_ok=True)
         socket_path.parent.mkdir(parents=True, exist_ok=True)
     print(f'Starting {" ".join(argv)}', flush=True)
@@ -637,6 +648,8 @@ def running_server(
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                pass_fds=() if listener_fd is None else (listener_fd,),
+                cwd=Path(__file__).resolve().parents[1],
             )
         except OSError as error:
             raise BenchmarkError(f'failed to start {argv[0]}: {error}') from error
@@ -648,7 +661,9 @@ def running_server(
                     f'{argv[0]} exited with {process.returncode} before serving'
                 )
             ready = (
-                _unix_ready(socket_path)
+                _protocol_ready(scenario)
+                if scenario is not None
+                else _unix_ready(socket_path)
                 if socket_path is not None
                 else _http_ready(f'http://{HOST}:{PORT}/')
             )
@@ -658,8 +673,12 @@ def running_server(
                 raise BenchmarkError(f'{argv[0]} did not become ready')
             time.sleep(0.05)
 
-        pids = _worker_pids(
-            socket_path, workers, time.monotonic() + SERVER_READY_TIMEOUT_SECONDS
+        pids = (
+            _protocol_worker_pids(scenario, workers)
+            if scenario is not None
+            else _worker_pids(
+                socket_path, workers, time.monotonic() + SERVER_READY_TIMEOUT_SECONDS
+            )
         )
         if len(pids) != workers:
             raise BenchmarkError(
@@ -670,7 +689,7 @@ def running_server(
     finally:
         if process is not None:
             terminate_process_group(process)
-        if socket_path is not None:
+        if socket_path is not None and listener_fd is None:
             socket_path.unlink(missing_ok=True)
 
 
@@ -695,10 +714,13 @@ def duration_seconds(value: str) -> float:
     )
 
 
-def _run(command: list[str], timeout: float) -> str:
+def _run(
+    command: list[str], timeout: float, *, evidence_path: Path | None = None
+) -> str:
     # oha parses NO_COLOR as its --no-color flag and rejects an empty value.
     environment = {key: value for key, value in os.environ.items() if key != 'NO_COLOR'}
     process = None
+    started = time.monotonic()
     try:
         process = subprocess.Popen(
             command,
@@ -712,9 +734,52 @@ def _run(command: list[str], timeout: float) -> str:
     except subprocess.TimeoutExpired as error:
         if process is not None:
             terminate_process_group(process)
+            stdout, stderr = process.communicate()
+            if evidence_path is not None:
+                write_json(
+                    evidence_path,
+                    {
+                        'command': command,
+                        'stdout': stdout,
+                        'stderr': stderr,
+                        'elapsed_seconds': time.monotonic() - started,
+                        'timeout_seconds': timeout,
+                        'returncode': process.returncode,
+                        'status': 'timeout',
+                    },
+                )
         raise BenchmarkError(f'load generator hung: {" ".join(command)}') from error
     except OSError as error:
         raise BenchmarkError(f'failed to run {command[0]!r}: {error}') from error
+    except BaseException:
+        if process is not None:
+            terminate_process_group(process)
+            stdout, stderr = process.communicate()
+            if evidence_path is not None:
+                write_json(
+                    evidence_path,
+                    {
+                        'command': command,
+                        'stdout': stdout,
+                        'stderr': stderr,
+                        'elapsed_seconds': time.monotonic() - started,
+                        'returncode': process.returncode,
+                        'status': 'interrupted',
+                    },
+                )
+        raise
+    if evidence_path is not None:
+        write_json(
+            evidence_path,
+            {
+                'command': command,
+                'stdout': stdout,
+                'stderr': stderr,
+                'elapsed_seconds': time.monotonic() - started,
+                'timeout_seconds': timeout,
+                'returncode': process.returncode,
+            },
+        )
     if process.returncode != 0:
         raise BenchmarkError(f'{command[0]} failed: {stderr.strip()}')
     return stdout
@@ -739,13 +804,17 @@ def _validate_oha(raw: dict[str, Any], max_deadline_aborts: int) -> None:
 
 
 def _oha_metrics(raw: dict[str, Any]) -> Metrics:
-    rps = raw.get('summary', {}).get('requestsPerSec')
-    if not isinstance(rps, int | float) or not math.isfinite(rps) or rps <= 0:
-        raise BenchmarkError(f'oha reported an invalid rate: {rps!r}')
+    elapsed = raw.get('summary', {}).get('total')
+    if (
+        not isinstance(elapsed, int | float)
+        or not math.isfinite(elapsed)
+        or elapsed <= 0
+    ):
+        raise BenchmarkError(f'oha reported an invalid duration: {elapsed!r}')
     percentiles = raw.get('latencyPercentiles', {})
     statuses: dict[str, int] = raw.get('statusCodeDistribution', {})
     return {
-        'rps': float(rps),
+        'rps': sum(statuses.values()) / elapsed,
         'completed': sum(statuses.values()),
         'latency_percentiles': {
             name: float(percentiles[name])
@@ -762,6 +831,8 @@ def run_oha(
     concurrency: int,
     http2_parallelism: int = 1,
     socket_path: Path | None = None,
+    port: int = PORT,
+    evidence_path: Path | None = None,
 ) -> Metrics:
     command = [
         'oha',
@@ -794,17 +865,35 @@ def run_oha(
         ]
     if socket_path is not None:
         command += ['--unix-socket', str(socket_path)]
-    command.append(contract.load_url())
+    command.append(contract.load_url(port))
 
-    stdout = _run(command, duration_seconds(duration) + LOAD_GRACE_SECONDS)
+    stdout = _run(
+        command,
+        duration_seconds(duration) + LOAD_GRACE_SECONDS,
+        evidence_path=evidence_path.with_suffix('.process.json')
+        if evidence_path
+        else None,
+    )
     try:
         raw = json.loads(stdout)
     except json.JSONDecodeError as error:
         raise BenchmarkError('oha returned invalid JSON') from error
+    if evidence_path is not None:
+        write_json(evidence_path, raw)
     # At the deadline each in-flight request/stream is cut, and its connection
     # may also report a cancelled operation — so allow two per in-flight slot.
     # A stalled server produces orders of magnitude more than that.
     _validate_oha(raw, 2 * concurrency * http2_parallelism)
+    expected = (
+        str(contract.request_body_path.stat().st_size).encode()
+        if contract.request_body_path is not None
+        else contract.response_body
+    )
+    completed = sum(raw['statusCodeDistribution'].values())
+    if raw.get('summary', {}).get('totalData') != completed * len(expected):
+        raise BenchmarkError(
+            'oha response-byte total differs from completed response bodies'
+        )
     return _oha_metrics(raw)
 
 
@@ -842,8 +931,34 @@ def _k6_metrics(raw: dict[str, Any]) -> Metrics:
     }
 
 
-def run_k6(contract: ResponseContract, *, duration: str, concurrency: int) -> Metrics:
-    summary = RESULTS_DIRECTORY / 'k6_summary.json'
+def run_k6(
+    contract: ResponseContract,
+    *,
+    duration: str,
+    concurrency: int,
+    port: int = PORT,
+    evidence_path: Path | None = None,
+) -> Metrics:
+    with tempfile.TemporaryDirectory(prefix='h2c-k6-') as directory:
+        return _run_k6(
+            contract,
+            duration=duration,
+            concurrency=concurrency,
+            port=port,
+            evidence_path=evidence_path,
+            summary=Path(directory) / 'summary.json',
+        )
+
+
+def _run_k6(
+    contract: ResponseContract,
+    *,
+    duration: str,
+    concurrency: int,
+    port: int,
+    evidence_path: Path | None,
+    summary: Path,
+) -> Metrics:
     summary.parent.mkdir(parents=True, exist_ok=True)
     summary.unlink(missing_ok=True)
     command = [
@@ -858,28 +973,50 @@ def run_k6(contract: ResponseContract, *, duration: str, concurrency: int) -> Me
         '--summary-trend-stats',
         'med,p(90),p(95),p(99)',
         '-e',
-        f'WS_URL={contract.load_url()}',
+        f'WS_URL={contract.load_url(port)}',
         str(K6_SCRIPT),
     ]
-    _run(command, duration_seconds(duration) + LOAD_GRACE_SECONDS)
+    _run(
+        command,
+        duration_seconds(duration) + LOAD_GRACE_SECONDS,
+        evidence_path=evidence_path.with_suffix('.process.json')
+        if evidence_path
+        else None,
+    )
     try:
         raw = json.loads(summary.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise BenchmarkError('k6 wrote no usable summary') from error
+    if evidence_path is not None:
+        write_json(evidence_path, raw)
     _validate_k6(raw)
     return _k6_metrics(raw)
 
 
-def run_load(scenario: Scenario, *, duration: str, concurrency: int) -> Metrics:
+def run_load(
+    scenario: Scenario,
+    *,
+    duration: str,
+    concurrency: int,
+    evidence_path: Path | None = None,
+) -> Metrics:
     contract = scenario.contract
     if contract.driver == 'k6':
-        return run_k6(contract, duration=duration, concurrency=concurrency)
+        return run_k6(
+            contract,
+            duration=duration,
+            concurrency=concurrency,
+            port=scenario.port,
+            evidence_path=evidence_path,
+        )
     return run_oha(
         contract,
         duration=duration,
         concurrency=concurrency,
         http2_parallelism=scenario.http2_parallelism,
         socket_path=scenario.socket_path,
+        port=scenario.port,
+        evidence_path=evidence_path,
     )
 
 
@@ -916,7 +1053,8 @@ def _check_body(contract: ResponseContract, body: bytes, content_type: str) -> N
         raise BenchmarkError(
             f'response body mismatch: expected {len(contract.response_body)} bytes '
             f'({hashlib.sha256(contract.response_body).hexdigest()[:16]}), got '
-            f'{len(body)} bytes ({hashlib.sha256(body).hexdigest()[:16]})'
+            f'{len(body)} bytes ({hashlib.sha256(body).hexdigest()[:16]}); '
+            f'expected prefix {contract.response_body[:32]!r}, got {body[:32]!r}'
         )
 
 
@@ -929,7 +1067,13 @@ def _check_content_length(contract: ResponseContract, headers: dict[str, str]) -
         )
 
 
-def _probe_http1(contract: ResponseContract, socket_path: Path | None) -> None:
+def _http1_response(
+    contract: ResponseContract,
+    socket_path: Path | None,
+    port: int,
+    *,
+    timeout: float = 10,
+) -> tuple[dict[str, str], bytes]:
     lines = [
         f'{contract.method} {contract.path} HTTP/1.1',
         'Host: localhost',
@@ -944,15 +1088,19 @@ def _probe_http1(contract: ResponseContract, socket_path: Path | None) -> None:
 
     family = socket.AF_UNIX if socket_path is not None else socket.AF_INET
     address: str | tuple[str, int] = (
-        str(socket_path) if socket_path is not None else (HOST, PORT)
+        str(socket_path) if socket_path is not None else (HOST, port)
     )
     with socket.socket(family, socket.SOCK_STREAM) as connection:
-        connection.settimeout(10)
+        deadline = time.monotonic() + timeout
+        connection.settimeout(timeout)
         connection.connect(address)
         connection.sendall(request)
         chunks = []
         while chunk := connection.recv(64 * 1024):
             chunks.append(chunk)
+            connection.settimeout(max(0.001, deadline - time.monotonic()))
+            if time.monotonic() >= deadline:
+                raise BenchmarkError('HTTP/1 probe exceeded its deadline')
 
     head, separator, body = b''.join(chunks).partition(b'\r\n\r\n')
     if not separator:
@@ -966,9 +1114,18 @@ def _probe_http1(contract: ResponseContract, socket_path: Path | None) -> None:
         for name, separator, value in [line.partition(b':')]
         if separator
     }
-    _check_content_length(contract, headers)
     if headers.get('transfer-encoding', '').lower() == 'chunked':
         body = _decode_chunked(body)
+    return headers, body
+
+
+def _probe_http1(
+    contract: ResponseContract,
+    socket_path: Path | None,
+    port: int = PORT,
+) -> None:
+    headers, body = _http1_response(contract, socket_path, port)
+    _check_content_length(contract, headers)
     _check_body(contract, body, headers.get('content-type', ''))
 
 
@@ -976,7 +1133,12 @@ def _text(value: str | bytes) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
-def _probe_http2(contract: ResponseContract) -> None:
+def _http2_response(
+    contract: ResponseContract,
+    port: int,
+    *,
+    timeout: float = 10,
+) -> tuple[dict[str, str], bytes]:
     connection = h2.connection.H2Connection(
         h2.config.H2Configuration(header_encoding='utf-8')
     )
@@ -985,7 +1147,7 @@ def _probe_http2(contract: ResponseContract) -> None:
     headers = [
         (':method', contract.method),
         (':scheme', 'http'),
-        (':authority', f'{HOST}:{PORT}'),
+        (':authority', f'{HOST}:{port}'),
         (':path', contract.path),
     ]
     if contract.request_body:
@@ -994,16 +1156,33 @@ def _probe_http2(contract: ResponseContract) -> None:
             ('content-type', 'application/octet-stream'),
         ]
     connection.send_headers(stream_id, headers, end_stream=not contract.request_body)
-    if contract.request_body:
-        connection.send_data(stream_id, contract.request_body, end_stream=True)
-
     status = None
-    content_type = ''
+    response: dict[str, str] = {}
     body = bytearray()
     ended = False
-    with socket.create_connection((HOST, PORT), timeout=10) as transport:
-        transport.sendall(connection.data_to_send())
+    sent = 0
+    deadline = time.monotonic() + timeout
+    with socket.create_connection((HOST, port), timeout=timeout) as transport:
         while not ended:
+            while sent < len(contract.request_body):
+                length = min(
+                    connection.local_flow_control_window(stream_id),
+                    connection.max_outbound_frame_size,
+                    len(contract.request_body) - sent,
+                )
+                if not length:
+                    break
+                connection.send_data(
+                    stream_id,
+                    contract.request_body[sent : sent + length],
+                    end_stream=sent + length == len(contract.request_body),
+                )
+                sent += length
+            if outbound := connection.data_to_send():
+                transport.sendall(outbound)
+            if time.monotonic() >= deadline:
+                raise BenchmarkError('HTTP/2 probe exceeded its deadline')
+            transport.settimeout(max(0.001, deadline - time.monotonic()))
             data = transport.recv(64 * 1024)
             if not data:
                 raise BenchmarkError('HTTP/2 response ended early')
@@ -1017,8 +1196,6 @@ def _probe_http2(contract: ResponseContract) -> None:
                         _text(name): _text(value) for name, value in event.headers
                     }
                     status = response.get(':status')
-                    content_type = response.get('content-type', '')
-                    _check_content_length(contract, response)
                 elif isinstance(event, h2.events.DataReceived):
                     body.extend(event.data)
                     connection.acknowledge_received_data(
@@ -1026,12 +1203,58 @@ def _probe_http2(contract: ResponseContract) -> None:
                     )
                 elif isinstance(event, h2.events.StreamEnded):
                     ended = True
-            if outbound := connection.data_to_send():
-                transport.sendall(outbound)
+                elif isinstance(event, h2.events.StreamReset):
+                    raise BenchmarkError(f'HTTP/2 probe reset: {event.error_code}')
 
     if status != '200':
         raise BenchmarkError(f'expected HTTP 200, got {status!r}')
-    _check_body(contract, bytes(body), content_type)
+    return response, bytes(body)
+
+
+def _probe_http2(
+    contract: ResponseContract,
+    port: int = PORT,
+    *,
+    timeout: float = 10,
+) -> None:
+    response, body = _http2_response(contract, port, timeout=timeout)
+    _check_content_length(contract, response)
+    _check_body(contract, body, response.get('content-type', ''))
+
+
+def request_response(
+    scenario: Scenario,
+    path: str,
+    *,
+    timeout: float = 1,
+) -> bytes:
+    contract = ResponseContract(path)
+    _, body = (
+        _http2_response(contract, scenario.port, timeout=timeout)
+        if scenario.contract.protocol == '2'
+        else _http1_response(
+            contract, scenario.socket_path, scenario.port, timeout=timeout
+        )
+    )
+    return body
+
+
+def _protocol_ready(scenario: Scenario) -> bool:
+    try:
+        return request_response(scenario, '/') == b'Hello, World!'
+    except (OSError, BenchmarkError):
+        return False
+
+
+def _protocol_worker_pids(scenario: Scenario, workers: int) -> set[int]:
+    deadline = time.monotonic() + SERVER_READY_TIMEOUT_SECONDS
+    seen: set[int] = set()
+    while len(seen) < workers and time.monotonic() < deadline:
+        try:
+            seen.add(int(request_response(scenario, '/__bench/worker-pid').strip()))
+        except (OSError, ValueError, BenchmarkError):
+            time.sleep(0.02)
+    return seen
 
 
 def _receive_at_least(connection: socket.socket, buffer: bytearray, size: int) -> None:
@@ -1042,7 +1265,7 @@ def _receive_at_least(connection: socket.socket, buffer: bytearray, size: int) -
         buffer.extend(chunk)
 
 
-def _probe_websocket(contract: ResponseContract) -> None:
+def _probe_websocket(contract: ResponseContract, port: int = PORT) -> None:
     key = base64.b64encode(secrets.token_bytes(16)).decode()
     accept = base64.b64encode(
         hashlib.sha1(  # ruff: ignore[hashlib-insecure-hash-function] - the value RFC 6455 specifies
@@ -1051,14 +1274,14 @@ def _probe_websocket(contract: ResponseContract) -> None:
     ).decode()
     request = (
         f'GET {contract.path} HTTP/1.1\r\n'
-        f'Host: {HOST}:{PORT}\r\n'
+        f'Host: {HOST}:{port}\r\n'
         'Upgrade: websocket\r\n'
         'Connection: Upgrade\r\n'
         f'Sec-WebSocket-Key: {key}\r\n'
         'Sec-WebSocket-Version: 13\r\n\r\n'
     ).encode()
 
-    with socket.create_connection((HOST, PORT), timeout=10) as connection:
+    with socket.create_connection((HOST, port), timeout=10) as connection:
         connection.sendall(request)
         handshake = bytearray()
         while b'\r\n\r\n' not in handshake:
@@ -1104,13 +1327,24 @@ def _probe_websocket(contract: ResponseContract) -> None:
 def check_response(scenario: Scenario) -> None:
     """Prove the server answers this scenario exactly, or refuse to measure it."""
     contract = scenario.contract
+    if contract.request_body_path is not None:
+        payload = contract.request_body_path.read_bytes()
+        contract = replace(
+            contract,
+            request_body=payload,
+            response_body=str(len(payload)).encode(),
+        )
     try:
         if contract.protocol == 'websocket':
-            _probe_websocket(contract)
+            _probe_websocket(contract, scenario.port)
         elif contract.protocol == '2':
-            _probe_http2(contract)
+            _probe_http2(
+                contract,
+                scenario.port,
+                timeout=60 if contract.request_body_path is not None else 10,
+            )
         else:
-            _probe_http1(contract, scenario.socket_path)
+            _probe_http1(contract, scenario.socket_path, scenario.port)
     except OSError as error:
         raise BenchmarkError(
             f'{scenario.type} correctness probe transport failed: {error}'

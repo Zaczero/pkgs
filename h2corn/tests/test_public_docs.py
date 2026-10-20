@@ -196,10 +196,14 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
             },
         },
         'type': kind,
-        'leader_separated': True,
-        'leader_half_width': 0.02,
-        'target_half_width': 0.03,
+        'paired_contrasts': {
+            'uvicorn': {
+                'h2corn_over_competitor': 2.5,
+                'interval_95': [2.3, 2.7],
+            },
+        },
         'scenario': 'HTTP/1 GET (1 worker)',
+        'planned_trials': 3,
         'package_versions': {'h2corn': '1.6.0', 'uvicorn': '0.43.0'},
         'network_profile': 'loopback',
         'system_summary': 'Python 3.14; Linux; x86_64\nCPU: Example CPU',
@@ -217,9 +221,17 @@ def test_benchmark_publication_accepts_a_measured_tie(tmp_path: Path) -> None:
     raw = tmp_path / 'raw'
     raw.mkdir()
     record = _benchmark_record()
-    record['leader_separated'] = False
+    record['paired_contrasts']['uvicorn']['interval_95'] = [0.9, 1.1]
     record['stopped'] = 'max-trials'
     (raw / 'comparison.json').write_text(json.dumps(record))
+    (tmp_path / 'identity.json').write_text(
+        json.dumps({'build': {'command': ['maturin']}})
+    )
+    for block in range(1, 4):
+        for name in record['aggregate']:
+            path = tmp_path / 'evidence/comparison' / f'block-{block:02d}' / name
+            path.mkdir(parents=True)
+            (path / 'trial.json').write_text(json.dumps({'status': 'completed'}))
     assert_publishable([tmp_path])
 
 
@@ -236,7 +248,7 @@ def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
     assert 'Observed rate range' in markdown
     assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98-102 |' in markdown
     assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
-    assert '95% bootstrap interval' in markdown
+    assert '| h2corn / uvicorn | 2.500 | 2.300-2.700 |' in markdown
     assert 'not a confidence interval' in markdown
 
 

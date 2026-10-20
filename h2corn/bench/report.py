@@ -41,20 +41,15 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     websocket = record['type'] == 'ws'
     unit = 'sessions/s' if websocket else 'requests/s'
     ordered = sorted(results.items(), key=lambda item: item[1]['rps'], reverse=True)
-    winner, _ = ordered[0]
+    conclusion = (
+        f'{ordered[0][0]} has the highest observed median rate. '
+        'Paired comparisons below describe rate ratios within the same trial blocks; '
+        'an interval including 1 does not establish equivalence.'
+    )
     if len(ordered) == 1:
         conclusion = (
-            f'Only {winner} produced an eligible result, so no cross-server '
+            f'Only {ordered[0][0]} produced an eligible result, so no cross-server '
             'comparison is available.'
-        )
-    elif record['leader_separated']:
-        conclusion = (
-            f'{winner} leads this throughput comparison; its 95% bootstrap '
-            'interval is separated from the runner-up.'
-        )
-    else:
-        conclusion = (
-            'Throughput is close: the 95% bootstrap intervals do not separate a leader.'
         )
 
     headers = ['Server (version)', 'Measure', 'Value', 'Observed rate range']
@@ -106,6 +101,8 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     text = [
         f'**Conclusion:** {conclusion}',
         '',
+        f'**Workload:** {record.get("workload", record["scenario"])}.',
+        '',
         f'**Environment:** {environment}; {profile}; '
         f'{record["duration"]} load after {record["warmup_duration"]} warmup.',
         '',
@@ -118,6 +115,27 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         '(PSS) is the maximum sampled value across the supervisor and workers; '
         'MB uses decimal units.',
     ]
+    contrasts = record.get('paired_contrasts', {})
+    if contrasts:
+        text.extend((
+            '',
+            '| Paired rate comparison | Median h2corn / competitor | 95% interval |',
+            '| --- | --- | --- |',
+        ))
+        for name, contrast in contrasts.items():
+            low, high = contrast['interval_95']
+            text.append(
+                f'| h2corn / {name} | {contrast["h2corn_over_competitor"]:.3f} '
+                f'| {low:.3f}-{high:.3f} |'
+            )
+        text.extend((
+            '',
+            'Intervals use a percentile bootstrap of complete paired trial blocks. '
+            'Each ratio compares the same block, with rotated server order. '
+            'These are per-comparison intervals, without a simultaneous ranking claim. '
+            'Load is closed-loop: clients wait for a response before issuing more work, '
+            'so the latency percentiles are not an open-arrival service-level estimate.',
+        ))
     if record['excluded']:
         text.extend((
             '',
