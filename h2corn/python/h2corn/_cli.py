@@ -344,8 +344,6 @@ def _overlay_tcp_bind_sugar(
     host: object,
     port: object,
 ) -> tuple[str, ...] | None:
-    if host is MISSING and port is MISSING:
-        return base_bind
     convenience = tcp_bind_convenience(base_bind)
     if convenience is None:
         return None
