@@ -94,15 +94,15 @@ def _quality_fixed_input_paths(root: Path) -> tuple[tuple[str, Path], ...]:
 
 def read_quality_receipt(root: Path) -> dict[str, Any]:
     """Read a receipt that is well-formed and was built by the pinned Maturin."""
-    return _load_quality_receipt(root, current_toolchain=True)
+    return _load_quality_receipt(root, allow_stale=False)
 
 
-def _load_quality_receipt(root: Path, *, current_toolchain: bool) -> dict[str, Any]:
-    """Validate a receipt's shape; require the pinned Maturin only when asked.
+def _load_quality_receipt(root: Path, *, allow_stale: bool) -> dict[str, Any]:
+    """Validate a receipt's shape and optionally require current build inputs.
 
     Preparing a runtime reads the previous receipt to decide whether it can be
-    reused. A receipt from an older Maturin is stale, not malformed, and must
-    lead to a rebuild instead of a crash.
+    reused. Older Maturin versions and input inventories require a rebuild,
+    while inconsistent receipt identities remain errors.
     """
     path = quality_receipt_path(root)
     try:
@@ -297,9 +297,9 @@ def _load_quality_receipt(root: Path, *, current_toolchain: bool) -> dict[str, A
         != _quality_settings_identity(settings['files'], settings['environment'])
     ):
         raise AssertionError(f'quality runtime settings identity is malformed: {path}')
-    if not {logical for logical, _ in _quality_fixed_input_paths(root)}.issubset(
-        settings['files']
-    ):
+    if not allow_stale and not {
+        logical for logical, _ in _quality_fixed_input_paths(root)
+    }.issubset(settings['files']):
         raise AssertionError(f'quality runtime settings omit fixed inputs: {path}')
     required_environment = {
         'CARGO_BUILD_TARGET',
@@ -329,7 +329,7 @@ def _load_quality_receipt(root: Path, *, current_toolchain: bool) -> dict[str, A
     if (
         not isinstance(maturin_version, str)
         or not maturin_version
-        or (current_toolchain and maturin_version != MATURIN_VERSION)
+        or (not allow_stale and maturin_version != MATURIN_VERSION)
     ):
         raise AssertionError(f'quality runtime Maturin version is malformed: {path}')
     wheel = receipt['wheel']
@@ -801,7 +801,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
     receipt_path = quality_receipt_path(root)
     current_members = python_members
     if receipt_path.is_file():
-        previous = _load_quality_receipt(root, current_toolchain=False)
+        previous = _load_quality_receipt(root, allow_stale=True)
         previous_build = previous['build']
         previous_source = previous['source']
         previous_wheel = previous['wheel']

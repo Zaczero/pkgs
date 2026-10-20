@@ -788,6 +788,50 @@ def test_producer_commit_binding_drops_late_changes_and_unavailable_heads(
     )
 
 
+def test_build_features_exclude_siblings_and_include_host_dependencies(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / 'Cargo.toml').write_text(
+        '[workspace]\nresolver = "3"\nmembers = ["gometry", "sibling", "shared"]\n',
+        encoding='utf-8',
+    )
+    for name in ('gometry', 'sibling', 'shared'):
+        package = tmp_path / name
+        (package / 'src').mkdir(parents=True)
+        (package / 'src' / 'lib.rs').write_text('', encoding='utf-8')
+        manifest = f'[package]\nname = "{name}"\nversion = "1.0.0"\n'
+        if name == 'shared':
+            manifest += '[features]\nruntime = []\nbuild = []\nsibling = []\n'
+        else:
+            feature = 'runtime' if name == 'gometry' else 'sibling'
+            manifest += (
+                '[dependencies]\n'
+                f'shared = {{ path = "../shared", features = ["{feature}"] }}\n'
+            )
+            if name == 'gometry':
+                manifest += (
+                    '[build-dependencies]\n'
+                    'shared = { path = "../shared", features = ["build"] }\n'
+                )
+                (package / 'build.rs').write_text('fn main() {}\n', encoding='utf-8')
+        (package / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+
+    metadata = source_artifact.cargo_metadata(tmp_path, locked=False)
+    shared_id = next(
+        package['id'] for package in metadata['packages'] if package['name'] == 'shared'
+    )
+    workspace_features = next(
+        node['features']
+        for node in metadata['resolve']['nodes']
+        if node['id'] == shared_id
+    )
+    assert set(workspace_features) == {'runtime', 'build', 'sibling'}
+    assert source_artifact.cargo_build_features(tmp_path)[shared_id] == {
+        'runtime',
+        'build',
+    }
+
+
 def test_source_identity_accepts_null_commit_but_requires_bound_source_fields() -> None:
     identity: dict[str, Any] = {
         'commit': None,
@@ -1622,9 +1666,11 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         )
 
 
+@pytest.mark.parametrize('stale_input', ['maturin', 'fixed-inputs'])
 def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    stale_input: str,
 ) -> None:
     workspace = tmp_path / 'workspace'
     root = workspace / 'gometry'
@@ -1800,10 +1846,19 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
 
     receipt_path = quality_runtime.quality_receipt_path(root)
     stale = json.loads(receipt_path.read_text(encoding='utf-8'))
-    stale['build']['maturin_version'] = '1.0.0'
-    stale['wheel']['generator'] = 'maturin (1.0.0)'
+    if stale_input == 'maturin':
+        stale['build']['maturin_version'] = '1.0.0'
+        stale['wheel']['generator'] = 'maturin (1.0.0)'
+        error = 'Maturin version is malformed'
+    else:
+        settings = stale['build']['settings']
+        del settings['files']['gometry/native/source_roots.txt']
+        settings['identity_sha256'] = quality_runtime._quality_settings_identity(
+            settings['files'], settings['environment']
+        )
+        error = 'settings omit fixed inputs'
     receipt_path.write_text(json.dumps(stale), encoding='utf-8')
-    with pytest.raises(AssertionError, match='Maturin version is malformed'):
+    with pytest.raises(AssertionError, match=error):
         quality_runtime.read_quality_receipt(root)
 
     rebuilt = quality_runtime.prepare_quality_runtime(
