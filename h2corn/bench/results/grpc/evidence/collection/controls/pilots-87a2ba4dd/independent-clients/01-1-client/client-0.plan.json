@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "U32",
+  "concurrency": 64,
+  "descriptor": "/tmp/opencode/grpc-final-779/pilots-87a2ba4dd/independent-clients/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 2.0,
+  "endpoint": "127.0.0.1:43687",
+  "messages": 1,
+  "mode": "",
+  "requests": 0,
+  "shape": "unary",
+  "size": 32,
+  "verify_identity": false
+}

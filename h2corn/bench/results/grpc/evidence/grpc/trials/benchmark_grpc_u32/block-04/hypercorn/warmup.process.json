@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_u32/block-04/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.020779990009032,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":6528,\"started\":6528,\"verified_ok\":6528,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":6528,\"verified_payload_bytes\":208896,\"serialized_request_bytes\":221952,\"serialized_response_bytes\":221952,\"statuses\":{\"OK\":6528},\"errors\":[],\"elapsed_seconds\":2.012536599,\"window_seconds\":2,\"drain_seconds\":0.012536599000000148,\"latency_percentiles\":{\"p50\":0.019505521733967274,\"p90\":0.02154623087502937,\"p95\":0.02219910321677368,\"p99\":0.029624789299100566},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1661\":5,\"1662\":2,\"1663\":4,\"1664\":3,\"1665\":6,\"1666\":3,\"1667\":5,\"1668\":3,\"1669\":4,\"1670\":5,\"1671\":2,\"1672\":4,\"1673\":4,\"1674\":3,\"1675\":4,\"1676\":9,\"1677\":240,\"1678\":323,\"1679\":379,\"1680\":394,\"1681\":377,\"1682\":375,\"1683\":228,\"1684\":272,\"1685\":471,\"1686\":478,\"1687\":503,\"1688\":302,\"1689\":241,\"1690\":176,\"1691\":295,\"1692\":216,\"1693\":170,\"1694\":154,\"1695\":191,\"1696\":127,\"1697\":101,\"1698\":98,\"1699\":28,\"1700\":7,\"1701\":3,\"1702\":3,\"1703\":17,\"1704\":34,\"1705\":7,\"1706\":9,\"1707\":9,\"1708\":11,\"1709\":10,\"1710\":7,\"1711\":4,\"1712\":4,\"1713\":4,\"1715\":2,\"1716\":2,\"1717\":8,\"1718\":4,\"1719\":15,\"1720\":10,\"1721\":9,\"1722\":14,\"1723\":62,\"1724\":2,\"1728\":48,\"1729\":15,\"1733\":1,\"1738\":1,\"1739\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.567174,\"cpu_system_seconds\":0.407532,\"max_rss_kib\":20624,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 3524164, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

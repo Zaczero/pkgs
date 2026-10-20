@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "Duplex",
+  "concurrency": 8,
+  "descriptor": "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 2.0,
+  "endpoint": "127.0.0.1:36423",
+  "messages": 64,
+  "mode": "",
+  "requests": 0,
+  "shape": "duplex",
+  "size": 256,
+  "verify_identity": false
+}

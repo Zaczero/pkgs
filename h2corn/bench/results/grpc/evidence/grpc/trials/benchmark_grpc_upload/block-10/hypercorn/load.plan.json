@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "Upload",
+  "concurrency": 8,
+  "descriptor": "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 10.0,
+  "endpoint": "127.0.0.1:47037",
+  "messages": 16,
+  "mode": "",
+  "requests": 0,
+  "shape": "upload",
+  "size": 65536,
+  "verify_identity": false
+}

@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_u64k/block-04/grpclib/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.0299317670287564,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":4008,\"started\":4008,\"verified_ok\":4008,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":4008,\"verified_payload_bytes\":262668288,\"serialized_request_bytes\":262684320,\"serialized_response_bytes\":262684320,\"statuses\":{\"OK\":4008},\"errors\":[],\"elapsed_seconds\":2.017089153,\"window_seconds\":2,\"drain_seconds\":0.017089153000000135,\"latency_percentiles\":{\"p50\":0.007965883137930216,\"p90\":0.008887283670223716,\"p95\":0.009156577252715183,\"p99\":0.009915261078704163},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1486\":1,\"1490\":1,\"1493\":1,\"1495\":1,\"1503\":1,\"1505\":1,\"1558\":1,\"1569\":2,\"1570\":1,\"1572\":1,\"1573\":6,\"1574\":8,\"1575\":6,\"1576\":4,\"1577\":16,\"1578\":13,\"1579\":18,\"1580\":18,\"1581\":13,\"1582\":24,\"1583\":36,\"1584\":48,\"1585\":71,\"1586\":80,\"1587\":87,\"1588\":137,\"1589\":172,\"1590\":171,\"1591\":157,\"1592\":204,\"1593\":232,\"1594\":187,\"1595\":147,\"1596\":158,\"1597\":166,\"1598\":188,\"1599\":196,\"1600\":214,\"1601\":191,\"1602\":135,\"1603\":135,\"1604\":138,\"1605\":111,\"1606\":95,\"1607\":84,\"1608\":61,\"1609\":48,\"1610\":53,\"1611\":36,\"1612\":23,\"1613\":19,\"1614\":10,\"1615\":12,\"1616\":13,\"1617\":9,\"1618\":7,\"1619\":2,\"1620\":7,\"1621\":3,\"1622\":6,\"1623\":1,\"1628\":1,\"1630\":1,\"1635\":1,\"1636\":2,\"1640\":1,\"1647\":1,\"1649\":1,\"1654\":1,\"1656\":1,\"1660\":1,\"1662\":1,\"1673\":1,\"1676\":2,\"1678\":1,\"1679\":2,\"1681\":2,\"1683\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":1.1557089999999999,\"cpu_system_seconds\":0.565892,\"max_rss_kib\":63304,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 3553577, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

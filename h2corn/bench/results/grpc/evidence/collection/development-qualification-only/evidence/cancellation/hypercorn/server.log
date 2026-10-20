@@ -1,0 +1,65 @@
+[2026-10-20 20:04:44 +0000] [2978028] [INFO] Running on http://127.0.0.1:56315 (CTRL + C to quit)
+[2026-10-20 20:04:47 +0000] [2978028] [ERROR] Error in ASGI Framework
+Traceback (most recent call last):
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 645, in _request_deadline
+    yield deadline
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 256, in __call__
+    return await self._handle_stream(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        receive, send, protocol, endpoint, codec, headers, ctx, deadline
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 511, in _handle_stream
+    async for message in response_stream:
+    ...<15 lines>...
+        )
+  File "/home/user/Source/pkgs/h2corn/bench/grpc_app.py", line 85, in download
+    await asyncio.Event().wait()
+  File "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/lib/python3.15/asyncio/locks.py", line 213, in wait
+    await fut
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 644, in _request_deadline
+    async with deadline:
+               ^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/lib/python3.15/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py", line 28, in _handle
+    await app(scope, receive, send, sync_spawn, call_soon)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/hypercorn/app_wrappers.py", line 34, in __call__
+    await self.app(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/routing.py", line 678, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/routing.py", line 699, in app
+    await route.handle(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/starlette/routing.py", line 459, in handle
+    await self.app(scope, receive, send)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 241, in __call__
+    async with _request_deadline(ctx) as deadline:
+               ~~~~~~~~~~~~~~~~~^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/lib/python3.15/contextlib.py", line 297, in __aexit__
+    await self.gen.athrow(value)
+  File "/tmp/opencode/h2corn-task779-development/lib/python3.15/site-packages/connectrpc/_server_async.py", line 648, in _request_deadline
+    raise ConnectError(Code.DEADLINE_EXCEEDED, "Request timed out") from e
+connectrpc.errors.ConnectError: Request timed out

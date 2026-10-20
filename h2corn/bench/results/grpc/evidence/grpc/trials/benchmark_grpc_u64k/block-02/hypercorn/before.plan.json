@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "U64K",
+  "concurrency": 1,
+  "descriptor": "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 0,
+  "endpoint": "127.0.0.1:51783",
+  "messages": 1,
+  "mode": "",
+  "requests": 1,
+  "shape": "unary",
+  "size": 65536,
+  "verify_identity": true
+}

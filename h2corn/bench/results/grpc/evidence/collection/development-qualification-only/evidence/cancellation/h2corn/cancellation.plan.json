@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "Cancellation",
+  "concurrency": 1,
+  "descriptor": "/tmp/opencode/grpc-final-779/qualification-development-87a2ba4dd/notebook.pb",
+  "drain_seconds": 3,
+  "duration_seconds": 0,
+  "endpoint": "127.0.0.1:37267",
+  "messages": 2,
+  "mode": "cancel",
+  "requests": 1,
+  "shape": "download",
+  "size": 32,
+  "verify_identity": true
+}

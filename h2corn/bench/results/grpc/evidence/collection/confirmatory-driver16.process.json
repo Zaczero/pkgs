@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/tmp/opencode/h2corn-task779-release/bin/python",
+    "bench/bench.py",
+    "--family",
+    "grpc",
+    "--max-trials",
+    "12",
+    "--duration",
+    "10s",
+    "--warmup-duration",
+    "2s",
+    "--run-directory",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd",
+    "--wheel",
+    "/tmp/opencode/grpc-http-perf/anchor-final/wheels/h2corn-1.5.1-cp315-cp315-linux_x86_64.whl",
+    "--publish"
+  ],
+  "started_at_ns": 1792533394948462734,
+  "total_timeout_seconds": 7200,
+  "startup_silence_timeout_seconds": 600,
+  "measurement_silence_timeout_seconds": 180,
+  "status": "completed",
+  "returncode": 0,
+  "finished_at_ns": 1792537567431472959,
+  "elapsed_seconds": 4172.483011304983
+}

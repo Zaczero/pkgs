@@ -1,0 +1,11 @@
+{
+  "case": "U32",
+  "concurrency": 64,
+  "grpclib": true,
+  "messages": 1,
+  "shape": "unary",
+  "size": 32,
+  "tls": false,
+  "type": "grpc",
+  "workers": 1
+}

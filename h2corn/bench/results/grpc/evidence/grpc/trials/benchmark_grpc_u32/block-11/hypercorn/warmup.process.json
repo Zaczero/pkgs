@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_u32/block-11/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.0177028760081157,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":6290,\"started\":6290,\"verified_ok\":6290,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":6290,\"verified_payload_bytes\":201280,\"serialized_request_bytes\":213860,\"serialized_response_bytes\":213860,\"statuses\":{\"OK\":6290},\"errors\":[],\"elapsed_seconds\":2.009443107,\"window_seconds\":2,\"drain_seconds\":0.009443107000000062,\"latency_percentiles\":{\"p50\":0.020096558548028255,\"p90\":0.02264530519143086,\"p95\":0.023800443343775537,\"p99\":0.029624789299100566},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1580\":1,\"1581\":2,\"1582\":2,\"1583\":2,\"1613\":4,\"1614\":7,\"1668\":2,\"1669\":4,\"1670\":3,\"1671\":4,\"1672\":4,\"1673\":6,\"1674\":9,\"1675\":6,\"1676\":15,\"1677\":22,\"1678\":45,\"1679\":43,\"1680\":36,\"1681\":94,\"1682\":110,\"1683\":177,\"1684\":632,\"1685\":512,\"1686\":641,\"1687\":523,\"1688\":148,\"1689\":232,\"1690\":218,\"1691\":161,\"1692\":254,\"1693\":440,\"1694\":364,\"1695\":201,\"1696\":153,\"1697\":168,\"1698\":241,\"1699\":81,\"1700\":93,\"1701\":100,\"1702\":117,\"1703\":42,\"1704\":8,\"1705\":29,\"1706\":78,\"1707\":45,\"1708\":9,\"1709\":12,\"1710\":81,\"1711\":36,\"1714\":7,\"1723\":2,\"1728\":64},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.530449,\"cpu_system_seconds\":0.365726,\"max_rss_kib\":20204,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 3540798, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

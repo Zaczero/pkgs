@@ -1,0 +1,18 @@
+{
+  "strict_build": "passed",
+  "existing_documentation_gate": "passed including Caddy syntax and embedded example",
+  "grpc_rows": 8,
+  "content_hashed_svg_variants_verified": 32,
+  "completion_and_stream_tables": "present",
+  "visual_previews": "U32, Download, Duplex; wide/narrow; light/dark with dark composited on #20212b",
+  "tools": {
+    "properdocs": "1.6.7",
+    "mkdocs-material": "9.7.7",
+    "mkdocstrings": "1.0.8",
+    "fastapi": "0.156.3",
+    "starlette": "1.9.0"
+  },
+  "final_build_log": "docs-build-driver16-final.log",
+  "final_gate_log": "docs-check-driver16-final.log",
+  "authored_methodology_sha256": "031fee6fa3e6100f38c72dee0b86a60e4abb56bad930759411a2e886574fda6f"
+}

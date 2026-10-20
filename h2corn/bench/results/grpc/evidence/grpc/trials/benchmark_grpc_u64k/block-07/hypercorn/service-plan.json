@@ -1,0 +1,12 @@
+{
+  "case": "U64K",
+  "concurrency": 16,
+  "grpclib": true,
+  "hold_after_first": false,
+  "messages": 1,
+  "shape": "unary",
+  "size": 65536,
+  "tls": false,
+  "type": "grpc",
+  "workers": 1
+}

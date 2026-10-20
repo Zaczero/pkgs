@@ -1,0 +1,4 @@
+h2corn v1.5.1 • HTTP/2 ASGI
+Listening on http://127.0.0.1:50343
+HTTP/1 compatibility is enabled; disable with http1=False (--no-http1)
+

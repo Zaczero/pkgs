@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_tls_u32/block-11/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.018784971907735,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":6400,\"started\":6400,\"verified_ok\":6400,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":6400,\"verified_payload_bytes\":204800,\"serialized_request_bytes\":217600,\"serialized_response_bytes\":217600,\"statuses\":{\"OK\":6400},\"errors\":[],\"elapsed_seconds\":2.008961617,\"window_seconds\":2,\"drain_seconds\":0.0089616170000002,\"latency_percentiles\":{\"p50\":0.019897582720820043,\"p90\":0.021332901856464782,\"p95\":0.021979310115617486,\"p99\":0.029624789299100566},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1653\":5,\"1654\":3,\"1655\":3,\"1656\":3,\"1657\":3,\"1658\":3,\"1659\":3,\"1660\":1,\"1673\":2,\"1674\":11,\"1675\":8,\"1676\":8,\"1677\":13,\"1678\":17,\"1679\":24,\"1680\":59,\"1681\":53,\"1682\":81,\"1683\":123,\"1684\":625,\"1685\":544,\"1686\":585,\"1687\":782,\"1688\":539,\"1689\":694,\"1690\":598,\"1691\":318,\"1692\":279,\"1693\":227,\"1694\":112,\"1695\":108,\"1696\":178,\"1697\":63,\"1698\":22,\"1699\":14,\"1700\":32,\"1701\":28,\"1702\":16,\"1703\":13,\"1704\":8,\"1705\":15,\"1706\":8,\"1707\":14,\"1708\":8,\"1709\":3,\"1710\":5,\"1711\":5,\"1712\":1,\"1713\":1,\"1714\":1,\"1715\":1,\"1717\":1,\"1719\":1,\"1725\":62,\"1726\":1,\"1728\":19,\"1729\":41,\"1730\":3,\"1738\":1,\"1741\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.58911,\"cpu_system_seconds\":0.391539,\"max_rss_kib\":20984,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"tls\":{\"alpn\":\"h2\",\"cipher\":\"TLS_AES_128_GCM_SHA256\",\"version\":\"TLS 1.3\"},\"server_identity\":\"{\\\"pid\\\": 3704260, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

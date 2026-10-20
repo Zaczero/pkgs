@@ -1,0 +1,28 @@
+{
+  "command": [
+    "/tmp/opencode/h2corn-task779-release/bin/python",
+    "bench/bench.py",
+    "--family",
+    "grpc",
+    "--servers",
+    "h2corn",
+    "--rpc-cases",
+    "U32",
+    "Duplex",
+    "--max-trials",
+    "3",
+    "--duration",
+    "2s",
+    "--warmup-duration",
+    "2s",
+    "--run-directory",
+    "/tmp/opencode/grpc-final-779/pilots-87a2ba4dd/warmup-a1",
+    "--wheel",
+    "/tmp/opencode/grpc-http-perf/anchor-final/wheels/h2corn-1.5.1-cp315-cp315-linux_x86_64.whl"
+  ],
+  "gomaxprocs": 8,
+  "server_warmup": "2s",
+  "started_at_ns": 1792527165911492718,
+  "returncode": 0,
+  "finished_at_ns": 1792527207801199083
+}

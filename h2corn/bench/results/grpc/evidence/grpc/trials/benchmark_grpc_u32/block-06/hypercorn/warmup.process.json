@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_u32/block-06/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.023365703993477,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":6079,\"started\":6079,\"verified_ok\":6079,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":6079,\"verified_payload_bytes\":194528,\"serialized_request_bytes\":206686,\"serialized_response_bytes\":206686,\"statuses\":{\"OK\":6079},\"errors\":[],\"elapsed_seconds\":2.015246477,\"window_seconds\":2,\"drain_seconds\":0.015246476999999814,\"latency_percentiles\":{\"p50\":0.020912559412277962,\"p90\":0.02219910321677368,\"p95\":0.022871758243345103,\"p99\":0.029331474553565003},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1680\":3,\"1681\":3,\"1682\":3,\"1683\":3,\"1684\":12,\"1685\":33,\"1686\":6,\"1687\":43,\"1688\":306,\"1689\":513,\"1690\":845,\"1691\":716,\"1692\":510,\"1693\":326,\"1694\":335,\"1695\":364,\"1696\":250,\"1697\":239,\"1698\":541,\"1699\":459,\"1700\":202,\"1701\":61,\"1702\":42,\"1703\":31,\"1704\":17,\"1705\":1,\"1706\":10,\"1707\":3,\"1708\":2,\"1709\":5,\"1710\":2,\"1713\":6,\"1714\":3,\"1715\":4,\"1716\":5,\"1717\":5,\"1725\":1,\"1726\":6,\"1727\":107,\"1728\":31,\"1729\":24,\"1731\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.531847,\"cpu_system_seconds\":0.393671,\"max_rss_kib\":20628,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 3527756, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

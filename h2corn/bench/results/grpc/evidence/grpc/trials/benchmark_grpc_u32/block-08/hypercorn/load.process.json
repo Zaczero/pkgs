@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_u32/block-08/hypercorn/load.plan.json"
+  ],
+  "elapsed_seconds": 10.021182577009313,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":32137,\"started\":32137,\"verified_ok\":32137,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":32137,\"verified_payload_bytes\":1028384,\"serialized_request_bytes\":1092658,\"serialized_response_bytes\":1092658,\"statuses\":{\"OK\":32137},\"errors\":[],\"elapsed_seconds\":10.013194733,\"window_seconds\":10,\"drain_seconds\":0.013194733000000625,\"latency_percentiles\":{\"p50\":0.01970057695130696,\"p90\":0.021332901856464782,\"p95\":0.021761693183779674,\"p99\":0.02904106391442077},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1601\":1,\"1602\":1,\"1603\":3,\"1604\":2,\"1605\":2,\"1651\":9,\"1665\":1,\"1666\":4,\"1667\":3,\"1668\":3,\"1669\":5,\"1670\":11,\"1671\":10,\"1672\":4,\"1673\":8,\"1674\":10,\"1675\":5,\"1676\":20,\"1677\":21,\"1678\":70,\"1679\":20,\"1680\":33,\"1681\":82,\"1682\":336,\"1683\":1416,\"1684\":4089,\"1685\":4187,\"1686\":4856,\"1687\":3370,\"1688\":2482,\"1689\":1906,\"1690\":1636,\"1691\":1542,\"1692\":1142,\"1693\":815,\"1694\":700,\"1695\":632,\"1696\":593,\"1697\":577,\"1698\":432,\"1699\":190,\"1700\":116,\"1701\":88,\"1702\":83,\"1703\":34,\"1704\":3,\"1705\":25,\"1706\":44,\"1707\":3,\"1724\":62,\"1725\":90,\"1726\":108,\"1727\":11,\"1728\":75,\"1729\":86,\"1730\":20,\"1731\":4,\"1732\":2,\"1733\":16,\"1734\":27,\"1735\":9,\"1736\":2},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":2.793719,\"cpu_system_seconds\":1.844013,\"max_rss_kib\":20536,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 3533835, \\\"active\\\": 0, \\\"finished\\\": 6721, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 40.0
+}

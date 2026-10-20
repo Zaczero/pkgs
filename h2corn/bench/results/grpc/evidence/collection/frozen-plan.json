@@ -1,0 +1,73 @@
+{
+  "frozen_at": "2026-10-20T20:26:17.413661+00:00",
+  "source_revision": "87a2ba4dd06125e232e084634788cc381a522901",
+  "source_status": "M h2corn/bench/bench.py",
+  "canonical_build_inputs": 471,
+  "canonical_build_inputs_sha256": "5772ec1b709647e7938eb3b337ba1d53f252019eb114f4b7ecb2787220fd2ab4",
+  "wheel": {
+    "path": "/tmp/opencode/grpc-http-perf/anchor-final/wheels/h2corn-1.5.1-cp315-cp315-linux_x86_64.whl",
+    "sha256": "91a359f557677e4f04128230d6d3569917ef245c81b247a5d18c68af04d67dae"
+  },
+  "build_revision": "8dc9e8b7ff654f168cc101dee84926e72260c3f1",
+  "matrix": {
+    "family": "grpc",
+    "rows": 8,
+    "eligible_cells": 27,
+    "blocks": 12,
+    "expected_timed_trials": 324,
+    "server_warmup_seconds": 2,
+    "start_window_seconds": 10,
+    "bounded_drain_seconds": 15,
+    "gomaxprocs": 2,
+    "serving_processes": 1,
+    "python_loops_per_process": 1,
+    "client_connections_per_trial": 1,
+    "compression": "identity"
+  },
+  "decision": {
+    "warmup": "4s did not improve rates or resolve observed variation relative to2s. Retain2s server warmup; measuredGo process and connection remain fresh and finish a controlRPC before timing.",
+    "client": "8Go processors did not improve rates over2, and the independenttwo/oneclient ABBA ratio was1.003845. ChoosecommonGOMAXPROCS2 for lower scheduler overhead; no per-stack tuning. The two-client control changes connection count and includes setup; it is not a proof of unconstrained server capacity.",
+    "scope": "Pilot intervals are descriptive with3matched indices, not final publication uncertainty. Final results use12balanced fresh-start blocks and per-row paired bootstrap ratios."
+  },
+  "pilot_analysis": "/tmp/opencode/grpc-final-779/pilots-87a2ba4dd/analysis.json",
+  "pilot_analysis_sha256": "9d0e8d395607de10ebd84c95f665cce71b74b7f94d72b992965a6b394852d5d8",
+  "pilot_summary": {
+    "warmup-U32": {
+      "b_over_a": 0.965905664812595,
+      "descriptive_interval95": [
+        0.9573910436999876,
+        0.9835834411971205
+      ]
+    },
+    "warmup-Duplex": {
+      "b_over_a": 0.9414921158845334,
+      "descriptive_interval95": [
+        0.9408154152471312,
+        1.0691213994143942
+      ]
+    },
+    "headroom-U32": {
+      "b_over_a": 0.9434054345607982,
+      "descriptive_interval95": [
+        0.8822175022979432,
+        0.9806515309667378
+      ]
+    },
+    "headroom-Duplex": {
+      "b_over_a": 0.95994490291211,
+      "descriptive_interval95": [
+        0.9432072928389377,
+        0.9634353150681582
+      ]
+    }
+  },
+  "independent_clients_abba_two_over_one": 1.003845218763728,
+  "presentation_fix": {
+    "file": {
+      "path": "/home/user/Source/pkgs/h2corn/bench/bench.py",
+      "sha256": "b71aa52fcea30277b76f957ada2d1c4c774fdacf98f069e353b35c697bfade5d"
+    },
+    "reason": "Wrap full stack bar labels and all narrow-footer lines to prevent observed overlap/clipping. No measurement/driver/native changes. Checked light/dark narrow previews."
+  },
+  "confirmatory_directory": "/tmp/opencode/grpc-final-779/confirmatory-87a2ba4dd"
+}

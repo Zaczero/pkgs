@@ -1,0 +1,188 @@
+{
+  "aggregate": {
+    "h2corn": {
+      "completed": 34138,
+      "latency_percentiles": {
+        "p50": 0.00355797305250354,
+        "p90": 0.0047956101196006,
+        "p95": 0.005244888161343267,
+        "p99": 0.007429923024434647
+      },
+      "peak_memory_bytes": 65761280,
+      "rpc_rate": 17051.08141923694,
+      "rps": 17051.08141923694,
+      "rps_range": [
+        16537.88599533861,
+        17339.61948064248
+      ],
+      "rps_samples": [
+        17339.61948064248,
+        16537.88599533861,
+        17051.08141923694
+      ]
+    }
+  },
+  "application_artifact_kind": "release",
+  "benchmark_family": "grpc",
+  "blocks": [
+    {
+      "block": 1,
+      "not_repeated_after_failure": [],
+      "order": [
+        "h2corn"
+      ]
+    },
+    {
+      "block": 2,
+      "not_repeated_after_failure": [],
+      "order": [
+        "h2corn"
+      ]
+    },
+    {
+      "block": 3,
+      "not_repeated_after_failure": [],
+      "order": [
+        "h2corn"
+      ]
+    }
+  ],
+  "duration": "2s",
+  "evidence": "../evidence/grpc/trials/benchmark_grpc_u32",
+  "failures": {},
+  "identity": "../evidence/grpc/identity.json",
+  "load_plan": {
+    "duration": "2s",
+    "mode": "time-window",
+    "warmup_duration": "2s"
+  },
+  "network_profile": "grpc",
+  "not_selected": {},
+  "package_versions": {
+    "connectrpc": "0.12.1",
+    "grpcio": "1.84.0",
+    "grpclib": "0.4.9",
+    "hypercorn": "0.18.0",
+    "protobuf-py": "0.6.0",
+    "protobuf-py-ext": "0.6.0"
+  },
+  "paired_contrasts": {},
+  "planned_trials": 3,
+  "qualification": {
+    "application_artifact_kind": "release",
+    "cells": [
+      {
+        "case": "U32",
+        "server": "h2corn",
+        "status": "passed"
+      },
+      {
+        "case": "Duplex",
+        "server": "h2corn",
+        "status": "passed"
+      },
+      {
+        "case": "Cancellation",
+        "server": "h2corn",
+        "status": "passed"
+      }
+    ],
+    "connect_sha256": "ba85ff49b5b7e0f1b16d07b35a05e39ce92c1a7116a7ed1a271c76393323cd07",
+    "framework": [
+      {
+        "case": "reserved-flag",
+        "expected_status": "13",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      },
+      {
+        "case": "truncated-suffix",
+        "expected_status": "13",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      },
+      {
+        "case": "expired-deadline",
+        "expected_status": "4",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      }
+    ]
+  },
+  "rate_unit": "RPC/s",
+  "reference_label": "Connect / h2corn",
+  "requested_servers": [
+    "h2corn"
+  ],
+  "rpc_case": "U32",
+  "samples": {
+    "h2corn": [
+      {
+        "completed": 34728,
+        "latency_percentiles": {
+          "p50": 0.0035227455965381564,
+          "p90": 0.004748128831287728,
+          "p95": 0.005244888161343267,
+          "p99": 0.009065918071995225
+        },
+        "peak_memory_bytes": 65761280,
+        "rps": 17339.61948064248
+      },
+      {
+        "completed": 33130,
+        "latency_percentiles": {
+          "p50": 0.003814628691433134,
+          "p90": 0.004843566220796609,
+          "p95": 0.005297337042956694,
+          "p99": 0.006861409257400434
+        },
+        "peak_memory_bytes": 65336320,
+        "rps": 16537.88599533861
+      },
+      {
+        "completed": 34138,
+        "latency_percentiles": {
+          "p50": 0.00355797305250354,
+          "p90": 0.0047956101196006,
+          "p95": 0.005244888161343267,
+          "p99": 0.007429923024434647
+        },
+        "peak_memory_bytes": 65524736,
+        "rps": 17051.08141923694
+      }
+    ]
+  },
+  "scenario": "gRPC U32",
+  "server_profiles": {
+    "h2corn": {
+      "access_log": false,
+      "compression": "identity",
+      "loop": "asyncio",
+      "processes": 1
+    }
+  },
+  "stack_labels": {
+    "grpcio": "grpc.aio",
+    "grpclib": "grpclib",
+    "h2corn": "Connect / h2corn",
+    "hypercorn": "Connect / Hypercorn"
+  },
+  "status": "completed",
+  "stopped": "max-trials",
+  "system_summary": "Python 3.15.0 | Linux 7.2.9 | x86_64\nCPU: AMD Ryzen 9 5950X 16-Core Processor",
+  "trials": 3,
+  "type": "grpc",
+  "unsupported": {},
+  "warmup_duration": "2s",
+  "workers": 1,
+  "workload": "unary; 1 message(s), 32 payload bytes; 1 H2 connection, 64 concurrent RPC(s); identity compression"
+}

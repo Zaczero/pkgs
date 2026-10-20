@@ -1,0 +1,12 @@
+{
+  "case": "TLS-Duplex",
+  "concurrency": 8,
+  "grpclib": false,
+  "hold_after_first": false,
+  "messages": 64,
+  "shape": "duplex",
+  "size": 256,
+  "tls": true,
+  "type": "grpc",
+  "workers": 1
+}

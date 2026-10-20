@@ -1,0 +1,111 @@
+{
+  "release": {
+    "source_revision": "87a2ba4dd06125e232e084634788cc381a522901",
+    "build_revision": "8dc9e8b7ff654f168cc101dee84926e72260c3f1",
+    "shape_outcomes": {
+      "passed": 27
+    },
+    "failed_shapes": [],
+    "cancellation": [
+      {
+        "case": "Cancellation",
+        "server": "h2corn",
+        "status": "passed"
+      },
+      {
+        "case": "Cancellation",
+        "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['server handler did not settle after cancellation']",
+        "server": "hypercorn",
+        "status": "failed"
+      },
+      {
+        "case": "Cancellation",
+        "server": "grpcio",
+        "status": "passed"
+      }
+    ],
+    "framework": [
+      {
+        "case": "reserved-flag",
+        "expected_status": "13",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      },
+      {
+        "case": "truncated-suffix",
+        "expected_status": "13",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      },
+      {
+        "case": "expired-deadline",
+        "expected_status": "4",
+        "handler_calls": 1,
+        "observed_statuses": [
+          "0"
+        ],
+        "status": "failed"
+      }
+    ],
+    "wheel_sha256": "91a359f557677e4f04128230d6d3569917ef245c81b247a5d18c68af04d67dae",
+    "client_sha256": "fb54402662edfcf12d3b421ffed6f4292df73a31d84d2660e338cef9fe6935db"
+  },
+  "development": {
+    "source_revision": "87a2ba4dd06125e232e084634788cc381a522901",
+    "build_revision": "8dc9e8b7ff654f168cc101dee84926e72260c3f1",
+    "shape_outcomes": {
+      "passed": 6
+    },
+    "failed_shapes": [],
+    "cancellation": [
+      {
+        "case": "Cancellation",
+        "server": "h2corn",
+        "status": "passed"
+      },
+      {
+        "case": "Cancellation",
+        "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['server handler did not settle after cancellation']",
+        "server": "hypercorn",
+        "status": "failed"
+      }
+    ],
+    "framework": [
+      {
+        "case": "reserved-flag",
+        "expected_status": "13",
+        "handler_calls": 0,
+        "observed_statuses": [
+          "13"
+        ],
+        "status": "passed"
+      },
+      {
+        "case": "truncated-suffix",
+        "expected_status": "13",
+        "handler_calls": 0,
+        "observed_statuses": [
+          "13"
+        ],
+        "status": "passed"
+      },
+      {
+        "case": "expired-deadline",
+        "expected_status": "4",
+        "handler_calls": 0,
+        "observed_statuses": [
+          "4"
+        ],
+        "status": "passed"
+      }
+    ],
+    "wheel_sha256": "91a359f557677e4f04128230d6d3569917ef245c81b247a5d18c68af04d67dae",
+    "client_sha256": "fb54402662edfcf12d3b421ffed6f4292df73a31d84d2660e338cef9fe6935db"
+  }
+}

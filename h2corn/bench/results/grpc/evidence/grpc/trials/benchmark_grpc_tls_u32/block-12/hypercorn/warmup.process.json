@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/grpc-client",
+    "/tmp/opencode/grpc-final-779/confirmatory-driver16-87a2ba4dd/evidence/benchmark_grpc_tls_u32/block-12/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 2.0224604670656845,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":5712,\"started\":5712,\"verified_ok\":5712,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":5712,\"verified_payload_bytes\":182784,\"serialized_request_bytes\":194208,\"serialized_response_bytes\":194208,\"statuses\":{\"OK\":5712},\"errors\":[],\"elapsed_seconds\":2.013748525,\"window_seconds\":2,\"drain_seconds\":0.013748525000000011,\"latency_percentiles\":{\"p50\":0.02219910321677368,\"p90\":0.023800443343775537,\"p95\":0.025014505151143732,\"p99\":0.030522450039652677},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1561\":1,\"1562\":1,\"1563\":2,\"1564\":1,\"1648\":2,\"1649\":4,\"1650\":3,\"1651\":8,\"1652\":7,\"1653\":4,\"1654\":4,\"1655\":2,\"1656\":2,\"1657\":3,\"1658\":4,\"1659\":3,\"1690\":4,\"1691\":9,\"1692\":3,\"1693\":51,\"1694\":53,\"1695\":135,\"1696\":360,\"1697\":731,\"1698\":900,\"1699\":688,\"1700\":461,\"1701\":413,\"1702\":426,\"1703\":314,\"1704\":145,\"1705\":301,\"1706\":124,\"1707\":82,\"1708\":27,\"1709\":60,\"1710\":64,\"1711\":38,\"1712\":52,\"1713\":50,\"1714\":24,\"1715\":13,\"1716\":5,\"1720\":1,\"1722\":4,\"1723\":19,\"1724\":16,\"1725\":17,\"1726\":7,\"1731\":22,\"1732\":13,\"1733\":13,\"1734\":11,\"1735\":5},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.566169,\"cpu_system_seconds\":0.370659,\"max_rss_kib\":20668,\"go_version\":\"go1.26.8\",\"gomaxprocs\":16,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"tls\":{\"alpn\":\"h2\",\"cipher\":\"TLS_AES_128_GCM_SHA256\",\"version\":\"TLS 1.3\"},\"server_identity\":\"{\\\"pid\\\": 3709523, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

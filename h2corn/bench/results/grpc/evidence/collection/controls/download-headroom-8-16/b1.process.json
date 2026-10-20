@@ -1,0 +1,28 @@
+{
+  "command": [
+    "/tmp/opencode/h2corn-task779-release/bin/python",
+    "bench/bench.py",
+    "--family",
+    "grpc",
+    "--rpc-cases",
+    "Download",
+    "--servers",
+    "h2corn",
+    "grpcio",
+    "--max-trials",
+    "3",
+    "--duration",
+    "2s",
+    "--warmup-duration",
+    "2s",
+    "--run-directory",
+    "/tmp/opencode/grpc-final-779/download-headroom-8-16/b1",
+    "--wheel",
+    "/tmp/opencode/grpc-http-perf/anchor-final/wheels/h2corn-1.5.1-cp315-cp315-linux_x86_64.whl"
+  ],
+  "gomaxprocs": 16,
+  "started_at_ns": 1792533232573586825,
+  "finished_at_ns": 1792533273032356946,
+  "returncode": 0,
+  "scope": "fixed client-budget diagnostic; never pooled into confirmatory samples"
+}

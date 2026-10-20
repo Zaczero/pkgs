@@ -1,0 +1,35 @@
+{
+  "clients": 2,
+  "metrics": {
+    "completed": 33914,
+    "latency_percentiles": {},
+    "rps": 16864.083487290027
+  },
+  "processes_after": {
+    "3134422": {
+      "start_ticks": 72299120,
+      "system_ticks": 197,
+      "threads": [
+        3134422,
+        3134431,
+        3134432
+      ],
+      "user_ticks": 569
+    }
+  },
+  "processes_before": {
+    "3134422": {
+      "start_ticks": 72299120,
+      "system_ticks": 104,
+      "threads": [
+        3134422,
+        3134431,
+        3134432
+      ],
+      "user_ticks": 292
+    }
+  },
+  "sampled_peak_pss": 52402176,
+  "scope": "whole generator command control",
+  "total_rpc_concurrency": 64
+}
