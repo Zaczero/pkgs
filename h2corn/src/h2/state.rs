@@ -1132,6 +1132,7 @@ mod tests {
         RequestTasks,
     };
     use crate::h2_frame::{STREAM_ID_MASK, StreamId, WindowIncrement};
+    use crate::http::policy::ResolvedRequestPolicy;
     use crate::runtime::{H2InputCreditQueue, StreamInput};
 
     struct JoinReportSignal(Option<oneshot::Sender<()>>);
