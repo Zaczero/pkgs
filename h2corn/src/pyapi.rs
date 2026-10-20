@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use smallvec::SmallVec;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
 use crate::config;
@@ -51,65 +51,36 @@ pub(crate) struct PreparedTls(Option<TlsConfig>);
 struct PyConfig<'py>(&'py Bound<'py, PyAny>);
 
 #[derive(Clone, Copy)]
-struct SecondaryLifespanConfig {
+struct ApplicationPreparationConfig {
+    enabled: bool,
+    factory: bool,
     required: bool,
     startup_timeout: Option<f64>,
     shutdown_timeout: Option<f64>,
 }
 
 /// The runner handed into Rust ownership, and the startup it is waiting on.
-type SecondaryLifespanStart = (
+type ApplicationStart = (
     oneshot::Receiver<PyResult<Py<PyAny>>>,
     SlotFuture<PyResult<Py<PyAny>>>,
 );
 
-struct SecondaryRunner {
+struct PreparedLoop {
     index: usize,
     shard: Shard,
     runner: Py<PyAny>,
-}
-
-/// Exact, immutable Python-to-Rust ownership handoff for an active primary
-/// lifespan runner. Implementation object for secondary-loop state — not public
-/// API; the Python name is private.
-#[pyclass(frozen, name = "_LifespanHandoff")]
-pub(crate) struct LifespanHandoff {
-    app: Py<PyAny>,
-    state: Py<PyDict>,
-    config: SecondaryLifespanConfig,
-}
-
-#[pymethods]
-impl LifespanHandoff {
-    #[new]
-    const fn new(
-        app: Py<PyAny>,
-        state: Py<PyDict>,
-        required: bool,
-        startup_timeout: Option<f64>,
-        shutdown_timeout: Option<f64>,
-    ) -> Self {
-        Self {
-            app,
-            state,
-            config: SecondaryLifespanConfig {
-                required,
-                startup_timeout,
-                shutdown_timeout,
-            },
-        }
-    }
 }
 
 struct ServeTask {
     app: AppRuntimeHandle,
     fds: Box<[ListenerFd]>,
     config: Arc<ServerConfig>,
+    startup_shutdown: Py<PyAny>,
     shutdown_trigger: Py<PyAny>,
     ready_trigger: Option<Py<PyAny>>,
     quiesce_fd: Option<QuiesceFd>,
-    lifespan_config: Option<SecondaryLifespanConfig>,
-    secondary_apps: Vec<Py<PyAny>>,
+    preparation_config: ApplicationPreparationConfig,
+    secondary_sources: Vec<Py<PyAny>>,
     shard_threads: Vec<ShardThread>,
     main_shard: Shard,
     resolve_fut: Py<RustFuture>,
@@ -520,32 +491,36 @@ fn effective_loop_count(
     Ok(requested)
 }
 
-fn extract_lifespan_handoff(
+fn install_prepared_application(
     py: Python<'_>,
-    app: Py<PyAny>,
-    handoff: Option<Py<LifespanHandoff>>,
-    main_shard: &Shard,
-) -> PyResult<(Py<PyAny>, Option<SecondaryLifespanConfig>)> {
-    let Some(handoff) = handoff else {
-        return Ok((app, None));
-    };
-    let handoff = handoff.borrow(py);
-    main_shard.install_scope_state(py, handoff.state.clone_ref(py))?;
-    Ok((handoff.app.clone_ref(py), Some(handoff.config)))
+    prepared: &Bound<'_, PyAny>,
+    shard: &Shard,
+) -> PyResult<()> {
+    shard.install_application(
+        py,
+        prepared.getattr("app")?.unbind(),
+        prepared.getattr("state")?.extract()?,
+    )
 }
 
-fn start_secondary_lifespan(
-    index: usize,
+fn start_secondary_application(
     shard: Shard,
     app: Py<PyAny>,
-    config: SecondaryLifespanConfig,
-) -> SecondaryLifespanStart {
+    config: ApplicationPreparationConfig,
+) -> ApplicationStart {
     let (owner_tx, owner_rx) = oneshot::channel();
-    let start = call_awaitable(shard, move |py, shard| {
+    let start = call_awaitable(shard, move |py, _shard| {
         let module = py.import("h2corn._lifespan")?;
-        let runner = module.getattr("LifespanRunner")?.call1((app,))?;
-        let state = runner.getattr("state")?.cast_into::<PyDict>()?.unbind();
-        shard.install_scope_state(py, state)?;
+        let mode = if !config.enabled {
+            "off"
+        } else if config.required {
+            "on"
+        } else {
+            "auto"
+        };
+        let runner = module
+            .getattr("PreparedApplication")?
+            .call1((app, config.factory, mode))?;
         // Cross the runner into Rust ownership before its startup awaitable
         // begins, so rollback can stop/discard it even when startup fails or
         // outlives a peer failure.
@@ -559,15 +534,14 @@ fn start_secondary_lifespan(
         kwargs.set_item("required", config.required)?;
         kwargs.set_item("startup_timeout", config.startup_timeout)?;
         module
-            .getattr("start_lifespan_runner")?
+            .getattr("start_prepared_application")?
             .call((runner,), Some(&kwargs))
             .map(Bound::unbind)
     });
-    let _ = index;
     (owner_rx, start)
 }
 
-async fn stop_secondary_lifespan(
+async fn stop_secondary_application(
     shard: Shard,
     runner: Py<PyAny>,
     shutdown_timeout: Option<f64>,
@@ -577,7 +551,7 @@ async fn stop_secondary_lifespan(
         let kwargs = PyDict::new(py);
         kwargs.set_item("shutdown_timeout", shutdown_timeout)?;
         module
-            .getattr("stop_lifespan_runner")?
+            .getattr("stop_prepared_application")?
             .call((runner,), Some(&kwargs))
             .map(Bound::unbind)
     })
@@ -596,22 +570,47 @@ fn secondary_loop_index(task_indices: &[(tokio::task::Id, usize)], err: &JoinErr
         .expect("every joined secondary lifespan has a recorded loop index")
 }
 
-async fn start_secondary_lifespans(
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the pinned shutdown watcher and select temporaries retain startup cancellation through every owner handoff"
+)]
+async fn start_secondary_applications(
     shards: &[Shard],
     apps: Vec<Py<PyAny>>,
-    config: SecondaryLifespanConfig,
-) -> (Vec<SecondaryRunner>, Option<H2CornError>) {
+    config: ApplicationPreparationConfig,
+    shutdown_trigger: Py<PyAny>,
+) -> (Vec<PreparedLoop>, Option<H2CornError>, bool) {
+    if apps.is_empty() {
+        return (Vec::new(), None, false);
+    }
     let mut starts = JoinSet::new();
+    let (cancel, _) = watch::channel(false);
+    let shutdown = call_awaitable(
+        Arc::clone(shards.first().expect("primary shard exists")),
+        move |py, _| {
+            py.import("asyncio")?
+                .call_method1("shield", (shutdown_trigger,))
+                .map(Bound::unbind)
+        },
+    );
+    tokio::pin!(shutdown);
+    let mut stopped = false;
     let mut task_indices = Vec::with_capacity(apps.len());
     for (index, (shard, app)) in shards.iter().skip(1).cloned().zip(apps).enumerate() {
-        let (owner_rx, start) = start_secondary_lifespan(index, Arc::clone(&shard), app, config);
+        let (owner_rx, mut start) = start_secondary_application(Arc::clone(&shard), app, config);
+        let mut cancelled = cancel.subscribe();
+        let fail = cancel.clone();
         let task = starts.spawn(async move {
             // Retain every delivered owner before awaiting startup so a peer
             // failure can still roll this runner back.
             let owner = match owner_rx.await {
                 Ok(Ok(runner)) => Some(runner),
-                Ok(Err(err)) => return (index, shard, None, Err(H2CornError::from(err))),
+                Ok(Err(err)) => {
+                    fail.send_replace(true);
+                    return (index, shard, None, Err(H2CornError::from(err)));
+                },
                 Err(_) => {
+                    fail.send_replace(true);
                     return (
                         index,
                         shard,
@@ -622,18 +621,43 @@ async fn start_secondary_lifespans(
                     );
                 },
             };
-            match start.await {
-                Ok(_runner) => (index, shard, owner, Ok(())),
-                Err(err) => (index, shard, owner, Err(H2CornError::from(err))),
+            let result = tokio::select! {
+                biased;
+                _ = cancelled.wait_for(|value| *value) => {
+                    drop(start);
+                    return (index, shard, owner, Ok(()));
+                }
+                result = &mut start => result,
+            };
+            let result = match result {
+                Ok(runner) => call_awaitable(Arc::clone(&shard), move |py, shard| {
+                    install_prepared_application(py, runner.bind(py), &shard)?;
+                    Ok(shard.ready_none().clone_ref(py).into_any())
+                })
+                .await
+                .map(drop)
+                .map_err(H2CornError::from),
+                Err(error) => Err(H2CornError::from(error)),
+            };
+            if result.is_err() {
+                fail.send_replace(true);
             }
+            (index, shard, owner, result)
         });
         task_indices.push((task.id(), index));
     }
 
-    // Await every bounded startup outcome. Never abort_all: a higher-index
-    // runner that already crossed construction must still receive shutdown.
+    // Retain every published owner even when a peer fails or stop wins.
     let mut outcomes = Vec::with_capacity(starts.len());
-    while let Some(joined) = starts.join_next_with_id().await {
+    while !starts.is_empty() {
+        let joined = tokio::select! {
+            joined = starts.join_next_with_id() => joined.expect("nonempty startup set"),
+            _ = &mut shutdown, if !stopped => {
+                stopped = true;
+                cancel.send_replace(true);
+                continue;
+            }
+        };
         match joined {
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
@@ -656,7 +680,7 @@ async fn start_secondary_lifespans(
         .into_iter()
         .map(|(index, shard, owner, outcome)| match (owner, outcome) {
             (Some(runner), Ok(())) => (
-                Some(SecondaryRunner {
+                Some(PreparedLoop {
                     index,
                     shard,
                     runner,
@@ -666,7 +690,7 @@ async fn start_secondary_lifespans(
             (Some(runner), Err(err)) => (
                 // Startup failed after the owner crossed into Rust: keep it
                 // for rollback so discard/shutdown still run on its loop.
-                Some(SecondaryRunner {
+                Some(PreparedLoop {
                     index,
                     shard,
                     runner,
@@ -687,7 +711,7 @@ async fn start_secondary_lifespans(
         .unzip();
 
     if error_slots.iter().all(Option::is_none) {
-        return (runner_slots.into_iter().flatten().collect(), None);
+        return (runner_slots.into_iter().flatten().collect(), None, stopped);
     }
 
     // Keep the lowest-index startup error primary and report rollback failures.
@@ -700,33 +724,76 @@ async fn start_secondary_lifespans(
     for err in startup_errors {
         crate::server::report_failure("secondary lifespan startup", Err(err));
     }
-    // Roll back every retained runner, including successful higher-index ones.
-    // Collect into the call so Py owners are not bound past the await.
-    let shutdown_error = stop_secondary_lifespans(
+    (
         runner_slots.into_iter().flatten().collect(),
-        config.shutdown_timeout,
+        Some(first_startup_error),
+        stopped,
     )
-    .await;
-    if let Some(err) = shutdown_error {
-        crate::server::report_failure("secondary lifespan rollback", Err(err));
-    }
-    (Vec::new(), Some(first_startup_error))
 }
 
-async fn stop_secondary_lifespans(
-    runners: Vec<SecondaryRunner>,
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "prepared owners transfer into shutdown tasks after all startup settlement completes"
+)]
+async fn stop_secondary_applications(
+    runners: Vec<PreparedLoop>,
     shutdown_timeout: Option<f64>,
 ) -> Option<H2CornError> {
+    let mut settlements = JoinSet::new();
+    for PreparedLoop {
+        index,
+        shard,
+        runner,
+    } in runners
+    {
+        settlements.spawn(async move {
+            let settled = call_awaitable(Arc::clone(&shard), move |py, _| {
+                runner
+                    .bind(py)
+                    .call_method0("settle_startup")
+                    .map(Bound::unbind)
+            })
+            .await;
+            (index, shard, settled)
+        });
+    }
+    let mut runners = Vec::new();
+    let mut settlement_result = Ok(());
+    while let Some(outcome) = settlements.join_next().await {
+        match outcome {
+            Ok((index, shard, Ok(runner))) => runners.push(PreparedLoop {
+                index,
+                shard,
+                runner,
+            }),
+            Ok((_, _, Err(error))) => {
+                record_shutdown_failure(
+                    &mut settlement_result,
+                    "application startup settlement",
+                    error.into(),
+                );
+            },
+            Err(error) => {
+                if let Some(error) = unexpected_join_error(error) {
+                    record_shutdown_failure(
+                        &mut settlement_result,
+                        "application startup settlement",
+                        error.into(),
+                    );
+                }
+            },
+        }
+    }
     let mut stops = JoinSet::new();
     let mut task_indices = Vec::with_capacity(runners.len());
-    for SecondaryRunner {
+    for PreparedLoop {
         index,
         shard,
         runner,
     } in runners
     {
         let task = stops.spawn(async move {
-            let outcome = stop_secondary_lifespan(shard, runner, shutdown_timeout).await;
+            let outcome = stop_secondary_application(shard, runner, shutdown_timeout).await;
             (index, outcome)
         });
         task_indices.push((task.id(), index));
@@ -754,7 +821,7 @@ async fn stop_secondary_lifespans(
     }
     errors.sort_unstable_by_key(|(index, _)| *index);
     let mut errors = errors.into_iter().map(|(_, err)| err);
-    let first = errors.next();
+    let first = settlement_result.err().or_else(|| errors.next());
     for err in errors {
         crate::server::report_failure("secondary lifespan shutdown", Err(err));
     }
@@ -779,25 +846,45 @@ async fn run_serve_task(task: ServeTask) {
         fds,
         config,
         shutdown_trigger,
-        ready_trigger,
+        startup_shutdown,
+        mut ready_trigger,
         quiesce_fd,
-        lifespan_config,
-        secondary_apps,
+        preparation_config,
+        secondary_sources,
         shard_threads,
         main_shard,
         resolve_fut,
     } = task;
     let mut fds = Some(fds);
     // Bind secondary owners where startup runs, not via declare-then-reassign.
-    let (secondary_runners, mut result) = match lifespan_config {
-        Some(cfg) => {
-            let (runners, error) =
-                start_secondary_lifespans(&app.shards, secondary_apps, cfg).await;
-            (runners, error.map_or(Ok(()), Err))
-        },
-        None => (Vec::new(), Ok(())),
-    };
-    if result.is_ok() {
+    let (secondary_runners, startup_error, stopped) = start_secondary_applications(
+        &app.shards,
+        secondary_sources,
+        preparation_config,
+        startup_shutdown,
+    )
+    .await;
+    let mut result = startup_error.map_or(Ok(()), Err);
+    if let Err(error) = result {
+        drop(fds.take());
+        let error = into_pyerr(error);
+        if let Some(trigger) = ready_trigger.take() {
+            result = call_awaitable(Arc::clone(&main_shard), move |py, _| {
+                if let Err(notification_error) = trigger.bind(py).call1((error.value(py),)) {
+                    notification_error.write_unraisable(py, Some(trigger.bind(py)));
+                }
+                Err(error)
+            })
+            .await
+            .map(drop)
+            .map_err(H2CornError::from);
+        } else {
+            result = Err(error.into());
+        }
+    } else if stopped {
+        drop(fds.take());
+    }
+    if result.is_ok() && !stopped {
         result = serve_from_fds(
             Arc::clone(&app),
             fds.take()
@@ -816,11 +903,38 @@ async fn run_serve_task(task: ServeTask) {
     // applications may catch CancelledError and perform async cleanup before
     // acknowledging completion.
     app.wait_for_scoped_owners().await;
-    if let Some(cfg) = lifespan_config {
+    {
         let shutdown_error =
-            stop_secondary_lifespans(secondary_runners, cfg.shutdown_timeout).await;
+            stop_secondary_applications(secondary_runners, preparation_config.shutdown_timeout)
+                .await;
         if let Some(err) = shutdown_error {
             record_shutdown_failure(&mut result, "secondary lifespan shutdown", err);
+        }
+    }
+
+    let mut releases = JoinSet::new();
+    for shard in &app.shards {
+        let shard = Arc::clone(shard);
+        releases.spawn(async move {
+            call_awaitable(shard, |py, shard| {
+                shard.release_application(py);
+                Ok(shard.ready_none().clone_ref(py).into_any())
+            })
+            .await
+            .map(drop)
+        });
+    }
+    while let Some(released) = releases.join_next().await {
+        match released {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => {
+                record_shutdown_failure(&mut result, "loop application release", error.into());
+            },
+            Err(error) => {
+                if let Some(error) = unexpected_join_error(error) {
+                    record_shutdown_failure(&mut result, "loop application release", error.into());
+                }
+            },
         }
     }
 
@@ -829,9 +943,9 @@ async fn run_serve_task(task: ServeTask) {
     // values for main-loop destruction.
     let loop_owned = match Arc::try_unwrap(app) {
         Ok(shared) => {
-            let (python_app, limits, shards) = shared.into_teardown();
+            let (limits, shards) = shared.into_teardown();
             drop(shards);
-            Some((python_app, limits))
+            Some(limits)
         },
         Err(app) => {
             let owners = Arc::strong_count(&app);
@@ -893,7 +1007,7 @@ async fn run_serve_task(task: ServeTask) {
 }
 
 #[pyfunction]
-#[pyo3(signature = (app, fds, config, shutdown_trigger, retire_trigger=None, lifespan_handoff=None, ready_trigger=None, quiesce_fd=None, *, prepared_tls))]
+#[pyo3(signature = (prepared_application, fds, config, shutdown_trigger, retire_trigger=None, ready_trigger=None, quiesce_fd=None, *, prepared_tls))]
 /// Adopt listener file descriptors and run one worker until shutdown.
 ///
 /// Borrows every descriptor in `fds` and `quiesce_fd` for this synchronous call,
@@ -905,14 +1019,15 @@ async fn run_serve_task(task: ServeTask) {
 /// reused here. There is no path that reopens certificate files in a worker.
 ///
 /// Args:
-///     app (Application): The ASGI application to serve.
+///     prepared_application (PreparedApplication): The primary loop's prepared app and source.
 ///     fds (list[int]): Listener descriptors to borrow and duplicate.
 ///     config (Config): The validated server configuration.
 ///     shutdown_trigger (Awaitable[str]): Awaited to begin a graceful shutdown.
 ///     retire_trigger (Callable[[], None] | None): Called when accepting stops
 ///         while in-flight requests drain.
-///     lifespan_handoff (_LifespanHandoff | None): Carries lifespan state from the parent process.
-///     ready_trigger (Callable[[], None] | None): Called once the worker accepts connections.
+///     ready_trigger (Callable[[BaseException | None], None] | None): Called with
+///         ``None`` when the worker accepts connections, or a startup error
+///         before retained rollback.
 ///     quiesce_fd (int | None): Descriptor signalling quiesce; borrowed and duplicated on Unix.
 ///     prepared_tls (_PreparedTls): The acceptor built once by ``prepare_tls``.
 ///
@@ -928,12 +1043,11 @@ async fn run_serve_task(task: ServeTask) {
 )]
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
-    app: Py<PyAny>,
+    prepared_application: Py<PyAny>,
     fds: Vec<PythonRawHandle>,
     config: &Bound<'py, PyAny>,
     shutdown_trigger: Py<PyAny>,
     retire_trigger: Option<Py<PyAny>>,
-    lifespan_handoff: Option<Py<LifespanHandoff>>,
     ready_trigger: Option<Py<PyAny>>,
     quiesce_fd: Option<PythonRawHandle>,
     prepared_tls: PyRef<'_, PreparedTls>,
@@ -951,14 +1065,28 @@ pub(crate) fn serve_fds<'py>(
     let config = Arc::new(config);
 
     let (main_shard, loop_factory) = ShardHandle::from_running_loop(py)?;
-    let (app, lifespan_config) =
-        match extract_lifespan_handoff(py, app, lifespan_handoff, &main_shard) {
-            Ok(handoff) => handoff,
-            Err(err) => {
-                main_shard.detach(py);
-                return Err(err);
+    let preparation = (|| {
+        let prepared = prepared_application.bind(py);
+        install_prepared_application(py, prepared, &main_shard)?;
+        let mode = prepared.getattr("mode")?.extract::<String>()?;
+        Ok::<_, PyErr>((
+            prepared.getattr("source")?.unbind(),
+            ApplicationPreparationConfig {
+                enabled: mode != "off",
+                factory: prepared.getattr("factory")?.extract()?,
+                required: mode == "on",
+                startup_timeout: py_config.get("timeout_lifespan_startup")?,
+                shutdown_timeout: py_config.get("timeout_lifespan_shutdown")?,
             },
-        };
+        ))
+    })();
+    let (source, preparation_config) = match preparation {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            main_shard.detach(py);
+            return Err(error);
+        },
+    };
     let limits = RuntimeLimits::new(&config, &main_shard, retire_trigger).map(Arc::new);
 
     // Extra loop shards only run on free-threaded builds; on a GIL build the
@@ -996,16 +1124,11 @@ pub(crate) fn serve_fds<'py>(
     } else {
         Vec::new()
     };
-    let secondary_apps = if lifespan_config.is_some() {
-        shard_threads
-            .iter()
-            .map(|_| app.clone_ref(py))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let secondary_sources = shard_threads
+        .iter()
+        .map(|_| source.clone_ref(py))
+        .collect::<Vec<_>>();
     let app: AppRuntimeHandle = Arc::new(AppRuntime::new(
-        app,
         std::iter::once(Arc::clone(&main_shard))
             .chain(
                 shard_threads
@@ -1029,15 +1152,28 @@ pub(crate) fn serve_fds<'py>(
     };
     let panic_shard = Arc::clone(&main_shard);
     let panic_future = server_done.clone_ref(py);
+    let shutdown_trigger = match py
+        .import("asyncio")
+        .and_then(|asyncio| asyncio.call_method1("ensure_future", (shutdown_trigger,)))
+    {
+        Ok(trigger) => trigger.unbind(),
+        Err(error) => {
+            drop(app);
+            py.detach(move || drop(shard_threads));
+            main_shard.detach(py);
+            return Err(error);
+        },
+    };
     let task = ServeTask {
         app,
         fds,
         config,
+        startup_shutdown: shutdown_trigger.clone_ref(py),
         shutdown_trigger,
         ready_trigger,
         quiesce_fd,
-        lifespan_config,
-        secondary_apps,
+        preparation_config,
+        secondary_sources,
         shard_threads,
         main_shard,
         resolve_fut: server_done.clone_ref(py),
@@ -1237,33 +1373,30 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-    fn typed_lifespan_handoff_installs_exact_app_state_and_config() {
+    fn prepared_application_installs_the_matching_callable_and_state() {
         Python::initialize();
         Python::attach(|py| {
-            let wrapper = config_stub(py).unbind();
             let original = config_stub(py).unbind();
             let state = PyDict::new(py);
             state.set_item("ready", true).unwrap();
-            let handoff = Py::new(
-                py,
-                LifespanHandoff::new(
-                    original.clone_ref(py),
-                    state.unbind(),
-                    true,
-                    Some(1.5),
-                    Some(2.5),
-                ),
-            )
-            .unwrap();
+            let prepared = config_stub(py);
+            prepared.setattr("app", original.bind(py)).unwrap();
+            prepared.setattr("state", state).unwrap();
             let shard = ShardHandle::test_stub(py);
 
-            let (app, config) =
-                extract_lifespan_handoff(py, wrapper, Some(handoff), &shard).unwrap();
+            install_prepared_application(py, &prepared, &shard).unwrap();
+            let (app, state) = shard.application_for_request(py).unwrap();
             assert!(app.bind(py).is(original.bind(py)));
-            let config = config.expect("typed handoff enables secondary lifespan");
-            assert!(config.required);
-            assert_eq!(config.startup_timeout, Some(1.5));
-            assert_eq!(config.shutdown_timeout, Some(2.5));
+            assert!(
+                state
+                    .unwrap()
+                    .get_item("ready")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            drop(shard);
         });
     }
 

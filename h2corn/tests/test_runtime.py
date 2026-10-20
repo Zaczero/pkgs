@@ -829,7 +829,6 @@ async def test_native_cancelled_error_propagates_without_shutdown_spin(
         _config,
         shutdown_trigger,
         _retire_trigger,
-        _lifespan_handoff,
         ready_trigger,
         *_args,
         **_kwargs,
@@ -878,7 +877,6 @@ async def test_synchronous_native_setup_failure_clears_state_before_reuse(
         _config,
         shutdown_trigger,
         _retire_trigger,
-        _lifespan_handoff,
         ready_trigger,
         *_args,
         **_kwargs,
@@ -1036,7 +1034,6 @@ async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) 
         _config,
         shutdown,
         _retire_trigger,
-        _lifespan_handoff,
         mark_started,
         _quiesce_fd,
         *,
@@ -1327,11 +1324,15 @@ async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
 
 async def test_serve_fds_count_mismatch_leaves_caller_handles_open() -> None:
     from h2corn._lib import prepare_tls, serve_fds
+    from h2corn._lifespan import PreparedApplication
 
     async def app(scope, receive, send):
         raise AssertionError('listener adoption must fail before app dispatch')
 
     async def attempt(raw_fds: list[int]) -> None:
+        prepared = PreparedApplication(app, False, 'off')
+        await prepared.startup(required=False)
+
         async def wait_for_shutdown() -> str:
             await asyncio.sleep(60)
             return 'stop'
@@ -1346,11 +1347,10 @@ async def test_serve_fds_count_mismatch_leaves_caller_handles_open() -> None:
         try:
             with pytest.raises((OSError, RuntimeError)):
                 await serve_fds(
-                    app,
+                    prepared,
                     raw_fds,
                     config,
                     shutdown,
-                    None,
                     None,
                     None,
                     quiesce_read_fd,
@@ -1396,11 +1396,14 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
     quiesce_fd: int | None,
 ) -> None:
     from h2corn._lib import prepare_tls, serve_fds
+    from h2corn._lifespan import PreparedApplication
 
     async def app(scope, receive, send):
         raise AssertionError('descriptor validation precedes app dispatch')
 
     shutdown = asyncio.get_running_loop().create_future()
+    prepared = PreparedApplication(app, False, 'off')
+    await prepared.startup(required=False)
     config = Config(
         bind=tuple(f'fd://{index}' for index in range(len(listener_fds))),
         lifespan='off',
@@ -1409,11 +1412,10 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
         ValueError, match=r'nonnegative|outside|globally unique|only supported on Unix'
     ):
         serve_fds(
-            app,
+            prepared,
             listener_fds,
             config,
             shutdown,
-            None,
             None,
             None,
             quiesce_fd,
@@ -1424,14 +1426,17 @@ async def test_serve_fds_rejects_unsafe_descriptor_ownership(
 @pytest.mark.skipif(sys.platform != 'win32', reason='Windows ingress regression')
 async def test_serve_fds_negative_handle_is_value_error() -> None:
     from h2corn._lib import prepare_tls, serve_fds
+    from h2corn._lifespan import PreparedApplication
 
     async def app(*_args: object) -> None:
         pass
 
     config = Config(bind=('fd://0',), lifespan='off')
+    prepared = PreparedApplication(app, False, 'off')
+    await prepared.startup(required=False)
     with pytest.raises(ValueError, match='socket handles must be nonnegative'):
         serve_fds(
-            app,
+            prepared,
             [-1],
             config,
             asyncio.get_running_loop().create_future(),
@@ -1446,6 +1451,7 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
     import resource
 
     from h2corn._lib import prepare_tls, serve_fds
+    from h2corn._lifespan import PreparedApplication
 
     async def app(*_args: object) -> None:
         pass
@@ -1472,10 +1478,12 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
         os.close(read_fd)
         quiesce_fd = None
     config = Config(bind=('fd://0',), lifespan='off')
+    prepared = PreparedApplication(app, False, 'off')
+    await prepared.startup(required=False)
     try:
         with pytest.raises(OSError, match=rf'os error {errno.EBADF}\b'):
             serve_fds(
-                app,
+                prepared,
                 [invalid_fd] if closed_source == 'listener' else [listener_fd],
                 config,
                 asyncio.get_running_loop().create_future(),
@@ -1494,6 +1502,7 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
 
 async def test_serve_fds_returns_awaitable_and_duplicates_sources() -> None:
     from h2corn._lib import prepare_tls, serve_fds
+    from h2corn._lifespan import PreparedApplication
 
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
@@ -1510,9 +1519,11 @@ async def test_serve_fds_returns_awaitable_and_duplicates_sources() -> None:
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
             await send({'type': 'http.response.body', 'body': b'fd-duplicate'})
 
+    prepared = PreparedApplication(app, False, 'off')
+    await prepared.startup(required=False)
     try:
         result = serve_fds(
-            app,
+            prepared,
             [listener_fd],
             config,
             shutdown,
@@ -2075,6 +2086,41 @@ async def test_worker_supervisor_serves_requests(tmp_path: Path, workers: int) -
         assert status == 200
         assert body == b'supervisor'
         assert process.returncode is None
+    finally:
+        await _terminate_process(process)
+
+
+async def test_cli_factory_constructs_the_application_on_a_running_worker_loop(
+    tmp_path: Path,
+) -> None:
+    process, port = await _spawn_server_process(
+        tmp_path=tmp_path,
+        module_name='loop_factory_app',
+        module_source="""
+        import asyncio
+
+        def app():
+            owner_loop = asyncio.get_running_loop()
+
+            async def application(scope, receive, send):
+                assert asyncio.get_running_loop() is owner_loop
+                if scope['type'] == 'lifespan':
+                    assert (await receive())['type'] == 'lifespan.startup'
+                    await send({'type': 'lifespan.startup.complete'})
+                    assert (await receive())['type'] == 'lifespan.shutdown'
+                    await send({'type': 'lifespan.shutdown.complete'})
+                else:
+                    await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+                    await send({'type': 'http.response.body', 'body': b'loop-local factory'})
+            return application
+        """,
+        workers=1,
+        extra_args=['--factory', '--lifespan', 'on', '--loop-threads', '2'],
+    )
+    try:
+        status, body = await asyncio.wait_for(h2_request(port=port), HANG_BOUND)
+        assert status == 200
+        assert body == b'loop-local factory'
     finally:
         await _terminate_process(process)
 

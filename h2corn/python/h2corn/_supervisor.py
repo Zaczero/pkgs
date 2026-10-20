@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from h2corn._config import Config
     from h2corn._lib import _PreparedTls
     from h2corn._server import ProcessIdentity
-    from h2corn._types import Application
+    from h2corn._types import Application, ApplicationFactory
 
 _WORKER_FAILURE_WINDOW = 5.0
 _WORKER_FAILURE_BACKOFF_INITIAL = 0.1
@@ -168,9 +168,10 @@ def _install_parent_death_signal(expected_supervisor_pid: int) -> None:
 
 
 def _worker_entry(
-    app: Application | ImportSettings,
+    app: Application | ApplicationFactory | ImportSettings,
     *,
     config: Config,
+    factory: bool = False,
     fds: tuple[int, ...],
     identity: ProcessIdentity,
     prepared_tls: _PreparedTls,
@@ -215,8 +216,15 @@ def _worker_entry(
 
     drop_process_privileges(identity)
     _install_parent_death_signal(expected_supervisor_pid)
-    active_app = import_target(app) if isinstance(app, ImportSettings) else app
-    server = Server(active_app, _clone_config(config, workers=1))
+    if isinstance(app, ImportSettings):
+        factory = app.factory
+        app = import_target(app)
+    worker_config = _clone_config(config, workers=1)
+    server = (
+        Server(cast('ApplicationFactory', app), worker_config, factory=True)
+        if factory
+        else Server(cast('Application', app), worker_config)
+    )
     ready = False
     native_drain_complete = False
 
@@ -331,11 +339,12 @@ class _Supervisor:
     tracks at most one in-flight rolling replacement.
     """
 
-    app: Application | ImportSettings
+    app: Application | ApplicationFactory | ImportSettings
     config: Config
     fds: tuple[int, ...]
     identity: ProcessIdentity
     prepared_tls: _PreparedTls
+    factory: bool = False
     pid_fd: int | None = None
     parent_liveness_fd: int | None = None
     supervisor_pid: int = field(default_factory=os.getpid)
@@ -489,6 +498,7 @@ class _Supervisor:
                 args=(self.app,),
                 kwargs={
                     'config': worker_config,
+                    'factory': self.factory,
                     'fds': self.fds,
                     'identity': self.identity,
                     'prepared_tls': self.prepared_tls,
@@ -1013,10 +1023,11 @@ class _Supervisor:
 
 
 def serve_with_supervisor(
-    app: Application | ImportSettings,
+    app: Application | ApplicationFactory | ImportSettings,
     config: Config,
     *,
     pid_fd: int | None = None,
+    factory: bool = False,
 ) -> None:
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
@@ -1061,6 +1072,7 @@ def serve_with_supervisor(
             fds=listener_fds,
             identity=identity,
             prepared_tls=prepared_tls,
+            factory=factory,
             pid_fd=pid_fd,
             parent_liveness_fd=parent_liveness_fd,
         )

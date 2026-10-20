@@ -83,7 +83,10 @@ silently re-enable the GIL.
 Requests are balanced across the loops round-robin, and each request
 runs entirely on one loop. Each loop runs a separate ASGI lifespan cycle
 and receives its own lifespan state dictionary. Applications using loop-bound
-resources should create them during lifespan startup; startup and shutdown
+resources should use an [application factory](../quickstart.md#application-factories)
+for a separate application instance on each loop, and acquire asynchronous
+resources during lifespan startup. Without `--factory` (or `factory=True` in
+Python), the application object itself is shared across loops. Startup and shutdown
 side effects therefore run once per loop and must be safe to repeat.
 
 On a regular (GIL)

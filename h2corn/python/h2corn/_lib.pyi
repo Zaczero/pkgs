@@ -2,31 +2,15 @@ from collections.abc import Awaitable, Callable
 from typing import final
 
 from h2corn._config import Config
+from h2corn._lifespan import PreparedApplication
 from h2corn._server import TlsMaterial
-from h2corn._types import Application, State
 
 __all__ = [
-    '_LifespanHandoff',
     '_PreparedTls',
     'emit_banner',
     'prepare_tls',
     'serve_fds',
 ]
-
-@final
-class _LifespanHandoff:
-    """Exact, immutable Python-to-Rust ownership handoff for an active primary
-    lifespan runner. Implementation object for secondary-loop state — not public
-    API; the Python name is private.
-    """
-    def __new__(
-        cls,
-        app: Application,
-        state: State,
-        required: bool,
-        startup_timeout: float | None,
-        shutdown_timeout: float | None,
-    ) -> _LifespanHandoff: ...
 
 @final
 class _PreparedTls:
@@ -66,13 +50,12 @@ def emit_banner(config: Config, tls: _PreparedTls) -> None:
     """
 
 def serve_fds(
-    app: Application,
+    prepared_application: PreparedApplication,
     fds: list[int],
     config: Config,
     shutdown_trigger: Awaitable[str],
     retire_trigger: Callable[[], None] | None = None,
-    lifespan_handoff: _LifespanHandoff | None = None,
-    ready_trigger: Callable[[], None] | None = None,
+    ready_trigger: Callable[[BaseException | None], None] | None = None,
     quiesce_fd: int | None = None,
     *,
     prepared_tls: _PreparedTls,
@@ -88,14 +71,15 @@ def serve_fds(
     reused here. There is no path that reopens certificate files in a worker.
 
     Args:
-        app (Application): The ASGI application to serve.
+        prepared_application (PreparedApplication): The primary loop's prepared app and source.
         fds (list[int]): Listener descriptors to borrow and duplicate.
         config (Config): The validated server configuration.
         shutdown_trigger (Awaitable[str]): Awaited to begin a graceful shutdown.
         retire_trigger (Callable[[], None] | None): Called when accepting stops
             while in-flight requests drain.
-        lifespan_handoff (_LifespanHandoff | None): Carries lifespan state from the parent process.
-        ready_trigger (Callable[[], None] | None): Called once the worker accepts connections.
+        ready_trigger (Callable[[BaseException | None], None] | None): Called with
+            ``None`` when the worker accepts connections, or a startup error
+            before retained rollback.
         quiesce_fd (int | None): Descriptor signalling quiesce; borrowed and duplicated on Unix.
         prepared_tls (_PreparedTls): The acceptor built once by ``prepare_tls``.
 

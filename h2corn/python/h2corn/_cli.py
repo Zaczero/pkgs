@@ -255,7 +255,7 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
             section.add_argument(
                 '--factory',
                 action='store_true',
-                help='Treat the target as a zero-argument callable that returns an ASGI application.',
+                help='Construct an application on each running request loop using the zero-argument target.',
             )
             section.add_argument(
                 '--app-dir',

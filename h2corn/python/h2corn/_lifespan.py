@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import cast
 
 TYPE_CHECKING = False
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
 
     from h2corn._types import (
         Application,
+        ApplicationFactory,
         FrameworkASGIApp,
         FrameworkMessage,
         State,
@@ -34,7 +36,9 @@ async def cancel_task(
     """
     if task is None:
         return
-    if not task.done():
+    if not task.done() and (
+        not isinstance(task, asyncio.Task) or not task.cancelling()
+    ):
         task.cancel()
 
     # Cancellation of this cleanup's caller is distinct from cancellation of
@@ -135,6 +139,10 @@ class LifespanRunner:
             if task.done():
                 self._task = None
 
+    async def wait_failed_startup(self) -> None:
+        if not self._active:
+            await self.wait_retained_task()
+
     async def _exchange(self, message: FrameworkMessage):
         assert self._task is not None
         event_task = asyncio.create_task(self._send.get())
@@ -174,7 +182,6 @@ class LifespanRunner:
                     self._active = True
                     return
                 case 'lifespan.startup.failed':
-                    await self.discard_task()
                     detail = message.get('message', '')
                     raise RuntimeError(
                         'lifespan startup failed'
@@ -185,7 +192,6 @@ class LifespanRunner:
                     await self.discard_task()
                     return
                 case message_type:
-                    await self.discard_task()
                     raise RuntimeError(
                         f'unexpected lifespan startup event: {message_type}'
                     )
@@ -238,7 +244,6 @@ class LifespanRunner:
             case 'lifespan.shutdown.complete':
                 pass
             case 'lifespan.shutdown.failed':
-                await self.discard_task()
                 detail = message.get('message', '')
                 raise RuntimeError(
                     'lifespan shutdown failed'
@@ -246,7 +251,6 @@ class LifespanRunner:
                     else f'lifespan shutdown failed: {detail}'
                 )
             case message_type:
-                await self.discard_task()
                 raise RuntimeError(
                     f'unexpected lifespan shutdown event: {message_type}'
                 )
@@ -260,12 +264,91 @@ class LifespanRunner:
             self._active = False
 
 
-async def start_lifespan_runner(
-    runner: LifespanRunner,
+class PreparedApplication:
+    """Own one application's construction and lifespan on its request loop."""
+
+    def __init__(
+        self,
+        source: Application | ApplicationFactory,
+        factory: bool,
+        mode: str,
+    ) -> None:
+        self.source = source
+        self.factory = factory
+        self.mode = mode
+        self.app: Application | None = None
+        self._runner: LifespanRunner | None = None
+        self._startup_task: asyncio.Task[Any] | None = None
+
+    @property
+    def state(self) -> State | None:
+        return None if self._runner is None else self._runner.state
+
+    async def startup(self, *, required: bool) -> None:
+        self._startup_task = asyncio.current_task()
+        app = cast('ApplicationFactory', self.source)() if self.factory else self.source
+        if inspect.isawaitable(app):
+            if inspect.iscoroutine(app):
+                app.close()
+            raise TypeError(
+                'application factory must return an ASGI callable, not an awaitable'
+            )
+        if not callable(app):
+            raise TypeError('application factory returned a non-callable')
+        self.app = cast('Application', app)
+        if self.mode != 'off':
+            self._runner = LifespanRunner(self.app)
+            await self._runner.startup(required=required)
+        self._startup_task = None
+
+    async def discard_task(self, timeout: float | None = None) -> bool:
+        if not await self._cancel_startup(timeout):
+            return False
+        return self._runner is None or await self._runner.discard_task(timeout)
+
+    async def _cancel_startup(self, timeout: float | None = None) -> bool:
+        startup = self._startup_task
+        if startup is not None and startup is not asyncio.current_task():
+            try:
+                await cancel_task(startup, timeout=timeout)
+            except (Exception, asyncio.CancelledError):
+                pass
+            if not startup.done():
+                return False
+            self._startup_task = None
+        return True
+
+    async def settle_startup(self) -> PreparedApplication:
+        await self._cancel_startup()
+        if self._runner is not None:
+            await self._runner.wait_failed_startup()
+        return self
+
+    async def wait_retained_task(self) -> None:
+        startup = self._startup_task
+        if startup is not None and startup is not asyncio.current_task():
+            try:
+                await asyncio.shield(startup)
+            except (Exception, asyncio.CancelledError):
+                pass
+            finally:
+                if startup.done():
+                    self._startup_task = None
+        if self._runner is not None:
+            await self._runner.wait_retained_task()
+
+    async def shutdown(self) -> None:
+        await self._cancel_startup()
+        if self._runner is not None:
+            await self._runner.shutdown()
+
+
+async def start_prepared_application(
+    runner: PreparedApplication,
     *,
     required: bool,
     startup_timeout: float | None,
-) -> LifespanRunner:
+) -> PreparedApplication:
     """Start one secondary-loop runner and return its owning object."""
     try:
         await await_with_timeout(
@@ -281,8 +364,8 @@ async def start_lifespan_runner(
     return runner
 
 
-async def stop_lifespan_runner(
-    runner: LifespanRunner,
+async def stop_prepared_application(
+    runner: PreparedApplication,
     *,
     shutdown_timeout: float | None,
 ) -> None:

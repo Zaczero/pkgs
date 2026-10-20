@@ -10,11 +10,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast, overload
 
 from h2corn._cli import ImportSettings, run_cli
 from h2corn._config import Config
-from h2corn._lifespan import LifespanRunner, await_with_timeout, cancel_task
+from h2corn._lifespan import PreparedApplication, await_with_timeout, cancel_task
 from h2corn._socket import (
     ListenerLease,
     bound_addresses,
@@ -29,8 +29,8 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
 
-    from h2corn._lib import _LifespanHandoff, _PreparedTls
-    from h2corn._types import Application, ASGIApp
+    from h2corn._lib import _PreparedTls
+    from h2corn._types import Application, ApplicationFactory
 
 
 _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
@@ -61,11 +61,21 @@ def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
 
 
 def _run_loop_thread(  # pyright: ignore[reportUnusedFunction] - Called by Rust.
-    run: Callable[[], None],
+    run: Callable[[asyncio.AbstractEventLoop], None],
+    loop_factory: Callable[[], asyncio.AbstractEventLoop],
 ) -> None:
     # Keep a Python frame alive while native loop setup and teardown call
     # debug traceback capture on a freshly attached thread.
-    run()
+    def create_current_loop() -> asyncio.AbstractEventLoop:
+        loop = loop_factory()
+        asyncio.set_event_loop(loop)
+        return loop
+
+    try:
+        with asyncio.Runner(loop_factory=create_current_loop) as runner:
+            run(runner.get_loop())
+    finally:
+        asyncio.set_event_loop(None)
 
 
 @contextmanager
@@ -337,16 +347,49 @@ class Server:
     `max_requests_jitter`, and `timeout_worker_healthcheck`) are ignored with
     a warning.
 
+    With `factory=True`, `app` is a synchronous zero-argument constructor.
+    Each effective request-serving loop calls it while running, once per serve
+    generation, then starts that instance's ASGI lifespan on the same loop.
+    Acquire asynchronous resources in lifespan and use `lifespan="on"` when
+    startup acknowledgement is required. Factory errors always fail startup.
+    Without the flag the supplied app is shared across request loops, so it
+    must support their concurrent use.
+
     Examples:
         `examples/embedded.py` runs one worker on an ephemeral port, sends a
         request through it, and shuts it down.
     """
 
-    app: Application
+    app: Application | ApplicationFactory
     config: Config
 
-    def __init__(self, app: Application, config: Config | None = None) -> None:
+    @overload
+    def __init__(
+        self,
+        app: Application,
+        config: Config | None = None,
+        *,
+        factory: Literal[False] = False,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        app: ApplicationFactory,
+        config: Config | None = None,
+        *,
+        factory: Literal[True],
+    ) -> None: ...
+
+    def __init__(
+        self,
+        app: Application | ApplicationFactory,
+        config: Config | None = None,
+        *,
+        factory: bool = False,
+    ) -> None:
         self.app = app
+        self.factory = factory
         self.config = Config() if config is None else config
         self._state_lock = threading.Lock()
         self._generation: _ServeGeneration | None = None
@@ -354,30 +397,22 @@ class Server:
         self._readiness = _Readiness.IDLE
         self._started_waiters: list[asyncio.Future[None]] = []
 
-    def _settle_started(self, state: _Readiness, error: BaseException | None) -> None:
-        """Answer everyone currently waiting to hear that this server started.
+    def _fail_started(self, state: _Readiness, error: BaseException) -> None:
+        """Fail current readiness waiters without retaining a generation's error.
 
         Readiness is a fact about the process, not about one event loop: a
         `Server` may be driven from another thread's loop entirely, so each
         waiter is resolved on the loop it is waiting in.
 
-        Only success is remembered. A failure belongs to the lifecycle it
-        ended, so someone who starts waiting afterwards is asking about the
-        next one and waits for it, rather than inheriting an answer to a
-        question they did not ask.
+        Someone who starts waiting after a failure asks about the next lifecycle
+        rather than inheriting an answer to a question they did not ask.
         """
         with self._state_lock:
-            if self._readiness is state and state is _Readiness.SERVING:
+            if state is _Readiness.IDLE and self._readiness is _Readiness.IDLE:
                 return
             self._readiness = state
             waiters = self._started_waiters
             self._started_waiters = []
-        if state is _Readiness.SERVING:
-            # Same fact, reported outward. Under the supervisor this is a no-op
-            # in the worker: `_worker_entry` drops `NOTIFY_SOCKET` so only the
-            # supervisor, which knows when the whole fleet is serving, answers
-            # for the unit.
-            notify_ready()
         for waiter in waiters:
             _resolve_on_owning_loop(waiter, error)
 
@@ -396,6 +431,10 @@ class Server:
 
         If startup fails, raises the startup error. Raises `RuntimeError`
         if the server is already shutting down.
+
+        A failure is delivered to callers waiting for that startup. A later
+        call waits for the next serve generation rather than repeating a
+        previous generation's error.
 
         Partial example:
 
@@ -423,12 +462,13 @@ class Server:
     @property
     def releasing(self) -> bool:
         """
-        Whether a previous `serve()` is still releasing its requests.
+        Whether a previous `serve()` is still releasing application resources.
 
-        `serve()` stops waiting once the graceful budget is spent, but requests
-        that ignored cancellation keep the application and its event loops
-        alive. While this is true the same `Server` cannot `serve()` again.
-        Lifespan shutdown runs only after those requests finally release.
+        A startup failure or an expired graceful budget can settle `serve()`
+        while cancellation cleanup still owns the application and its loops.
+        The same `Server` cannot `serve()` again until this becomes false.
+        Lifespan shutdown follows actual request settlement, and private loop
+        cleanup finishes before the generation releases.
         """
         with self._state_lock:
             generation = self._generation
@@ -482,7 +522,7 @@ class Server:
         # Acceptance stops here, so this server is no longer one that
         # `wait_started()` can report as started, and anyone still waiting to
         # hear that it did is told what actually happened instead.
-        self._settle_started(
+        self._fail_started(
             _Readiness.STOPPING, RuntimeError('the server is shutting down')
         )
         # Only a real stop. A RESTART is a supervisor-internal generation
@@ -542,10 +582,14 @@ class Server:
         with self._state_lock:
             if self._generation is generation:
                 self._generation = None
-        # Consume any lifecycle exception once the public boundary has already
-        # observed it (or timed out); otherwise asyncio warns on abandon.
         if not task.cancelled():
-            task.exception()
+            error = task.exception()
+            if error is not None and error is not generation.returned.exception():
+                generation.loop.call_exception_handler({
+                    'message': 'server cleanup failed',
+                    'exception': error,
+                    'future': task,
+                })
 
     async def _await_generation(self, generation: _ServeGeneration) -> None:
         """Wait on the public boundary, absorbing cancellation into shutdown."""
@@ -598,7 +642,7 @@ class Server:
                     raise
                 finally:
                     self._finish_returned(generation, error)
-                    self._settle_started(
+                    self._fail_started(
                         _Readiness.IDLE,
                         RuntimeError('the server stopped before it started serving')
                         if error is None
@@ -646,6 +690,10 @@ class Server:
         and the same `Server` cannot `serve()` again until then. A synchronous
         Python call that blocks the event-loop thread cannot be preempted
         in-process; use supervised workers when a hard kill bound is required.
+
+        The original serving or startup error remains the public failure if
+        rollback also fails. A later cleanup failure is reported through the
+        owning event loop's exception handler.
 
         Raises `NotImplementedError` if `Config.workers` is not 1; multi-worker
         deployments must go through [`serve`][h2corn.serve].
@@ -817,18 +865,6 @@ class Server:
         mode = self.config.lifespan
         startup_timeout = self.config.timeout_lifespan_startup
         shutdown_timeout = self.config.timeout_lifespan_shutdown
-        if mode == 'off':
-            await self._native_serve(
-                generation,
-                listeners,
-                lifespan_handoff=None,
-                retire_trigger=retire_trigger,
-                ready_trigger=ready_trigger,
-                quiesce_fd=quiesce_fd,
-                prepared_tls=prepared_tls,
-            )
-            return
-
         if release_pre_native_listeners is None:
 
             def _release_bound_listeners() -> BaseException | None:
@@ -848,7 +884,7 @@ class Server:
 
             release_pre_native_listeners = _release_bound_listeners
 
-        lifespan = LifespanRunner(self.app)
+        lifespan = PreparedApplication(self.app, self.factory, mode)
         try:
             await self._run_primary_startup(
                 generation,
@@ -867,30 +903,27 @@ class Server:
         except BaseException as exc:
             # Startup is the primary failure; cleanup must not replace it.
             release_pre_native_listeners()
+            self._fail_started(_Readiness.IDLE, exc)
             await self._retain_until_lifespan_settles(
                 generation, lifespan, startup_timeout, exc
             )
             raise
 
         try:
-            from h2corn._lib import _LifespanHandoff
-
-            handoff = _LifespanHandoff(
-                self.app,
-                lifespan.state,
-                mode == 'on',
-                startup_timeout,
-                shutdown_timeout,
-            )
             await self._native_serve(
                 generation,
                 listeners,
-                lifespan_handoff=handoff,
+                prepared_application=lifespan,
                 retire_trigger=retire_trigger,
                 ready_trigger=ready_trigger,
                 quiesce_fd=quiesce_fd,
                 prepared_tls=prepared_tls,
             )
+        except BaseException as exc:
+            release_pre_native_listeners()
+            self._fail_started(_Readiness.IDLE, exc)
+            self._finish_returned(generation, exc)
+            raise
         finally:
             # Native drain is complete: every request has released the
             # application, so lifespan shutdown can close what startup opened.
@@ -914,7 +947,7 @@ class Server:
     async def _run_primary_startup(
         self,
         generation: _ServeGeneration,
-        lifespan: LifespanRunner,
+        lifespan: PreparedApplication,
         mode: str,
         startup_timeout: float | None,
         release_pre_native_listeners: Callable[[], BaseException | None],
@@ -979,7 +1012,7 @@ class Server:
     async def _retain_until_lifespan_settles(
         self,
         generation: _ServeGeneration,
-        lifespan: LifespanRunner,
+        lifespan: PreparedApplication,
         timeout: float | None,
         error: BaseException,
     ) -> None:
@@ -994,7 +1027,7 @@ class Server:
         generation: _ServeGeneration,
         listeners: Sequence[ListenerLease],
         *,
-        lifespan_handoff: _LifespanHandoff | None,
+        prepared_application: PreparedApplication,
         retire_trigger: Callable[[], None] | None,
         ready_trigger: Callable[[], None] | None,
         quiesce_fd: int | None,
@@ -1015,10 +1048,32 @@ class Server:
                 raise RuntimeError('this Server already has an active serve() call')
             generation.quiesce_write_fd = internal_quiesce_write_fd
 
-        def _mark_started() -> None:
+        def _mark_started(error: BaseException | None = None) -> None:
             # Readiness is SERVING only after lifespan startup (already done
             # when this runs) and native acceptance.
-            self._settle_started(_Readiness.SERVING, None)
+            if error is not None:
+                try:
+                    for listener in reversed(listeners):
+                        listener.release()
+                finally:
+                    with self._state_lock:
+                        self._addresses = ()
+                    self._fail_started(_Readiness.IDLE, error)
+                    self._finish_returned(generation, error)
+                return
+            with self._state_lock:
+                if (
+                    self._generation is not generation
+                    or self._readiness is not _Readiness.STARTING
+                    or generation.shutdown.done()
+                ):
+                    return
+                self._readiness = _Readiness.SERVING
+                waiters = self._started_waiters
+                self._started_waiters = []
+            notify_ready()
+            for waiter in waiters:
+                _resolve_on_owning_loop(waiter, None)
             if ready_trigger is not None:
                 ready_trigger()
 
@@ -1041,12 +1096,11 @@ class Server:
             # Native duplication is synchronous. Keep the leases alive while
             # it runs, then the caller may close them without affecting native.
             native_result = serve_fds(
-                self.app,
+                prepared_application,
                 [listener.raw_handle() for listener in listeners],
                 self.config,
                 shutdown_task,
                 retire_trigger,
-                lifespan_handoff,
                 _mark_started,
                 quiesce_fd,
                 prepared_tls=prepared_tls,
@@ -1143,7 +1197,30 @@ class _StartupAborted(BaseException):
         self.cleanup_error = cleanup_error
 
 
-def serve(app: Application, config: Config | None = None) -> None:
+@overload
+def serve(
+    app: Application,
+    config: Config | None = None,
+    *,
+    factory: Literal[False] = False,
+) -> None: ...
+
+
+@overload
+def serve(
+    app: ApplicationFactory,
+    config: Config | None = None,
+    *,
+    factory: Literal[True],
+) -> None: ...
+
+
+def serve(
+    app: Application | ApplicationFactory,
+    config: Config | None = None,
+    *,
+    factory: bool = False,
+) -> None:
     """
     Start the server. This is the primary programmatic entrypoint and matches
     the behavior of the `h2corn` CLI. For an in-process lifecycle, use
@@ -1163,9 +1240,14 @@ def serve(app: Application, config: Config | None = None) -> None:
     | `SIGTTOU`           | Scale workers down by one                       |
 
     Args:
-        app: An ASGI 3 application callable.
+        app: An ASGI 3 application callable, or its synchronous zero-argument
+            constructor when `factory=True`.
         config: Server configuration. Defaults to `Config()` (one worker,
             bound to `127.0.0.1:8000`).
+        factory: Treat `app` as a synchronous zero-argument application factory.
+            Each effective request loop constructs and starts its own instance
+            while that loop is running, on every worker generation. Without
+            this flag the supplied app is shared across request loops.
 
     Examples:
         `examples/embedded.py` shows the [`Server`][h2corn.Server] alternative:
@@ -1177,11 +1259,16 @@ def serve(app: Application, config: Config | None = None) -> None:
         from h2corn._supervisor import serve_with_supervisor
 
         with _process_umask(config), _pidfile(config) as pid_fd:
-            serve_with_supervisor(app, config, pid_fd=pid_fd)
+            serve_with_supervisor(app, config, pid_fd=pid_fd, factory=factory)
         return
 
     with event_loop_runner(config.loop) as runner:
-        runner.run(Server(app, config).serve())
+        server = (
+            Server(cast('ApplicationFactory', app), config, factory=True)
+            if factory
+            else Server(cast('Application', app), config)
+        )
+        runner.run(server.serve())
 
 
 def _serve_import_target(import_settings: ImportSettings, config: Config) -> None:
@@ -1200,7 +1287,11 @@ def _serve_import_target(import_settings: ImportSettings, config: Config) -> Non
             serve_with_supervisor(import_settings, config, pid_fd=pid_fd)
         return
 
-    serve(import_target(import_settings), config)
+    source = import_target(import_settings)
+    if import_settings.factory:
+        serve(cast('ApplicationFactory', source), config, factory=True)
+    else:
+        serve(cast('Application', source), config)
 
 
 def load_env_file(path: Path) -> None:
@@ -1239,7 +1330,7 @@ def load_env_file(path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
-def import_target(import_settings: ImportSettings) -> ASGIApp:
+def import_target(import_settings: ImportSettings) -> Application | ApplicationFactory:
     import importlib
 
     target = import_settings.target
@@ -1267,13 +1358,7 @@ def import_target(import_settings: ImportSettings) -> ASGIApp:
     target_obj = getattr(module, attr)
     if not callable(target_obj):
         raise TypeError(f'import target {target!r} is not callable')
-    if not import_settings.factory:
-        return cast('ASGIApp', target_obj)
-
-    app = target_obj()
-    if not callable(app):
-        raise TypeError(f'import target {target!r} factory returned a non-callable')
-    return cast('ASGIApp', app)
+    return cast('Application | ApplicationFactory', target_obj)
 
 
 def main() -> None:

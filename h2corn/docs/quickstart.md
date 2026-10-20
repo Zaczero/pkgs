@@ -80,7 +80,8 @@ cannot be combined with multiple workers.
 
 Some applications expose their ASGI object through a factory function
 rather than a module-level attribute. [`--factory`](configuration.md#command-factory)
-makes `h2corn` call the target:
+makes `h2corn` call the target once on each effective request-serving loop,
+while that loop is running:
 
 ```python title="factory.py"
 --8<-- "factory.py"
@@ -89,6 +90,25 @@ makes `h2corn` call the target:
 ```bash
 h2corn factory:create_app --factory
 ```
+
+Programmatic deployments pass the constructor to
+[`serve`](api/server.md) or [`Server`](api/server.md) with `factory=True`.
+Each worker reload and each new `Server.serve()` generation creates fresh
+instances. On regular GIL-enabled Python there is one request loop per
+worker; free-threaded deployments can configure multiple
+[`loop_threads`](configuration.md#option-loop_threads).
+
+Factories are synchronous and take no arguments. Acquire asynchronous resources
+in the returned application's lifespan, which runs on the same loop as its
+requests. Use [`lifespan="on"`](configuration.md#option-lifespan) when startup
+must succeed before traffic is admitted. Factory exceptions fail startup even
+with `lifespan="auto"`; `lifespan="off"` skips lifespan but still constructs
+each application.
+
+Without the factory flag, h2corn shares the supplied application across its
+request loops. Use one loop for singleton resources, or a factory for
+loop-bound application instances. A factory closure can be called concurrently
+on free-threaded Python and should share only inputs safe for that use.
 
 <span id="deploy"></span>
 <span id="migrate-from-another-asgi-server"></span>

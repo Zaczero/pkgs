@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from h2corn import Config, Server, _lib
+from h2corn import ApplicationFactory, Config, Server, _lib
 
 from tests._support import HANG_BOUND, gil_is_disabled, open_fd_count
 
@@ -310,6 +310,10 @@ def test_native_serve_completion_releases_its_event_loop_readers() -> None:
             await send({'type': 'http.response.body', 'body': b''})
 
         config = Config(access_log=False, lifespan='off')
+        from h2corn._lifespan import PreparedApplication
+
+        prepared = PreparedApplication(app, False, 'off')
+        await prepared.startup(required=False)
         ready = asyncio.Event()
         shutdown: asyncio.Future[str] = asyncio.Future()
 
@@ -325,11 +329,11 @@ def test_native_serve_completion_releases_its_event_loop_readers() -> None:
             listener.listen()
             listener.setblocking(False)
             serving = _lib.serve_fds(
-                app,
+                prepared,
                 [listener.fileno()],
                 config,
                 shutdown,
-                ready_trigger=ready.set,
+                ready_trigger=lambda _error: ready.set(),
                 prepared_tls=_lib.prepare_tls(config),
             )
             stopping = asyncio.create_task(stop_when_ready())
@@ -1691,7 +1695,7 @@ def test_import_target_requires_callable_attribute(
         _server.import_target(ImportSettings(target=f'{module_name}:app'))
 
 
-def test_import_target_calls_factory_when_requested(
+def test_import_target_defers_factory_construction_until_the_serving_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1702,6 +1706,8 @@ def test_import_target_calls_factory_when_requested(
     (tmp_path / f'{module_name}.py').write_text(
         """
 def create_app():
+    import asyncio
+    asyncio.get_running_loop()
     async def app(scope, receive, send):
         return None
     return app
@@ -1716,7 +1722,8 @@ def create_app():
     assert callable(app)
 
 
-def test_import_target_requires_factory_result_to_be_callable(
+@pytest.mark.asyncio
+async def test_import_target_requires_factory_result_to_be_callable_at_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1732,13 +1739,12 @@ def create_app():
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    with pytest.raises(
-        TypeError,
-        match=rf"import target '{module_name}:create_app' factory returned a non-callable",
-    ):
-        _server.import_target(
-            ImportSettings(target=f'{module_name}:create_app', factory=True)
-        )
+    source = _server.import_target(
+        ImportSettings(target=f'{module_name}:create_app', factory=True)
+    )
+    server = Server(cast('ApplicationFactory', source), Config(port=0), factory=True)
+    with pytest.raises(TypeError, match='application factory returned a non-callable'):
+        await server.serve()
 
 
 def test_import_target_uses_app_dir(
@@ -2900,131 +2906,106 @@ async def test_pre_native_release_attempts_all_and_preserves_startup_error(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_wins_startup_and_waits_for_retained_lifespan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import Server, _server
-    from h2corn._lib import prepare_tls
-
+async def test_shutdown_wins_startup_and_waits_for_retained_lifespan() -> None:
     startup_entered = asyncio.Event()
-    release_startup = asyncio.Event()
     cancellation_seen = asyncio.Event()
-    discard_returned = asyncio.Event()
-    entered_retained_wait = asyncio.Event()
     release_retained = asyncio.Event()
-    cleanup_sentinel = RuntimeError('retained cleanup sentinel')
-    releases: list[str] = []
-    release_calls = 0
-    returned_callbacks = 0
-    released_callbacks = 0
+    cleanup_finished = asyncio.Event()
 
-    class FakeLifespanRunner:
-        def __init__(self, _app) -> None:
-            self.state: dict[str, Any] = {}
-            self.discard_timeouts: list[float | None] = []
-
-        async def startup(self, *, required: bool) -> None:
-            assert required
-            startup_entered.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                cancellation_seen.set()
-                await release_startup.wait()
-                raise
-
-        async def discard_task(self, timeout: float | None = None) -> bool:
-            self.discard_timeouts.append(timeout)
-            discard_returned.set()
-            return False
-
-        async def wait_retained_task(self) -> None:
-            entered_retained_wait.set()
+    async def app(scope, receive, _send):
+        assert scope['type'] == 'lifespan'
+        assert (await receive())['type'] == 'lifespan.startup'
+        startup_entered.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
             await release_retained.wait()
+            cleanup_finished.set()
+            raise
 
-    async def app(*_args: object) -> None:
-        pass
-
-    config = Config(lifespan='on', timeout_lifespan_startup=0)
+    config = Config(port=0, lifespan='on', timeout_lifespan_startup=0, access_log=False)
     server = Server(app, config)
-    runner: FakeLifespanRunner | None = None
+    public = asyncio.create_task(server.serve())
+    try:
+        await asyncio.wait_for(startup_entered.wait(), HANG_BOUND)
+        server.shutdown()
+        await asyncio.wait_for(cancellation_seen.wait(), HANG_BOUND)
+        await asyncio.wait_for(asyncio.shield(public), HANG_BOUND)
+        assert server.addresses == ()
+        assert server.releasing
+        assert not cleanup_finished.is_set()
+        with pytest.raises(RuntimeError, match='still releasing'):
+            await server.serve()
+    finally:
+        release_retained.set()
+        generation = server._generation
+        if generation is not None:
+            await asyncio.wait_for(asyncio.shield(generation.released), HANG_BOUND)
+    assert cleanup_finished.is_set()
+    assert not server.releasing
 
-    def make_runner(_app) -> FakeLifespanRunner:
-        nonlocal runner
-        runner = FakeLifespanRunner(_app)
-        return runner
 
-    monkeypatch.setattr(_server, 'LifespanRunner', make_runner)
+def test_native_setup_failure_survives_lifespan_rollback_failure() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import asyncio
+from h2corn import Config, Server
 
-    class Lease:
-        def __init__(self, name: str) -> None:
-            self.name = name
+async def main():
+    async def unused_app(*args):
+        raise AssertionError('no requests are sent')
 
-        def release(self) -> None:
-            releases.append(self.name)
+    warm = Server(unused_app, Config(port=0, runtime_threads=1, lifespan='off', access_log=False))
+    warming = asyncio.create_task(warm.serve())
+    await warm.wait_started()
+    warm.shutdown()
+    await warming
 
-    listeners = [Lease('first'), Lease('second')]
+    def create_app():
+        asyncio.get_running_loop()
+        async def app(scope, receive, send):
+            assert (await receive())['type'] == 'lifespan.startup'
+            await send({'type': 'lifespan.startup.complete'})
+            assert (await receive())['type'] == 'lifespan.shutdown'
+            await send({'type': 'lifespan.shutdown.failed', 'message': 'rollback failed'})
+        return app
 
-    def release_pre_native() -> BaseException:
-        nonlocal release_calls
-        release_calls += 1
-        releases.append('pre-native')
-        for listener in reversed(listeners):
-            listener.release()
-        return cleanup_sentinel
+    loop = asyncio.get_running_loop()
+    reported = loop.create_future()
+    reports = []
+    def report(loop, context):
+        reports.append(context)
+        if not reported.done():
+            reported.set_result(context)
+    loop.set_exception_handler(report)
 
-    async def body(generation) -> None:
-        await server._serve_with_primary_lifespan(
-            generation,
-            cast('list[ListenerLease]', listeners),
-            release_pre_native_listeners=release_pre_native,
-            prepared_tls=prepare_tls(config),
-        )
+    server = Server(create_app, Config(port=0, runtime_threads=2, lifespan='on', access_log=False), factory=True)
+    try:
+        await server.serve()
+    except ValueError as error:
+        assert 'runtime_threads' in str(error), error
+    else:
+        raise AssertionError('native runtime configuration must fail')
+    async with asyncio.timeout(10):
+        context = await reported
+    assert isinstance(context['exception'], RuntimeError), context
+    assert 'rollback failed' in str(context['exception']), context
+    assert len(reports) == 1, reports
+    assert not server.releasing
 
-    def returned_settled(_task) -> None:
-        nonlocal returned_callbacks
-        returned_callbacks += 1
-
-    def released_settled(_task) -> None:
-        nonlocal released_callbacks
-        released_callbacks += 1
-
-    generation = server._claim_generation(body)
-    generation.returned.add_done_callback(returned_settled)
-    generation.released.add_done_callback(released_settled)
-    public = asyncio.create_task(server._await_generation(generation))
-    await asyncio.wait_for(startup_entered.wait(), timeout=2)
-    server.shutdown()
-    await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
-    release_startup.set()
-    await asyncio.wait_for(discard_returned.wait(), timeout=2)
-    assert runner is not None
-    assert runner.discard_timeouts == [0]
-    assert not generation.returned.done()
-    assert not generation.released.done()
-    assert not public.done()
-
-    await asyncio.wait_for(entered_retained_wait.wait(), timeout=2)
-    assert not generation.returned.done()
-    assert not generation.released.done()
-    assert not public.done()
-    assert releases == ['pre-native', 'second', 'first']
-
-    release_retained.set()
-    with pytest.raises(RuntimeError) as error:
-        await asyncio.wait_for(public, timeout=2)
-
-    assert error.value is cleanup_sentinel
-    with pytest.raises(RuntimeError) as release_error:
-        await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
-    assert release_error.value is cleanup_sentinel
-    assert generation.returned.done()
-    assert generation.released.done()
-    assert releases == ['pre-native', 'second', 'first']
-    assert release_calls == 1
-    assert returned_callbacks == 1
-    assert released_callbacks == 1
-    assert not isinstance(error.value, _server._StartupAborted)
+asyncio.run(main())
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HANG_BOUND,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_env_file_is_read_before_privileges_drop(

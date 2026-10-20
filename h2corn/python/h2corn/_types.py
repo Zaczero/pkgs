@@ -410,3 +410,6 @@ FrameworkASGIApp = Callable[
     [MutableMapping[str, Any], FrameworkReceive, FrameworkSend], Awaitable[None]
 ]
 Application = ASGIApp | FrameworkASGIApp
+#: Synchronous zero-argument constructor used with `factory=True`. Called once
+#: on each running request loop per generation; async resources belong in lifespan.
+ApplicationFactory = Callable[[], Application]

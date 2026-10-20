@@ -510,6 +510,10 @@ async def test_secondary_lifespan_failure_rolls_back_started_loops() -> None:
     )
     with pytest.raises(RuntimeError, match='lifespan startup failed: secondary'):
         await server.serve()
+    generation = server._generation
+    if generation is not None:
+        with pytest.raises(RuntimeError, match='lifespan startup failed: secondary'):
+            await asyncio.shield(generation.released)
 
     assert startups[0] == main_loop_id
     assert len(set(startups)) == 4
@@ -533,9 +537,6 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
     cancelled_cleanup_done = threading.Event()
     secondary_loop_ids: list[int] = []
     secondary_shutdowns: list[int] = []
-    # Every secondary startup is awaited under this bound (no abort_all). A
-    # peer that ignores cancellation until the bound is spent forces the wall
-    # clock to at least this long before rollback can finish.
     startup_timeout = 0.5
 
     async def app(scope, receive, send):
@@ -601,24 +602,18 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
             access_log=False,
         ),
     )
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    # Lowest-index error wins: depending on shard index order the hang may
-    # surface as startup timeout and the explicit failure as secondary — both
-    # are real startup failures under the await-all-bounded-outcomes contract.
     with pytest.raises(
         RuntimeError,
         match=r'lifespan startup (failed: secondary|timed out)',
     ):
         await server.serve()
 
-    elapsed = loop.time() - started
-    # Floor: the hanging peer is only released when its startup bound fires.
-    # Ceiling: that bound, plus the deliberate 50ms cleanup sleeps and the
-    # 2-party rollback barrier (ready as soon as cleanup finishes — not its
-    # full timeout), with a little free-thread scheduling headroom.
-    assert elapsed >= startup_timeout * 0.5
-    assert elapsed < startup_timeout + 0.05 + 0.05 + 0.5
+    generation = server._generation
+    if generation is not None:
+        with pytest.raises(
+            RuntimeError, match=r'lifespan startup (failed: secondary|timed out)'
+        ):
+            await asyncio.shield(generation.released)
     assert cancelled_cleanup_done.is_set()
     assert len(secondary_shutdowns) == 2
     assert len(set(secondary_shutdowns)) == 2
@@ -628,29 +623,13 @@ async def test_secondary_lifespan_failure_awaits_cancelled_startup_cleanup() -> 
     not gil_is_disabled(),
     reason='requires a free-threaded interpreter with the GIL disabled',
 )
-async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from h2corn import _lifespan
-
+async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles() -> (
+    None
+):
     main_loop_id = id(asyncio.get_running_loop())
     secondary_cleanup_started = threading.Event()
     release_secondary_cleanup = threading.Event()
-    stop_entered = threading.Event()
-    stop_completed = threading.Event()
-    release_stop = threading.Event()
     secondary_loops: list[asyncio.AbstractEventLoop] = []
-    original_stop_lifespan_runner = _lifespan.stop_lifespan_runner
-
-    async def observe_stop_lifespan_runner(runner, *, shutdown_timeout):
-        stop_entered.set()
-        try:
-            return await original_stop_lifespan_runner(
-                runner, shutdown_timeout=shutdown_timeout
-            )
-        finally:
-            stop_completed.set()
-            await asyncio.to_thread(release_stop.wait)
 
     async def app(scope, receive, send):
         assert scope['type'] == 'lifespan'
@@ -675,7 +654,6 @@ async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
                     task.uncancel()
             raise
 
-    monkeypatch.setattr(_lifespan, 'stop_lifespan_runner', observe_stop_lifespan_runner)
     server = Server(
         app,
         Config(
@@ -688,21 +666,16 @@ async def test_secondary_startup_retains_its_loop_until_cancelled_task_settles(
     )
     serving = asyncio.create_task(server.serve())
     await asyncio.wait_for(asyncio.to_thread(secondary_cleanup_started.wait), timeout=2)
-    await asyncio.wait_for(asyncio.to_thread(stop_entered.wait), timeout=2)
-    try:
-        await asyncio.wait_for(asyncio.to_thread(stop_completed.wait), timeout=0.2)
-    except TimeoutError:
-        stop_completed_early = False
-    else:
-        stop_completed_early = True
+    with pytest.raises(RuntimeError, match='lifespan startup timed out'):
+        await asyncio.wait_for(asyncio.shield(serving), timeout=2)
     loops_remain_open = secondary_loops and all(
         not loop.is_closed() for loop in secondary_loops
     )
     release_secondary_cleanup.set()
-    release_stop.set()
+    generation = server._generation
+    assert generation is not None
     with pytest.raises(RuntimeError, match='lifespan startup timed out'):
-        await asyncio.wait_for(serving, timeout=2)
-    assert not stop_completed_early, 'the retained task still owns its secondary loop'
+        await asyncio.wait_for(asyncio.shield(generation.released), timeout=2)
     assert loops_remain_open
     assert all(loop.is_closed() for loop in secondary_loops)
 

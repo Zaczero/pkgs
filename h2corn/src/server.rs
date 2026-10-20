@@ -68,7 +68,7 @@ use crate::proxy_protocol::{
     ProxyProtocolMode, ServerAddr, ServerEndpoint, TrustedPeer, read_h2_preface,
     read_preamble_protocol, read_proxy_v1, read_proxy_v2,
 };
-use crate::pyloop::{PumpEvent, Shard, TaskSlot};
+use crate::pyloop::{PumpEvent, Shard, TaskSlot, call_awaitable};
 use crate::runtime::{
     AppRuntimeHandle, ConnectionContext, ConnectionShared, ShutdownKind, ShutdownState,
 };
@@ -383,7 +383,11 @@ pub(crate) async fn serve_from_fds(
         // Through the pump, not `Python::attach`: this runs on a tokio thread,
         // and attaching there creates and tears down a thread state (costly on
         // free-threaded builds, and the one rule the pump exists to keep).
-        app.main_shard().push(PumpEvent::CallTrigger { trigger });
+        call_awaitable(app.main_shard(), move |py, shard| {
+            trigger.bind(py).call1((py.None(),))?;
+            Ok(shard.ready_none().clone_ref(py).into_any())
+        })
+        .await?;
     }
     let served = serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await;
     log::flush_log_sink();

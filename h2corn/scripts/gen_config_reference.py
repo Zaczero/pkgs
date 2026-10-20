@@ -155,7 +155,7 @@ def _command_only_section() -> str:
     entries: list[str] = []
     meanings = {
         'config': 'Select the TOML file; `H2CORN_CONFIG` selects the same file.',
-        'factory': 'Call the target as a zero-argument app factory.',
+        'factory': 'Construct an application on each running request loop using the zero-argument target.',
         'app_dir': 'Import the target from this directory.',
         'env_file': 'Load application environment before import.',
         'reload': 'Watch application files and restart one development worker.',

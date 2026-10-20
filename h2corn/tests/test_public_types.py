@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from h2corn import (
     Application,
+    ApplicationFactory,
     ASGIApp,
     Config,
     ExtensionParameters,
@@ -33,6 +34,7 @@ from h2corn import (
     WebSocketReceiveBytes,
     WebSocketReceiveText,
     WebSocketScope,
+    serve,
 )
 
 from tests._support import (
@@ -66,6 +68,16 @@ assert h2corn.HTTPRequest is request_type
 
 async def _typed_app(scope: Scope, receive: Receive, send: Send) -> None:
     _ = scope, receive, send
+
+
+def _factory_entrypoint_types(
+    precise: ApplicationFactory,
+    framework: type[FastAPI],
+) -> None:
+    assert_type(Server(precise, factory=True), Server)
+    assert_type(Server(framework, factory=True), Server)
+    assert_type(serve(precise, factory=True), None)
+    assert_type(serve(framework, factory=True), None)
 
 
 def _scope_type_is_discriminated(scope: Scope) -> None:

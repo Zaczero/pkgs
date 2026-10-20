@@ -31,6 +31,7 @@ if _TYPE_CHECKING:
     from h2corn._server import Server, serve
     from h2corn._types import (
         Application,
+        ApplicationFactory,
         ASGIApp,
         ASGIVersions,
         ExtensionParameters,
@@ -83,6 +84,7 @@ __all__ = (
     'ASGIApp',
     'ASGIVersions',
     'Application',
+    'ApplicationFactory',
     'CertReqsMode',
     'Config',
     'ExtensionParameters',

@@ -21,7 +21,6 @@ use crate::pyloop::{PumpEvent, Shard, ShardHandle, SlotFuture, TaskSlot};
 use crate::tls::ConnectionSecurity;
 
 pub(crate) struct AppRuntime {
-    pub app: Py<PyAny>,
     /// Loop shards; exactly one on GIL builds, `loop_threads` on
     /// free-threaded builds. Index 0 is the main (caller's) loop, which
     /// also owns lifespan and the shutdown trigger.
@@ -36,14 +35,9 @@ pub(crate) struct AppRuntime {
 }
 
 impl AppRuntime {
-    pub(crate) fn new(
-        app: Py<PyAny>,
-        shards: Box<[Shard]>,
-        limits: Option<Arc<RuntimeLimits>>,
-    ) -> Self {
+    pub(crate) fn new(shards: Box<[Shard]>, limits: Option<Arc<RuntimeLimits>>) -> Self {
         debug_assert!(!shards.is_empty());
         Self {
-            app,
             shards,
             next_shard: AtomicUsize::new(0),
             limits,
@@ -74,8 +68,8 @@ impl AppRuntime {
         }
     }
 
-    pub(crate) fn into_teardown(self) -> (Py<PyAny>, Option<Arc<RuntimeLimits>>, Box<[Shard]>) {
-        (self.app, self.limits, self.shards)
+    pub(crate) fn into_teardown(self) -> (Option<Arc<RuntimeLimits>>, Box<[Shard]>) {
+        (self.limits, self.shards)
     }
 
     /// Wait until every scoped `AppRuntime` owner — connection shares and
@@ -332,6 +326,10 @@ pub(crate) struct RequestTaskGuard {
         reason = "RAII: settles admission state in field order on drop"
     )]
     admission: RequestAdmission,
+    #[expect(
+        dead_code,
+        reason = "RAII: releases the connection after admission settlement"
+    )]
     connection: ConnectionContext,
 }
 
@@ -341,10 +339,6 @@ impl RequestTaskGuard {
             admission,
             connection,
         }
-    }
-
-    pub(crate) fn app(&self) -> &AppRuntimeHandle {
-        &self.connection.app
     }
 }
 
@@ -1021,7 +1015,6 @@ pub(crate) mod test_fixtures {
 
     pub(crate) fn app_runtime(py: Python<'_>) -> AppRuntimeHandle {
         Arc::new(AppRuntime::new(
-            py.None(),
             Box::new([ShardHandle::test_stub(py)]),
             None,
         ))

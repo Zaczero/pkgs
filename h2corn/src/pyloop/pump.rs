@@ -158,18 +158,14 @@ fn start_task(
     slot: &Arc<TaskSlot<Result<(), H2CornError>, RequestTaskGuard>>,
 ) -> PyResult<()> {
     let args = args.build(py, Arc::clone(shard))?;
-    if let Some(state) = shard.copy_scope_state(py)? {
+    let (app, state) = shard.application_for_request(py)?;
+    if let Some(state) = state {
         args.scope.set_item(pyo3::intern!(py, "state"), state)?;
     }
     // pyo3's tuple `call1` moves the owned bounds straight into an
     // offset-flag `PyObject_Vectorcall` — no Python tuple, no extra
     // refcount traffic.
-    let coroutine = slot
-        .guard()
-        .app()
-        .app
-        .bind(py)
-        .call1((args.scope, args.receive, args.send))?;
+    let coroutine = app.bind(py).call1((args.scope, args.receive, args.send))?;
 
     let task = shard.construct_task(py, &coroutine)?;
 

@@ -275,9 +275,12 @@ pub(crate) struct ShardHandle {
     /// ASGI response performs ≥2 sends, so this is the highest-frequency
     /// per-request awaitable — a shared constant beats allocating each time.
     ready_none: Py<ReadyNone>,
-    /// Mutable lifespan state owned by this loop. The pump shallow-copies it
-    /// into each request scope; no cross-loop asyncio object is shared.
-    scope_state: PyOnceLock<Py<PyDict>>,
+    application: Mutex<Option<LoopApplication>>,
+}
+
+struct LoopApplication {
+    app: Py<PyAny>,
+    state: Option<Py<PyDict>>,
 }
 
 enum TaskFactoryAccessor {
@@ -369,7 +372,7 @@ impl ShardHandle {
             ensure_future: asyncio.getattr("ensure_future")?.unbind(),
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone)?,
-            scope_state: PyOnceLock::new(),
+            application: Mutex::new(None),
         });
 
         let pump = pump::Pump::into_callable(py, &shard)?;
@@ -411,7 +414,7 @@ impl ShardHandle {
             ensure_future: py.None(),
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone).expect("test ready_none"),
-            scope_state: PyOnceLock::new(),
+            application: Mutex::new(None),
         })
     }
 
@@ -537,19 +540,31 @@ impl ShardHandle {
         &self.ready_none
     }
 
-    pub(crate) fn install_scope_state(&self, py: Python<'_>, state: Py<PyDict>) -> PyResult<()> {
-        self.scope_state
-            .set(py, state)
-            .map_err(|_| PyRuntimeError::new_err("lifespan state already initialized"))
+    pub(crate) fn install_application(
+        &self,
+        _py: Python<'_>,
+        app: Py<PyAny>,
+        state: Option<Py<PyDict>>,
+    ) -> PyResult<()> {
+        let mut application = self.application.lock();
+        if application.is_some() {
+            return Err(PyRuntimeError::new_err(
+                "loop application already initialized",
+            ));
+        }
+        *application = Some(LoopApplication { app, state });
+        drop(application);
+        Ok(())
     }
 
-    pub(super) fn copy_scope_state<'py>(
+    pub(super) fn application_for_request<'py>(
         &self,
         py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(state) = self.scope_state.get(py) else {
-            return Ok(None);
-        };
+    ) -> PyResult<(Py<PyAny>, Option<Bound<'py, PyDict>>)> {
+        let owner = self.application.lock();
+        let application = owner
+            .as_ref()
+            .expect("application prepared before request admission");
         // Copied even when empty. The lifespan spec says the namespace is
         // shallow-copied into every connection scope, and an application that
         // reads `scope["state"]` directly — rather than through Starlette,
@@ -557,7 +572,20 @@ impl ShardHandle {
         // get a `KeyError` purely because startup happened to store nothing.
         // Costs a measured ~430 instructions per request; a compatibility
         // break is not worth that.
-        state.bind(py).copy().map(Some)
+        let state = application
+            .state
+            .as_ref()
+            .map(|state| state.bind(py).copy())
+            .transpose()?;
+        let app = application.app.clone_ref(py);
+        drop(owner);
+        Ok((app, state))
+    }
+
+    /// Release Python owners here, not when the last cross-thread shard handle drops.
+    pub(crate) fn release_application(&self, _py: Python<'_>) {
+        let application = self.application.lock().take();
+        drop(application);
     }
 
     /// Unregister the POSIX doorbell. Pump-only: event-loop reader ownership
@@ -674,7 +702,7 @@ pub(crate) fn spawn_shard_thread(
                 let initialized = tx.clone();
                 let run = PyCFunction::new_closure(py, None, None, move |args, _| {
                     let py = args.py();
-                    let event_loop = factory.create(py)?;
+                    let event_loop = args.get_item(0)?;
                     let setup = || -> PyResult<Shard> {
                         let actual = SecondaryLoopFactory::classify(&event_loop)?;
                         if actual != factory {
@@ -692,14 +720,14 @@ pub(crate) fn spawn_shard_thread(
                             error.write_unraisable(py, Some(&event_loop));
                         }
                     }
-                    if let Err(error) = event_loop.call_method0("close") {
-                        error.write_unraisable(py, Some(&event_loop));
-                    }
                     result.map(drop)
                 })
                 .and_then(|run| {
+                    let create = PyCFunction::new_closure(py, None, None, move |args, _| {
+                        factory.create(args.py()).map(Bound::unbind)
+                    })?;
                     py.import("h2corn._server")?
-                        .call_method1("_run_loop_thread", (run,))
+                        .call_method1("_run_loop_thread", (run, create))
                 });
                 if let Err(error) = run {
                     drop(tx.send(Err(error)));

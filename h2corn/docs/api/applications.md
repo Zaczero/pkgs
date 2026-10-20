@@ -18,6 +18,8 @@ broader mutable-mapping annotations used by framework applications.
       show_signature: false
 
 ::: h2corn.Application
+
+::: h2corn.ApplicationFactory
     options:
       show_signature: false
 
