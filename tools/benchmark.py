@@ -305,7 +305,9 @@ def decode_compressed_body(encoding: str, body: bytes) -> bytes:
     return body
 
 
-def validate_one_shot_response(encoding: str, body: bytes, response) -> str:
+def validate_one_shot_response(
+    encoding: str, expected_mode: str, body: bytes, response
+) -> None:
     status, headers, body_messages, _ = response
     assert status == 200
     assert response_header(headers, b'content-type') == [b'application/json']
@@ -316,15 +318,13 @@ def validate_one_shot_response(encoding: str, body: bytes, response) -> str:
 
     encoded_body = b''.join(chunk for chunk, _ in body_messages)
     content_encodings = response_header(headers, b'content-encoding')
-    if encoding == 'identity':
-        assert not content_encodings
-        mode = 'bypass'
-    elif content_encodings == [encoding.encode()]:
+    if expected_mode == 'compress':
+        assert encoding != 'identity'
+        assert content_encodings == [encoding.encode()]
         assert has_accept_encoding_vary(headers)
-        mode = 'compress'
     else:
+        assert expected_mode == 'bypass'
         assert not content_encodings
-        mode = 'bypass'
 
     assert response_header(headers, b'content-length') == [
         str(len(encoded_body)).encode()
@@ -336,7 +336,6 @@ def validate_one_shot_response(encoding: str, body: bytes, response) -> str:
         )
         == body
     )
-    return mode
 
 
 def incremental_decoder(encoding: str):
@@ -407,7 +406,12 @@ def validate_streaming_response(
 def compression_cases(_scratch: Path) -> dict:
     cases = {}
     for encoding in ('identity', 'gzip', 'br', 'zstd'):
-        for size, count in (('small', 2), ('medium', 64), ('large', 1024)):
+        for size, count, intended_mode in (
+            ('small', 2, 'bypass'),
+            ('medium', 64, 'compress'),
+            ('large', 1024, 'compress'),
+        ):
+            expected_mode = 'bypass' if encoding == 'identity' else intended_mode
             body = json.dumps(
                 {
                     'records': [
@@ -423,8 +427,12 @@ def compression_cases(_scratch: Path) -> dict:
                 separators=(',', ':'),
             ).encode()
             exchange = compression_exchange(encoding, (body,), b'application/json')
-            mode = validate_one_shot_response(encoding, body, asyncio.run(exchange()))
-            cases[f'{encoding} {mode} JSON {size} ({len(body):,} bytes)'] = exchange
+            validate_one_shot_response(
+                encoding, expected_mode, body, asyncio.run(exchange())
+            )
+            cases[f'{encoding} {expected_mode} JSON {size} ({len(body):,} bytes)'] = (
+                exchange
+            )
 
         messages = tuple(
             (
