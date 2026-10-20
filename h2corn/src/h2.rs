@@ -1305,7 +1305,7 @@ where
             }
             stop_retired_request(state, stream_id)?;
         }
-        prepare_connection_egress(state)?;
+        prepare_connection_egress(state).await?;
         let mut stop_after_flush = false;
         let event = ingest_connection_input(state).await?;
         if matches!(&event, IngestEvent::Frame(_)) {
@@ -1500,12 +1500,9 @@ fn map_frame_ingest_result(
     }
 }
 
-async fn ingest_connection_input<R, W>(
-    state: &mut H2ConnectionState<R, W>,
-) -> Result<IngestEvent, H2CornError>
+fn next_connection_deadline<R, W>(state: &H2ConnectionState<R, W>) -> Option<ConnectionDeadline>
 where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
+    W: WriteTarget,
 {
     // A server drain owns its shutdown bound even when it cannot be represented.
     // Keep-alive remains available to ordinary idle and peer-drained connections.
@@ -1533,13 +1530,24 @@ where
         next_deadline,
         response_stall_deadline.map(|(_, instant)| ConnectionDeadline::ResponseStall(instant)),
     );
-    next_deadline = earlier_deadline(
+    earlier_deadline(
         next_deadline,
         state
             .writer
             .next_write_deadline()
             .map(ConnectionDeadline::WriteStall),
-    );
+    )
+}
+
+async fn ingest_connection_input<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+) -> Result<IngestEvent, H2CornError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static + WriteTarget,
+{
+    let next_deadline = next_connection_deadline(state);
+    let draining = state.drain_state.server_deadline().is_some();
     let outbound_notified = state.connection.outbound_notified();
     tokio::pin!(outbound_notified);
     let input_notified = state.input_flow.notified();
@@ -1558,7 +1566,7 @@ where
         () = connection_timeout, if next_deadline.is_some() => Ok(IngestEvent::Deadline(
             next_deadline.expect("timer is only polled when a deadline is present"),
         )),
-        _ = state.shutdown.changed(), if drain_deadline.is_none() => Ok(IngestEvent::ShutdownChanged),
+        _ = state.shutdown.changed(), if !draining => Ok(IngestEvent::ShutdownChanged),
         () = state.request_tasks.wait_for_completion(), if has_request_tasks => Ok(IngestEvent::Continue),
         result = std::future::poll_fn(|cx| {
             let output = state.writer.poll_egress(cx);
@@ -1572,17 +1580,30 @@ where
     }
 }
 
-fn prepare_connection_egress<R, W>(state: &mut H2ConnectionState<R, W>) -> Result<(), H2CornError>
+async fn prepare_connection_egress<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+) -> Result<(), H2CornError>
 where
     W: WriteTarget,
 {
     apply_writer_feedback(state)?;
     flush_released_input_credits(state)?;
 
-    if state.writer.drain_app_writes()? {
-        apply_writer_feedback(state)?;
-        flush_released_input_credits(state)?;
+    state.writer.drain_app_writes()?;
+    if (state.writer.needs_flush() || state.writer.has_ready_streams())
+        && next_connection_deadline(state)
+            .is_none_or(|deadline| deadline.instant() > TokioInstant::now())
+    {
+        std::future::poll_fn(|cx| {
+            Poll::Ready(match state.writer.poll_egress(cx) {
+                Poll::Ready(result) => result,
+                Poll::Pending => Ok(()),
+            })
+        })
+        .await?;
     }
+    apply_writer_feedback(state)?;
+    flush_released_input_credits(state)?;
 
     Ok(())
 }
@@ -2267,6 +2288,53 @@ mod tests {
             7,
             "local progress must not require an unblocked write"
         );
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the context moves into connection state, whose writer is inspected after the driver returns"
+    )]
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    async fn expired_output_deadline_precedes_newly_writable_transport() {
+        use pyo3::Python;
+        use tokio::io::duplex;
+
+        use crate::runtime::test_fixtures;
+
+        Python::initialize();
+        let mut config = test_fixtures::server_config_parts();
+        config.http2.timeout_write = Some(Duration::from_secs(10));
+        config.timeout_keep_alive = Some(Duration::from_secs(1));
+        let context =
+            Python::attach(|py| test_fixtures::connection_context_with(py, Arc::new(config)));
+        let target = writer::GatedWriter::new(usize::MAX, true);
+        let gate = Arc::clone(&target.0);
+        let (mut output, handle) = writer::init_writer(target, Arc::clone(&context.config), None)
+            .await
+            .unwrap();
+        gate.lock().bytes.clear();
+        let id = StreamId::new(1).unwrap();
+        output
+            .send_headers(id, status_code::OK, ResponseHeaders::new(), true)
+            .unwrap();
+        let (_peer, input) = duplex(256);
+        let (_shutdown, shutdown_rx) = watch::channel(ShutdownState::Running);
+        let mut state = H2ConnectionState::new(
+            h2_frame::BufferedConnectionReader::new(input),
+            handle,
+            output,
+            context,
+            shutdown_rx,
+            ConnectionDrainState::Accepting,
+        );
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let error = drive_h2_connection(&mut state).await.unwrap_err();
+        assert!(
+            matches!(error.kind(), ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(gate.lock().bytes.is_empty());
+        assert!(state.writer.take_response_closes().is_empty());
     }
 
     #[derive(Default)]
