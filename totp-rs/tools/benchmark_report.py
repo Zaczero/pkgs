@@ -28,7 +28,6 @@ _COMMON_METADATA = (
     'python_config_args',
     'python_implementation',
     'python_version',
-    'report_sha256',
     'source_revision',
     'comparison_workload',
 )
@@ -70,7 +69,6 @@ def _read(path: str, implementation: str) -> tuple[dict, tuple[Series, ...]]:
         'benchmark_sha256': hashlib.sha256(
             (package_root / 'benchmark.py').read_bytes()
         ).hexdigest(),
-        'report_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
     for field, expected_hash in expected_hashes.items():
         if metadata[field] != expected_hash:
@@ -151,6 +149,9 @@ def _markdown(
         '# TOTP generation and verification',
         '',
         _caption(metadata),
+        '',
+        'Intervals are 95% percentile bootstrap intervals with 10,000 resamples '
+        'across worker-process means.',
         '',
         '## Matched PyOTP comparison',
         '',

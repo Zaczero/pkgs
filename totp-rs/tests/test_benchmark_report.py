@@ -35,11 +35,7 @@ def _write_results(
         'python_config_args': 'test config',
         'python_implementation': 'CPython',
         'python_version': '3.15.0',
-        'report_sha256': hashlib.sha256(
-            (
-                Path(__file__).resolve().parents[1] / 'tools' / 'benchmark_report.py'
-            ).read_bytes()
-        ).hexdigest(),
+        'report_sha256': 'report-sha',
         'source_revision': source_revision,
         'comparison_workload': 'test workload',
     }
