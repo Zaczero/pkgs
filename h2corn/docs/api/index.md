@@ -6,8 +6,7 @@ description: Public Python API reference for h2corn.
 
 Use [`serve()`][h2corn.serve] with a [`Config`][h2corn.Config] for the standard
 server entrypoint, or [`Server`][h2corn.Server] to embed one worker in an
-existing event loop. The reference is grouped by the ASGI concept a symbol
-describes; each page contains the complete signature and docstring.
+existing event loop.
 
 ::: h2corn
     options:

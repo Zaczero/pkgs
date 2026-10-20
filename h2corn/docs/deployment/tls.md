@@ -115,11 +115,8 @@ h2corn sees h2c, so its [`tls` ASGI extension](../api/scopes.md#h2corn.HTTPExten
 
 ## Restrictions
 
-- Direct TLS is only supported on TCP listeners. A configuration that
-  combines TLS with a `unix:` listener is rejected at startup.
-- TLS 1.0/1.1 and SSLv3 are not configurable.
-- Encrypted private-key files (passphrase-protected PEM) are not
-  supported.
+Direct TLS is only supported on TCP listeners. A configuration that
+combines TLS with a `unix:` listener is rejected at startup.
 
 Uncommon ciphers, client-cert revocation lists, and SNI multiplexing require a
 dedicated TLS proxy. Run `h2corn` on `h2c` upstream as described in

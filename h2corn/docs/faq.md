@@ -86,7 +86,7 @@ each — it differs from Uvicorn, which reports several malformed values as
 
 ## Does `h2corn` support gRPC?
 
-No. h2corn has no gRPC dispatcher, and gRPC-to-ASGI bridges are not tested.
+No. h2corn has no gRPC dispatcher.
 
 ## Where do I report bugs or request features?
 

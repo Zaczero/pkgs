@@ -4,11 +4,8 @@ description: Run h2corn behind nginx, Caddy or HAProxy with an h2c upstream, and
 
 # Behind a reverse proxy
 
-A production topology runs `h2corn` behind a reverse proxy
-that handles browser-facing TLS:
-
-The proxy takes care of ALPN negotiation, TLS termination, and
-public-edge hardening. `h2corn` runs the application side of the
+A reverse proxy handles browser-facing TLS, ALPN negotiation, and
+public-edge controls. `h2corn` runs the application side of the
 connection on `h2c` — cleartext HTTP/2 over TCP or a Unix socket inside the
 trust boundary, established by
 [prior knowledge](https://www.rfc-editor.org/rfc/rfc9113.html#section-3.3)
@@ -49,7 +46,7 @@ A separate proxy is optional: `h2corn` can terminate TLS itself; see
 | Proxy | Required capability | Local syntax check |
 | --- | --- | --- |
 | nginx | 1.29.4+ HTTP/2 upstream support and `ngx_http_v2_module` | `nginx -V`, `nginx -t` |
-| Caddy | A supported `reverse_proxy` release with documented h2c transport | `caddy validate` |
+| Caddy | `reverse_proxy` with h2c transport | `caddy validate` |
 | HAProxy | 2.4+ for WebSockets over HTTP/2, `proto h2`, and PROXY protocol v2 | `haproxy -c` |
 
 ## Proxy headers and PROXY protocol
