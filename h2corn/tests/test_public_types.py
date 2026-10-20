@@ -22,6 +22,7 @@ from h2corn import (
     LifespanScope,
     Receive,
     ReceiveMessage,
+    RequestPolicy,
     Scope,
     ScopeHeaders,
     Send,
@@ -122,6 +123,30 @@ def _header_types_follow_the_direction_of_data_flow(
     # literal's own type instead of the published alias.
     assert_type(scope_headers, ScopeHeaders)
     assert_type(outbound_headers, Headers)
+
+
+def _request_policy_types_are_precise(
+    policy: RequestPolicy,
+    config: Config,
+) -> None:
+    assert_type(policy.path, str)
+    assert_type(policy.max_request_body_size, int)
+    assert_type(policy.timeout_request_body_idle, float)
+    assert_type(policy.h2_timeout_response_stall, float)
+    assert_type(config.request_policies, tuple[RequestPolicy, ...])
+
+
+def test_request_policy_is_available_from_the_public_package() -> None:
+    policy = RequestPolicy(
+        path='/example.Chat/*',
+        max_request_body_size=0,
+        timeout_request_body_idle=0,
+        h2_timeout_response_stall=60,
+    )
+
+    assert h2corn.RequestPolicy is RequestPolicy
+    assert policy.timeout_request_body_idle == 0.0
+    assert 'RequestPolicy' in dir(h2corn)
 
 
 def test_scope_types_are_reusable_and_framework_boundary_is_compatible() -> None:

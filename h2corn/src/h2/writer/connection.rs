@@ -971,7 +971,13 @@ impl<W: WriteTarget> WriterState<W> {
         mut headers: ResponseHeaders,
         end_stream: bool,
     ) -> Result<(), H2CornError> {
-        self.register_stream(stream_id, self.config.http2.timeout_response_stall);
+        self.register_stream(
+            stream_id,
+            self.config
+                .request_policies
+                .default_policy()
+                .h2_timeout_response_stall,
+        );
         apply_default_response_headers(&mut headers, &self.config);
         self.process_command(WriterCommand::SendHeaders {
             stream_id,

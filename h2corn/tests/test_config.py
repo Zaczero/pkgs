@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from h2corn import Config
+from h2corn import Config, RequestPolicy
 from h2corn._cli import CliSettings, ImportSettings, build_parser, parse_cli
 from h2corn._config import config_options, tcp_bind_convenience
 
@@ -61,6 +61,7 @@ def test_config_fields_are_exactly_the_documented_options() -> None:
             'h2_initial_connection_window_size',
         ),
         ({'max_request_body_size': -1}, 'max_request_body_size'),
+        ({'max_request_body_size': 1 << 64}, 'max_request_body_size'),
         ({'max_requests': -1}, 'max_requests'),
         ({'max_requests_jitter': -1}, 'max_requests_jitter'),
         ({'limit_concurrency': -1}, 'limit_concurrency'),
@@ -338,7 +339,9 @@ def test_config_convenience_inputs_normalize_once_into_bind() -> None:
         Config(bind=('127.0.0.1:9010',), port=9020)
 
 
-def test_config_from_toml_reads_flat_top_level_keys(tmp_path: Path) -> None:
+def test_config_from_toml_reads_options_and_request_policy_tables(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text(
         """
@@ -376,6 +379,12 @@ websocket_ping_timeout = 9.5
 server_header = "full"
 date_header = false
 response_headers = ["x-demo: one", "x-extra: two"]
+
+[[request_policies]]
+path = "/example.Chat/*"
+max_request_body_size = 0
+timeout_request_body_idle = 0
+h2_timeout_response_stall = 4.25
 """.strip()
     )
 
@@ -414,6 +423,14 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.server_header == 'full'
     assert config.date_header is False
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
+    assert config.request_policies == (
+        RequestPolicy(
+            path='/example.Chat/*',
+            max_request_body_size=0,
+            timeout_request_body_idle=0,
+            h2_timeout_response_stall=4.25,
+        ),
+    )
 
 
 def test_config_from_toml_rejects_websocket_message_size_inherit(
@@ -424,6 +441,110 @@ def test_config_from_toml_rejects_websocket_message_size_inherit(
 
     with pytest.raises(ValueError, match='invalid literal for int'):
         Config.from_toml(config_path)
+
+
+def test_config_from_mapping_converts_request_policy_tables() -> None:
+    config = Config.from_mapping({
+        'request_policies': [
+            {
+                'path': '/upload/*',
+                'max_request_body_size': 0,
+                'timeout_request_body_idle': 0,
+                'h2_timeout_response_stall': 2.5,
+            }
+        ]
+    })
+
+    assert config.request_policies == (
+        RequestPolicy(
+            path='/upload/*',
+            max_request_body_size=0,
+            timeout_request_body_idle=0,
+            h2_timeout_response_stall=2.5,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        pytest.param('upload', id='relative'),
+        pytest.param('/upload?format=json', id='query'),
+        pytest.param('/upload#fragment', id='fragment'),
+        pytest.param('/upload*part', id='embedded-wildcard'),
+        pytest.param('/upload/**', id='multiple-wildcards'),
+        pytest.param('/upload/%2', id='invalid-percent-escape'),
+        pytest.param('/upload/é', id='non-ascii'),
+    ],
+)
+def test_request_policy_rejects_invalid_paths(path: str) -> None:
+    with pytest.raises((TypeError, ValueError), match='request policy path'):
+        RequestPolicy(
+            path=path,
+            max_request_body_size=0,
+            timeout_request_body_idle=0,
+            h2_timeout_response_stall=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ('field', 'value', 'error'),
+    [
+        ('max_request_body_size', True, TypeError),
+        ('max_request_body_size', -1, ValueError),
+        ('max_request_body_size', 1 << 64, ValueError),
+        ('timeout_request_body_idle', True, TypeError),
+        ('timeout_request_body_idle', -0.1, ValueError),
+        ('timeout_request_body_idle', float('nan'), ValueError),
+        ('h2_timeout_response_stall', False, TypeError),
+        ('h2_timeout_response_stall', float('inf'), ValueError),
+    ],
+)
+def test_request_policy_uses_config_field_validators(
+    field: str, value: object, error: type[Exception]
+) -> None:
+    values: dict[str, object] = {
+        'path': '/upload',
+        'max_request_body_size': 4,
+        'timeout_request_body_idle': 5.0,
+        'h2_timeout_response_stall': 6.0,
+    }
+    values[field] = value
+
+    with pytest.raises(error, match=field):
+        RequestPolicy(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    'table',
+    [
+        pytest.param(
+            {
+                'path': '/upload',
+                'max_request_body_size': 0,
+                'timeout_request_body_idle': 0,
+            },
+            id='missing',
+        ),
+        pytest.param(
+            {
+                'path': '/upload',
+                'max_request_body_size': 0,
+                'timeout_request_body_idle': 0,
+                'h2_timeout_response_stall': 0,
+                'extra': True,
+            },
+            id='unknown',
+        ),
+    ],
+)
+def test_config_mapping_requires_exact_request_policy_fields(
+    table: dict[str, object],
+) -> None:
+    with pytest.raises(
+        ValueError, match='request_policies entries must contain exactly'
+    ):
+        Config.from_mapping({'request_policies': [table]})
 
 
 def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,6 +580,11 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_LIMIT_REQUEST_LINE', '4094')
     monkeypatch.setenv('H2CORN_H2_MAX_HEADER_LIST_SIZE', '65536')
     monkeypatch.setenv('H2CORN_MAX_REQUEST_BODY_SIZE', '1048576')
+    monkeypatch.setenv(
+        'H2CORN_REQUEST_POLICIES',
+        '[{ path = "/example.Chat/*", max_request_body_size = 0, '
+        'timeout_request_body_idle = 0, h2_timeout_response_stall = 60.0 }]',
+    )
     monkeypatch.setenv('H2CORN_WEBSOCKET_MAX_MESSAGE_SIZE', '2048')
     monkeypatch.setenv('H2CORN_WEBSOCKET_PER_MESSAGE_DEFLATE', 'false')
     monkeypatch.setenv('H2CORN_WEBSOCKET_PING_INTERVAL', '8.5')
@@ -502,6 +628,14 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.limit_request_line == 4094
     assert config.h2_max_header_list_size == 65536
     assert config.max_request_body_size == 1048576
+    assert config.request_policies == (
+        RequestPolicy(
+            path='/example.Chat/*',
+            max_request_body_size=0,
+            timeout_request_body_idle=0,
+            h2_timeout_response_stall=60.0,
+        ),
+    )
     assert config.websocket_max_message_size == 2048
     assert config.websocket_per_message_deflate is False
     assert config.websocket_ping_interval == 8.5
@@ -547,6 +681,32 @@ def test_native_config_rejects_unrepresentable_durations(seconds: float) -> None
 
     with pytest.raises(ValueError, match='timeout_keep_alive'):
         prepare_tls(Config(timeout_keep_alive=seconds))
+
+
+@pytest.mark.parametrize(
+    ('field', 'seconds'),
+    [
+        ('timeout_request_body_idle', 1e20),
+        ('h2_timeout_response_stall', 1e300),
+    ],
+)
+def test_native_config_rejects_unrepresentable_request_policy_durations(
+    field: str,
+    seconds: float,
+) -> None:
+    from h2corn._lib import prepare_tls
+
+    values: dict[str, object] = {
+        'path': '/upload',
+        'max_request_body_size': 0,
+        'timeout_request_body_idle': 0.0,
+        'h2_timeout_response_stall': 0.0,
+    }
+    values[field] = seconds
+    policy = RequestPolicy(**values)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=field):
+        prepare_tls(Config(request_policies=(policy,)))
 
 
 def test_config_rejects_empty_unix_bind_path() -> None:
@@ -734,6 +894,25 @@ def test_websocket_max_message_size_defaults_to_safe_cap() -> None:
     assert config.websocket_max_message_size == 16_777_216
 
 
+def test_request_policy_table_defaults_to_global_body_and_stall_values() -> None:
+    config = Config()
+
+    assert config.request_policies == ()
+    assert config.max_request_body_size == 1_073_741_824
+    assert config.timeout_request_body_idle == 60.0
+    assert config.h2_timeout_response_stall == 60.0
+
+    disabled = Config(
+        max_request_body_size=0,
+        timeout_request_body_idle=0,
+        h2_timeout_response_stall=0,
+    )
+    assert disabled.request_policies == ()
+    assert disabled.max_request_body_size == 0
+    assert disabled.timeout_request_body_idle == 0.0
+    assert disabled.h2_timeout_response_stall == 0.0
+
+
 def test_config_does_not_trust_forwarding_headers_by_default() -> None:
     config = Config()
 
@@ -804,6 +983,88 @@ def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) ->
     assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
     assert config.bind == ('127.0.0.1:9020',)
+
+
+def test_request_policy_environment_and_cli_precedence(tmp_path: Path) -> None:
+    config_path = tmp_path / 'h2corn.toml'
+    config_path.write_text(
+        """
+[[request_policies]]
+path = "/from-toml"
+max_request_body_size = 10
+timeout_request_body_idle = 11.0
+h2_timeout_response_stall = 12.0
+""".strip()
+    )
+    env = {
+        'H2CORN_REQUEST_POLICIES': (
+            '[{ path = "/from-env", max_request_body_size = 20, '
+            'timeout_request_body_idle = 21.0, h2_timeout_response_stall = 22.0 }]'
+        )
+    }
+
+    _cli, _import, from_env = parse_cli(
+        ['--config', str(config_path), 'example:app'],
+        env,
+    )
+    assert tuple(policy.path for policy in from_env.request_policies) == ('/from-env',)
+
+    _cli, _import, from_cli = parse_cli(
+        [
+            '--config',
+            str(config_path),
+            '--request-policy',
+            '{ path = "/first", max_request_body_size = 30, timeout_request_body_idle = 31.0, h2_timeout_response_stall = 32.0 }',
+            '--request-policy',
+            '{ path = "/second", max_request_body_size = 40, timeout_request_body_idle = 41.0, h2_timeout_response_stall = 42.0 }',
+            'example:app',
+        ],
+        env,
+    )
+    assert tuple(policy.path for policy in from_cli.request_policies) == (
+        '/first',
+        '/second',
+    )
+
+
+def test_check_config_rejects_incomplete_request_policy_without_target_import(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'incomplete.toml'
+    config_path.write_text(
+        """
+[[request_policies]]
+path = "/upload"
+max_request_body_size = 0
+timeout_request_body_idle = 0
+""".strip()
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        parse_cli(['--check-config', '--config', str(config_path)], {})
+
+    assert raised.value.code == 2
+
+
+def test_check_config_rejects_unrepresentable_policy_before_importing_target(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from h2corn._cli import run_cli
+
+    with pytest.raises(SystemExit) as raised:
+        run_cli(
+            lambda *_: pytest.fail('check-config must not load the application'),
+            [
+                '--check-config',
+                '--request-policy',
+                '{ path = "/upload", max_request_body_size = 0, timeout_request_body_idle = 1e300, h2_timeout_response_stall = 0 }',
+                'missing_application:app',
+            ],
+            {},
+        )
+
+    assert raised.value.code == 2
+    assert 'timeout_request_body_idle' in capsys.readouterr().err
 
 
 def test_parse_cli_rejects_websocket_message_size_inherit() -> None:
@@ -903,6 +1164,48 @@ def test_print_config_round_trips_every_control_character() -> None:
         value = f'a{chr(code)}b'
         parsed = tomllib.loads(f'key = {_toml_literal(value)}')
         assert parsed['key'] == value, f'U+{code:04X} did not round-trip'
+
+
+def test_print_config_round_trips_request_policy_inline_tables(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from h2corn._cli import _print_config
+
+    config = Config(
+        request_policies=(
+            RequestPolicy(
+                path='/example.Chat/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=60.0,
+            ),
+            RequestPolicy(
+                path='/upload/%2F',
+                max_request_body_size=4096,
+                timeout_request_body_idle=2.5,
+                h2_timeout_response_stall=0,
+            ),
+        )
+    )
+
+    _print_config(config)
+
+    printed = capsys.readouterr().out
+    assert tomllib.loads(printed)['request_policies'] == [
+        {
+            'path': '/example.Chat/*',
+            'max_request_body_size': 0,
+            'timeout_request_body_idle': 0.0,
+            'h2_timeout_response_stall': 60.0,
+        },
+        {
+            'path': '/upload/%2F',
+            'max_request_body_size': 4096,
+            'timeout_request_body_idle': 2.5,
+            'h2_timeout_response_stall': 0.0,
+        },
+    ]
+    assert Config.from_mapping(tomllib.loads(printed)) == config
 
 
 def test_parse_cli_accepts_print_config_flag() -> None:

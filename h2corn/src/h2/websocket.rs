@@ -36,6 +36,10 @@ struct H2WebSocketTransport {
 }
 
 impl H2WebSocketTransport {
+    const fn http_response_transport(&self) -> H2HttpTransport<'_> {
+        H2HttpTransport::new(&self.connection, self.stream_id)
+    }
+
     /// WebSocket DATA is charged to the same connection-wide outbound budget
     /// as ordinary response bodies.
     ///
@@ -93,28 +97,26 @@ impl HttpResponseTransport for H2WebSocketTransport {
         &self,
         event: HttpOutboundEvent,
     ) -> Result<AdmittedHttpOutboundEvent, H2CornError> {
-        H2HttpTransport::new(&self.connection, self.stream_id)
+        self.http_response_transport()
             .admit_outbound_event(event)
             .await
     }
 
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
-        H2HttpTransport::new(&self.connection, self.stream_id)
+        self.http_response_transport()
             .apply_response_action(action)
             .await
     }
 
     async fn flush_buffered(&mut self) -> Result<(), H2CornError> {
-        H2HttpTransport::new(&self.connection, self.stream_id)
-            .flush_buffered()
-            .await
+        self.http_response_transport().flush_buffered().await
     }
 
     async fn apply_response_actions(
         &mut self,
         actions: &mut ResponseActions,
     ) -> Result<(), H2CornError> {
-        H2HttpTransport::new(&self.connection, self.stream_id)
+        self.http_response_transport()
             .apply_response_actions(actions)
             .await
     }

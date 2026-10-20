@@ -4,7 +4,7 @@ import argparse
 import importlib.metadata
 import os
 import sys
-from dataclasses import MISSING, dataclass
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import NoReturn, TypeAlias, cast
 
@@ -15,6 +15,7 @@ from h2corn._config import (
     OPTION_GROUPS,
     Config,
     ConfigOption,
+    RequestPolicy,
     bind_from_convenience,
     config_options,
     env_values,
@@ -44,6 +45,7 @@ _TomlLiteralValue: TypeAlias = (
     | str
     | int
     | float
+    | dict[str, '_TomlLiteralValue']
     | tuple['_TomlLiteralValue', ...]
     | list['_TomlLiteralValue']
 )
@@ -76,16 +78,22 @@ class _AppendConfigValue(argparse.Action):
         option_string: str | None = None,
     ):
         current: object = getattr(namespace, self.dest, ())
-        items: list[str]
-        if self.dest == 'bind' and isinstance(current, tuple):
+        items: list[object]
+        if self.dest in {'bind', 'request_policies'} and isinstance(current, tuple):
             items = []
         elif isinstance(current, tuple | list):
-            items = [
-                str(item) for item in cast('tuple[object, ...] | list[object]', current)
-            ]
+            existing = cast('tuple[object, ...] | list[object]', current)
+            items = (
+                list(existing)
+                if self.dest == 'request_policies'
+                else [str(item) for item in existing]
+            )
         else:
             items = []
-        if not isinstance(values, str):
+        if self.dest == 'request_policies':
+            if type(values) is not RequestPolicy:
+                raise TypeError('request_policies requires a RequestPolicy value')
+        elif not isinstance(values, str):
             raise TypeError(f'{self.dest} requires a string value')
         items.append(values)
         setattr(namespace, self.dest, items)
@@ -140,6 +148,11 @@ def _add_named_config_arguments(
 def _toml_value(value: object) -> _TomlLiteralValue:
     if isinstance(value, Path):
         return os.fspath(value)
+    if isinstance(value, RequestPolicy):
+        return {
+            config_field.name: _toml_value(getattr(value, config_field.name))
+            for config_field in fields(value)
+        }
     if isinstance(value, bool | str | int | float):
         return value
     if isinstance(value, tuple | list):
@@ -184,6 +197,14 @@ def _toml_literal(value: _TomlLiteralValue) -> str:
             return '"' + ''.join(map(_toml_escape_char, value)) + '"'
         case int() | float():
             return str(value)
+        case dict() as items:
+            return (
+                '{ '
+                + ', '.join(
+                    f'{key} = {_toml_literal(item)}' for key, item in items.items()
+                )
+                + ' }'
+            )
         case tuple() | list():
             return f'[{", ".join(_toml_literal(item) for item in value)}]'
 
@@ -396,6 +417,7 @@ def parse_cli(
         parser.error('target is required')
 
     values = {option.name: getattr(args, option.name) for option in config_options()}
+    values['request_policies'] = tuple(values['request_policies'])
     _apply_tcp_bind_sugar(parser, args, base, values)
     try:
         config = Config(**values)

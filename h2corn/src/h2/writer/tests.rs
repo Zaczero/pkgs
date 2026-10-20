@@ -528,7 +528,6 @@ async fn partial_progress_does_not_renew_the_socket_write_bound() {
     let gate = Arc::clone(&target.0);
     let mut config = test_fixtures::server_config_parts();
     config.http2.timeout_write = Some(std::time::Duration::from_secs(10));
-    config.http2.timeout_response_stall = None;
     let mut writer = WriterState::new(target, Arc::new(config));
     writer
         .send_headers(
@@ -553,8 +552,11 @@ async fn partial_progress_does_not_renew_the_socket_write_bound() {
 async fn response_stall_policy_does_not_enable_a_disabled_socket_timer() {
     let mut config = test_fixtures::server_config_parts();
     config.http2.timeout_write = None;
-    config.http2.timeout_response_stall = Some(std::time::Duration::from_secs(1));
     let mut writer = WriterState::new(GatedWriter::new(0, true), Arc::new(config));
+    writer.register_stream(
+        StreamId::new(1).unwrap(),
+        Some(std::time::Duration::from_secs(1)),
+    );
     writer
         .send_headers(
             StreamId::new(1).unwrap(),

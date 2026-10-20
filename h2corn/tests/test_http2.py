@@ -12,7 +12,7 @@ import h2.events
 import h2.settings
 import pytest
 from fastapi import FastAPI
-from h2corn import Config, Server
+from h2corn import Config, RequestPolicy, Server
 from starlette.requests import Request
 from starlette.responses import FileResponse, PlainTextResponse
 
@@ -915,6 +915,58 @@ async def test_h2_content_length_limit_returns_413() -> None:
 
     assert status == 413
     assert body == b''
+
+
+async def test_h2_request_policy_allows_content_length_and_streaming_uploads() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(
+        port=0,
+        max_request_body_size=4,
+        request_policies=(
+            RequestPolicy(
+                path='/upload/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        fixed_status, fixed_body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            path='/upload/fixed',
+            body=b'hello!',
+            extra_headers=[(b'content-length', b'6')],
+        )
+        streaming_status, streaming_body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            path='/upload/stream',
+            body=b'hello!',
+        )
+        ordinary_status, ordinary_body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            path='/ordinary',
+            body=b'hello!',
+            extra_headers=[(b'content-length', b'6')],
+        )
+
+    assert fixed_status == 200
+    assert fixed_body == b'hello!'
+    assert streaming_status == 200
+    assert streaming_body == b'hello!'
+    assert ordinary_status == 413
+    assert ordinary_body == b''
 
 
 async def test_request_body_can_be_consumed() -> None:

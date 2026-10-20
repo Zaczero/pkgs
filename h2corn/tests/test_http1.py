@@ -7,7 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
-from h2corn import Config
+from h2corn import Config, RequestPolicy
 
 from tests._support import (
     h2_request,
@@ -1514,6 +1514,178 @@ async def test_http1_content_length_limit_returns_413() -> None:
 
     assert status == 413
     assert body == b''
+
+
+async def test_http1_request_policy_allows_buffered_and_chunked_uploads() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                return
+            assert message['type'] == 'http.request', message
+            body.extend(message.get('body', b''))
+            if not message.get('more_body', False):
+                break
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': bytes(body)})
+
+    config = Config(
+        port=0,
+        max_request_body_size=4,
+        request_policies=(
+            RequestPolicy(
+                path='/upload/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        fixed = await http1_request(
+            port=port,
+            request=(
+                f'POST /upload/fixed HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+                'Content-Length: 6\r\nConnection: close\r\n\r\nhello!'
+            ).encode(),
+        )
+        chunked = await http1_request(
+            port=port,
+            request=(
+                f'POST /upload/chunked HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+                'Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
+                '3\r\nhel\r\n3\r\nlo!\r\n0\r\n\r\n'
+            ).encode(),
+        )
+        unmatched = await http1_request(
+            port=port,
+            request=(
+                f'POST /ordinary HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+                'Content-Length: 6\r\nConnection: close\r\n\r\nhello!'
+            ).encode(),
+        )
+
+    assert fixed[0] == 200
+    assert fixed[2] == b'hello!'
+    assert chunked[0] == 200
+    assert chunked[2] == b'hello!'
+    assert unmatched[0] == 413
+
+
+async def test_http1_request_policy_selects_before_100_continue() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(
+        port=0,
+        max_request_body_size=4,
+        request_policies=(
+            RequestPolicy(
+                path='/upload',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(
+                b'POST /upload?source=client HTTP/1.1\r\n'
+                b'Host: localhost\r\nContent-Length: 6\r\n'
+                b'Expect: 100-continue\r\nConnection: close\r\n\r\n'
+            )
+            await writer.drain()
+            interim = await asyncio.wait_for(reader.readline(), timeout=5)
+            interim_end = await asyncio.wait_for(reader.readline(), timeout=5)
+            writer.write(b'hello!')
+            await writer.drain()
+            status, _headers, body, _trailers = await asyncio.wait_for(
+                read_http1_response(reader),
+                timeout=5,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert interim == b'HTTP/1.1 100 Continue\r\n'
+    assert interim_end == b'\r\n'
+    assert status == 200
+    assert body == b'hello!'
+
+
+async def test_http1_request_policy_owns_body_idle_timeout() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(
+        port=0,
+        timeout_request_body_idle=0.12,
+        request_policies=(
+            RequestPolicy(
+                path='/slow',
+                max_request_body_size=0,
+                timeout_request_body_idle=0.8,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        slow_reader, slow_writer = await asyncio.open_connection('127.0.0.1', port)
+        try:
+            slow_writer.write(
+                b'POST /slow HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n'
+                b'Connection: close\r\n\r\na'
+            )
+            await slow_writer.drain()
+            await asyncio.sleep(0.35)
+            slow_writer.write(b'b')
+            await slow_writer.drain()
+            slow_status, _headers, slow_body, _trailers = await asyncio.wait_for(
+                read_http1_response(slow_reader),
+                timeout=5,
+            )
+        finally:
+            slow_writer.close()
+            await slow_writer.wait_closed()
+
+        ordinary_reader, ordinary_writer = await asyncio.open_connection(
+            '127.0.0.1', port
+        )
+        try:
+            ordinary_writer.write(
+                b'POST /ordinary HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n'
+                b'Connection: close\r\n\r\na'
+            )
+            await ordinary_writer.drain()
+            ordinary_eof = await asyncio.wait_for(ordinary_reader.read(), timeout=5)
+        finally:
+            ordinary_writer.close()
+            await ordinary_writer.wait_closed()
+
+    assert slow_status == 200
+    assert slow_body == b'ab'
+    assert ordinary_eof == b''
 
 
 async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> (

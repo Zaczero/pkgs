@@ -25,6 +25,7 @@ use crate::http::app::{HttpRequestBody, poll_app_task_once};
 use crate::http::body::RequestBodyState;
 use crate::http::execution::StreamRequestInput;
 use crate::http::planner::{RejectedResponse, reject_before_launch};
+use crate::http::policy::ResolvedRequestPolicy;
 use crate::http::run_request::run_http_request;
 use crate::http::types::{HttpVersion, RequestHead, status_code};
 use crate::runtime::{
@@ -40,6 +41,7 @@ struct ParsedRequest {
     request: RequestHead,
     route: RequestRoute,
     persistence: ConnectionPersistence,
+    policy: ResolvedRequestPolicy,
 }
 
 /// A parsed HTTP/1 request has one transport route. Keeping upgrades out of
@@ -188,12 +190,14 @@ where
             request,
             route,
             persistence,
+            policy,
         } = parsed;
         match route {
             RequestRoute::Http(body_kind) => {
                 match handle_http_request(
                     RequestContext::new(Arc::clone(&connection), request),
                     &connection.config,
+                    policy,
                     body_kind,
                     persistence,
                     H1Io {
@@ -216,6 +220,7 @@ where
                 return handle_upgrade_request(
                     request,
                     upgrade,
+                    policy,
                     reader,
                     buffer,
                     writer,
@@ -249,6 +254,7 @@ fn request_head_timeout(config: &ServerConfig, first_request: bool) -> Option<Du
 async fn handle_upgrade_request<R, W>(
     request: RequestHead,
     upgrade: UpgradeRequest,
+    policy: ResolvedRequestPolicy,
     reader: R,
     buffer: BytesMut,
     mut writer: BufWriter<W>,
@@ -317,7 +323,7 @@ where
         },
         UpgradeRequest::H2c { settings } => {
             Box::pin(serve_h2c_upgrade_request(
-                request, settings, reader, buffer, writer, context,
+                request, settings, policy, reader, buffer, writer, context,
             ))
             .await
         },
@@ -327,6 +333,7 @@ where
 async fn serve_h2c_upgrade_request<R, W>(
     mut request: RequestHead,
     settings: PeerSettings,
+    policy: ResolvedRequestPolicy,
     reader: R,
     buffer: BytesMut,
     mut writer: BufWriter<W>,
@@ -351,6 +358,7 @@ where
             buffer,
             request,
             body: Bytes::new(),
+            policy,
             peer_settings: settings,
         },
     )
@@ -364,6 +372,7 @@ async fn handle_http_request<R, W>(
     // still needs the config, and cloning the `Arc` was the shortcut around
     // that -- two atomics per request for a value that cannot go away.
     config: &ServerConfig,
+    policy: ResolvedRequestPolicy,
     body_kind: RequestBodyKind,
     persistence: ConnectionPersistence,
     io: H1Io<'_, R, W>,
@@ -377,7 +386,7 @@ where
         buffer,
         writer,
     } = io;
-    if let Err(rejection) = reject_before_launch(&ctx.request, config.max_request_body_size) {
+    if let Err(rejection) = reject_before_launch(&ctx.request, policy.max_request_body_size) {
         write_simple_response(
             writer,
             config,
@@ -421,6 +430,7 @@ where
     handle_streaming_http_request(
         ctx,
         config,
+        policy,
         body_kind,
         persistence,
         config.access_log,
@@ -434,6 +444,7 @@ where
 async fn handle_streaming_http_request<R, W>(
     ctx: Box<RequestContext>,
     config: &ServerConfig,
+    policy: ResolvedRequestPolicy,
     body_kind: StreamedBodyKind,
     persistence: ConnectionPersistence,
     count_body_bytes: bool,
@@ -494,9 +505,9 @@ where
                     StreamedBodyKind::Chunked => None,
                 },
                 body_bytes_read,
-                config.max_request_body_size,
+                policy.max_request_body_size,
             ),
-            config.timeout_request_body_idle,
+            policy.timeout_request_body_idle,
             parse::FieldLimits {
                 max_fields: config.limit_request_fields.map(NonZeroUsize::get),
                 max_field_size: config.http1.limit_request_field_size.map(NonZeroUsize::get),

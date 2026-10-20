@@ -41,6 +41,7 @@ use crate::h2_frame::{
 };
 use crate::hpack::DecoderError;
 use crate::http::body::RequestBodyProgress;
+use crate::http::policy::ResolvedRequestPolicy;
 use crate::http::types::{RequestHead, ResponseHeaders};
 use crate::proxy_protocol::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
@@ -151,6 +152,7 @@ pub(crate) struct UpgradedH2Request {
     pub buffer: BytesMut,
     pub request: RequestHead,
     pub body: Bytes,
+    pub policy: ResolvedRequestPolicy,
     pub peer_settings: PeerSettings,
 }
 
@@ -349,7 +351,7 @@ impl<R, W> H2ConnectionState<R, W> {
             }
             if stream.is_http
                 && !stream.delivery.is_stopped()
-                && let Some(timeout) = self.context.config.timeout_request_body_idle
+                && let Some(timeout) = stream.timeout_request_body_idle
             {
                 self.request_deadlines.reschedule_after(
                     state::RequestInputDeadlineKey::body(stream_id),
@@ -606,7 +608,7 @@ where
                     end_stream,
                     None,
                     None,
-                    None,
+                    ResolvedRequestPolicy::default(),
                     ctx.spawn
                         .connection
                         .config
@@ -638,13 +640,22 @@ where
         },
     };
 
-    ctx.writer.register_stream(
+    let policy = ctx
+        .spawn
+        .connection
+        .config
+        .request_policies
+        .resolve(&request);
+    ctx.writer
+        .register_stream(stream_id, policy.h2_timeout_response_stall);
+    if let Some(rejected) = spawn_request_stream(
         stream_id,
-        ctx.spawn.connection.config.http2.timeout_response_stall,
-    );
-    if let Some(rejected) =
-        spawn_request_stream(stream_id, request, end_stream, ctx.connection, ctx.spawn)
-    {
+        request,
+        end_stream,
+        policy,
+        ctx.connection,
+        ctx.spawn,
+    ) {
         ctx.writer
             .send_headers(stream_id, rejected.status, rejected.headers, true)?;
     }
@@ -688,7 +699,12 @@ where
     let peer_settings = upgraded.peer_settings;
     let mut connection =
         start_h2_connection(reader, writer, connection, shutdown, Some(peer_settings)).await?;
-    seed_upgraded_request(&mut connection, upgraded.request, upgraded.body)?;
+    seed_upgraded_request(
+        &mut connection,
+        upgraded.request,
+        upgraded.body,
+        upgraded.policy,
+    )?;
     run_h2_connection(Box::new(connection)).await
 }
 
@@ -756,19 +772,20 @@ fn seed_upgraded_request<R, W>(
     connection: &mut H2ConnectionState<R, W>,
     request: RequestHead,
     body: Bytes,
+    policy: ResolvedRequestPolicy,
 ) -> Result<(), H2CornError>
 where
     W: WriteTarget,
 {
     let stream_id = StreamId::new(1).expect("value is non-zero");
-    connection.writer.register_stream(
-        stream_id,
-        connection.context.config.http2.timeout_response_stall,
-    );
+    connection
+        .writer
+        .register_stream(stream_id, policy.h2_timeout_response_stall);
     if let Some(rejected) = spawn_request_stream(
         stream_id,
         request,
         body.is_empty(),
+        policy,
         &connection.connection,
         RequestSpawnContext {
             streams: &mut connection.streams,
@@ -2172,7 +2189,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(2);
         state.streams.insert(
             id,
-            InboundStream::new(Some(tx), true, false, None, None, None, 8 << 20),
+            InboundStream::new(
+                Some(tx),
+                true,
+                false,
+                None,
+                None,
+                ResolvedRequestPolicy::default(),
+                8 << 20,
+            ),
         );
         if matches!(event, BlockedOutputEvent::InputTimeout) {
             state.request_deadlines.reschedule_after(

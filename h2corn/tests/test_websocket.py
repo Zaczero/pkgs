@@ -8,8 +8,9 @@ from typing import NamedTuple
 import h2.config
 import h2.connection
 import h2.events
+import h2.settings
 import pytest
-from h2corn import Config, WebSocketScope
+from h2corn import Config, RequestPolicy, WebSocketScope
 
 from tests._support import (
     h2_request,
@@ -186,11 +187,17 @@ async def _http1_h2c_upgrade_request(
     *,
     port: int,
     path: str = '/',
+    initial_window_size: int | None = None,
+    release_window_after: float | None = None,
 ) -> tuple[int, bytes]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
     conn = h2.connection.H2Connection(
         config=h2.config.H2Configuration(client_side=True, header_encoding=None)
     )
+    if initial_window_size is not None:
+        conn.local_settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = (
+            initial_window_size
+        )
     settings_header = conn.initiate_upgrade_connection()
     assert settings_header is not None
     settings = settings_header.decode()
@@ -210,6 +217,11 @@ async def _http1_h2c_upgrade_request(
 
     writer.write(conn.data_to_send())
     await writer.drain()
+    if release_window_after is not None:
+        await asyncio.sleep(release_window_after)
+        conn.increment_flow_control_window(1024, stream_id=1)
+        writer.write(conn.data_to_send())
+        await writer.drain()
 
     response_status = None
     response_body = bytearray()
@@ -234,6 +246,8 @@ async def _http1_h2c_upgrade_request(
                         await writer.drain()
                     assert response_status is not None
                     return response_status, bytes(response_body)
+                elif isinstance(event, h2.events.StreamReset):
+                    pytest.fail(f'h2c request stream reset with {event.error_code}')
             pending = conn.data_to_send()
             if pending:
                 writer.write(pending)
@@ -924,7 +938,18 @@ async def test_http1_websocket_idle_session_ignores_timeout_request_body_idle() 
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=0, timeout_request_body_idle=0.05)
+    config = Config(
+        port=0,
+        timeout_request_body_idle=0.05,
+        request_policies=(
+            RequestPolicy(
+                path='/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0.01,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
     async with running_server(websocket_app, config) as server:
         reader, writer, _ = await _http1_open_websocket_stream(
             port=server_port(server),
@@ -955,7 +980,18 @@ async def test_h2_websocket_idle_session_ignores_timeout_request_body_idle() -> 
         await websocket.send_text(f'echo:{message}')
         await websocket.close()
 
-    config = Config(port=0, timeout_request_body_idle=0.05)
+    config = Config(
+        port=0,
+        timeout_request_body_idle=0.05,
+        request_policies=(
+            RequestPolicy(
+                path='/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0.01,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
     async with running_server(websocket_app, config) as server:
         reader, writer, conn, stream_id, handshake = await _h2_open_websocket_stream(
             port=server_port(server),
@@ -1374,10 +1410,26 @@ async def test_http1_h2c_upgrade_round_trip() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'upgraded'})
 
-    config = Config(port=0)
+    config = Config(
+        port=0,
+        h2_timeout_response_stall=0.05,
+        request_policies=(
+            RequestPolicy(
+                path='/stream',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
     async with running_server(app, config) as server:
         status, body = await asyncio.wait_for(
-            _http1_h2c_upgrade_request(port=server_port(server)),
+            _http1_h2c_upgrade_request(
+                port=server_port(server),
+                path='/stream',
+                initial_window_size=0,
+                release_window_after=0.15,
+            ),
             timeout=5,
         )
 

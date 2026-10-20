@@ -28,6 +28,7 @@ use crate::http::header::{
 use crate::http::header_meta::{ParsedWebSocketKey, ParsedWebSocketVersion, RequestHeaderMeta};
 use crate::http::header_value::header_value_is_valid;
 use crate::http::planner::reject_before_launch;
+use crate::http::policy::RequestPolicies;
 use crate::http::types::{
     BytesStr, ConnectAuthority, H1RequestHeaders, HttpStatusCode, HttpVersion,
     KnownRequestHeaderName, RequestHead, RequestHeaders, RequestTarget as DomainRequestTarget,
@@ -536,6 +537,7 @@ fn parsed_request_from_head(
     line: RequestLineParts<'_>,
     mut header_state: HeaderParseState,
     scheme: &'static str,
+    request_policies: &RequestPolicies,
 ) -> Result<HeadParseOutcome<ParsedHead>, H2CornError> {
     let scheme = BytesStr::from_static(scheme);
     // Every way a target can fail to parse is the client's, and the framing is
@@ -643,6 +645,18 @@ fn parsed_request_from_head(
     } else {
         RequestRoute::Http(body_kind)
     };
+    let policy = if matches!(
+        &route,
+        RequestRoute::Upgrade(
+            UpgradeRequest::WebSocket { .. }
+                | UpgradeRequest::WebSocketBadRequest
+                | UpgradeRequest::WebSocketUnsupportedVersion
+        )
+    ) {
+        request_policies.default_policy()
+    } else {
+        request_policies.resolve(&request)
+    };
 
     Ok(HeadParseOutcome::Parsed(ParsedHead {
         request: ParsedRequest {
@@ -653,6 +667,7 @@ fn parsed_request_from_head(
             } else {
                 ConnectionPersistence::KeepAlive
             },
+            policy,
         },
         expect_continue,
     }))
@@ -740,7 +755,13 @@ where
         },
     };
 
-    let parsed = match parsed_request_from_head(&head, line, header_state, scheme)? {
+    let parsed = match parsed_request_from_head(
+        &head,
+        line,
+        header_state,
+        scheme,
+        &config.request_policies,
+    )? {
         HeadParseOutcome::Parsed(parsed) => parsed,
         HeadParseOutcome::Reject(status) => {
             write_empty_response(writer, config, status, true).await?;
@@ -756,7 +777,11 @@ where
             .route
             .body_kind()
             .is_some_and(|body| body != RequestBodyKind::None)
-        && reject_before_launch(&parsed.request.request, config.max_request_body_size).is_ok()
+        && reject_before_launch(
+            &parsed.request.request,
+            parsed.request.policy.max_request_body_size,
+        )
+        .is_ok()
     {
         writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
         writer.flush().await?;

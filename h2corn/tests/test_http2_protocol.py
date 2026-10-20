@@ -9,7 +9,7 @@ import h2.errors
 import h2.events
 import h2.settings
 import pytest
-from h2corn import Config, Server
+from h2corn import Config, RequestPolicy, Server
 
 import hpack
 from tests._support import (
@@ -625,7 +625,7 @@ async def test_content_length_mismatch_is_rejected() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': b'unreachable'})
 
-    config = Config(port=0)
+    config = Config(port=0, max_request_body_size=0)
     async with running_server(app, config) as server:
         kind, detail = await _h2_expect_error(
             port=server_port(server),
@@ -1827,6 +1827,128 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
     assert slow_disconnects == [None]
 
 
+async def test_request_policy_owns_initial_and_refreshed_body_idle_deadlines() -> None:
+    disconnects: list[str] = []
+    disconnect_events: asyncio.Queue[str] = asyncio.Queue()
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                disconnects.append(scope['path'])
+                disconnect_events.put_nowait(scope['path'])
+                return
+            if not message.get('more_body', False):
+                break
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        timeout_request_body_idle=0.12,
+        request_policies=(
+            RequestPolicy(
+                path='/designated',
+                max_request_body_size=0,
+                timeout_request_body_idle=0.8,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        designated_stream = conn.get_next_available_stream_id()
+        ordinary_stream = designated_stream + 2
+        for stream_id, path in (
+            (designated_stream, '/designated'),
+            (ordinary_stream, '/ordinary'),
+        ):
+            conn.send_headers(
+                stream_id,
+                [
+                    (b':method', b'POST'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', path.encode()),
+                    (b'content-length', b'100'),
+                ],
+                end_stream=False,
+            )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        resets: dict[int, int] = {}
+
+        async def receive_resets_for(
+            duration: float, stop_when: int | None = None
+        ) -> None:
+            deadline = asyncio.get_running_loop().time() + duration
+            while remaining := deadline - asyncio.get_running_loop().time():
+                try:
+                    data = await asyncio.wait_for(reader.read(65535), timeout=remaining)
+                except TimeoutError:
+                    return
+                assert data
+                for event in conn.receive_data(data):
+                    if isinstance(event, h2.events.StreamReset):
+                        resets[event.stream_id] = int(event.error_code)
+                    elif isinstance(event, h2.events.DataReceived):
+                        conn.acknowledge_received_data(
+                            event.flow_controlled_length,
+                            event.stream_id,
+                        )
+                pending = conn.data_to_send()
+                if pending:
+                    writer.write(pending)
+                    await writer.drain()
+                if stop_when is not None and stop_when in resets:
+                    return
+
+        async def receive_until_reset(stream_id: int) -> None:
+            deadline = asyncio.get_running_loop().time() + 5
+            while stream_id not in resets:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(f'stream {stream_id} did not reset')
+                await receive_resets_for(remaining, stream_id)
+
+        try:
+            await receive_until_reset(ordinary_stream)
+            assert resets[ordinary_stream] == int(h2.errors.ErrorCodes.CANCEL)
+            assert designated_stream not in resets
+
+            conn.send_data(designated_stream, b'a', end_stream=False)
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            await receive_resets_for(0.45)
+            assert designated_stream not in resets
+
+            conn.send_data(designated_stream, b'b', end_stream=False)
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            await receive_resets_for(0.45)
+            assert designated_stream not in resets
+
+            await receive_until_reset(designated_stream)
+            await asyncio.wait_for(
+                asyncio.gather(disconnect_events.get(), disconnect_events.get()),
+                timeout=5,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert resets[designated_stream] == int(h2.errors.ErrorCodes.CANCEL)
+    assert disconnects.count('/ordinary') == 1
+    assert disconnects.count('/designated') == 1
+
+
 async def test_h2_header_block_size_limit_resets_stream() -> None:
     async def app(scope, receive, send):
         raise AssertionError('header block limit should reject before the app runs')
@@ -2070,6 +2192,97 @@ async def test_h2_response_stall_timeout_resets_flow_control_blocked_stream() ->
             await writer.wait_closed()
 
     assert reset_code == int(h2.errors.ErrorCodes.CANCEL)
+
+
+async def test_h2_response_stall_policies_are_owned_per_stream() -> None:
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'x' * 1024})
+
+    config = Config(
+        port=0,
+        h2_timeout_response_stall=0,
+        request_policies=(
+            RequestPolicy(
+                path='/finite',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0.08,
+            ),
+            RequestPolicy(
+                path='/disabled',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        conn.update_settings({h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 0})
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        settings_acknowledged = False
+        while not settings_acknowledged:
+            data = await asyncio.wait_for(reader.read(65535), timeout=5)
+            assert data
+            for event in conn.receive_data(data):
+                settings_acknowledged |= isinstance(
+                    event, h2.events.SettingsAcknowledged
+                )
+            pending = conn.data_to_send()
+            if pending:
+                writer.write(pending)
+                await writer.drain()
+
+        finite_stream_id = conn.get_next_available_stream_id()
+        disabled_stream_id = finite_stream_id + 2
+        for stream_id, path in (
+            (finite_stream_id, '/finite'),
+            (disabled_stream_id, '/disabled'),
+        ):
+            conn.send_headers(
+                stream_id,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', path.encode()),
+                ],
+                end_stream=True,
+            )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        reset_streams: dict[int, int] = {}
+        try:
+            while finite_stream_id not in reset_streams:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    if isinstance(event, h2.events.StreamReset):
+                        reset_streams[event.stream_id] = int(event.error_code)
+                pending = conn.data_to_send()
+                if pending:
+                    writer.write(pending)
+                    await writer.drain()
+
+            try:
+                data = await asyncio.wait_for(reader.read(65535), timeout=0.15)
+            except TimeoutError:
+                data = b''
+            if data:
+                for event in conn.receive_data(data):
+                    if isinstance(event, h2.events.StreamReset):
+                        reset_streams[event.stream_id] = int(event.error_code)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert reset_streams[finite_stream_id] == int(h2.errors.ErrorCodes.CANCEL)
+    assert disabled_stream_id not in reset_streams
 
 
 async def test_invalid_h2_preface_emits_goaway_protocol_error() -> None:

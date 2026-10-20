@@ -933,6 +933,7 @@ pub(crate) mod test_fixtures {
         ResponseHeaderConfig, ServerConfig, WebSocketConfig,
     };
     use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
+    use crate::http::policy::RequestPolicies;
     use crate::proxy_protocol::{
         ConnectionInfo, ConnectionPeer, ProxyProtocolMode, ServerAddr, ServerEndpoint,
     };
@@ -966,14 +967,12 @@ pub(crate) mod test_fixtures {
                     .expect("default HTTP/2 frame size is non-zero"),
                 initial_stream_window_size: NonZeroU32::new(8 << 20).expect("non-zero"),
                 initial_connection_window_size: NonZeroU32::new(8 << 20).expect("non-zero"),
-                timeout_response_stall: None,
                 timeout_write: None,
             },
-            max_request_body_size: None,
+            request_policies: RequestPolicies::default(),
             timeout_graceful_shutdown: Duration::from_secs(30),
             timeout_keep_alive: None,
             timeout_request_header: None,
-            timeout_request_body_idle: None,
             limit_concurrency: None,
             limit_connections: None,
             max_requests: None,

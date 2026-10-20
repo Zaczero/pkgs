@@ -23,6 +23,7 @@ from h2corn._config import (
     LifespanMode,
     LoopImpl,
     ProxyProtocolMode,
+    RequestPolicy,
     ServerHeaderMode,
 )
 from h2corn._log import LogFormat
@@ -117,6 +118,7 @@ __all__ = (
     'ProxyProtocolMode',
     'Receive',
     'ReceiveMessage',
+    'RequestPolicy',
     'Scope',
     'ScopeHeaders',
     'Send',

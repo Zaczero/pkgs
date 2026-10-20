@@ -23,6 +23,7 @@ use crate::config::{
 use crate::error::{ConfigError, H2CornError, unexpected_join_error};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
+use crate::http::policy::{RequestPolicies, ResolvedRequestPolicy};
 use crate::log::emit_banner as emit_access_banner;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use crate::pyapi::errors::{IntoPyResult as _, into_pyerr};
@@ -217,9 +218,39 @@ impl<'py> PyConfig<'py> {
                 self.get("h2_initial_connection_window_size")?,
             )
             .expect("configured connection window is non-zero"),
-            timeout_response_stall: self.optional_duration("h2_timeout_response_stall")?,
             timeout_write: self.optional_duration("h2_timeout_write")?,
         })
+    }
+
+    fn request_policies(&self) -> PyResult<RequestPolicies> {
+        let default = ResolvedRequestPolicy {
+            max_request_body_size: self.nonzero_u64("max_request_body_size")?,
+            timeout_request_body_idle: self.optional_duration("timeout_request_body_idle")?,
+            h2_timeout_response_stall: self.optional_duration("h2_timeout_response_stall")?,
+        };
+        let mut rules = Vec::new();
+        for item in self.attr("request_policies")?.try_iter()? {
+            let item = item?;
+            let path = item.getattr("path")?.extract::<String>()?;
+            let max_request_body_size =
+                NonZeroU64::new(item.getattr("max_request_body_size")?.extract::<u64>()?);
+            let timeout_request_body_idle = optional_duration(
+                "timeout_request_body_idle",
+                item.getattr("timeout_request_body_idle")?
+                    .extract::<f64>()?,
+            )?;
+            let h2_timeout_response_stall = optional_duration(
+                "h2_timeout_response_stall",
+                item.getattr("h2_timeout_response_stall")?
+                    .extract::<f64>()?,
+            )?;
+            rules.push((path, ResolvedRequestPolicy {
+                max_request_body_size,
+                timeout_request_body_idle,
+                h2_timeout_response_stall,
+            }));
+        }
+        RequestPolicies::new(default, rules).map_err(PyValueError::new_err)
     }
 
     fn websocket(&self) -> PyResult<WebSocketConfig> {
@@ -291,9 +322,9 @@ impl<'py> PyConfig<'py> {
     }
 
     fn server_config(&self, tls: Option<TlsConfig>) -> PyResult<ServerConfig> {
-        let max_request_body_size = self.nonzero_u64("max_request_body_size")?;
         let binds = self.binds()?;
         let http1 = self.http1()?;
+        let request_policies = self.request_policies()?;
 
         Ok(ServerConfig {
             binds,
@@ -304,11 +335,10 @@ impl<'py> PyConfig<'py> {
             limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             http1,
             http2: self.http2()?,
-            max_request_body_size,
+            request_policies,
             timeout_graceful_shutdown: self.duration("timeout_graceful_shutdown")?,
             timeout_keep_alive: self.optional_duration("timeout_keep_alive")?,
             timeout_request_header: self.optional_duration("timeout_request_header")?,
-            timeout_request_body_idle: self.optional_duration("timeout_request_body_idle")?,
             limit_concurrency: self.nonzero_usize("limit_concurrency")?,
             limit_connections: self.nonzero_usize("limit_connections")?,
             max_requests: self.nonzero_u64("max_requests")?,
@@ -1204,10 +1234,13 @@ mod tests {
     use std::process::Command;
     use std::sync::Barrier;
 
+    use http::Method;
     use pyo3::types::PyTuple;
 
     use super::*;
     use crate::config::LogFormat;
+    use crate::http::header_meta::RequestHeaderMeta;
+    use crate::http::types::{BytesStr, HttpVersion, RequestHead, RequestHeaders, RequestTarget};
     use crate::proxy_protocol::Cidr;
 
     fn config_stub(py: Python<'_>) -> Bound<'_, PyAny> {
@@ -1491,7 +1524,11 @@ mod tests {
         assert_eq!(extracted.log_format, LogFormat::Json);
         assert_eq!(extracted.root_path.as_ref(), "/api");
         assert_eq!(
-            extracted.max_request_body_size.map(NonZeroU64::get),
+            extracted
+                .request_policies
+                .default_policy()
+                .max_request_body_size
+                .map(NonZeroU64::get),
             Some(987_654)
         );
         assert_eq!(extracted.max_requests.map(NonZeroU64::get), Some(41));
@@ -1560,11 +1597,17 @@ mod tests {
             Some(Duration::from_secs_f64(4.5))
         );
         assert_eq!(
-            extracted.timeout_request_body_idle,
+            extracted
+                .request_policies
+                .default_policy()
+                .timeout_request_body_idle,
             Some(Duration::from_secs_f64(5.5))
         );
         assert_eq!(
-            extracted.http2.timeout_response_stall,
+            extracted
+                .request_policies
+                .default_policy()
+                .h2_timeout_response_stall,
             Some(Duration::from_secs_f64(6.0))
         );
         assert_eq!(extracted.http2.timeout_write, Some(Duration::from_secs(7)));
@@ -1625,10 +1668,32 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let config = config_stub(py);
+            config
+                .setattr("request_policies", PyTuple::empty(py))
+                .unwrap();
             set_core_options(&config);
             set_http_options(&config);
             set_timeout_and_limit_options(&config);
             set_websocket_and_proxy_options(&config, py);
+            let request_policy_type = PyModule::import(py, "h2corn")
+                .unwrap()
+                .getattr("RequestPolicy")
+                .unwrap();
+            let policy_kwargs = PyDict::new(py);
+            policy_kwargs.set_item("path", "/example.Chat/*").unwrap();
+            policy_kwargs
+                .set_item("max_request_body_size", 123_456)
+                .unwrap();
+            policy_kwargs
+                .set_item("timeout_request_body_idle", 1.25)
+                .unwrap();
+            policy_kwargs
+                .set_item("h2_timeout_response_stall", 2.5)
+                .unwrap();
+            let policy = request_policy_type.call((), Some(&policy_kwargs)).unwrap();
+            config
+                .setattr("request_policies", PyTuple::new(py, [policy]).unwrap())
+                .unwrap();
 
             let extracted = PyConfig(&config)
                 .server_config(None)
@@ -1638,6 +1703,29 @@ mod tests {
             assert_http_config(&extracted);
             assert_timeout_and_limit_config(&extracted);
             assert_websocket_and_proxy_config(&extracted);
+            let request = RequestHead {
+                http_version: HttpVersion::Http2,
+                method: Method::POST,
+                target: RequestTarget::normal(
+                    BytesStr::from_static("https"),
+                    BytesStr::from_static("/example.Chat/Converse"),
+                ),
+                headers: RequestHeaders::default(),
+                header_meta: RequestHeaderMeta::default(),
+            };
+            let policy = extracted.request_policies.resolve(&request);
+            assert_eq!(
+                policy.max_request_body_size.map(NonZeroU64::get),
+                Some(123_456)
+            );
+            assert_eq!(
+                policy.timeout_request_body_idle,
+                Some(Duration::from_secs_f64(1.25))
+            );
+            assert_eq!(
+                policy.h2_timeout_response_stall,
+                Some(Duration::from_secs_f64(2.5))
+            );
         });
     }
 

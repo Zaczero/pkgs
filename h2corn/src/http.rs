@@ -7,6 +7,7 @@ pub(crate) mod header_meta;
 pub(crate) mod header_value;
 pub(crate) mod pathsend;
 pub(crate) mod planner;
+pub(crate) mod policy;
 pub(crate) mod response;
 pub(crate) mod run_request;
 pub(crate) mod scope;

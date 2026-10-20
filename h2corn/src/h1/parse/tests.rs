@@ -21,6 +21,7 @@ use crate::error::{ErrorKind, H2CornError, Http1Error};
 use crate::h1::{ConnectionPersistence, RequestBodyKind, RequestRoute, UpgradeRequest};
 use crate::h2_frame;
 use crate::http::body::RequestBodyState;
+use crate::http::policy::RequestPolicies;
 use crate::http::types::RequestAuthority;
 use crate::proxy_protocol::ProxyProtocolMode;
 use crate::runtime::StreamInput;
@@ -48,14 +49,12 @@ fn test_server_config() -> &'static ServerConfig {
                 .expect("default HTTP/2 frame size is non-zero"),
             initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
             initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
-            timeout_response_stall: None,
             timeout_write: None,
         },
-        max_request_body_size: None,
+        request_policies: RequestPolicies::default(),
         timeout_graceful_shutdown: Duration::from_secs(30),
         timeout_keep_alive: None,
         timeout_request_header: None,
-        timeout_request_body_idle: None,
         limit_concurrency: None,
         limit_connections: None,
         max_requests: None,

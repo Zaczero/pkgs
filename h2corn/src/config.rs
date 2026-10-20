@@ -10,6 +10,7 @@ use pyo3::types::PyString;
 use tokio_rustls::TlsAcceptor;
 
 use crate::h2_frame::DEFAULT_MAX_FRAME_SIZE;
+use crate::http::policy::RequestPolicies;
 use crate::http::types::ResponseHeaderKind;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer};
 
@@ -53,7 +54,6 @@ pub(crate) struct Http2Config {
     pub initial_stream_window_size: NonZeroU32,
     /// Receive-side connection flow-control window.
     pub initial_connection_window_size: NonZeroU32,
-    pub timeout_response_stall: Option<Duration>,
     pub timeout_write: Option<Duration>,
 }
 
@@ -87,7 +87,6 @@ impl Default for Http2Config {
                 .expect("default stream window is non-zero"),
             initial_connection_window_size: NonZeroU32::new(8 << 20)
                 .expect("default connection window is non-zero"),
-            timeout_response_stall: None,
             timeout_write: None,
         }
     }
@@ -210,11 +209,10 @@ pub(crate) struct ServerConfig {
     pub limit_request_fields: Option<NonZeroUsize>,
     pub http1: Http1Config,
     pub http2: Http2Config,
-    pub max_request_body_size: Option<NonZeroU64>,
+    pub request_policies: RequestPolicies,
     pub timeout_graceful_shutdown: Duration,
     pub timeout_keep_alive: Option<Duration>,
     pub timeout_request_header: Option<Duration>,
-    pub timeout_request_body_idle: Option<Duration>,
     pub limit_concurrency: Option<NonZeroUsize>,
     pub limit_connections: Option<NonZeroUsize>,
     pub max_requests: Option<NonZeroU64>,

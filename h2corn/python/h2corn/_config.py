@@ -5,6 +5,7 @@ import ipaddress
 import math
 import os
 import socket
+import string
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, InitVar, dataclass, field, fields
 from functools import cache
@@ -50,6 +51,7 @@ _H2_MAX_FRAME_SIZE = 16_777_215
 _H2_MIN_WINDOW_SIZE = 65_535
 _H2_MAX_WINDOW_SIZE = 2_147_483_647
 _U32_MAX = (1 << 32) - 1
+_U64_MAX = (1 << 64) - 1
 DEFAULT_BIND = ('127.0.0.1:8000',)
 # `host` and `port` are not options in their own right -- they compose into
 # `bind` -- so both ingresses have to convert them by hand. One table, so the
@@ -418,6 +420,176 @@ def _exact_bool(name: str) -> Callable[[bool], bool]:
     return normalize
 
 
+def _request_policy_path(value: str) -> str:
+    """Validate an absolute wire path, optionally ending in one subtree `/*`."""
+    if type(value) is not str:
+        raise TypeError(
+            f'request policy path must be a str, got {type(value).__name__}'
+        )
+    if not value.isascii():
+        raise ValueError('request policy path must contain only ASCII characters')
+    if not value.startswith('/'):
+        raise ValueError('request policy path must start with `/`')
+    if '?' in value or '#' in value:
+        raise ValueError('request policy path must not contain a query or fragment')
+
+    path = value[:-1] if value.endswith('/*') else value
+    if '*' in path:
+        raise ValueError('request policy path supports only one terminal `/*` wildcard')
+
+    index = 0
+    while index < len(path):
+        char = path[index]
+        if char == '%':
+            if index + 2 >= len(path) or any(
+                digit not in string.hexdigits for digit in path[index + 1 : index + 3]
+            ):
+                raise ValueError(
+                    'request policy path contains an invalid percent escape'
+                )
+            index += 3
+            continue
+        if char not in (
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+            'abcdefghijklmnopqrstuvwxyz'
+            '0123456789'
+            "-._~!$&'()+,;=:@/"
+        ):
+            raise ValueError(f'request policy path contains invalid character {char!r}')
+        index += 1
+    return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RequestPolicy:
+    """Complete body and HTTP/2 response-stall policy for matching request paths.
+
+    Attributes:
+        path: An exact ASCII request path or slash-delimited subtree ending in
+            `/*`. Queries are excluded from matching. Paths are compared
+            case-sensitively and percent escapes are not decoded. `/service/*`
+            matches `/service/` and its descendants, not `/service` itself.
+        max_request_body_size: Maximum request-body bytes as an exact integer
+            from `0` through `18_446_744_073_709_551_615`. Use `0` to disable
+            the cumulative size limit.
+        timeout_request_body_idle: Maximum seconds without request-body data.
+            Use `0` to disable the idle timer.
+        h2_timeout_response_stall: Maximum seconds response bytes may remain
+            blocked by HTTP/2 peer flow control. Use `0` to disable the timer.
+
+    Rules replace all three global values on a match; they do not inherit
+    individual values from `Config`.
+
+    Construction accepts exact integers or floats for timeout seconds and
+    normalizes them to floats. Booleans, non-finite numbers, and negative
+    values are rejected. Config validation also rejects durations the runtime's
+    monotonic clock cannot represent.
+
+    Raises:
+        TypeError: A field has the wrong Python type.
+        ValueError: The path or a numeric field is outside its accepted range.
+    """
+
+    path: str
+    max_request_body_size: int
+    timeout_request_body_idle: float
+    h2_timeout_response_stall: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'path', _request_policy_path(self.path))
+        object.__setattr__(
+            self,
+            'max_request_body_size',
+            _bounded_int('max_request_body_size', minimum=0, maximum=_U64_MAX)(
+                self.max_request_body_size
+            ),
+        )
+        object.__setattr__(
+            self,
+            'timeout_request_body_idle',
+            _non_negative_float('timeout_request_body_idle')(
+                self.timeout_request_body_idle
+            ),
+        )
+        object.__setattr__(
+            self,
+            'h2_timeout_response_stall',
+            _non_negative_float('h2_timeout_response_stall')(
+                self.h2_timeout_response_stall
+            ),
+        )
+
+
+_REQUEST_POLICY_FIELDS = frozenset({
+    'path',
+    'max_request_body_size',
+    'timeout_request_body_idle',
+    'h2_timeout_response_stall',
+})
+
+
+def _request_policy_from_mapping(value: object) -> RequestPolicy:
+    if not isinstance(value, Mapping):
+        raise TypeError('request_policies entries must be tables')
+    mapping = cast('Mapping[str, object]', value)
+    keys = set(mapping)
+    expected_fields = set(_REQUEST_POLICY_FIELDS)
+    if keys != expected_fields:
+        missing = sorted(expected_fields - keys)
+        unknown = sorted(keys - expected_fields)
+        details: list[str] = []
+        if missing:
+            details.append(f'missing: {", ".join(missing)}')
+        if unknown:
+            details.append(f'unknown: {", ".join(unknown)}')
+        raise ValueError(
+            'request_policies entries must contain exactly path, '
+            'max_request_body_size, timeout_request_body_idle, and '
+            'h2_timeout_response_stall (' + '; '.join(details) + ')'
+        )
+    return RequestPolicy(
+        path=cast('str', mapping['path']),
+        max_request_body_size=cast('int', mapping['max_request_body_size']),
+        timeout_request_body_idle=cast('float', mapping['timeout_request_body_idle']),
+        h2_timeout_response_stall=cast('float', mapping['h2_timeout_response_stall']),
+    )
+
+
+def _request_policies_from_mapping(value: object) -> tuple[RequestPolicy, ...]:
+    if not isinstance(value, tuple | list):
+        raise TypeError('request_policies must be an array of tables')
+    items = cast('tuple[object, ...] | list[object]', value)
+    return tuple(
+        item if type(item) is RequestPolicy else _request_policy_from_mapping(item)
+        for item in items
+    )
+
+
+def _parse_request_policies_toml(value: str) -> tuple[RequestPolicy, ...]:
+    import tomllib
+
+    parsed = tomllib.loads(f'request_policies = {value}')
+    return _request_policies_from_mapping(parsed['request_policies'])
+
+
+def _parse_request_policy_cli(value: str) -> RequestPolicy:
+    import tomllib
+
+    parsed = tomllib.loads(f'request_policy = {value}')
+    return _request_policy_from_mapping(parsed['request_policy'])
+
+
+def _normalize_request_policies(
+    value: tuple[RequestPolicy, ...],
+) -> tuple[RequestPolicy, ...]:
+    """Require an immutable tuple of validated RequestPolicy records."""
+    if type(value) is not tuple:
+        raise TypeError(f'request_policies must be a tuple, got {type(value).__name__}')
+    if any(type(policy) is not RequestPolicy for policy in value):
+        raise TypeError('request_policies must contain RequestPolicy records')
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class OptionMetadata:
     doc: str
@@ -640,6 +812,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
             'h2_initial_stream_window_size',
             'h2_initial_connection_window_size',
             'max_request_body_size',
+            'request_policies',
             'limit_concurrency',
             'limit_connections',
         ),
@@ -1030,10 +1203,38 @@ class Config:
     )
     max_request_body_size: int = _option(
         default=1_073_741_824,
-        doc='Maximum request body size in bytes. Use 0 for no limit.',
+        doc=(
+            'Maximum request body size in bytes as an exact integer from 0 '
+            'through 18_446_744_073_709_551_615. Use 0 for no limit.'
+        ),
         env_parse=int,
-        converter=_bounded_int('max_request_body_size', minimum=0),
+        converter=_bounded_int('max_request_body_size', minimum=0, maximum=_U64_MAX),
         cli_type=int,
+    )
+    request_policies: tuple[RequestPolicy, ...] = _option(
+        default_factory=tuple,
+        doc=(
+            'Ordered path-specific body and HTTP/2 response-stall policies. '
+            'Each rule supplies all three values; the first exact path or '
+            'terminal `/*` subtree match replaces the global values, and an '
+            'unmatched request uses those global values. Paths are raw ASCII '
+            'URI paths without query or fragment text and match case-sensitively '
+            'before the query, without percent-decoding or `root_path` changes. '
+            '`/*` matches every normal HTTP path. Rules apply to HTTP/1 and '
+            'HTTP/2; WebSockets keep their dedicated policy. Use `0` to disable '
+            'an individual limit or timer. `H2CORN_REQUEST_POLICIES` accepts a '
+            'TOML array of inline tables; repeat `--request-policy` with one '
+            'TOML inline table per rule. Python construction uses a tuple of '
+            '[`RequestPolicy`][h2corn.RequestPolicy] records. Explicit CLI rules '
+            'replace the inherited table as a whole. Config validation rejects '
+            'timeout values outside the runtime monotonic-clock range.'
+        ),
+        env_parse=_parse_request_policies_toml,
+        converter=_normalize_request_policies,
+        cli_flags=('--request-policy',),
+        cli_type=_parse_request_policy_cli,
+        cli_action='append',
+        cli_metavar='TOML_TABLE',
     )
     limit_concurrency: int = _option(
         default=0,
@@ -1322,13 +1523,17 @@ class Config:
         if unknown := sorted(data.keys() - option_map.keys() - CONVENIENCE_KEYS):
             raise ValueError(f'unknown config keys: {", ".join(unknown)}')
 
-        values = {
-            option.name: option.metadata.env_parse(value)
-            if isinstance(value, str)
-            else value
-            for key, value in data.items()
-            if (option := option_map.get(key)) is not None
-        }
+        values: dict[str, Any] = {}
+        for key, value in data.items():
+            option = option_map.get(key)
+            if option is None:
+                continue
+            if isinstance(value, str):
+                values[option.name] = option.metadata.env_parse(value)
+            elif option.name == 'request_policies':
+                values[option.name] = _request_policies_from_mapping(value)
+            else:
+                values[option.name] = value
         values |= {
             key: CONVENIENCE_PARSERS[key](data[key])
             if isinstance(data[key], str)
@@ -1342,8 +1547,8 @@ class Config:
         """
         Build a [`Config`][h2corn.Config] from a TOML file.
 
-        The file must be a flat table whose keys correspond to `Config`
-        field names. For example, save this as `h2corn.toml`:
+        The file uses top-level `Config` field names. Request policies use an
+        array of tables. For example, save this as `h2corn.toml`:
 
         ```toml
         bind = ["127.0.0.1:8000"]
@@ -1351,6 +1556,12 @@ class Config:
         proxy_headers = true
         forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
         forwarded_fields = ["for", "proto"]
+
+        [[request_policies]]
+        path = "/example.Chat/*"
+        max_request_body_size = 0
+        timeout_request_body_idle = 0
+        h2_timeout_response_stall = 60.0
         ```
 
         Load it with:

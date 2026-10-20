@@ -1,5 +1,5 @@
 ---
-description: Reference for the Config dataclass, construction helpers, and option literal types.
+description: Reference for Config, RequestPolicy, construction helpers, and option literal types.
 ---
 
 # Config
@@ -11,6 +11,10 @@ description: Reference for the Config dataclass, construction helpers, and optio
         - from_env
         - from_mapping
         - from_toml
+
+::: h2corn.RequestPolicy
+    options:
+      show_signature: false
 
 `Config(...)` options are keyword-only. Accepted Python input types, normalized
 stored types, defaults, CLI flags, environment variables, TOML keys, and

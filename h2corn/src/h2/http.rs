@@ -18,6 +18,7 @@ use crate::http::app::{
 };
 use crate::http::execution::{AppRequestInput, RequestExecution, prepare_request_execution};
 use crate::http::planner::{RejectedResponse, plan_request};
+use crate::http::policy::ResolvedRequestPolicy;
 use crate::http::response::{
     FinalResponseBody, HttpResponseTransport, ResponseAction, ResponseActions, ResponseStart,
 };
@@ -143,6 +144,7 @@ pub(super) fn spawn_request_stream(
     stream_id: StreamId,
     request: RequestHead,
     end_stream: bool,
+    policy: ResolvedRequestPolicy,
     connection: &H2WriterHandle,
     mut context: RequestSpawnContext<'_>,
 ) -> Option<RejectedResponse> {
@@ -156,7 +158,7 @@ pub(super) fn spawn_request_stream(
         websocket,
         end_stream,
         config.access_log,
-        config.max_request_body_size,
+        policy.max_request_body_size,
     )
     .and_then(|plan| {
         prepare_request_execution(&context.connection.app, plan).ok_or_else(|| RejectedResponse {
@@ -175,7 +177,10 @@ pub(super) fn spawn_request_stream(
                     end_stream,
                     content_length,
                     None,
-                    None,
+                    ResolvedRequestPolicy {
+                        max_request_body_size: None,
+                        ..policy
+                    },
                     config.http2.initial_stream_window_size.get(),
                 ),
             );
@@ -203,7 +208,7 @@ pub(super) fn spawn_request_stream(
                     end_stream,
                     content_length,
                     app_input.body_bytes_read(),
-                    config.max_request_body_size,
+                    policy,
                     config.http2.initial_stream_window_size.get(),
                 ),
             );
@@ -235,7 +240,7 @@ pub(super) fn spawn_request_stream(
                     end_stream,
                     content_length,
                     None,
-                    config.max_request_body_size,
+                    policy,
                     config.http2.initial_stream_window_size.get(),
                 ),
             );
@@ -313,10 +318,7 @@ async fn handle_http_request(
     stream_id: StreamId,
     task: H2HttpRequestContext,
 ) -> Result<(), H2CornError> {
-    let mut transport = H2HttpTransport {
-        connection: &task.connection,
-        stream_id,
-    };
+    let mut transport = H2HttpTransport::new(&task.connection, stream_id);
     let AppRequestInput::Stream {
         rx: request_body_rx,
         body_bytes_read,

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::mem::replace;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -43,6 +43,7 @@ pub(super) struct InboundStream {
     /// WebSocket input shutdown remains owned by its session, not HTTP's
     /// early-response retirement.
     pub(super) is_http: bool,
+    pub(super) timeout_request_body_idle: Option<Duration>,
     pub(super) receive_window: ReceiveWindowState,
     pub(super) state: StreamLifecycle,
     pub(super) body: RequestBodyState,
@@ -771,7 +772,7 @@ impl InboundStream {
         end_stream: bool,
         expected_content_length: Option<u64>,
         body_bytes: Option<RequestBodyCounter>,
-        max_request_body_size: Option<NonZeroU64>,
+        policy: crate::http::policy::ResolvedRequestPolicy,
         initial_window: u32,
     ) -> Self {
         let mut delivery = InputDelivery::new(input);
@@ -781,13 +782,22 @@ impl InboundStream {
         Self {
             delivery,
             is_http,
+            timeout_request_body_idle: if is_http {
+                policy.timeout_request_body_idle
+            } else {
+                None
+            },
             receive_window: ReceiveWindowState::new(initial_window),
             state: if end_stream {
                 StreamLifecycle::RequestClosed
             } else {
                 StreamLifecycle::Open
             },
-            body: RequestBodyState::new(expected_content_length, body_bytes, max_request_body_size),
+            body: RequestBodyState::new(
+                expected_content_length,
+                body_bytes,
+                policy.max_request_body_size,
+            ),
         }
     }
 
@@ -947,18 +957,17 @@ impl<R, W> H2ConnectionState<R, W> {
 
     pub(super) fn refresh_body_deadline(&mut self, stream_id: StreamId) {
         let key = RequestInputDeadlineKey::body(stream_id);
-        let should_schedule = self.streams.get(&stream_id).is_some_and(|stream| {
-            stream.is_http && !stream.state.request_is_closed() && !stream.delivery.is_stopped()
+        let timeout = self.streams.get(&stream_id).and_then(|stream| {
+            (!stream.state.request_is_closed() && !stream.delivery.is_stopped())
+                .then_some(stream.timeout_request_body_idle)
+                .flatten()
         });
-        match (
-            should_schedule,
-            self.context.config.timeout_request_body_idle,
-        ) {
-            (true, Some(timeout)) => {
+        match timeout {
+            Some(timeout) => {
                 self.request_deadlines
                     .reschedule_after(key, TokioInstant::now(), timeout);
             },
-            _ => self.request_deadlines.cancel(key),
+            None => self.request_deadlines.cancel(key),
         }
     }
 
@@ -1412,7 +1421,15 @@ mod tests {
     fn closed_stream_retention_is_identical_for_both_close_orders() {
         fn backlogged_stream() -> (InboundStream, mpsc::Receiver<StreamInput>) {
             let (tx, rx) = mpsc::channel(1);
-            let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
+            let mut stream = InboundStream::new(
+                Some(tx),
+                true,
+                false,
+                None,
+                None,
+                Default::default(),
+                0xFFFF,
+            );
             stream.delivery.push(data(b"a"));
             stream.delivery.push(data(b"b"));
             assert!(stream.delivery.has_backlog());
@@ -1449,7 +1466,15 @@ mod tests {
     #[tokio::test]
     async fn end_stream_queues_behind_backlogged_data() {
         let (tx, mut rx) = mpsc::channel(1);
-        let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
+        let mut stream = InboundStream::new(
+            Some(tx),
+            true,
+            false,
+            None,
+            None,
+            Default::default(),
+            0xFFFF,
+        );
 
         stream.delivery.push(data(b"a"));
         stream.delivery.push(data(b"b"));
@@ -1613,8 +1638,15 @@ mod tests {
         let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let (tx, mut rx) = mpsc::channel(1);
-        let mut stream =
-            InboundStream::new(Some(tx), is_http, false, None, None, None, 0x7FFF_FFFF);
+        let mut stream = InboundStream::new(
+            Some(tx),
+            is_http,
+            false,
+            None,
+            None,
+            Default::default(),
+            0x7FFF_FFFF,
+        );
 
         for index in 0..FRAME_COUNT {
             let body = if index & 1 == 0 {
@@ -1687,7 +1719,15 @@ mod tests {
     #[tokio::test]
     async fn fully_closed_stream_retains_terminal_backlog() {
         let (tx, mut rx) = mpsc::channel(1);
-        let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
+        let mut stream = InboundStream::new(
+            Some(tx),
+            true,
+            false,
+            None,
+            None,
+            Default::default(),
+            0xFFFF,
+        );
         stream.mark_response_closed();
 
         stream.delivery.push(data(b"a"));
@@ -1712,7 +1752,15 @@ mod tests {
     #[tokio::test]
     async fn idle_delivery_completion_queues_terminal_in_channel() {
         let (tx, mut rx) = mpsc::channel(4);
-        let mut stream = InboundStream::new(Some(tx), true, false, None, None, None, 0xFFFF);
+        let mut stream = InboundStream::new(
+            Some(tx),
+            true,
+            false,
+            None,
+            None,
+            Default::default(),
+            0xFFFF,
+        );
 
         let close = stream.finish_request_input();
         assert!(matches!(close, RequestInputClose::Closed));
