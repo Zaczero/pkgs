@@ -3,6 +3,7 @@
 AMD Ryzen 9 5950X 16-Core Processor · Linux-7.2.9-x86_64-with-glibc2.42 · cpython 3.15.0 (64-bit)
 Pillow 13.0.0 · NumPy 2.5.4
 Each value is a median of 12 independent worker-process means; 95% percentile bootstrap intervals use 10,000 resamples across those workers.
+Warmup-only runs remain in the raw JSON and are omitted from the table.
 
 ## Encode a Pillow image
 

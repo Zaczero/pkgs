@@ -92,7 +92,8 @@ has twelve independent worker-process means from three calibrated readings of
 at least 0.1 seconds each after one warmup. Six-worker batches ran blurhash-rs,
 blurhash, blurhash-python and then the reverse order. The table reports medians
 and 95% percentile bootstrap intervals from 10,000 resamples of
-worker-process means.
+worker-process means. Warmup-only runs remain in the raw JSON but are excluded
+from the reported values and intervals.
 Native wheels used release builds with rustc 1.101.0-nightly
 (`4ebd25825`, LLVM 23.1.4) targeting x86-64-v2.
 

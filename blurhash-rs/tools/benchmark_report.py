@@ -165,7 +165,8 @@ def _markdown(results: Report, definitions: tuple[dict, ...], metadata: dict) ->
         f'{metadata["python_implementation"]} {metadata["python_version"]}\n'
         f'Pillow {metadata["pillow_version"]} · NumPy {metadata["numpy_version"]}\n'
         'Each value is a median of 12 independent worker-process means; '
-        '95% percentile bootstrap intervals use 10,000 resamples across those workers.'
+        '95% percentile bootstrap intervals use 10,000 resamples across those workers.\n'
+        'Warmup-only runs remain in the raw JSON and are omitted from the table.'
     )
     summaries = {(item.case, item.name): item for item in results.results}
     rows = [f'# {results.title}', '', captions, '']
