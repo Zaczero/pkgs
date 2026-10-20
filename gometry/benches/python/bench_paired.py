@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import os
 import platform
 import sys
@@ -44,6 +45,19 @@ from benchmark_observation import make_observation
 
 _OUTPUT_SINK = 0
 PAIR_ARTIFACT_SCHEMA_VERSION = 1
+MIN_SAMPLE_NS = 1_000_000
+MAX_CALIBRATION_BATCHES = 20
+
+
+def _time_batch(
+    call: Callable[[], object], iterations: int, clock_ns: Callable[[], int]
+) -> int:
+    started = clock_ns()
+    for _ in range(iterations):
+        # Discard every result here so each call includes its own release,
+        # including the last call. No result escapes into another sample.
+        call()
+    return clock_ns() - started
 
 
 def _arm_identity(
@@ -114,6 +128,7 @@ def _measure_arm(
     useful_work: dict[str, Any],
     output_validator: Callable[[object], None] | None,
     oracle_identity: str,
+    min_sample_ns: int,
 ) -> dict[str, Any]:
     if not callable(call):
         raise SystemExit(f'paired block callable for {row} is not callable')
@@ -126,16 +141,24 @@ def _measure_arm(
         )
     for _ in range(warmups):
         _consume_output(call())
+    iterations = 1
+    calibration_iterations = 0
+    for _ in range(MAX_CALIBRATION_BATCHES):
+        elapsed = _time_batch(call, iterations, clock_ns)
+        calibration_iterations += iterations
+        if elapsed >= min_sample_ns:
+            break
+        iterations *= 2
+    else:
+        raise SystemExit(f'paired batch calibration did not converge for {row}')
     started = clock_ns()
-    raw_seconds: list[float] = []
-    last_value: object | None = None
-    for _ in range(repetitions):
-        arm_started = clock_ns()
-        last_value = call()
-        _consume_output(last_value)
-        arm_ended = clock_ns()
-        raw_seconds.append((arm_ended - arm_started) / 1_000_000_000.0)
+    batch_seconds = [
+        _time_batch(call, iterations, clock_ns) / 1_000_000_000.0
+        for _ in range(repetitions)
+    ]
     ended = clock_ns()
+    last_value = call()
+    _consume_output(last_value)
     if output_validator is not None:
         try:
             output_validator(last_value)
@@ -145,12 +168,18 @@ def _measure_arm(
             ) from exc
     observation = make_observation(
         metric='duration',
-        raw_values=raw_seconds,
+        raw_values=[elapsed / iterations for elapsed in batch_seconds],
         useful_work=useful_work,
         oracle_identity=oracle_identity,
         phase=phase,
         warmup_iterations=warmups,
-        calibration_iterations=repetitions,
+        calibration_iterations=calibration_iterations,
+        calibration_strategy='bounded-doubling',
+        batch={
+            'iterations': iterations,
+            'raw_seconds': batch_seconds,
+            'result_lifetime': 'released-inside-timer',
+        },
     )
     if producer_identity is not None:
         observation['producer_identity'] = producer_identity
@@ -177,6 +206,7 @@ def run_block(
     identity: Callable[[], dict[str, Any]],
     completion: Callable[[], dict[str, Any]] | None = None,
     builder: Callable[[], Any] | None = None,
+    min_sample_ns: int = MIN_SAMPLE_NS,
 ) -> dict[str, Any]:
     """Build and execute one complete paired block."""
     if lead not in {'ab', 'ba'}:
@@ -185,6 +215,8 @@ def run_block(
         raise SystemExit(
             'paired block warmups must be non-negative and repetitions positive'
         )
+    if min_sample_ns < 1:
+        raise SystemExit('minimum sample duration must be positive')
     phase = operation.phase
     invocation_id = os.environ.get('GOMETRY_BENCH_INVOCATION_ID') or uuid.uuid4().hex
     if phase == 'first-use':
@@ -255,6 +287,7 @@ def run_block(
             useful_work=useful_work,
             output_validator=output_validator,
             oracle_identity=oracle_identity,
+            min_sample_ns=min_sample_ns,
         )
         for side in order
     }
@@ -316,7 +349,8 @@ def run_block(
         'sampling': {
             'warmup_iterations': warmups,
             'repetitions': repetitions,
-            'calibration_strategy': 'fixed-repetitions',
+            'calibration_strategy': 'bounded-doubling',
+            'min_sample_ns': min_sample_ns,
             'phase': phase,
             'scaling': scaling_record(operation),
         },
@@ -338,8 +372,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
     parser.add_argument('--warmups', type=int, required=True)
     parser.add_argument('--repetitions', type=int, required=True)
+    parser.add_argument(
+        '--min-sample-time',
+        type=float,
+        default=MIN_SAMPLE_NS / 1_000_000_000,
+        help='Target this many seconds per batch in untimed calibration (default: %(default)s)',
+    )
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
+    if not math.isfinite(args.min_sample_time) or args.min_sample_time < 1e-9:
+        parser.error('--min-sample-time must be finite and at least 1 ns')
     if os.environ.get('GOMETRY_BENCH_ORACLE_OK') != '1':
         raise SystemExit(
             'paired benchmark timing requires GOMETRY_BENCH_ORACLE_OK=1 '
@@ -364,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         repetitions=args.repetitions,
         identity=runtime.collect_identity,
         completion=runtime.complete,
+        min_sample_ns=int(args.min_sample_time * 1_000_000_000),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:

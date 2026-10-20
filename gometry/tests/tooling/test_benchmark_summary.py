@@ -165,6 +165,71 @@ def test_real_block_populates_both_arm_stats_without_ordinal_matching(
     assert stats['gometry.op/10k'].blocks == stats['shapely.op/10k'].blocks
 
 
+def test_report_shows_paired_interval_and_separates_reference_implementations() -> None:
+    documents = {
+        Path(f'{index}.json'): _block(
+            block_id=f'block-{index}',
+            gometry_value=left,
+            competitor_value=right,
+        )
+        for index, (left, right) in enumerate(((1.0, 2.0), (10.0, 5.0), (100.0, 100.0)))
+    }
+    row = sb._build_rows(
+        [_meta()], sb._load_all_blocks(documents), equivalence_margin=0.03
+    )[0]
+    assert row.ratio == 1.0
+    assert row.competitor.median / row.gometry.median == 0.5
+    reference = dataclasses.replace(
+        row,
+        meta=dataclasses.replace(
+            row.meta,
+            label='Country boundary length',
+            competitor_label='Python/NumPy quadrature reference',
+            footnotes=('reference',),
+        ),
+    )
+    report = '\n'.join(sb.render([row, reference], publishable=True))
+    comparisons = report.split('[start:comparisons]')[1].split('[end:comparisons]')[0]
+    references = report.split('[start:references]')[1].split('[end:references]')[0]
+    assert 'Paired ratio 1&times; (95% CI 0.5 to 2)' in comparisons
+    assert 'Country boundary length' not in comparisons
+    assert 'Country boundary length' in references
+    assert 'Python/NumPy quadrature reference' in references
+
+
+@pytest.mark.parametrize('iterations', [0, 4])
+def test_observation_rejects_incorrect_batch_normalization(iterations: int) -> None:
+    observation = _observation('duration', 1.0)
+    observation['batch'] = {
+        'iterations': iterations,
+        'raw_seconds': [8.0],
+        'result_lifetime': 'released-inside-timer',
+    }
+    with pytest.raises(ValueError, match='batch'):
+        bo.validate_observation(observation)
+
+
+def test_summary_uses_measured_samples_instead_of_calibration_call_count() -> None:
+    payload = _block()
+    payload['sampling']['calibration_strategy'] = 'bounded-doubling'
+    for side in ('A', 'B'):
+        observation = payload['arms'][side]['observation']
+        normalized = observation['measurement']['raw']['raw_seconds'][0]
+        observation['calibration'] = {
+            'iterations': 15,
+            'strategy': 'bounded-doubling',
+            'completed': True,
+        }
+        observation['batch'] = {
+            'iterations': 8,
+            'raw_seconds': [normalized * 8],
+            'result_lifetime': 'released-inside-timer',
+        }
+    stats = sb._load_all_blocks({Path('calibrated.json'): payload})
+    assert stats['gometry.op/10k'].median == 1.0
+    assert stats['shapely.op/10k'].median == 2.0
+
+
 def test_missing_lead_or_one_block_rejects_declared_release_matrix() -> None:
     meta = _meta()
     first = sb.PairedBlock(

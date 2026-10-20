@@ -58,21 +58,33 @@ def _block_payload(
     }
     observation_a = make_observation(
         metric='duration',
-        raw_values=[1.0],
+        raw_values=[1.0] * 5,
         oracle_identity=f'public:{operation.gometry}:oracle',
         phase=operation.phase,
         useful_work=useful_work,
         warmup_iterations=2,
-        calibration_iterations=5,
+        calibration_iterations=1,
+        calibration_strategy='bounded-doubling',
+        batch={
+            'iterations': 1,
+            'raw_seconds': [1.0] * 5,
+            'result_lifetime': 'released-inside-timer',
+        },
     )
     observation_b = make_observation(
         metric='duration',
-        raw_values=[2.0],
+        raw_values=[2.0] * 5,
         oracle_identity=f'public:{operation.gometry}:oracle',
         phase=operation.phase,
         useful_work=useful_work,
         warmup_iterations=2,
-        calibration_iterations=5,
+        calibration_iterations=1,
+        calibration_strategy='bounded-doubling',
+        batch={
+            'iterations': 1,
+            'raw_seconds': [2.0] * 5,
+            'result_lifetime': 'released-inside-timer',
+        },
     )
     provenance_a = producer(
         operation.gometry,
@@ -136,7 +148,7 @@ def _block_payload(
         'sampling': {
             'warmup_iterations': 2,
             'repetitions': 5,
-            'calibration_strategy': 'fixed-repetitions',
+            'calibration_strategy': 'bounded-doubling',
             'phase': operation.phase,
             'scaling': scaling,
         },
@@ -885,6 +897,7 @@ def test_publication_rejects_stale_gometry_product_bytes(
     package_root = tmp_path / 'changed-product'
     (package_root / 'src').mkdir(parents=True)
     (package_root / 'native').mkdir()
+    (package_root / 'native' / 'source_roots.txt').write_text('', encoding='utf-8')
     (package_root / 'build.rs').write_text('fn main() {}\n', encoding='utf-8')
     (package_root / 'src' / 'lib.rs').write_text(
         'pub fn changed() {}\n', encoding='utf-8'

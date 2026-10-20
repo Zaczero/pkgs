@@ -190,13 +190,14 @@ def test_one_fresh_process_block_contains_both_arms_and_consumes_output() -> Non
         lead='ab',
         warmups=1,
         repetitions=2,
+        min_sample_ns=1,
         clock_ns=_clock(),
         identity=_identity,
         builder=lambda: _Case(_Pair(left, right)),
     )
     assert artifact['lead_order'] == ['A', 'B']
     assert set(artifact['arms']) == {'A', 'B'}
-    assert seen == ['A', 'A', 'A', 'B', 'B', 'B']
+    assert seen == ['A'] * 5 + ['B'] * 5
     assert artifact['arms']['A']['observation']['measurement']['unit'] == 'seconds'
     assert (
         artifact['arms']['A']['observation']['useful_work']['unit']
@@ -268,11 +269,12 @@ def test_local_oracle_is_not_run_in_timed_worker() -> None:
         warmups=1,
         repetitions=2,
         clock_ns=clock,
+        min_sample_ns=1,
         identity=_identity,
         builder=lambda: _OracleCase(_Pair(gometry_call, competitor_call)),
     )
     assert set(artifact['arms']) == {'A', 'B'}
-    assert timed_calls == 6
+    assert timed_calls == 10
     assert clock_calls > 0
 
 
@@ -286,6 +288,7 @@ def test_warm_phase_requires_explicit_prewarms() -> None:
             warmups=0,
             repetitions=1,
             clock_ns=_clock(),
+            min_sample_ns=1,
             identity=_identity,
             builder=lambda: _Case(_Pair(lambda: [1], lambda: [1])),
         )
@@ -320,10 +323,96 @@ def test_useful_output_mutation_fails_after_timing_before_artifact_acceptance() 
             lead='ab',
             warmups=1,
             repetitions=1,
+            min_sample_ns=1,
             clock_ns=_clock(),
             identity=_identity,
             builder=lambda: _ValidatedCase(_Pair(lambda: [1], lambda: [1])),
         )
+
+
+def test_batches_normalize_creation_and_release_cost_for_every_call() -> None:
+    now = 100
+    calls = 0
+    releases = 0
+
+    class Result:
+        def __del__(self) -> None:
+            nonlocal now, releases
+            now += 200
+            releases += 1
+
+    def call() -> Result:
+        nonlocal now, calls
+        now += 100
+        calls += 1
+        return Result()
+
+    arm = worker._measure_arm(
+        row='gometry.fake/1',
+        call=call,
+        clock_ns=lambda: now,
+        producer_identity=None,
+        warmups=1,
+        repetitions=3,
+        phase='warm',
+        useful_work={'count': 1, 'unit': 'invocation'},
+        output_validator=None,
+        oracle_identity='public:gometry.fake/1:oracle',
+        min_sample_ns=1_000,
+    )
+    observation = arm['observation']
+    assert observation['calibration']['iterations'] == 7
+    assert observation['batch']['iterations'] == 4
+    assert observation['batch']['raw_seconds'] == [1.2e-6] * 3
+    assert observation['measurement']['raw']['raw_seconds'] == [3e-7] * 3
+    assert calls == 21
+    assert releases == calls
+
+
+def test_unresolved_batch_calibration_fails_instead_of_publishing_precision() -> None:
+    with pytest.raises(SystemExit, match='calibration did not converge'):
+        worker._measure_arm(
+            row='gometry.fake/1',
+            call=lambda: [1],
+            clock_ns=lambda: 1,
+            producer_identity=None,
+            warmups=1,
+            repetitions=1,
+            phase='warm',
+            useful_work={'count': 1, 'unit': 'invocation'},
+            output_validator=None,
+            oracle_identity='public:gometry.fake/1:oracle',
+            min_sample_ns=1,
+        )
+
+
+@pytest.mark.parametrize('duration', ['0', 'nan', 'inf'])
+def test_cli_rejects_invalid_batch_targets_before_runtime_admission(
+    duration: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        worker.main([
+            '--gometry',
+            'gometry.fake/1',
+            '--pair-id',
+            'pair',
+            '--block-id',
+            'block',
+            '--lead',
+            'ab',
+            '--warmups',
+            '2',
+            '--repetitions',
+            '5',
+            '--output',
+            'unused.json',
+            '--min-sample-time',
+            duration,
+        ])
+    assert error.value.code == 2
+    assert (
+        '--min-sample-time must be finite and at least 1 ns' in capsys.readouterr().err
+    )
 
 
 def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> None:
@@ -342,6 +431,7 @@ def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> No
         warmups=1,
         repetitions=1,
         clock_ns=_clock(),
+        min_sample_ns=1,
         identity=identity,
         builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
     )
@@ -391,6 +481,7 @@ def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
         warmups=1,
         repetitions=1,
         clock_ns=_clock(),
+        min_sample_ns=1,
         identity=_complete_identity,
         builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
     )

@@ -19,7 +19,9 @@ from summarize_bench import (
     _humanize_seconds,
     _load_all_blocks,
     _parse_public_operations,
+    _section_table,
     load_run_artifacts,
+    normalize_scaling_values,
     validate_exact_paired_matrix,
 )
 
@@ -91,6 +93,8 @@ def on_pre_build(config, **_kwargs):
             axes.xaxis.label.set_fontsize(12)
             axes.yaxis.label.set_fontsize(12)
             axes.tick_params(labelsize=12, pad=6)
+            if curve == 'prepared-point-in-polygon':
+                axes.set_xscale('log')
             axes.set_xticks(sorted(values['gometry']))
             axes.xaxis.set_major_formatter(
                 PercentFormatter(xmax=1)
@@ -121,7 +125,24 @@ def on_pre_build(config, **_kwargs):
                 f'(../assets/benchmark-{curve}-{theme}.svg#only-{theme})',
                 '',
             ))
-        cards.extend(('</div>', ''))
+        normalized = [
+            normalize_scaling_values(
+                [getattr(row, name).median for row in selected],
+                [row.blocks[0].useful_work['count'] for row in selected],
+            )
+            for name in ('gometry', 'competitor')
+        ]
+        cards.extend((
+            '<details markdown="1">',
+            '<summary>Call times and paired ratio intervals</summary>',
+            '',
+            *_section_table(selected, list(zip(*normalized, strict=True))),
+            '',
+            '</details>',
+            '',
+            '</div>',
+            '',
+        ))
     cards.append('</div>')
     config.extra['_benchmark_scaling'] = '\n'.join(cards)
 

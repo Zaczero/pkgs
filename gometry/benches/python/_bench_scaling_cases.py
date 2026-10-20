@@ -101,7 +101,7 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
             ],
             dtype=object,
         )
-    elif operation.dimension == 'query-selectivity':
+    elif operation.dimension == 'queries-with-a-match':
         matching = int(point * 1_000)
         queries_gm = gm.GeometryArray([
             gm.box(
@@ -316,7 +316,7 @@ def _grid_case(operation: ScalingOperation) -> PublicCase:
     )
 
 
-def _batch_boundary_case(operation: ScalingOperation) -> PublicCase:
+def _point_in_polygon_case(operation: ScalingOperation) -> PublicCase:
     import gometry as gm
     import shapely
 
@@ -359,8 +359,8 @@ def _builder_for(operation: ScalingOperation) -> Callable[[], PublicCase]:
         return lambda: _holes_case(operation)
     if operation.curve_id == 'grid-cover-output-count':
         return lambda: _grid_case(operation)
-    if operation.curve_id == 'prepared-batch-boundary':
-        return lambda: _batch_boundary_case(operation)
+    if operation.curve_id == 'prepared-point-in-polygon':
+        return lambda: _point_in_polygon_case(operation)
     raise ValueError(f'no scaling builder for {operation.curve_id}')
 
 

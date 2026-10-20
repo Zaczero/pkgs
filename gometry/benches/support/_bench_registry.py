@@ -44,7 +44,9 @@ Domain = Literal[
     'Spatial index',
 ]
 Suite = Literal['competitors']
-Footnote = Literal['geodesic', 'in_core', 'batched', 'noisy']
+Footnote = Literal[
+    'geodesic', 'in_core', 'batched', 'noisy', 'ellipsoidal', 'chart-edge', 'reference'
+]
 Phase = Literal['warm', 'steady', 'first-use']
 
 DOMAIN_ORDER: tuple[Domain, ...] = (
@@ -412,8 +414,8 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Geometry',
-        'clip_by_rect realistic linework',
-        '10k linework / crossing, inside, outside categories',
+        'Clip short lines to a rectangle (clip_by_rect)',
+        '10,000 three-vertex lines; 40% crossing, 40% inside, 20% outside',
         ('GeometryArray.clip_by_rect',),
         'gometry.clip_by_rect/10k_realistic_linework_categories',
         'shapely.clip_by_rect/10k_realistic_linework_categories',
@@ -478,7 +480,7 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         ('GeometryArray.area',),
         'gometry.chart_edge_area/217_countries',
         'pyproj.chart_edge_area_reference/217_countries',
-        'PyProj + NumPy quadrature reference',
+        'Python/NumPy quadrature reference',
         ('ellipsoidal', 'chart-edge', 'reference'),
     ),
     _op(
@@ -488,7 +490,7 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         ('GeometryArray.length',),
         'gometry.chart_edge_length/1034_exteriors_16135_vertices',
         'pyproj.chart_edge_length_reference/1034_exteriors_16135_vertices',
-        'PyProj + NumPy quadrature reference',
+        'Python/NumPy quadrature reference',
         ('ellipsoidal', 'chart-edge', 'reference'),
     ),
     # --- Discrete global grids — 4 ---
@@ -637,10 +639,10 @@ SCALING_CURVES: tuple[ScalingCurve, ...] = (
     ScalingCurve(
         curve_id='spatial-index-selectivity',
         domain='Spatial index',
-        label='index candidates: query selectivity',
-        workload='10k indexed polygons / 1k queries',
+        label='Spatial index: queries with a match',
+        workload='SpatialIndex.candidates / 10k indexed polygons / 1k queries',
         canonical_symbols=('SpatialIndex.candidates', 'Groups.to_pairs'),
-        dimension='query-selectivity',
+        dimension='queries-with-a-match',
         unit='fraction',
         points=(
             ScalingPoint(0.01, '1pct'),
@@ -757,17 +759,17 @@ SCALING_CURVES: tuple[ScalingCurve, ...] = (
         ),
     ),
     ScalingCurve(
-        curve_id='prepared-batch-boundary',
+        curve_id='prepared-point-in-polygon',
         domain='Geometry',
-        label='contains coordinate probes: certified batch boundary',
-        workload='prepared polygon / probe count',
+        label='Point-in-polygon queries',
+        workload='contains / repeated coordinate queries against a prepared polygon with three holes',
         canonical_symbols=('contains',),
         dimension='probe-count',
         unit='probes',
         points=(
-            ScalingPoint(9_999, 'below-gate'),
-            ScalingPoint(10_000, 'gate'),
-            ScalingPoint(10_001, 'above-gate'),
+            ScalingPoint(1_000, '1k'),
+            ScalingPoint(10_000, '10k'),
+            ScalingPoint(100_000, '100k'),
         ),
         gometry_prefix='gometry.contains/coordinate',
         competitor_prefix='shapely.contains_xy.prepared',

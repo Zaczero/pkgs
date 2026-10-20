@@ -502,13 +502,18 @@ def _validate_block(
         observed_phase = arms[side]['observation'].get('phase')
         if observed_phase != phase:
             raise SystemExit(f'{path} arm {side} has mismatched phase metadata')
-        for field in ('warmup_iterations', 'repetitions'):
-            expected = sampling.get(field)
-            observed = arms[side]['observation'][
-                'warmup' if field.startswith('warmup') else 'calibration'
-            ]['iterations']
-            if observed != expected:
-                raise SystemExit(f'{path} arm {side} has mismatched sampling {field}')
+        observation = arms[side]['observation']
+        if observation['warmup']['iterations'] != sampling.get('warmup_iterations'):
+            raise SystemExit(
+                f'{path} arm {side} has mismatched sampling warmup_iterations'
+            )
+        if len(measurement_summary(observation)[3]) != sampling.get('repetitions'):
+            raise SystemExit(f'{path} arm {side} has mismatched sampling repetitions')
+        if sampling.get('calibration_strategy') == 'bounded-doubling' and (
+            observation['calibration']['strategy'] != 'bounded-doubling'
+            or 'batch' not in observation
+        ):
+            raise SystemExit(f'{path} arm {side} lacks calibrated batch evidence')
     if common_identity(provenances['A'][0]) != common_identity(provenances['B'][0]):
         raise SystemExit(f'{path} arms have mismatched common producer identities')
     for side in ('A', 'B'):
@@ -749,7 +754,12 @@ def format_speedup(row: OpRow) -> str:
         label = f'{row.ratio:.2f}× faster'  # ruff: ignore[ambiguous-unicode-character-string]
     else:
         label = f'{1.0 / row.ratio:.2f}× slower'  # ruff: ignore[ambiguous-unicode-character-string]
-    return f'<span class="benchmark-status">{label}</span>'
+    low, high = row.ratio_ci95
+    return (
+        f'<span class="benchmark-status">{label}</span>'
+        f'<small class="benchmark-detail">Paired ratio {row.ratio:.3g}&times; '
+        f'(95% CI {low:.3g} to {high:.3g})</small>'
+    )
 
 
 def _section_table(
@@ -772,8 +782,15 @@ def _section_table(
             useful = row.blocks[0].useful_work
             label = escape(f'{scaling["point_label"]} {scaling["unit"]}')
             workload = escape(f'{useful["count"]} {useful["unit"]}')
+            unit = {
+                'predicate-results': 'query',
+                'candidate-pairs': 'candidate pair',
+                'output-tiles': 'tile',
+                'input-geometries': 'input geometry',
+                'holes': 'hole',
+            }.get(useful['unit'], useful['unit'])
             gometry_work, competitor_work = (
-                f'<small class="benchmark-detail">{_humanize_seconds(value)} / work</small> '
+                f'<small class="benchmark-detail">{_humanize_seconds(value)} / {escape(unit)}</small> '
                 for value in normalized[index]
             )
         markers = ''.join(
@@ -952,7 +969,9 @@ def render(
         by_domain.setdefault(row.meta.domain, []).append(row)
     for domain in DOMAIN_ORDER:
         domain_rows = [
-            row for row in by_domain.get(domain, ()) if row.meta.scaling is None
+            row
+            for row in by_domain.get(domain, ())
+            if row.meta.scaling is None and 'reference' not in row.meta.footnotes
         ]
         if not domain_rows:
             continue
@@ -969,6 +988,11 @@ def render(
             '‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.'
         )
     lines.extend(('', '<!-- --8<-- [end:comparisons] -->'))
+    reference_rows = [row for row in rows if 'reference' in row.meta.footnotes]
+    lines.extend(('', '<!-- --8<-- [start:references] -->', ''))
+    if reference_rows:
+        lines.extend(_section_table(reference_rows))
+    lines.extend(('', '<!-- --8<-- [end:references] -->'))
     scaling_rows = [row for row in rows if row.meta.scaling is not None]
     if scaling_rows:
         lines.extend((

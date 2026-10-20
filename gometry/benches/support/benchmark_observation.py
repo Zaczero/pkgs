@@ -86,7 +86,7 @@ def validate_observation(value: Any) -> dict[str, Any]:
         raise _fail('unsupported schema version')
     if value.get('observation_type') != OBSERVATION_TYPE:
         raise _fail('unsupported observation type')
-    metric, _unit, _, _raw = _validate_raw(value.get('measurement', {}))
+    metric, _unit, _, raw = _validate_raw(value.get('measurement', {}))
     useful_work = value.get('useful_work')
     if metric == 'scaling_ratio':
         if not isinstance(useful_work, dict) or set(useful_work) != {
@@ -131,6 +131,31 @@ def validate_observation(value: Any) -> dict[str, Any]:
     ):
         raise _fail('oracle must have passed status and a non-empty identity')
     producer_identity = value.get('producer_identity')
+    batch = value.get('batch')
+    if batch is not None:
+        if metric != 'duration' or not isinstance(batch, dict):
+            raise _fail('batch requires a duration observation')
+        iterations = batch.get('iterations')
+        if (
+            not isinstance(iterations, int)
+            or isinstance(iterations, bool)
+            or iterations < 1
+        ):
+            raise _fail('batch.iterations must be a positive integer')
+        totals = batch.get('raw_seconds')
+        if not isinstance(totals, list) or len(totals) != len(raw):
+            raise _fail('batch.raw_seconds must match the normalized samples')
+        for total, normalized in zip(totals, raw, strict=True):
+            if (
+                not isinstance(total, (int, float))
+                or isinstance(total, bool)
+                or not math.isfinite(total)
+                or total <= 0
+                or total / iterations != normalized
+            ):
+                raise _fail('batch durations do not normalize to raw_seconds')
+        if batch.get('result_lifetime') != 'released-inside-timer':
+            raise _fail('batch result lifetime must be released-inside-timer')
     if producer_identity is not None:
         try:
             validate_producer_identity(producer_identity)
@@ -149,6 +174,7 @@ def make_observation(
     warmup_iterations: int = 0,
     calibration_iterations: int = 0,
     calibration_strategy: str = 'fixed-repetitions',
+    batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct one observation using the metric-specific schema.
 
@@ -181,6 +207,8 @@ def make_observation(
         'oracle': {'status': 'passed'},
     }
     observation['oracle']['identity'] = oracle_identity
+    if batch is not None:
+        observation['batch'] = batch
     return validate_observation(observation)
 
 
