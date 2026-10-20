@@ -43,8 +43,8 @@ def githead_cases(scratch: Path) -> dict:
     assert githead(detached) == expected
     assert githead(symbolic) == expected
     return {
-        'detached HEAD': partial(githead, detached),
-        'loose branch HEAD': partial(githead, symbolic),
+        'read commit from detached HEAD': partial(githead, detached),
+        'read commit from loose branch HEAD': partial(githead, symbolic),
     }
 
 
@@ -75,8 +75,8 @@ def polyline_cases(_scratch: Path) -> dict:
         for a, b in zip(pair, expected, strict=True)
     )
     cases = {
-        'encode latlon 3': partial(encode_latlon, known),
-        'decode latlon 3': partial(decode_latlon, encoded),
+        'encode 3 latitude/longitude coordinates': partial(encode_latlon, known),
+        'decode 3 latitude/longitude coordinates': partial(decode_latlon, encoded),
     }
     for size in (10, 1000):
         points = [(21 + (i % 37) * 0.00001, 52 + i * 0.00001) for i in range(size)]
@@ -89,12 +89,12 @@ def polyline_cases(_scratch: Path) -> dict:
                 for pair, expected in zip(restored, points, strict=True)
                 for a, b in zip(pair, expected, strict=True)
             )
-            cases[f'encode lonlat {size} precision {precision}'] = partial(
-                encode_lonlat, points, precision
-            )
-            cases[f'decode lonlat {size} precision {precision}'] = partial(
-                decode_lonlat, text, precision
-            )
+            cases[
+                f'encode {size} longitude/latitude coordinates at precision {precision}'
+            ] = partial(encode_lonlat, points, precision)
+            cases[
+                f'decode {size} longitude/latitude coordinates at precision {precision}'
+            ] = partial(decode_lonlat, text, precision)
     return cases
 
 
@@ -107,8 +107,10 @@ def shortlink_cases(_scratch: Path) -> dict:
     for zoom in (0, 9, 18, 22):
         token = shortlink_encode(21.0122, 52.2297, zoom)
         assert shortlink_decode(token)[2] == zoom
-        cases[f'encode zoom {zoom}'] = partial(shortlink_encode, 21.0122, 52.2297, zoom)
-        cases[f'decode zoom {zoom}'] = partial(shortlink_decode, token)
+        cases[f'encode coordinate at zoom {zoom}'] = partial(
+            shortlink_encode, 21.0122, 52.2297, zoom
+        )
+        cases[f'decode coordinate at zoom {zoom}'] = partial(shortlink_decode, token)
     return cases
 
 
@@ -120,9 +122,9 @@ def zid_cases(_scratch: Path) -> dict:
     batch = zids(256)
     assert batch == list(range(batch[0], batch[0] + 256))
     return {
-        'reserve one': zid,
-        'reserve 256': partial(zids, 256),
-        'extract timestamp': partial(parse_zid_timestamp, identifier),
+        'generate one ID': zid,
+        'generate a batch of 256 IDs': partial(zids, 256),
+        'extract timestamp from a fixed ID': partial(parse_zid_timestamp, identifier),
     }
 
 
@@ -142,10 +144,10 @@ def lru_cases(_scratch: Path) -> dict:
     insert_cycle()
     assert list(evicting) == list(range(64, 128))
     return {
-        'hit string key': partial(cache.get, 'key-31'),
-        'miss string key': partial(cache.get, 'absent'),
-        'snapshot 64 items': lambda: list(cache.items()),
-        'insert and evict 128 integers': insert_cycle,
+        'lookup existing string key in 64-entry cache': partial(cache.get, 'key-31'),
+        'lookup missing string key in 64-entry cache': partial(cache.get, 'absent'),
+        'snapshot 64 cached items': lambda: list(cache.items()),
+        'insert 128 integer keys into 64-entry cache': insert_cycle,
     }
 
 
@@ -197,15 +199,28 @@ def httpx_cases(_scratch: Path) -> dict:
 
 
 def compression_exchange(
-    encoding: str, messages: tuple[bytes, ...], content_type: bytes
+    encoding: str,
+    messages: tuple[bytes, ...],
+    content_type: bytes,
+    *,
+    track_delivery: bool = False,
 ):
     from starlette_compress import CompressMiddleware
 
+    one_shot = content_type != b'text/event-stream'
+    status = None
+    response_headers = ()
+    body_messages = []
+    delivery_checkpoints = []
+
     async def app(scope, receive, send):
+        headers = [(b'content-type', content_type)]
+        if one_shot:
+            headers.append((b'content-length', str(len(messages[0])).encode()))
         await send({
             'type': 'http.response.start',
             'status': 200,
-            'headers': [(b'content-type', content_type)],
+            'headers': headers,
         })
         for index, chunk in enumerate(messages):
             await send({
@@ -213,6 +228,8 @@ def compression_exchange(
                 'body': chunk,
                 'more_body': index + 1 < len(messages),
             })
+            if track_delivery:
+                delivery_checkpoints.append(len(body_messages))
 
     middleware = CompressMiddleware(app)
     scope = {
@@ -221,67 +238,211 @@ def compression_exchange(
         'headers': [(b'accept-encoding', encoding.encode())],
     }
 
+    async def receive():
+        return {'type': 'http.request', 'body': b''}
+
+    async def send(message):
+        nonlocal status, response_headers
+        if message['type'] == 'http.response.start':
+            status = message['status']
+            response_headers = tuple(message.get('headers', ()))
+        elif message['type'] == 'http.response.body':
+            body_messages.append((
+                message.get('body', b''),
+                message.get('more_body', False),
+            ))
+
     async def exchange():
-        output = []
-
-        async def receive():
-            return {'type': 'http.request', 'body': b''}
-
-        async def send(message):
-            if message['type'] == 'http.response.body':
-                output.append(message.get('body', b''))
-
+        nonlocal status, response_headers
+        status = None
+        response_headers = ()
+        body_messages.clear()
+        delivery_checkpoints.clear()
         await middleware(scope, receive, send)
-        return b''.join(output)
+        return (
+            status,
+            response_headers,
+            tuple(body_messages),
+            tuple(delivery_checkpoints),
+        )
 
     return exchange
 
 
-def compression_cases(_scratch: Path) -> dict:
-    import gzip
+def response_header(headers, name: bytes) -> list[bytes]:
+    return [value for key, value in headers if key.lower() == name]
 
+
+def has_accept_encoding_vary(headers) -> bool:
+    return any(
+        value.strip().lower() == b'accept-encoding'
+        for header in response_header(headers, b'vary')
+        for value in header.split(b',')
+    )
+
+
+def decode_compressed_body(encoding: str, body: bytes) -> bytes:
+    if encoding == 'gzip':
+        import gzip
+
+        return gzip.decompress(body)
+    if encoding == 'br':
+        if sysconfig.get_config_var('Py_GIL_DISABLED'):
+            import brotlicffi as brotli
+        else:
+            import brotli
+
+        return brotli.decompress(body)
+    if encoding == 'zstd':
+        if sys.version_info >= (3, 14):
+            from compression.zstd import decompress
+
+            return decompress(body)
+        from zstandard import ZstdDecompressor
+
+        with ZstdDecompressor().stream_reader(body) as reader:
+            return reader.read()
+    return body
+
+
+def validate_one_shot_response(encoding: str, body: bytes, response) -> str:
+    status, headers, body_messages, _ = response
+    assert status == 200
+    assert response_header(headers, b'content-type') == [b'application/json']
+    assert body_messages
+    assert [more for _, more in body_messages] == [True] * (len(body_messages) - 1) + [
+        False
+    ]
+
+    encoded_body = b''.join(chunk for chunk, _ in body_messages)
+    content_encodings = response_header(headers, b'content-encoding')
+    if encoding == 'identity':
+        assert not content_encodings
+        mode = 'bypass'
+    elif content_encodings == [encoding.encode()]:
+        assert has_accept_encoding_vary(headers)
+        mode = 'compress'
+    else:
+        assert not content_encodings
+        mode = 'bypass'
+
+    assert response_header(headers, b'content-length') == [
+        str(len(encoded_body)).encode()
+    ]
+    assert (
+        decode_compressed_body(
+            content_encodings[0].decode() if content_encodings else 'identity',
+            encoded_body,
+        )
+        == body
+    )
+    return mode
+
+
+def incremental_decoder(encoding: str):
+    if encoding == 'gzip':
+        import zlib
+
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        return decoder.decompress, decoder.flush, lambda: decoder.eof
+    if encoding == 'br':
+        if sysconfig.get_config_var('Py_GIL_DISABLED'):
+            import brotlicffi as brotli
+        else:
+            import brotli
+
+        decoder = brotli.Decompressor()
+        return decoder.process, lambda: b'', decoder.is_finished
+    if encoding == 'zstd':
+        if sys.version_info >= (3, 14):
+            from compression.zstd import ZstdDecompressor
+
+            decoder = ZstdDecompressor()
+            return decoder.decompress, lambda: b'', lambda: decoder.eof
+        from zstandard import ZstdDecompressor
+
+        decoder = ZstdDecompressor().decompressobj()
+        return decoder.decompress, decoder.flush, lambda: decoder.eof
+    return lambda chunk: chunk, lambda: b'', lambda: True
+
+
+def validate_streaming_response(
+    encoding: str, messages: tuple[bytes, ...], response
+) -> None:
+    status, headers, body_messages, checkpoints = response
+    assert status == 200
+    assert response_header(headers, b'content-type') == [b'text/event-stream']
+    assert not response_header(headers, b'content-length')
+    assert has_accept_encoding_vary(headers)
+
+    content_encodings = response_header(headers, b'content-encoding')
+    if encoding == 'identity':
+        assert not content_encodings
+    else:
+        assert content_encodings == [encoding.encode()]
+
+    assert checkpoints
+    assert len(checkpoints) == len(messages)
+    assert all(
+        earlier < later
+        for earlier, later in zip((0, *checkpoints[:-1]), checkpoints, strict=True)
+    )
+    assert checkpoints[-1] == len(body_messages)
+    assert [more for _, more in body_messages] == [True] * (len(body_messages) - 1) + [
+        False
+    ]
+
+    decoder, finish, is_finished = incremental_decoder(encoding)
+    previous = 0
+    for expected, checkpoint in zip(messages, checkpoints, strict=True):
+        decoded = b''.join(
+            decoder(chunk) for chunk, _ in body_messages[previous:checkpoint]
+        )
+        assert decoded == expected
+        previous = checkpoint
+    assert finish() == b''
+    assert is_finished()
+
+
+def compression_cases(_scratch: Path) -> dict:
     cases = {}
     for encoding in ('identity', 'gzip', 'br', 'zstd'):
-        for streaming in (False, True):
-            messages = (
-                (b'data: {"value":123,"label":"sensor"}\n\n',) * 32
-                if streaming
-                else (
-                    json.dumps(
-                        {'items': [{'value': 123, 'label': 'sensor'}] * 32},
-                        separators=(',', ':'),
-                    ).encode(),
-                )
-            )
-            body = b''.join(messages)
-            content_type = b'text/event-stream' if streaming else b'application/json'
-            exchange = compression_exchange(encoding, messages, content_type)
-            encoded = asyncio.run(exchange())
-            if encoding == 'gzip':
-                decoded = gzip.decompress(encoded)
-            elif encoding == 'br':
-                if sysconfig.get_config_var('Py_GIL_DISABLED'):
-                    import brotlicffi as brotli
-                else:
-                    import brotli
+        for size, count in (('small', 2), ('medium', 64), ('large', 1024)):
+            body = json.dumps(
+                {
+                    'records': [
+                        {
+                            'id': index,
+                            'sensor': f'sensor-{index % 19:02d}',
+                            'reading': round((index * 37 % 10001) / 100, 2),
+                            'status': ('ok', 'warning', 'offline')[index % 3],
+                        }
+                        for index in range(count)
+                    ]
+                },
+                separators=(',', ':'),
+            ).encode()
+            exchange = compression_exchange(encoding, (body,), b'application/json')
+            mode = validate_one_shot_response(encoding, body, asyncio.run(exchange()))
+            cases[f'{encoding} {mode} JSON {size} ({len(body):,} bytes)'] = exchange
 
-                decoded = brotli.decompress(encoded)
-            elif encoding == 'zstd':
-                if sys.version_info >= (3, 14):
-                    from compression.zstd import decompress
-
-                    decoded = decompress(encoded)
-                else:
-                    from zstandard import ZstdDecompressor
-
-                    with ZstdDecompressor().stream_reader(encoded) as reader:
-                        decoded = reader.read()
-            else:
-                decoded = encoded
-            assert decoded == body
-            cases[
-                f'{encoding} {"SSE 32 messages" if streaming else f"one-shot JSON {len(body)} bytes"}'
-            ] = exchange
+        messages = tuple(
+            (
+                f'id: {index + 1}\n'
+                f'event: {("reading", "warning", "heartbeat")[index % 3]}\n'
+                f'data: {json.dumps({"sensor": f"sensor-{index % 7}", "value": (index * 29) % 101, "active": index % 4 != 0}, separators=(",", ":"))}\n\n'
+            ).encode()
+            for index in range(32)
+        )
+        exchange = compression_exchange(
+            encoding, messages, b'text/event-stream', track_delivery=True
+        )
+        validate_streaming_response(encoding, messages, asyncio.run(exchange()))
+        total_bytes = sum(map(len, messages))
+        mode = 'bypass' if encoding == 'identity' else 'compress'
+        cases[f'{encoding} {mode} SSE 32 events ({total_bytes:,} bytes)'] = (
+            compression_exchange(encoding, messages, b'text/event-stream')
+        )
     return cases
 
 

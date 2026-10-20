@@ -31,6 +31,7 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/lrucache-rs"
 [dependency-groups]
 dev = [
   { include-group = "freethreaded" },
+  "pyperf>=2.9",
   "pyo3stubs",
 ]
 
