@@ -987,10 +987,12 @@ def plot_results(
     record: dict[str, Any],
     path: Path,
 ) -> None:
-    for dark in (False, True):
-        destination = path.with_stem(path.stem + '-dark') if dark else path
-        with theme(dark=dark):
-            _plot_results(record, destination, dark=dark)
+    for narrow in (False, True):
+        for dark in (False, True):
+            suffix = ('-narrow' if narrow else '') + ('-dark' if dark else '')
+            destination = path.with_stem(path.stem + suffix)
+            with theme(dark=dark):
+                _plot_results(record, destination, dark=dark, narrow=narrow)
     path.with_suffix('.md').write_text(
         render_accessible_results(record), encoding='utf-8'
     )
@@ -1005,13 +1007,24 @@ def plot_results(
     )
 
 
-def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
+def _plot_results(
+    record: dict[str, Any], path: Path, *, dark: bool, narrow: bool
+) -> None:
     results = record['aggregate']
     title = record['scenario']
     websocket = record['type'] == 'ws'
     failures = record.get('failures', {})
-    figure, axes = plt.subplots(1, 3, figsize=(15, 6), layout='constrained')
-    figure.suptitle(title, fontsize=17, fontweight='bold')
+    figure, axes = plt.subplots(
+        2 if narrow else 1,
+        1 if narrow else 2,
+        figsize=(5.2, 8.4) if narrow else (10.5, 5.6),
+        layout='constrained',
+    )
+    figure.suptitle(
+        textwrap.fill(title, width=44) if narrow else title,
+        fontsize=15 if narrow else 17,
+        fontweight='bold',
+    )
 
     names = sorted(
         record.get('requested_servers', [*results, *failures]),
@@ -1066,47 +1079,34 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     unit = 'sessions/s' if websocket else 'requests/s'
     throughput.set_title('Throughput · higher is better')
     throughput.set_ylabel(unit)
-    # Leave physical headroom for the two labels even when a short bar cannot
-    # contain its memory annotation.
-    throughput.margins(y=0.16)
-    figure.canvas.draw()
-    baseline = throughput.transData.transform((0, 0))[1]
+    throughput.margins(y=0.24)
     for bar, name in zip(bars, names, strict=True):
         if name not in results:
             continue
         _, high = results[name]['rps_range']
-        value = results[name]['rps']
+        result = results[name]
+        value = result['rps']
         center = bar.get_x() + bar.get_width() / 2
         top = max(value, high)
-        height_pixels = throughput.transData.transform((0, value))[1] - baseline
         throughput.annotate(
             format_rate(value),
             (center, top),
-            xytext=(0, 4 if height_pixels >= 28 else 20),
+            xytext=(0, 17),
             textcoords='offset points',
             ha='center',
             va='bottom',
             fontsize=10,
         )
-
-    memory = axes[2]
-    memory_values = [
-        results[name]['peak_memory_bytes'] / 1e6 if name in results else math.nan
-        for name in names
-    ]
-    memory_bars = memory.bar(labels, memory_values, color=colors)
-    memory.set_xlim(-0.6, len(names) - 0.4)
-    memory.bar_label(
-        memory_bars,
-        labels=[
-            '' if name not in results else f'{value:.1f}'
-            for name, value in zip(names, memory_values, strict=True)
-        ],
-        padding=4,
-    )
-    memory.set_ylabel('Maximum sampled PSS (decimal MB)')
-    memory.set_title('Deployment memory · lower is better')
-    memory.margins(y=0.16)
+        throughput.annotate(
+            f'{result["peak_memory_bytes"] / 1e6:.1f} MB PSS',
+            (center, top),
+            xytext=(0, 4),
+            textcoords='offset points',
+            ha='center',
+            va='bottom',
+            fontsize=8,
+            alpha=0.85,
+        )
 
     latency = axes[1]
     plotted = False
@@ -1145,8 +1145,8 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
 
     footer = (
         'Bars: median rate · Dots: fresh-start trials · Whiskers: observed range'
-        '\nLatency: median trial percentiles'
-        '\n' + textwrap.fill(record.get('workload', ''), width=145)
+        '\nLatency: median trial percentiles · PSS: maximum sampled, decimal MB'
+        '\n' + textwrap.fill(record.get('workload', ''), width=65 if narrow else 110)
     )
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
@@ -1280,7 +1280,7 @@ def publish(run_directories: Sequence[Path]) -> None:
         profile = json.loads((directory / 'profile.json').read_text())['profile']
         destination = evidence / profile
         destination.mkdir()
-        for name in ('identity.json', 'hypercorn.toml', 'build.log'):
+        for name in ('identity.json', 'profile.json', 'hypercorn.toml', 'build.log'):
             if (directory / name).exists():
                 shutil.copy2(directory / name, destination / name)
         if (directory / 'evidence').exists():
@@ -1298,10 +1298,13 @@ def publish(run_directories: Sequence[Path]) -> None:
                 (run_directory / 'profile.json').read_text(encoding='utf-8')
             )['profile']
             for artifact in sorted((run_directory / kind).glob(f'*{suffix}')):
-                variant = (
-                    '-dark'
-                    if kind == 'plots' and artifact.stem.endswith('-dark')
-                    else ''
+                variant = next(
+                    (
+                        suffix
+                        for suffix in ('-narrow-dark', '-narrow', '-dark')
+                        if kind == 'plots' and artifact.stem.endswith(suffix)
+                    ),
+                    '',
                 )
                 stem = artifact.stem.removesuffix(variant)
                 published_name = f'{stem}-{profile}{variant}{suffix}'

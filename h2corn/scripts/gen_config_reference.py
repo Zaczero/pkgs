@@ -301,15 +301,26 @@ def render_benchmark_results() -> str:
 
         relative_plot = f'assets/benchmarks/{plot_path.name}'
         dark_plot = plot_path.with_stem(plot_path.stem + '-dark')
-        if not dark_plot.is_file():
-            raise RuntimeError(f'{raw_path.name} has no dark plot')
+        narrow_plot = plot_path.with_stem(plot_path.stem + '-narrow')
+        narrow_dark_plot = plot_path.with_stem(plot_path.stem + '-narrow-dark')
+        for variant in (dark_plot, narrow_plot, narrow_dark_plot):
+            if not variant.is_file():
+                raise RuntimeError(f'{raw_path.name} has no {variant.name}')
         results = record['aggregate']
         unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
-        description = alt_text(scenario, results, unit, record.get('failures'))
+        description = escape(
+            alt_text(scenario, results, unit, record.get('failures')), quote=True
+        )
         sections.extend((
             f'### {scenario} — {profile}\n\n',
-            f'![{description}]({relative_plot}#only-light)\n'
-            f'![{description}](assets/benchmarks/{dark_plot.name}#only-dark)\n\n',
+            '<picture>\n'
+            f'  <source media="(max-width: 600px)" srcset="assets/benchmarks/{narrow_plot.name}">\n'
+            f'  <img src="{relative_plot}#only-light" alt="{description}">\n'
+            '</picture>\n'
+            '<picture>\n'
+            f'  <source media="(max-width: 600px)" srcset="assets/benchmarks/{narrow_dark_plot.name}">\n'
+            f'  <img src="assets/benchmarks/{dark_plot.name}#only-dark" alt="{description}">\n'
+            '</picture>\n\n',
             '<details markdown="1">\n<summary>Detailed results</summary>\n\n',
             table,
             '\n</details>\n\n',

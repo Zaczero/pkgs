@@ -89,6 +89,8 @@ application with standard asyncio. HTTP/1.1 uses the controlled pure-Python
 parser configurations for Uvicorn and Gunicorn.
 
 <picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-narrow-dark.svg">
+  <source media="(max-width: 600px)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-narrow.svg">
   <source media="(prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-dark.svg">
   <img src="bench/results/plots/benchmark_http_1_get_1_worker-loopback.svg" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for h2corn, Uvicorn, Hypercorn, and Gunicorn.">
 </picture>
