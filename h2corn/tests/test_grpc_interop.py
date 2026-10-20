@@ -702,20 +702,11 @@ async def test_rpc_and_ordinary_http_share_one_listener() -> None:
     assert body == b'ok'
 
 
-async def test_upload_request_policy_overrides_the_global_body_cap() -> None:
-    from h2corn import RequestPolicy
-
-    policy = RequestPolicy(
-        path=f'{SERVICE_PATH}/UploadNote',
-        max_request_body_size=0,
-        timeout_request_body_idle=0.0,
-        h2_timeout_response_stall=5.0,
-    )
+async def test_rpc_upload_is_exempt_from_the_global_body_cap_by_default() -> None:
     config = Config(
         port=0,
         lifespan='on',
         max_request_body_size=128,
-        request_policies=(policy,),
     )
     app, config = _connect_app(_NotebookService(), config)
 
@@ -735,21 +726,12 @@ async def test_upload_request_policy_overrides_the_global_body_cap() -> None:
     assert (summary.chunks_received, summary.bytes_received) == (1, 4096)
 
 
-async def test_duplex_stream_policy_allows_a_configured_idle_gap() -> None:
-    from h2corn import RequestPolicy
-
+async def test_duplex_stream_default_allows_an_idle_gap() -> None:
     service = _NotebookService()
-    policy = RequestPolicy(
-        path=f'{SERVICE_PATH}/Collaborate',
-        max_request_body_size=4096,
-        timeout_request_body_idle=0.0,
-        h2_timeout_response_stall=5.0,
-    )
     config = Config(
         port=0,
         lifespan='on',
         timeout_request_body_idle=0.05,
-        request_policies=(policy,),
     )
     app, config = _connect_app(service, config)
 

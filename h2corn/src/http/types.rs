@@ -1156,6 +1156,10 @@ impl RequestHead {
         self.header_meta.accepts_trailers()
     }
 
+    pub(crate) const fn is_rpc_stream(&self) -> bool {
+        self.header_meta.is_rpc_stream()
+    }
+
     pub(crate) const fn content_length(&self) -> Option<u64> {
         self.header_meta.content_length()
     }

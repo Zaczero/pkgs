@@ -1696,6 +1696,48 @@ async def test_http1_request_policy_owns_body_idle_timeout() -> None:
     assert ordinary_eof == b''
 
 
+async def test_http1_connect_stream_defaults_exempt_body_limits() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(
+        port=0,
+        max_request_body_size=4,
+        timeout_request_body_idle=0.05,
+    )
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(
+                b'POST /connect HTTP/1.1\r\n'
+                b'Host: localhost\r\n'
+                b'Content-Type: application/connect+proto\r\n'
+                b'Content-Length: 6\r\n'
+                b'Connection: close\r\n\r\n'
+                b'abc'
+            )
+            await writer.drain()
+            await asyncio.sleep(0.15)
+            writer.write(b'def')
+            await writer.drain()
+            status, _headers, body, _trailers = await asyncio.wait_for(
+                read_http1_response(reader),
+                timeout=5,
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert status == 200
+    assert body == b'abcdef'
+
+
 async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> (
     None
 ):

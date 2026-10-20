@@ -471,14 +471,25 @@ class RequestPolicy:
             matches `/service/` and its descendants, not `/service` itself.
         max_request_body_size: Maximum request-body bytes as an exact integer
             from `0` through `18_446_744_073_709_551_615`. Use `0` to disable
-            the cumulative size limit.
+            the cumulative size limit. gRPC and Connect streaming requests are
+            exempt by default; a matching request policy can set an explicit
+            limit.
         timeout_request_body_idle: Maximum seconds without request-body data.
-            Use `0` to disable the idle timer.
+            Use `0` to disable the idle timer. gRPC and Connect streaming
+            requests are exempt by default; a matching request policy can set
+            an explicit timeout.
         h2_timeout_response_stall: Maximum seconds response bytes may remain
             blocked by HTTP/2 peer flow control. Use `0` to disable the timer.
 
-    Rules replace all three global values on a match; they do not inherit
-    individual values from `Config`.
+    A matching rule takes precedence over the protocol-aware defaults and
+    replaces all three global values; it does not inherit individual values
+    from `Config`. Without a matching rule, gRPC and Connect streaming requests
+    have no request-body size limit or idle timeout, while their HTTP/2
+    response-stall timeout still follows `Config`. The streaming defaults apply
+    to case-insensitive `application/grpc`,
+    `application/grpc+<subtype>`, and `application/connect+<subtype>` media
+    types; parameters are ignored. They do not apply to gRPC-Web or unary
+    Connect media types.
 
     Construction accepts exact integers or floats for timeout seconds and
     normalizes them to floats. Booleans, non-finite numbers, and negative
@@ -1205,7 +1216,9 @@ class Config:
         default=1_073_741_824,
         doc=(
             'Maximum request body size in bytes as an exact integer from 0 '
-            'through 18_446_744_073_709_551_615. Use 0 for no limit.'
+            'through 18_446_744_073_709_551_615. Use 0 for no limit. gRPC and '
+            'Connect streaming requests are exempt by default; a matching '
+            'request policy can set an explicit limit.'
         ),
         env_parse=int,
         converter=_bounded_int('max_request_body_size', minimum=0, maximum=_U64_MAX),
@@ -1216,8 +1229,12 @@ class Config:
         doc=(
             'Ordered path-specific body and HTTP/2 response-stall policies. '
             'Each rule supplies all three values; the first exact path or '
-            'terminal `/*` subtree match replaces the global values, and an '
-            'unmatched request uses those global values. Paths are raw ASCII '
+            'terminal `/*` subtree match takes precedence over protocol-aware '
+            'defaults and replaces the global values. Without a matching rule, '
+            'gRPC and Connect streaming requests have no request-body size '
+            'limit or idle timeout; other requests use the global values. '
+            'The global HTTP/2 response-stall timeout still applies to RPC '
+            'responses. Paths are raw ASCII '
             'URI paths without query or fragment text and match case-sensitively '
             'before the query, without percent-decoding or `root_path` changes. '
             '`/*` matches every normal HTTP path. Rules apply to HTTP/1 and '
@@ -1284,7 +1301,11 @@ class Config:
     )
     timeout_request_body_idle: float = _option(
         default=60.0,
-        doc='Idle timeout in seconds while reading an HTTP request body. Use 0 to disable.',
+        doc=(
+            'Idle timeout in seconds while reading an HTTP request body. Use 0 '
+            'to disable. gRPC and Connect streaming requests are exempt by '
+            'default; a matching request policy can set an explicit timeout.'
+        ),
         env_parse=float,
         converter=_non_negative_float('timeout_request_body_idle'),
         cli_type=float,

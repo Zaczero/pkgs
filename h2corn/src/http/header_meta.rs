@@ -110,6 +110,7 @@ bitflags! {
     pub(crate) struct RequestHeaderFlags: u8 {
         const HAS_CONTENT_LENGTH = 1 << 0;
         const ACCEPTS_TRAILERS = 1 << 1;
+        const IS_RPC_STREAM = 1 << 2;
     }
 }
 
@@ -129,6 +130,10 @@ struct RequestHeaderSidecar {
 impl RequestHeaderMeta {
     pub(crate) const fn accepts_trailers(&self) -> bool {
         self.flags.contains(RequestHeaderFlags::ACCEPTS_TRAILERS)
+    }
+
+    pub(crate) const fn is_rpc_stream(&self) -> bool {
+        self.flags.contains(RequestHeaderFlags::IS_RPC_STREAM)
     }
 
     pub(crate) const fn set_accepts_trailers(&mut self) {
@@ -300,6 +305,11 @@ impl RequestHeaderMeta {
                 self.rare_mut().websocket.request.per_message_deflate |=
                     offers_compatible_permessage_deflate(value_bytes);
             },
+            KnownRequestHeaderName::ContentType => {
+                if is_rpc_stream_content_type(value_bytes) {
+                    self.flags = self.flags.union(RequestHeaderFlags::IS_RPC_STREAM);
+                }
+            },
             KnownRequestHeaderName::Accept
             | KnownRequestHeaderName::AcceptEncoding
             | KnownRequestHeaderName::AcceptLanguage
@@ -307,7 +317,6 @@ impl RequestHeaderMeta {
             | KnownRequestHeaderName::CacheControl
             | KnownRequestHeaderName::Connection
             | KnownRequestHeaderName::ContentLength
-            | KnownRequestHeaderName::ContentType
             | KnownRequestHeaderName::Cookie
             | KnownRequestHeaderName::Expect
             | KnownRequestHeaderName::Host
@@ -326,6 +335,42 @@ impl RequestHeaderMeta {
             | KnownRequestHeaderName::UserAgent => {},
         }
     }
+}
+
+fn is_rpc_stream_content_type(value: &[u8]) -> bool {
+    let media_type = value
+        .split(|byte| *byte == b';')
+        .next()
+        .unwrap_or(value)
+        .trim_ascii();
+    let Some(slash) = media_type.iter().position(|byte| *byte == b'/') else {
+        return false;
+    };
+    let Some((kind, slash_and_subtype)) = media_type.split_at_checked(slash) else {
+        return false;
+    };
+    let Some(subtype) = slash_and_subtype.get(1..) else {
+        return false;
+    };
+    if !kind.eq_ignore_ascii_case(b"application") {
+        return false;
+    }
+    if subtype.eq_ignore_ascii_case(b"grpc") {
+        return true;
+    }
+    if !subtype_has_nonempty_extension(subtype, b"grpc+")
+        && !subtype_has_nonempty_extension(subtype, b"connect+")
+    {
+        return false;
+    }
+    protocol_token_is_valid(subtype)
+}
+
+fn subtype_has_nonempty_extension(subtype: &[u8], prefix: &[u8]) -> bool {
+    subtype.len() > prefix.len()
+        && subtype
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
 }
 
 /// Classify standard forwarding names and the underscore spellings accepted by
@@ -426,6 +471,39 @@ mod tests {
         assert!(meta.rare.is_none());
         assert!(meta.proxy_headers().is_none());
         assert!(meta.websocket().is_none());
+    }
+
+    #[test]
+    fn content_type_classifies_rpc_streams_without_a_sidecar() {
+        for (content_type, expected) in [
+            (Some(b"application/grpc".as_slice()), true),
+            (Some(b"application/grpc+proto"), true),
+            (Some(b"APPLICATION/GRPC"), true),
+            (Some(b"application/grpc; charset=utf-8"), true),
+            (Some(b"application/connect+proto"), true),
+            (Some(b"application/grpc-web"), false),
+            (Some(b"application/grpc-web+proto"), false),
+            (Some(b"application/grpc+"), false),
+            (Some(b"application/proto"), false),
+            (None, false),
+        ] {
+            let mut meta = RequestHeaderMeta::default();
+            if let Some(content_type) = content_type {
+                meta.observe_known_header_slice(
+                    KnownRequestHeaderName::ContentType,
+                    content_type,
+                    0,
+                    false,
+                );
+            }
+
+            assert_eq!(
+                meta.is_rpc_stream(),
+                expected,
+                "unexpected classification for {content_type:?}"
+            );
+            assert!(meta.rare.is_none());
+        }
     }
 
     #[test]

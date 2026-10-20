@@ -54,20 +54,42 @@ impl RequestPolicies {
     }
 
     pub(crate) fn resolve(&self, head: &RequestHead) -> ResolvedRequestPolicy {
-        if self.rules.is_empty() || head.protocol_is_websocket() {
+        if self.rules.is_empty() {
+            return if head.is_rpc_stream() && !head.protocol_is_websocket() {
+                self.rpc_stream_default()
+            } else {
+                self.default
+            };
+        }
+        if head.protocol_is_websocket() {
             return self.default;
         }
-        let Some(path_and_query) = head.path_and_query() else {
-            return self.default;
-        };
-        let path = path_and_query
-            .as_str()
-            .split_once('?')
-            .map_or(path_and_query.as_str(), |(path, _)| path);
-        self.rules
-            .iter()
-            .find(|rule| rule.selector.matches(path))
-            .map_or(self.default, |rule| rule.policy)
+        if let Some(path_and_query) = head.path_and_query() {
+            let path = path_and_query
+                .as_str()
+                .split_once('?')
+                .map_or(path_and_query.as_str(), |(path, _)| path);
+            if let Some(policy) = self
+                .rules
+                .iter()
+                .find(|rule| rule.selector.matches(path))
+                .map(|rule| rule.policy)
+            {
+                return policy;
+            }
+        }
+        if head.is_rpc_stream() {
+            return self.rpc_stream_default();
+        }
+        self.default
+    }
+
+    const fn rpc_stream_default(&self) -> ResolvedRequestPolicy {
+        ResolvedRequestPolicy {
+            max_request_body_size: None,
+            timeout_request_body_idle: None,
+            ..self.default
+        }
     }
 }
 
@@ -145,8 +167,8 @@ mod tests {
     use super::{RequestPolicies, ResolvedRequestPolicy};
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
-        BytesStr, HttpVersion, Protocol, RequestAuthority, RequestHead, RequestHeaders,
-        RequestTarget,
+        BytesStr, HttpVersion, KnownRequestHeaderName, Protocol, RequestAuthority, RequestHead,
+        RequestHeaders, RequestTarget,
     };
 
     fn policy(
@@ -172,6 +194,20 @@ mod tests {
             headers: RequestHeaders::default(),
             header_meta: RequestHeaderMeta::default(),
         }
+    }
+
+    fn request_with_content_type(
+        path_and_query: &'static str,
+        content_type: &'static [u8],
+    ) -> RequestHead {
+        let mut request = request(path_and_query);
+        request.header_meta.observe_known_header_slice(
+            KnownRequestHeaderName::ContentType,
+            content_type,
+            0,
+            false,
+        );
+        request
     }
 
     #[test]
@@ -213,6 +249,54 @@ mod tests {
     }
 
     #[test]
+    fn rpc_stream_defaults_disable_only_request_body_limits() {
+        let fallback = policy(NonZeroU64::new(41), Some(13), Some(19));
+        let expected = policy(None, None, Some(19));
+        let policies = RequestPolicies::new(fallback, Vec::new())
+            .expect("empty request-policy table is valid");
+
+        assert_eq!(
+            policies.resolve(&request_with_content_type("/grpc", b"application/grpc")),
+            expected
+        );
+
+        let mut connect = request_with_content_type("/connect", b"application/connect+proto");
+        connect.http_version = HttpVersion::Http1_1;
+        assert_eq!(policies.resolve(&connect), expected);
+    }
+
+    #[test]
+    fn matching_path_policy_overrides_rpc_stream_defaults() {
+        let fallback = policy(NonZeroU64::new(41), Some(13), Some(19));
+        let exact = policy(NonZeroU64::new(17), Some(3), Some(5));
+        let subtree = policy(NonZeroU64::new(29), Some(7), Some(11));
+        let policies = RequestPolicies::new(fallback, vec![
+            ("/grpc/exact".to_owned(), exact),
+            ("/grpc/*".to_owned(), subtree),
+        ])
+        .expect("valid request-policy paths compile");
+
+        assert_eq!(
+            policies.resolve(&request_with_content_type(
+                "/grpc/exact",
+                b"application/grpc"
+            )),
+            exact
+        );
+        assert_eq!(
+            policies.resolve(&request_with_content_type(
+                "/grpc/service",
+                b"application/grpc+proto"
+            )),
+            subtree
+        );
+        assert_eq!(
+            policies.resolve(&request_with_content_type("/ordinary", b"application/grpc")),
+            policy(None, None, Some(19))
+        );
+    }
+
+    #[test]
     fn websocket_candidate_keeps_the_ordinary_policy() {
         let selected = policy(NonZeroU64::new(1), Some(2), Some(3));
         let fallback = policy(NonZeroU64::new(4), Some(5), Some(6));
@@ -232,6 +316,19 @@ mod tests {
         };
 
         assert_eq!(policies.resolve(&websocket), fallback);
+
+        let mut rpc_labeled_websocket = websocket;
+        rpc_labeled_websocket
+            .header_meta
+            .observe_known_header_slice(
+                KnownRequestHeaderName::ContentType,
+                b"application/grpc",
+                0,
+                false,
+            );
+        let no_rules =
+            RequestPolicies::new(fallback, Vec::new()).expect("empty policy table is valid");
+        assert_eq!(no_rules.resolve(&rpc_labeled_websocket), fallback);
     }
 
     #[test]

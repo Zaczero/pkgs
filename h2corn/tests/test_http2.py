@@ -917,6 +917,40 @@ async def test_h2_content_length_limit_returns_413() -> None:
     assert body == b''
 
 
+async def test_h2_grpc_content_length_exceeds_global_body_cap_by_default() -> None:
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        body = await read_http_request_body(receive)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': body})
+
+    config = Config(port=0, max_request_body_size=4)
+    async with running_server(app, config) as server:
+        grpc_status, grpc_body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            body=b'hello',
+            extra_headers=[
+                (b'content-type', b'application/grpc'),
+                (b'content-length', b'5'),
+            ],
+        )
+        ordinary_status, ordinary_body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            body=b'hello',
+            extra_headers=[(b'content-length', b'5')],
+        )
+
+    assert grpc_status == 200
+    assert grpc_body == b'hello'
+    assert ordinary_status == 413
+    assert ordinary_body == b''
+
+
 async def test_h2_request_policy_allows_content_length_and_streaming_uploads() -> None:
     async def app(scope, receive, send):
         if scope['type'] == 'lifespan':

@@ -137,22 +137,12 @@ async def _notebook_service() -> AsyncGenerator[Notebook, None]:
 
 
 if __name__ == '__main__':
-    from h2corn import RequestPolicy
-
     serve(
         create_app,
         Config(
             port=8000,
             lifespan='on',
             max_request_body_size=64 * 1024 * 1024,
-            request_policies=(
-                RequestPolicy(
-                    path='/h2corn.interop.v1.NotebookService/UploadNote',
-                    max_request_body_size=1024 * 1024 * 1024,
-                    timeout_request_body_idle=300.0,
-                    h2_timeout_response_stall=60.0,
-                ),
-            ),
         ),
         factory=True,
     )
