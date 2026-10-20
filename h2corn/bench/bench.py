@@ -133,7 +133,7 @@ CHECKED_IN_RAW_DIRECTORY = RESULTS_DIRECTORY / 'raw'
 CHECKED_IN_PLOT_DIRECTORY = RESULTS_DIRECTORY / 'plots'
 
 # Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
-# where it has one (uvicorn `--http h11`, gunicorn `--http-parser python`). The
+# where it has one (uvicorn `--http h11`, gunicorn's Python parser). The
 # comparison is meant to isolate the server, not its optional accelerators, and
 # uvloop is not equally load-bearing across them: it does all of uvicorn's I/O,
 # while h2corn's I/O runs in Rust and the loop only schedules application
@@ -197,8 +197,6 @@ SERVERS: dict[str, list[str]] = {
         'asgi',
         '--asgi-loop',
         'asyncio',
-        '--http-parser',
-        'python',
         '--no-control-socket',
         '--access-logfile',
         '-',
@@ -448,6 +446,12 @@ def write_hypercorn_config(path: Path) -> None:
     )
 
 
+def unsupported_reason(name: str, scenario: Scenario) -> str | None:
+    if scenario.contract.protocol == '2' and name in {'uvicorn', 'gunicorn'}:
+        return 'The selected release has no prior-knowledge cleartext HTTP/2 mode.'
+    return None
+
+
 def server_command(
     name: str,
     scenario: Scenario,
@@ -455,27 +459,10 @@ def server_command(
     hypercorn_config: Path,
     listener_fd: int | None = None,
 ) -> list[str]:
+    if reason := unsupported_reason(name, scenario):
+        raise BenchmarkError(f'{name}: {reason}')
     command = SERVERS[name].copy()
     command[0] = str(Path(sys.executable).parent / name)
-    if scenario.contract.protocol == '2':
-        if name == 'uvicorn':
-            command[command.index('--http') + 1] = 'zttp'
-            command += ['--http2']
-        elif name == 'gunicorn':
-            command += [
-                '--http-protocols',
-                'h2',
-                '--http2-cleartext',
-                'prior-knowledge',
-                '--http2-max-concurrent-streams',
-                '256',
-                '--http2-initial-window-size',
-                '8388608',
-                '--http2-max-frame-size',
-                '65536',
-                '--http2-max-header-list-size',
-                '1048576',
-            ]
     socket_path = scenario.socket_path
     if name == 'uvicorn':
         command += ['--ws', 'websockets' if scenario.type == 'ws' else 'none']
@@ -505,7 +492,7 @@ def server_command(
 
 def package_versions() -> dict[str, str | None]:
     versions: dict[str, str | None] = {}
-    for package in (*SERVERS, 'starlette', 'h11', 'h2', 'zttp', 'websockets'):
+    for package in (*SERVERS, 'starlette', 'h11', 'h2', 'websockets'):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -563,7 +550,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
         aligned_setting('h2_max_header_list_size', 1_048_576, 1_048_576),
         aligned_setting('h2_max_inbound_frame_size', 65_536, 65_536),
     ]
-    return {
+    profiles: dict[str, dict[str, object]] = {
         'h2corn': {
             'profile_choice': [aligned_setting('loop', 'asyncio', 'auto')],
             'aligned': [
@@ -630,18 +617,8 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                     'auto',
                 )
             ],
-            'http_backend': 'zttp (experimental HTTP/2)'
-            if scenario.contract.protocol == '2'
-            else 'h11',
-            'no_equivalent': [
-                no_equivalent(
-                    'http2_limits',
-                    '256 streams; 65536-byte frames; 1048576-byte headers',
-                    'Uvicorn exposes no zttp HTTP/2 limit overrides.',
-                ),
-            ]
-            if scenario.contract.protocol == '2'
-            else [],
+            'http_backend': 'h11',
+            'no_equivalent': [],
         },
         'gunicorn': {
             'aligned': [
@@ -667,17 +644,13 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                     'Gunicorn has no ASGI proxy-header parsing counterpart.',
                 ),
             ],
-            'http_backend': 'h2' if scenario.contract.protocol == '2' else 'python',
-            'requested_http2_limits': {
-                'max_concurrent_streams': 256,
-                'initial_window_size': 8_388_608,
-                'max_frame_size': 65_536,
-                'max_header_list_size': 1_048_576,
-            }
-            if scenario.contract.protocol == '2'
-            else None,
+            'http_backend': 'python',
         },
     }
+    for name in profiles:
+        if reason := unsupported_reason(name, scenario):
+            profiles[name] = {'status': 'unsupported', 'reason': reason}
+    return profiles
 
 
 def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
@@ -901,14 +874,20 @@ def run_scenario(
     identity: dict[str, Any],
 ) -> dict[str, Any]:
     names = list(servers)
-    samples: dict[str, list[MeasuredMetrics]] = {name: [] for name in names}
-    excluded: dict[str, str] = {}
+    unsupported = {
+        name: reason for name in names if (reason := unsupported_reason(name, scenario))
+    }
+    samples: dict[str, list[MeasuredMetrics]] = {
+        name: [] for name in names if name not in unsupported
+    }
+    if not samples:
+        raise BenchmarkError(f'no selected server supports {scenario.name}')
     failures: dict[str, dict[str, Any]] = {}
     stopped = 'max-trials'
     trials = 0
     blocks = []
     for trial in range(1, max_trials + 1):
-        remaining = [name for name in names if name not in failures]
+        remaining = [name for name in samples if name not in failures]
         order = rotations(remaining, max_trials, SEED)[trial - 1]
         blocks.append({
             'block': trial,
@@ -958,7 +937,7 @@ def run_scenario(
                     'status': 'response_validation_failed',
                 }
                 print(f'  FAILED {name}: {error}', flush=True)
-        remaining = [name for name in names if name not in failures]
+        remaining = [name for name in samples if name not in failures]
         if not remaining:
             raise BenchmarkError(f'every server failed {scenario.name}')
         trials = trial
@@ -987,7 +966,7 @@ def run_scenario(
         'trials': trials,
         'planned_trials': max_trials,
         'stopped': stopped,
-        'excluded': excluded,
+        'unsupported': unsupported,
         'failures': failures,
         'requested_servers': names,
         'server_profiles': server_profiles(scenario),
@@ -1354,8 +1333,10 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                 continue
             if record.get('stopped') == 'time-budget' or not record.get('aggregate'):
                 incomplete.append(record['scenario'])
-            represented = set(record.get('aggregate', {})) | set(
-                record.get('failures', {})
+            represented = (
+                set(record.get('aggregate', {}))
+                | set(record.get('failures', {}))
+                | set(record.get('unsupported', {}))
             )
             if represented != set(record['requested_servers']):
                 incomplete.append(

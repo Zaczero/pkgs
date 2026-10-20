@@ -24,6 +24,7 @@ from bench.bench import (
     benchmark_scenarios,
     paired_contrasts,
     server_command,
+    unsupported_reason,
     write_hypercorn_config,
 )
 from bench.evidence import verify_workers
@@ -34,8 +35,21 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize('name', ['h2corn', 'uvicorn', 'hypercorn', 'gunicorn'])
-@pytest.mark.parametrize('protocol', ['h1', 'h1_uds', 'h2'])
+@pytest.mark.parametrize(
+    ('name', 'protocol'),
+    [
+        ('h2corn', 'h1'),
+        ('h2corn', 'h1_uds'),
+        ('h2corn', 'h2'),
+        ('hypercorn', 'h1'),
+        ('hypercorn', 'h1_uds'),
+        ('hypercorn', 'h2'),
+        ('uvicorn', 'h1'),
+        ('uvicorn', 'h1_uds'),
+        ('gunicorn', 'h1'),
+        ('gunicorn', 'h1_uds'),
+    ],
+)
 @pytest.mark.parametrize('workers', [1, 4])
 def test_benchmark_inherited_listener_and_protocol_readiness(
     name, protocol, workers, tmp_path
@@ -71,6 +85,14 @@ def test_benchmark_inherited_listener_and_protocol_readiness(
                 assert startup['pid'] == pid
             assert server.memory_bytes() > 0
         assert listener.fileno() >= 0
+
+
+@pytest.mark.parametrize('name', ['uvicorn', 'gunicorn'])
+def test_benchmark_unsupported_cleartext_http2_is_not_launched(name, tmp_path):
+    scenario = Scenario('Cleartext HTTP/2', 1, 'h2')
+    assert unsupported_reason(name, scenario) is not None
+    with pytest.raises(BenchmarkError, match='no prior-knowledge cleartext HTTP/2'):
+        server_command(name, scenario, hypercorn_config=tmp_path / 'hypercorn.toml')
 
 
 def test_benchmark_pss_counts_a_single_process_once():

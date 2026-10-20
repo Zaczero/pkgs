@@ -220,7 +220,10 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
     }
 
 
-def test_benchmark_publication_accepts_a_measured_tie(tmp_path: Path) -> None:
+@pytest.mark.parametrize('unsupported_server', [False, True])
+def test_benchmark_publication_accepts_complete_supported_measurements(
+    tmp_path: Path, unsupported_server: bool
+) -> None:
     import json
 
     from bench.bench import assert_publishable
@@ -228,6 +231,11 @@ def test_benchmark_publication_accepts_a_measured_tie(tmp_path: Path) -> None:
     raw = tmp_path / 'raw'
     raw.mkdir()
     record = _benchmark_record()
+    if unsupported_server:
+        record['requested_servers'].append('gunicorn')
+        record['unsupported'] = {
+            'gunicorn': 'The selected release has no prior-knowledge cleartext HTTP/2 mode.'
+        }
     record['paired_contrasts']['uvicorn']['interval_95'] = [0.9, 1.1]
     record['stopped'] = 'max-trials'
     (raw / 'comparison.json').write_text(json.dumps(record))
