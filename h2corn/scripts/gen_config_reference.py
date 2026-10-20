@@ -215,9 +215,9 @@ def render() -> str:
     return ''.join(parts)
 
 
-def render_benchmark_results() -> str:
-    raw_directory = ROOT / 'bench' / 'results' / 'raw'
-    plot_directory = ROOT / 'bench' / 'results' / 'plots'
+def _render_benchmark_family(directory: Path, title: str = '') -> str:
+    raw_directory = directory / 'raw'
+    plot_directory = directory / 'plots'
     records = {
         path: json.loads(path.read_text(encoding='utf-8'))
         for path in sorted(raw_directory.glob('*.json'))
@@ -243,7 +243,7 @@ def render_benchmark_results() -> str:
         record for record in records.values() if record.get('status') != 'skipped'
     )
     sections: list[str] = [
-        '## Environment\n\n',
+        f'## {title}Environment\n\n',
         environment['system_summary'].replace('\n', ' · ') + '\n\n',
         ', '.join(
             f'{name} {version}'
@@ -251,10 +251,28 @@ def render_benchmark_results() -> str:
             if version is not None
         )
         + '.\n\n',
-        '## Results\n\n',
+    ]
+    if qualification := environment.get('qualification'):
+        sections.extend((
+            f'## {title}Qualification\n\n',
+            '| Scope | Case | Stack | Outcome |\n',
+            '| --- | --- | --- | --- |\n',
+        ))
+        sections.extend(
+            f'| Host | {cell["case"]} | {cell["server"]} | {cell["status"]} |\n'
+            for cell in qualification['cells']
+            if cell['case'] == 'Cancellation'
+        )
+        sections.extend(
+            f'| Application | {cell["case"]} | Connect | {cell["status"]} |\n'
+            for cell in qualification['framework']
+        )
+        sections.append('\n')
+    sections.extend((
+        f'## {title}Results\n\n',
         '| Workload | Network | ' + ' | '.join(servers) + ' |\n',
         '| --- | --- | ' + ' | '.join('---' for _ in servers) + ' |\n',
-    ]
+    ))
     for path, record in records.items():
         network = record['network_profile']
         if (measured_rtt := record.get('measured_rtt_ms')) is not None:
@@ -264,6 +282,8 @@ def render_benchmark_results() -> str:
             if name in record.get('aggregate', {})
             else 'failed'
             if name in record.get('failures', {})
+            else 'not selected'
+            if name in record.get('not_selected', {})
             else 'unsupported'
             for name in servers
         ]
@@ -286,7 +306,7 @@ def render_benchmark_results() -> str:
                 f'{profile} measurements were skipped: {reason}\n\n',
             ))
             continue
-        if not record.get('aggregate'):
+        if not record.get('aggregate') and not record.get('failures'):
             raise RuntimeError(f'{raw_path.name} contains no benchmark measurements')
 
         plot_path = plot_directory / f'{raw_path.stem}.svg'
@@ -307,9 +327,18 @@ def render_benchmark_results() -> str:
             if not variant.is_file():
                 raise RuntimeError(f'{raw_path.name} has no {variant.name}')
         results = record['aggregate']
-        unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
+        unit = record.get(
+            'rate_unit', 'sessions/s' if record['type'] == 'ws' else 'requests/s'
+        )
         description = escape(
-            alt_text(scenario, results, unit, record.get('failures')), quote=True
+            alt_text(
+                scenario,
+                results,
+                unit,
+                record.get('failures'),
+                record.get('stack_labels'),
+            ),
+            quote=True,
         )
         sections.extend((
             f'### {scenario} — {profile}\n\n',
@@ -326,6 +355,14 @@ def render_benchmark_results() -> str:
             '\n</details>\n\n',
         ))
     return ''.join(sections)
+
+
+def render_benchmark_results() -> str:
+    results = ROOT / 'bench' / 'results'
+    rendered = _render_benchmark_family(results)
+    if (results / 'grpc/raw').is_dir():
+        rendered += _render_benchmark_family(results / 'grpc', 'gRPC ')
+    return rendered
 
 
 with mkdocs_gen_files.open('configuration.md', 'w') as fh:

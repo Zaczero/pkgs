@@ -164,3 +164,222 @@ def test_benchmark_worker_receipt_rejects_a_different_native_image():
     }
     with pytest.raises(RuntimeError, match='differs from installed inventory'):
         verify_workers(trial, identity)
+
+
+def test_grpc_benchmark_outcomes_reject_an_unfinished_call():
+    from bench.grpc import validate_outcomes
+
+    raw = {
+        'attempted': 3,
+        'started': 3,
+        'admission_failures': 0,
+        'verified_ok': 2,
+        'expected_cancelled': 0,
+        'deadline_exceeded': 0,
+        'other_non_ok': 0,
+        'invalid_response': 0,
+        'unfinished': 1,
+    }
+    with pytest.raises(BenchmarkError, match='did not all complete'):
+        validate_outcomes(raw, {'shape': 'unary', 'requests': 0})
+
+
+def test_grpc_benchmark_outcomes_reject_missing_stream_suffix():
+    from bench.grpc import validate_outcomes
+
+    raw = {
+        'attempted': 2,
+        'started': 2,
+        'admission_failures': 0,
+        'verified_ok': 2,
+        'expected_cancelled': 0,
+        'deadline_exceeded': 0,
+        'other_non_ok': 0,
+        'invalid_response': 0,
+        'unfinished': 0,
+        'verified_messages': 7,
+        'verified_payload_bytes': 80,
+    }
+    with pytest.raises(BenchmarkError, match='useful message/byte totals'):
+        validate_outcomes(
+            raw,
+            {
+                'shape': 'duplex',
+                'requests': 2,
+                'messages': 4,
+                'size': 10,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_grpc_benchmark_duplex_reads_ahead_while_output_is_held():
+    import asyncio
+
+    pytest.importorskip('connectrpc')
+    from bench.grpc_app import Work
+    from examples.grpc.gen.h2corn.interop.v1.notebook_pb import Edit
+
+    consumed_three = asyncio.Event()
+    work = Work({'size': 4, 'messages': 3})
+
+    async def requests():
+        for sequence in range(3):
+            if sequence == 2:
+                consumed_three.set()
+            yield Edit(note_id='distinct-id', base_revision=sequence, text='xxxx')
+
+    responses = work.duplex(requests())
+    first = await anext(responses)
+    await asyncio.wait_for(consumed_three.wait(), timeout=3)
+    assert first.revision == 1
+    assert work.consumed == 3
+    assert [response.revision async for response in responses] == [2, 3]
+    assert work.active == 0
+    assert work.readers == 0
+
+
+@pytest.mark.asyncio
+async def test_grpc_benchmark_duplex_closure_joins_its_input_reader():
+    import asyncio
+
+    pytest.importorskip('connectrpc')
+    from bench.grpc_app import Work
+    from examples.grpc.gen.h2corn.interop.v1.notebook_pb import Edit
+
+    released = asyncio.Event()
+    work = Work({'size': 1, 'messages': 2})
+
+    async def requests():
+        try:
+            yield Edit(note_id='close-id', text='x')
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+
+    responses = work.duplex(requests())
+    assert (await anext(responses)).revision == 1
+    await responses.aclose()
+    assert released.is_set()
+    assert work.active == 0
+    assert work.readers == 0
+
+
+def test_grpc_benchmark_process_scope_includes_live_child():
+    import subprocess
+
+    with subprocess.Popen(
+        [sys.executable, '-c', 'import sys; sys.stdin.read()'],
+        stdin=subprocess.PIPE,
+    ) as child:
+        try:
+            server = ServerRun(
+                [], os.getpid(), (os.getpid(),), include_descendants=True
+            )
+            assert child.pid in server.process_pids()
+            assert server.memory_bytes() > 0
+        finally:
+            child.communicate()
+
+
+def test_grpc_benchmark_wheel_verification_rejects_changed_runtime_bytes(
+    tmp_path, monkeypatch
+):
+    import zipfile
+
+    from bench.grpc import verify_wheel
+
+    metadata = tmp_path / 'benchmark_fixture-1.0.dist-info'
+    metadata.mkdir()
+    (metadata / 'METADATA').write_text(
+        'Metadata-Version: 2.1\nName: benchmark-fixture\nVersion: 1.0\n'
+    )
+    module = tmp_path / 'benchmark_fixture.py'
+    module.write_text('answer = 42\n')
+    monkeypatch.syspath_prepend(str(tmp_path))
+    wheel = tmp_path / 'benchmark_fixture-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('benchmark_fixture.py', 'answer = 42\n')
+    assert verify_wheel(wheel, 'benchmark-fixture')['members']
+    module.write_text('answer = 43\n')
+    with pytest.raises(BenchmarkError, match='installed bytes differ'):
+        verify_wheel(wheel, 'benchmark-fixture')
+
+
+def test_grpc_publication_preserves_http_artifacts(tmp_path, monkeypatch):
+    from bench import bench
+
+    results = tmp_path / 'results'
+    http = results / 'raw/http.json'
+    http.parent.mkdir(parents=True)
+    http.write_text('existing HTTP evidence')
+    run = tmp_path / 'run'
+    (run / 'raw').mkdir(parents=True)
+    (run / 'plots').mkdir()
+    (run / 'profile.json').write_text(
+        json.dumps({
+            'profile': 'grpc',
+            'benchmark_family': 'grpc',
+        })
+    )
+    (run / 'raw/rpc.json').write_text('new RPC evidence')
+    (run / 'identity.json').write_text('{}')
+    monkeypatch.setattr(bench, 'RESULTS_DIRECTORY', results)
+    bench.publish([run])
+    assert http.read_text() == 'existing HTTP evidence'
+    assert (results / 'grpc/raw/rpc-grpc.json').read_text() == 'new RPC evidence'
+    assert (results / 'grpc/evidence/grpc/identity.json').is_file()
+
+
+def test_grpc_publication_requires_qualification_receipts(tmp_path):
+    from bench.grpc import assert_rpc_publishable
+
+    (tmp_path / 'identity.json').write_text('{}')
+    with pytest.raises(BenchmarkError, match='retained qualification'):
+        assert_rpc_publishable(tmp_path)
+
+
+def test_grpc_table_distinguishes_subset_omission_from_unsupported():
+    from bench.report import render_accessible_results
+
+    table = render_accessible_results({
+        'type': 'grpc',
+        'rate_unit': 'messages/s',
+        'reference_label': 'Connect / h2corn',
+        'aggregate': {},
+        'requested_servers': ['grpclib'],
+        'not_selected': {'grpclib': 'Representative subset'},
+    })
+    assert 'messages/s' in table
+    assert '| grpclib | not selected |' in table
+
+
+@pytest.mark.parametrize(
+    'arguments',
+    [
+        ['--qualify-only'],
+        ['--family', 'grpc', '--publish', '--rpc-cases', 'U32'],
+        [
+            '--family',
+            'grpc',
+            '--qualify-only',
+            '--rpc-cases',
+            'U32',
+            '--connect-development-revision',
+            'abcdef',
+        ],
+    ],
+)
+def test_grpc_cli_rejects_incomplete_experiments_before_starting_work(arguments):
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, 'bench/bench.py', *arguments],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert 'require' in result.stderr

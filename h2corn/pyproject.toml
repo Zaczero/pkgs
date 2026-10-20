@@ -91,11 +91,12 @@ freethreaded = [
   "websockets>=16.0",
 ]
 
-# Optional real-socket gRPC interoperability tests and protobuf generation.
+# Optional gRPC interoperability, benchmark runtimes, and protobuf generation.
 grpc-interop = [
   "asgi-lifespan>=2.1.0",
   "buf-bin>=1.72.0",
   "grpcio>=1.83.1",
+  "grpclib>=0.4.9",
   "protoc-gen-connectrpc>=0.12.1",
   "protoc-gen-grpc-py>=0.3.0",
   "protoc-gen-py>=0.3.0",

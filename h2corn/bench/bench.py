@@ -38,70 +38,41 @@ from benchroom.plot import save, theme
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 
-try:
-    from bench._core import (
-        RESULTS_DIRECTORY,
-        BenchmarkError,
-        MeasuredMetrics,
-        ResponseError,
-        Scenario,
-        allocated_listener,
-        bootstrap_median_ci,
-        check_response,
-        deadline_bound,
-        duration_seconds,
-        ensure_large_upload_payload,
-        ensure_static_file_payload,
-        measure_peak_memory,
-        peer_settings,
-        request_response,
-        rotations,
-        run_load,
-        running_server,
-        terminate_process_group,
-        write_json,
-    )
-    from bench.evidence import build_wheel, run_identity, verify_workers
-    from bench.report import (
-        SERVER_COLORS,
-        SERVER_LINESTYLES,
-        SERVER_MARKERS,
-        alt_text,
-        format_rate,
-        render_accessible_results,
-    )
-except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
-    from _core import (  # type: ignore[import-not-found, no-redef]
-        RESULTS_DIRECTORY,
-        BenchmarkError,
-        MeasuredMetrics,
-        ResponseError,
-        Scenario,
-        allocated_listener,
-        bootstrap_median_ci,
-        check_response,
-        deadline_bound,
-        duration_seconds,
-        ensure_large_upload_payload,
-        ensure_static_file_payload,
-        measure_peak_memory,
-        peer_settings,
-        request_response,
-        rotations,
-        run_load,
-        running_server,
-        terminate_process_group,
-        write_json,
-    )
-    from evidence import build_wheel, run_identity, verify_workers
-    from report import (
-        SERVER_COLORS,
-        SERVER_LINESTYLES,
-        SERVER_MARKERS,
-        alt_text,
-        format_rate,
-        render_accessible_results,
-    )
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from bench._core import (
+    RESULTS_DIRECTORY,
+    BenchmarkError,
+    MeasuredMetrics,
+    ResponseError,
+    Scenario,
+    allocated_listener,
+    bootstrap_median_ci,
+    check_response,
+    deadline_bound,
+    duration_seconds,
+    ensure_large_upload_payload,
+    ensure_static_file_payload,
+    measure_peak_memory,
+    peer_settings,
+    request_response,
+    rotations,
+    run_load,
+    running_server,
+    terminate_process_group,
+    write_json,
+)
+from bench.evidence import build_wheel, run_identity, verify_workers
+from bench.grpc import RpcScenario
+from bench.report import (
+    SERVER_COLORS,
+    SERVER_LINESTYLES,
+    SERVER_MARKERS,
+    alt_text,
+    format_rate,
+    render_accessible_results,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -128,9 +99,6 @@ NETEM_RATE = '1gbit'
 NETEM_RTT_TOLERANCE_MS = 15.0
 NETEM_RTT_SAMPLES = 10
 NETEM_NAMESPACE_ENV = 'H2CORN_BENCH_NETEM_NAMESPACE'
-
-CHECKED_IN_RAW_DIRECTORY = RESULTS_DIRECTORY / 'raw'
-CHECKED_IN_PLOT_DIRECTORY = RESULTS_DIRECTORY / 'plots'
 
 # Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
 # where it has one (uvicorn `--http h11`, gunicorn's Python parser). The
@@ -446,7 +414,9 @@ def write_hypercorn_config(path: Path) -> None:
     )
 
 
-def unsupported_reason(name: str, scenario: Scenario) -> str | None:
+def unsupported_reason(name: str, scenario: Scenario | RpcScenario) -> str | None:
+    if scenario.type == 'grpc':
+        return None
     if scenario.contract.protocol == '2' and name in {'uvicorn', 'gunicorn'}:
         return 'The selected release has no prior-knowledge cleartext HTTP/2 mode.'
     return None
@@ -702,7 +672,7 @@ def load_plan(scenario: Scenario, duration: str, warmup: str) -> dict[str, Any]:
 
 def measure_cell(
     name: str,
-    scenario: Scenario,
+    scenario: Scenario | RpcScenario,
     duration: str,
     warmup: str,
     *,
@@ -711,6 +681,24 @@ def measure_cell(
     identity: dict[str, Any] | None = None,
 ) -> MeasuredMetrics:
     """One cold-start trial: start, prove correctness, warm up, measure, prove again."""
+    if scenario.type == 'grpc':
+        from bench.grpc import measure_cell as measure_rpc
+
+        assert identity is not None
+        rpc_measured = measure_rpc(
+            name,
+            scenario,
+            duration,
+            warmup,
+            evidence_directory=evidence_directory,
+            identity=identity,
+        )
+        return {
+            'rps': rpc_measured['rps'],
+            'completed': rpc_measured['completed'],
+            'latency_percentiles': rpc_measured['latency_percentiles'],
+            'peak_memory_bytes': rpc_measured['peak_memory_bytes'],
+        }
     concurrency = scenario.concurrency or CONCURRENCY
     plan = load_plan(scenario, duration, warmup)
     evidence_directory.mkdir(parents=True)
@@ -862,7 +850,7 @@ def workload_description(scenario: Scenario) -> str:
 
 
 def run_scenario(
-    scenario: Scenario,
+    scenario: Scenario | RpcScenario,
     servers: Sequence[str],
     *,
     duration: str,
@@ -874,20 +862,44 @@ def run_scenario(
     identity: dict[str, Any],
 ) -> dict[str, Any]:
     names = list(servers)
+    rpc = scenario.type == 'grpc'
+    rpc_case = scenario.case if isinstance(scenario, RpcScenario) else None
+    not_selected = (
+        {'grpclib': 'Representative no-compression subset'}
+        if rpc and not scenario.grpclib and 'grpclib' in names
+        else {}
+    )
     unsupported = {
         name: reason for name in names if (reason := unsupported_reason(name, scenario))
     }
     samples: dict[str, list[MeasuredMetrics]] = {
-        name: [] for name in names if name not in unsupported
+        name: []
+        for name in names
+        if name not in unsupported and name not in not_selected
     }
     if not samples:
         raise BenchmarkError(f'no selected server supports {scenario.name}')
-    failures: dict[str, dict[str, Any]] = {}
+    failures: dict[str, dict[str, Any]] = {
+        cell['server']: {
+            'phase': 'qualification',
+            'error': cell['error'],
+            'block': 0,
+            'evidence': cell['server'],
+            'status': 'response_validation_failed',
+        }
+        for cell in identity.get('rpc_qualification', [])
+        if rpc
+        and cell['case'] == rpc_case
+        and cell['status'] == 'failed'
+        and cell['server'] in samples
+    }
     stopped = 'max-trials'
     trials = 0
     blocks = []
     for trial in range(1, max_trials + 1):
         remaining = [name for name in samples if name not in failures]
+        if not remaining:
+            break
         order = rotations(remaining, max_trials, SEED)[trial - 1]
         blocks.append({
             'block': trial,
@@ -927,7 +939,9 @@ def run_scenario(
                         'samples': samples,
                     },
                 )
-                if name == 'h2corn' or not isinstance(error.__cause__, ResponseError):
+                if (name == 'h2corn' and not rpc) or not isinstance(
+                    error.__cause__, ResponseError
+                ):
                     raise
                 failures[name] = {
                     'phase': error.phase,
@@ -939,7 +953,10 @@ def run_scenario(
                 print(f'  FAILED {name}: {error}', flush=True)
         remaining = [name for name in samples if name not in failures]
         if not remaining:
-            raise BenchmarkError(f'every server failed {scenario.name}')
+            if not rpc:
+                raise BenchmarkError(f'every server failed {scenario.name}')
+            trials = trial
+            break
         trials = trial
         medians = ', '.join(
             f'{name} {format_rate(statistics.median([s["rps"] for s in samples[name]]))}'
@@ -952,8 +969,12 @@ def run_scenario(
         if trial < max_trials and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
-    plan = load_plan(scenario, duration, warmup)
-    description = workload_description(scenario)
+    plan = (
+        {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
+        if rpc
+        else load_plan(scenario, duration, warmup)
+    )
+    description = scenario.workload if rpc else workload_description(scenario)
     if plan['mode'] == 'fixed-count':
         description += f'; {plan["requests"]} completed requests per trial'
     return {
@@ -967,9 +988,22 @@ def run_scenario(
         'planned_trials': max_trials,
         'stopped': stopped,
         'unsupported': unsupported,
+        **({'not_selected': not_selected} if rpc else {}),
         'failures': failures,
         'requested_servers': names,
-        'server_profiles': server_profiles(scenario),
+        'server_profiles': (
+            {
+                name: {
+                    'loop': 'asyncio',
+                    'processes': 1,
+                    'compression': 'identity',
+                    'access_log': False,
+                }
+                for name in names
+            }
+            if rpc
+            else server_profiles(scenario)
+        ),
         'blocks': blocks,
         'samples': samples,
         'paired_contrasts': paired_contrasts({
@@ -1001,8 +1035,11 @@ def plot_results(
         alt_text(
             record['scenario'],
             record['aggregate'],
-            'sessions/s' if record['type'] == 'ws' else 'requests/s',
+            record.get(
+                'rate_unit', 'sessions/s' if record['type'] == 'ws' else 'requests/s'
+            ),
             record.get('failures'),
+            record.get('stack_labels'),
         )
     )
 
@@ -1030,7 +1067,7 @@ def _plot_results(
         record.get('requested_servers', [*results, *failures]),
         key=lambda name: list(SERVER_COLORS).index(name),
     )
-    labels = names
+    labels = [record.get('stack_labels', {}).get(name, name) for name in names]
     rates = [results[name]['rps'] if name in results else math.nan for name in names]
     colors = [SERVER_COLORS[name][dark] for name in names]
     foreground = mpl.rcParams['text.color']
@@ -1043,7 +1080,11 @@ def _plot_results(
             throughput.text(
                 bar.get_x() + bar.get_width() / 2,
                 0.05,
-                'failed' if name in failures else 'unsupported',
+                'failed'
+                if name in failures
+                else 'not selected'
+                if name in record.get('not_selected', {})
+                else 'unsupported',
                 ha='center',
                 va='bottom',
                 transform=throughput.get_xaxis_transform(),
@@ -1076,7 +1117,7 @@ def _plot_results(
             linewidths=0.8,
             zorder=3,
         )
-    unit = 'sessions/s' if websocket else 'requests/s'
+    unit = record.get('rate_unit', 'sessions/s' if websocket else 'requests/s')
     throughput.set_title('Throughput · higher is better')
     throughput.set_ylabel(unit)
     throughput.margins(y=0.24)
@@ -1145,8 +1186,13 @@ def _plot_results(
 
     footer = (
         'Bars: median rate · Dots: fresh-start trials · Whiskers: observed range'
-        '\nLatency: median trial percentiles · PSS: maximum sampled, decimal MB'
-        '\n' + textwrap.fill(record.get('workload', ''), width=65 if narrow else 110)
+        + (
+            '\nLatency: median trial histogram bounds (1% buckets)'
+            if record.get('benchmark_family') == 'grpc'
+            else '\nLatency: median trial percentiles'
+        )
+        + ' · PSS: maximum sampled, decimal MB\n'
+        + textwrap.fill(record.get('workload', ''), width=65 if narrow else 110)
     )
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
@@ -1272,7 +1318,12 @@ def run_rtt50_namespace(
 
 
 def publish(run_directories: Sequence[Path]) -> None:
-    evidence = RESULTS_DIRECTORY / 'evidence'
+    profiles = [json.loads((d / 'profile.json').read_text()) for d in run_directories]
+    if len({p.get('benchmark_family', 'http') for p in profiles}) != 1:
+        raise BenchmarkError('publish one benchmark family at a time')
+    rpc = all(p.get('benchmark_family') == 'grpc' for p in profiles)
+    root = RESULTS_DIRECTORY / 'grpc' if rpc else RESULTS_DIRECTORY
+    evidence = root / 'evidence'
     if evidence.exists():
         shutil.rmtree(evidence)
     evidence.mkdir(parents=True)
@@ -1280,15 +1331,22 @@ def publish(run_directories: Sequence[Path]) -> None:
         profile = json.loads((directory / 'profile.json').read_text())['profile']
         destination = evidence / profile
         destination.mkdir()
-        for name in ('identity.json', 'profile.json', 'hypercorn.toml', 'build.log'):
+        for name in (
+            'identity.json',
+            'profile.json',
+            'hypercorn.toml',
+            'build.log',
+            'qualification.json',
+            'notebook.pb',
+        ):
             if (directory / name).exists():
                 shutil.copy2(directory / name, destination / name)
         if (directory / 'evidence').exists():
             shutil.copytree(directory / 'evidence', destination / 'trials')
     for kind, suffix, destination in (
-        ('raw', '.json', CHECKED_IN_RAW_DIRECTORY),
-        ('plots', '.svg', CHECKED_IN_PLOT_DIRECTORY),
-        ('plots', '.md', CHECKED_IN_PLOT_DIRECTORY),
+        ('raw', '.json', root / 'raw'),
+        ('plots', '.svg', root / 'plots'),
+        ('plots', '.md', root / 'plots'),
     ):
         destination.mkdir(parents=True, exist_ok=True)
         for stale in destination.glob(f'*{suffix}'):
@@ -1311,7 +1369,7 @@ def publish(run_directories: Sequence[Path]) -> None:
                 shutil.copy2(artifact, destination / published_name)
     print(
         f'Published {len(run_directories)} profile(s) with matched raw records, '
-        f'tables, and plots to {CHECKED_IN_RAW_DIRECTORY} and {CHECKED_IN_PLOT_DIRECTORY}'
+        f'tables, and plots to {root / "raw"} and {root / "plots"}'
     )
 
 
@@ -1327,6 +1385,15 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
             or json.loads(identity_path.read_text()).get('build') is None
         ):
             raise BenchmarkError(f'no identified release build in {run_directory}')
+        profile = (
+            json.loads((run_directory / 'profile.json').read_text())
+            if (run_directory / 'profile.json').exists()
+            else {}
+        )
+        if profile.get('benchmark_family') == 'grpc':
+            from bench.grpc import assert_rpc_publishable
+
+            assert_rpc_publishable(run_directory)
         for record_path in records:
             record = json.loads(record_path.read_text())
             if record.get('planned_trials', 0) < MIN_TRIALS:
@@ -1334,12 +1401,15 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
             if record.get('status') == 'skipped':
                 incomplete.append(record['scenario'])
                 continue
-            if record.get('stopped') == 'time-budget' or not record.get('aggregate'):
+            if record.get('stopped') == 'time-budget' or (
+                not record.get('aggregate') and not record.get('failures')
+            ):
                 incomplete.append(record['scenario'])
             represented = (
                 set(record.get('aggregate', {}))
                 | set(record.get('failures', {}))
                 | set(record.get('unsupported', {}))
+                | set(record.get('not_selected', {}))
             )
             if represented != set(record['requested_servers']):
                 incomplete.append(
@@ -1503,7 +1573,14 @@ def main() -> int:
         description='h2corn cross-server benchmark suite',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument('--servers', nargs='+', choices=list(SERVERS))
+    parser.add_argument('--family', choices=('http', 'grpc'), default='http')
+    parser.add_argument('--servers', nargs='+', choices=[*SERVERS, 'grpcio', 'grpclib'])
+    parser.add_argument('--rpc-cases', nargs='+')
+    parser.add_argument('--connect-wheel', type=Path)
+    parser.add_argument('--connect-development-revision')
+    parser.add_argument('--connect-source', type=Path)
+    parser.add_argument('--comparator-selection', type=Path)
+    parser.add_argument('--qualify-only', action='store_true')
     benchmark_types = sorted({
         scenario.type for scenario in (*benchmark_scenarios(), *rtt50_scenarios())
     })
@@ -1520,7 +1597,7 @@ def main() -> int:
     parser.add_argument('--run-directory', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--duration', default=DURATION)
     parser.add_argument('--warmup-duration', default=WARMUP_DURATION)
-    parser.add_argument('--max-trials', type=int, default=MAX_TRIALS)
+    parser.add_argument('--max-trials', type=int)
     parser.add_argument(
         '--wheel',
         type=Path,
@@ -1541,6 +1618,11 @@ def main() -> int:
         help='replace the checked-in plots and raw records with this run',
     )
     args = parser.parse_args()
+
+    def interrupted(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
     if args.build_wheel is not None:
         print(
             f'Building release wheel; log: {args.build_wheel / "build.log"}',
@@ -1557,17 +1639,67 @@ def main() -> int:
             return 1
         print(wheel)
         return 0
+    if args.max_trials is None:
+        args.max_trials = 12 if args.family == 'grpc' else MAX_TRIALS
+    if args.family == 'grpc':
+        from bench.grpc import SERVERS as RPC_SERVERS
+        from bench.grpc import run_suite as run_rpc_suite
+        from bench.grpc import scenarios
+
+        if args.types or args.network_profile != 'all':
+            parser.error(
+                '--family grpc uses --rpc-cases and its own cleartext/TLS plans'
+            )
+        if args.servers and set(args.servers) - set(RPC_SERVERS):
+            parser.error('gRPC servers are h2corn, hypercorn, grpcio, and grpclib')
+        if args.rpc_cases and set(args.rpc_cases) - {s.case for s in scenarios()}:
+            parser.error('unknown --rpc-cases selection')
+        if not sys.platform.startswith('linux'):
+            parser.error('gRPC benchmarking requires Linux PSS accounting')
+        duration_seconds(args.duration)
+        duration_seconds(args.warmup_duration)
+        if args.connect_development_revision and (
+            not args.qualify_only or not args.rpc_cases or args.connect_source is None
+        ):
+            parser.error(
+                'development Connect requires --qualify-only, explicit --rpc-cases, and --connect-source'
+            )
+        if args.max_trials < MIN_TRIALS:
+            parser.error(f'--max-trials must be at least {MIN_TRIALS}')
+        if args.publish and (
+            args.wheel is None
+            or args.servers
+            or args.rpc_cases
+            or args.max_trials != 12
+            or args.connect_development_revision
+            or args.qualify_only
+        ):
+            parser.error(
+                'gRPC publication requires the full released matrix, --wheel, and 12 blocks'
+            )
+        try:
+            run_rpc_suite(args)
+        except (BenchmarkError, OSError, subprocess.SubprocessError) as error:
+            print(f'benchmark failed: {error}', file=sys.stderr)
+            return 1
+        return 0
+    if (
+        args.qualify_only
+        or args.rpc_cases
+        or args.connect_wheel
+        or args.connect_development_revision
+        or args.connect_source
+        or args.comparator_selection
+    ):
+        parser.error('RPC qualification and application options require --family grpc')
+    if args.servers and set(args.servers) - set(SERVERS):
+        parser.error('grpcio and grpclib require --family grpc')
     if args.publish and args.wheel is None:
         parser.error('--publish requires --wheel to establish native artifact identity')
     if not sys.platform.startswith('linux'):
         parser.error(
             'this benchmark requires Linux PSS accounting and inherited listeners'
         )
-
-    def interrupted(_signum: int, _frame: Any) -> None:
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, interrupted)
 
     if args.max_trials < MIN_TRIALS:
         parser.error(f'--max-trials must be at least {MIN_TRIALS}')

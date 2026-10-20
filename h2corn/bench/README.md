@@ -87,3 +87,43 @@ To replace checked-in results, add `--publish` to a complete run with
 themes together. Partial server/type/profile selections cannot publish.
 
 See `uv run python bench/bench.py --help` for the full option list.
+
+## gRPC workloads
+
+The optional gRPC family compares the same generated Protobuf messages and
+Python handler work through Connect on h2corn and Hypercorn, grpc.aio, and a
+representative grpclib subset. It requires regular CPython 3.15, Go 1.26 or
+newer, `curl`, and `openssl`. The optional development group supplies Buf and
+the Python RPC runtimes:
+
+```bash
+uv sync --upgrade --group grpc-interop --python 3.15
+```
+
+Build and install the explicit h2corn wheel as above, then qualify the eight
+workloads without running a timing comparison:
+
+```bash
+uv run --no-sync python bench/bench.py --family grpc --qualify-only \
+  --wheel "$WHEELS"/*.whl
+```
+
+Qualification checks complete responses, status and metadata, duplex progress,
+handler settlement after cancellation, and framework input validation. Results
+retain failed qualifications separately from successful-call measurements.
+HTTP 200 alone is not success.
+
+Omit `--qualify-only` for the twelve-block comparison. `--rpc-cases U32 Duplex`
+selects a smaller apparatus check. The full matrix includes zero-serialized,
+tiny and bulk unary messages, upload, download, duplex, and representative
+verified TLS workloads. The client validates every message and terminal outcome.
+Streaming plots use verified response messages per second; upload and unary
+plots use complete RPCs per second. Latency percentiles are upper bounds from
+1%-width client histogram buckets, summarized across trials.
+
+The gRPC family uses one serving process and one standard asyncio loop per
+arm, identity compression, and no access logging. It retains native runtime
+threads in process accounting, records actual client connections, and annotates
+throughput with maximum sampled serving-process PSS. Partial matrices cannot
+publish. `--family grpc --publish` replaces only `bench/results/grpc`; the
+existing HTTP results remain intact.

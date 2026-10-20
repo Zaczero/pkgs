@@ -17,6 +17,18 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+RUNTIME_PREFIXES = (
+    'h2corn',
+    'uvicorn',
+    'hypercorn',
+    'gunicorn',
+    'zttp',
+    'connectrpc',
+    'protobuf',
+    'grpc',
+    'grpclib',
+)
+
 
 def file_identity(path: Path) -> dict[str, str]:
     return {
@@ -71,7 +83,7 @@ def worker_identity() -> dict[str, Any]:
         if (
             filename
             and (
-                name.startswith(('h2corn', 'uvicorn', 'hypercorn', 'gunicorn', 'zttp'))
+                name.startswith(RUNTIME_PREFIXES)
                 or any(
                     filename.endswith(suffix)
                     for suffix in importlib.machinery.EXTENSION_SUFFIXES
@@ -150,7 +162,13 @@ def build_wheel(root: Path, output: Path) -> Path:
     return wheel
 
 
-def run_identity(root: Path, wheel: Path | None) -> dict[str, Any]:
+def run_identity(
+    root: Path,
+    wheel: Path | None,
+    *,
+    commands_required: tuple[str, ...] = ('h2corn', 'uvicorn', 'hypercorn', 'gunicorn'),
+    tools_required: tuple[str, ...] = ('oha', 'k6', 'rustc'),
+) -> dict[str, Any]:
     packages = {}
     for distribution in importlib.metadata.distributions():
         files = {}
@@ -163,7 +181,7 @@ def run_identity(root: Path, wheel: Path | None) -> dict[str, Any]:
             'files': files,
         }
     commands = {}
-    for name in ('h2corn', 'uvicorn', 'hypercorn', 'gunicorn'):
+    for name in commands_required:
         executable = Path(sys.executable).parent / name
         if not executable.is_file():
             raise RuntimeError(f'{name} must be installed beside {sys.executable}')
@@ -173,7 +191,7 @@ def run_identity(root: Path, wheel: Path | None) -> dict[str, Any]:
             )
         commands[name] = file_identity(executable)
     tools = {}
-    for name in ('oha', 'k6', 'rustc'):
+    for name in tools_required:
         path = shutil.which(name)
         if path is None:
             raise RuntimeError(f'{name} is required')
@@ -257,7 +275,7 @@ def verify_workers(trial: dict[str, Any], identity: dict[str, Any]) -> None:
             raise RuntimeError('worker did not select the standard asyncio loop')
         for name, module in receipt['modules'].items():
             if (
-                name.startswith(('h2corn', 'uvicorn', 'hypercorn', 'gunicorn', 'zttp'))
+                name.startswith(RUNTIME_PREFIXES)
                 and installed.get(module['path']) != module['sha256']
             ):
                 raise RuntimeError(

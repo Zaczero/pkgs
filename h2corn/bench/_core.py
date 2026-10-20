@@ -27,7 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
@@ -38,6 +38,7 @@ import h2.events
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
+    from ssl import SSLContext
 
 HOST = '127.0.0.1'
 PORT = 8000
@@ -537,6 +538,24 @@ class ServerRun:
     command: list[str]
     pid: int
     worker_pids: tuple[int, ...]
+    include_descendants: bool = False
+
+    def process_pids(self) -> set[int]:
+        pids = {self.pid, *self.worker_pids}
+        if self.include_descendants:
+            pending = list(pids)
+            while pending:
+                pid = pending.pop()
+                for task in Path(f'/proc/{pid}/task').glob('*'):
+                    try:
+                        children = (task / 'children').read_text().split()
+                    except FileNotFoundError:
+                        continue
+                    for child in map(int, children):
+                        if child not in pids:
+                            pids.add(child)
+                            pending.append(child)
+        return pids
 
     def memory_bytes(self) -> int:
         """Return a current PSS snapshot of the supervisor and every worker.
@@ -550,7 +569,7 @@ class ServerRun:
 
         """
         total = 0
-        for pid in sorted({self.pid, *self.worker_pids}):
+        for pid in sorted(self.process_pids()):
             try:
                 rollup = Path(f'/proc/{pid}/smaps_rollup').read_text()
             except OSError as error:
@@ -581,7 +600,13 @@ def measure_peak_memory(
     periodic samples, and a final sample.
     """
     started = time.monotonic()
-    samples = [{'elapsed_seconds': 0.0, 'pss_bytes': server.memory_bytes()}]
+    samples = [
+        {
+            'elapsed_seconds': 0.0,
+            'pss_bytes': server.memory_bytes(),
+            'unique_pids': sorted(server.process_pids()),
+        }
+    ]
     failures: list[BenchmarkError] = []
     stop = threading.Event()
 
@@ -591,6 +616,7 @@ def measure_peak_memory(
                 samples.append({
                     'elapsed_seconds': time.monotonic() - started,
                     'pss_bytes': server.memory_bytes(),
+                    'unique_pids': sorted(server.process_pids()),
                 })
             except BenchmarkError as error:
                 failures.append(error)
@@ -606,12 +632,13 @@ def measure_peak_memory(
         samples.append({
             'elapsed_seconds': time.monotonic() - started,
             'pss_bytes': server.memory_bytes(),
+            'unique_pids': sorted(server.process_pids()),
         })
         if evidence_path is not None:
             write_json(
                 evidence_path,
                 {
-                    'unique_pids': sorted({server.pid, *server.worker_pids}),
+                    'unique_pids': sorted(server.process_pids()),
                     'sample_interval_seconds': PSS_SAMPLE_INTERVAL_SECONDS,
                     'samples': samples,
                     'errors': [str(error) for error in failures],
@@ -632,6 +659,8 @@ def running_server(
     scenario: Scenario | None = None,
     listener_fd: int | None = None,
     identity_directory: Path | None = None,
+    readiness: Callable[[int], bool] | None = None,
+    include_descendants: bool = False,
 ) -> Generator[ServerRun, None, None]:
     """Run a server for the duration of the block.
 
@@ -675,7 +704,9 @@ def running_server(
                     f'{argv[0]} exited with {process.returncode} before serving'
                 )
             ready = (
-                _protocol_ready(scenario)
+                readiness(process.pid)
+                if readiness is not None
+                else _protocol_ready(scenario)
                 if scenario is not None
                 else _unix_ready(socket_path)
                 if socket_path is not None
@@ -688,7 +719,9 @@ def running_server(
             time.sleep(0.05)
 
         pids = (
-            _protocol_worker_pids(scenario, workers)
+            {process.pid}
+            if readiness is not None
+            else _protocol_worker_pids(scenario, workers)
             if scenario is not None
             else _worker_pids(
                 socket_path, workers, time.monotonic() + SERVER_READY_TIMEOUT_SECONDS
@@ -699,7 +732,12 @@ def running_server(
                 f'{argv[0]} exposed {len(pids)}/{workers} workers: {sorted(pids)}'
             )
         time.sleep(SETTLE_SECONDS)
-        yield ServerRun(command=argv, pid=process.pid, worker_pids=tuple(sorted(pids)))
+        yield ServerRun(
+            command=argv,
+            pid=process.pid,
+            worker_pids=tuple(sorted(pids)),
+            include_descendants=include_descendants,
+        )
     finally:
         if process is not None:
             terminate_process_group(process)
@@ -1295,14 +1333,23 @@ def request_response(
     return body
 
 
-def peer_settings(scenario: Scenario) -> dict[str, Any]:
+def peer_settings(
+    scenario: Scenario, *, tls_context: SSLContext | None = None
+) -> dict[str, Any]:
     """Read effective HTTP/2 settings after a round-trip ordering barrier."""
     connection = h2.connection.H2Connection()
     connection.initiate_connection()
     connection.ping(b'bench-h2')
     changes = []
     deadline = time.monotonic() + 5
-    with socket.create_connection((HOST, scenario.port), timeout=5) as transport:
+    with ExitStack() as owners:
+        transport = owners.enter_context(
+            socket.create_connection((HOST, scenario.port), timeout=5)
+        )
+        if tls_context is not None:
+            transport = owners.enter_context(
+                tls_context.wrap_socket(transport, server_hostname='localhost')
+            )
         transport.sendall(connection.data_to_send())
         while True:
             remaining = deadline - time.monotonic()
