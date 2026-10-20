@@ -27,22 +27,30 @@ uv add gometry
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# A one-degree tile over Paris. The CRS travels with the geometry.
-tile = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
+origin = gm.Point(2.2945, 48.8584, crs=4326)
+landmarks = {
+    "Arc de Triomphe": gm.Point(2.2950, 48.8738, crs=4326),
+    "Louvre": gm.Point(2.3376, 48.8606, crs=4326),
+    "Notre-Dame": gm.Point(2.3499, 48.8530, crs=4326),
+    "Palace of Versailles": gm.Point(2.1204, 48.8049, crs=4326),
+}
+nearby = sorted(
+    (
+        (name, gm.distance(origin, place))
+        for name, place in landmarks.items()
+        if gm.dwithin(origin, place, 5_000)
+    ),
+    key=lambda item: item[1],
+)
 
-print(f"ellipsoidal area: {tile.area / 1e6:>8,.0f} km²")
-print(f"planar area:      {gm.area(tile, unit='planar'):>8.4f} degree²")
-print(f"Web Mercator:     {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
-
-tile
+print("Within 5 km of the Eiffel Tower")
+for name, distance in nearby:
+    print(f"{name:<18} {distance / 1_000:>4.1f} km")
 ```
 
-One square degree is three different answers, and the CRS carried by the
-geometry decides which one you asked for. On a geographic CRS,
-[`area`][gometry.Geometry.area] measures the ellipsoidal area bounded by
-straight longitude/latitude edges; `unit="planar"` measures the raw coordinates
-as they stand; and reprojecting first returns that frame's own answer, which at
-this latitude Web Mercator inflates 2.3 times.
+Find Paris landmarks within 5 km of the Eiffel Tower. With EPSG:4326 attached,
+[`dwithin`][gometry.dwithin] filters by geodesic distance and
+[`distance`][gometry.distance] reports that distance in metres.
 
 <div class="grid cards" markdown>
 
