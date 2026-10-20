@@ -22,6 +22,7 @@ use crate::h2::{StreamMap, new_stream_map};
 use crate::h2_frame::{self, FramePayloadLen, StreamId, WindowIncrement};
 use crate::hpack::Decoder;
 use crate::http::body::{RequestBodyFinish, RequestBodyState};
+use crate::http::policy::ResolvedRequestPolicy;
 use crate::runtime::{
     ConnectionContext, H2InputCredit, H2InputCreditQueue, ReleasedH2InputCredit, RequestAdmission,
     RequestSettlementCompletion, ShutdownState, StreamInput,
@@ -772,7 +773,7 @@ impl InboundStream {
         end_stream: bool,
         expected_content_length: Option<u64>,
         body_bytes: Option<RequestBodyCounter>,
-        policy: crate::http::policy::ResolvedRequestPolicy,
+        policy: ResolvedRequestPolicy,
         initial_window: u32,
     ) -> Self {
         let mut delivery = InputDelivery::new(input);
@@ -1427,7 +1428,7 @@ mod tests {
                 false,
                 None,
                 None,
-                Default::default(),
+                ResolvedRequestPolicy::default(),
                 0xFFFF,
             );
             stream.delivery.push(data(b"a"));
@@ -1472,7 +1473,7 @@ mod tests {
             false,
             None,
             None,
-            Default::default(),
+            ResolvedRequestPolicy::default(),
             0xFFFF,
         );
 
@@ -1644,7 +1645,7 @@ mod tests {
             false,
             None,
             None,
-            Default::default(),
+            ResolvedRequestPolicy::default(),
             0x7FFF_FFFF,
         );
 
@@ -1725,7 +1726,7 @@ mod tests {
             false,
             None,
             None,
-            Default::default(),
+            ResolvedRequestPolicy::default(),
             0xFFFF,
         );
         stream.mark_response_closed();
@@ -1758,7 +1759,7 @@ mod tests {
             false,
             None,
             None,
-            Default::default(),
+            ResolvedRequestPolicy::default(),
             0xFFFF,
         );
 
