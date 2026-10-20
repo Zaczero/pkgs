@@ -1,0 +1,12 @@
+[2026-10-20 05:16:50 +0000] [1603006] [INFO] Starting gunicorn 26.2.0
+[2026-10-20 05:16:50 +0000] [1603006] [INFO] Listening at: http://127.0.0.1:48689 (1603006)
+[2026-10-20 05:16:50 +0000] [1603006] [INFO] Using worker: asgi
+[2026-10-20 05:16:50 +0000] [1603007] [INFO] Booting worker with pid: 1603007
+[2026-10-20 05:16:50 +0000] [1603007] [INFO] ASGI server listening on http://127.0.0.1:48689
+127.0.0.1 - - [20/Oct/2026:05:16:50 +0000] "GET / HTTP/2" 200 13 "-" "-"
+127.0.0.1 - - [20/Oct/2026:05:16:50 +0000] "GET /__bench/worker-pid HTTP/2" 200 7 "-" "-"
+127.0.0.1 - - [20/Oct/2026:05:16:50 +0000] "POST /streaming-post HTTP/2" 200 36 "-" "-"
+[2026-10-20 05:16:51 +0000] [1603006] [INFO] Handling signal: term
+[2026-10-20 05:16:52 +0000] [1603007] [INFO] Worker shutting down...
+[2026-10-20 05:16:52 +0000] [1603007] [INFO] Worker exiting (pid: 1603007)
+[2026-10-20 05:16:52 +0000] [1603006] [INFO] Shutting down: Master
