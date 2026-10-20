@@ -118,6 +118,7 @@ let
 
   shell' = ''
     export TZ=UTC
+    export SSL_CERT_FILE="''${SSL_CERT_FILE:-${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt}"
     export NIX_ENFORCE_NO_NATIVE=0
     export NIX_ENFORCE_PURITY=0
     export PYTHONPATH=""
