@@ -74,8 +74,12 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     duration = 'session' if websocket else 'latency'
     headers = [
         'Server',
-        record.get('rate_unit', 'Sessions/s' if websocket else 'Requests/s'),
-        *(['Complete RPC/s'] if message_rate else []),
+        (
+            f'Median {record["rate_unit"]}'
+            if rpc
+            else record.get('rate_unit', 'Sessions/s' if websocket else 'Requests/s')
+        ),
+        *(['Median complete RPC/s'] if message_rate else []),
         *(['Median completed RPCs/trial'] if rpc else []),
         f'p50 {duration} (ms)',
         f'p99 {duration} (ms)',

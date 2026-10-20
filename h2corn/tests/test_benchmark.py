@@ -372,7 +372,8 @@ def test_grpc_stream_table_reports_messages_complete_calls_and_trial_counts():
         },
         'requested_servers': ['grpcio'],
     })
-    assert 'Complete RPC/s' in table
+    assert 'Median messages/s' in table
+    assert 'Median complete RPC/s' in table
     assert 'Median completed RPCs/trial' in table
     assert '| grpcio | 128 | 2.00 | 42.5 | 1.000 | 5.000 | 3.0 | - |' in table
 
