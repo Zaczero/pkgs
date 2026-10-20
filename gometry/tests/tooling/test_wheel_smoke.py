@@ -1351,6 +1351,69 @@ def test_build_identifiers_keep_raw_aarch64_and_separate_gnu_from_musl() -> None
         artifact_content.build_identifier_policy('cp314-manylinux2014_x86_64')
 
 
+@pytest.mark.parametrize(
+    ('target', 'compatible'),
+    [
+        ('x86_64-unknown-linux-gnu', True),
+        ('x86_64-unknown-linux-musl', True),
+        ('aarch64-unknown-linux-gnu', False),
+        ('x86_64-pc-windows-msvc', False),
+    ],
+)
+def test_native_linux_wheel_tags_match_the_selected_target(
+    target: str, compatible: bool
+) -> None:
+    wheel = Path('gometry-1.0.0-cp314-cp314-linux_x86_64.whl')
+    assert (
+        artifact_content.wheel_target_compatible(
+            wheel, target, ['cp314-cp314-linux_x86_64']
+        )
+        is compatible
+    )
+
+
+@pytest.mark.parametrize(
+    ('identifier', 'tag', 'native', 'release_error'),
+    [
+        (
+            'cp314-manylinux_x86_64',
+            'cp314-cp314-linux_x86_64',
+            {
+                'format': 'ELF',
+                'architecture': 'x86_64',
+                'libc': 'gnu',
+                'needed': ['libc.so.6'],
+                'glibc_versions': ['GLIBC_2.43'],
+            },
+            'unknown manylinux platform tag',
+        ),
+        (
+            'cp314-macosx_arm64',
+            'cp314-cp314-macosx_14_0_arm64',
+            {
+                'format': 'Mach-O',
+                'architecture': 'arm64',
+                'deployment_targets': ['14.0.0'],
+            },
+            'macOS version is not 11.0',
+        ),
+    ],
+    ids=['linux', 'macos'],
+)
+def test_local_wheels_do_not_require_release_platform_floors(
+    identifier: str, tag: str, native: dict[str, Any], release_error: str
+) -> None:
+    policy = artifact_content.build_identifier_policy(identifier)
+    inspection = {'tags': [tag], 'native': native}
+    artifact_content.validate_wheel_native_target(
+        inspection, policy, label='local wheel', validate_tags=False
+    )
+    with pytest.raises(AssertionError, match=release_error):
+        artifact_content.validate_wheel_native_target(
+            inspection, policy, label='release wheel'
+        )
+
+
 def test_native_libc_versions_must_fit_the_advertised_manylinux_floor() -> None:
     policy = artifact_content.build_identifier_policy('cp314-manylinux_x86_64')
     native = {

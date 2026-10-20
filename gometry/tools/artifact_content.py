@@ -1565,6 +1565,12 @@ def wheel_target_compatible(
                 return False
             if platform_tag.startswith('musllinux_') != ('-linux-musl' in target):
                 return False
+        elif platform_tag.startswith('linux_'):
+            recognized = True
+            if '-linux-' not in target or _platform_architecture(
+                platform_tag
+            ) != _target_architecture(target.split('-', 1)[0]):
+                return False
         elif platform_tag.startswith('macosx_'):
             recognized = True
             if not target.endswith('-apple-darwin'):
@@ -1642,13 +1648,6 @@ def validate_wheel_native_target(
         if not isinstance(image, dict):
             raise TypeError(f'{label} native library identity is malformed: {name}')
         check_image(image, name, require_libc=False)
-    if family == 'darwin':
-        deployment_targets = extension.get('deployment_targets')
-        if (
-            not isinstance(deployment_targets, list)
-            or '11.0.0' not in deployment_targets
-        ):
-            raise AssertionError(f'{label} Mach-O minimum macOS version is not 11.0')
     if not validate_tags:
         return
     if tags is None:
@@ -1662,7 +1661,12 @@ def validate_wheel_native_target(
             raise AssertionError(f'{label} has a malformed wheel tag')
         platform_tags.extend(parts[2].lower().split('.'))
     if family == 'darwin':
-        deployment_targets = extension['deployment_targets']
+        deployment_targets = extension.get('deployment_targets')
+        if (
+            not isinstance(deployment_targets, list)
+            or '11.0.0' not in deployment_targets
+        ):
+            raise AssertionError(f'{label} Mach-O minimum macOS version is not 11.0')
         macos_floors = []
         for platform_tag in platform_tags:
             match = re.match(r'^macosx_(\d+)_(\d+)_', platform_tag)

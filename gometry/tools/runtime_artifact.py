@@ -358,7 +358,7 @@ def inspect_runtime_inputs(
             wheel_inspection,
             target_policy,
             label=str(expected_wheel),
-            validate_tags=not sanitizer_receipt,
+            validate_tags=not (quality_receipt or sanitizer_receipt),
         )
         extension_records = wheel_inspection['extension_members']
         if len(extension_records) != 1:
