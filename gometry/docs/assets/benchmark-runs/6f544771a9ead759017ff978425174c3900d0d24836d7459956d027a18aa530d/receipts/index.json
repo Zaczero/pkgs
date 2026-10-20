@@ -1,0 +1,10 @@
+{
+  "receipts": [
+    {
+      "bundle_path": "receipts/f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a.json",
+      "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+      "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+    }
+  ],
+  "schema_version": 1
+}

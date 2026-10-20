@@ -1,0 +1,3415 @@
+{
+  "arms": {
+    "A": {
+      "case_process": {
+        "identity_sha256": "645dce89df82cf68f2a264eef020f7b75f71a2c595f7394a070260172036d891",
+        "invocation_id": "f562a7caf3014fa3bf6138a31e3b3ba0",
+        "pid": 2478829,
+        "row": "gometry.index.nearest/1k_queries_10k_polygons_k1"
+      },
+      "ended_monotonic_ns": 674827343862818,
+      "observation": {
+        "batch": {
+          "iterations": 1,
+          "raw_seconds": [
+            0.002136824,
+            0.002151623,
+            0.002141764,
+            0.002133523,
+            0.002135903
+          ],
+          "result_lifetime": "released-inside-timer"
+        },
+        "calibration": {
+          "completed": true,
+          "iterations": 1,
+          "strategy": "bounded-doubling"
+        },
+        "case_process": {
+          "identity_sha256": "645dce89df82cf68f2a264eef020f7b75f71a2c595f7394a070260172036d891",
+          "invocation_id": "f562a7caf3014fa3bf6138a31e3b3ba0",
+          "pid": 2478829,
+          "row": "gometry.index.nearest/1k_queries_10k_polygons_k1"
+        },
+        "measurement": {
+          "direction": "lower_is_better",
+          "estimate": {
+            "median_seconds": 0.002136824
+          },
+          "metric": "duration",
+          "raw": {
+            "raw_seconds": [
+              0.002136824,
+              0.002151623,
+              0.002141764,
+              0.002133523,
+              0.002135903
+            ]
+          },
+          "unit": "seconds"
+        },
+        "observation_type": "gometry-benchmark-observation",
+        "oracle": {
+          "identity": "public:gometry.index.nearest/1k_queries_10k_polygons_k1:oracle",
+          "status": "passed"
+        },
+        "phase": "warm",
+        "producer_identity": {
+          "arm": {
+            "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+            "side": "A"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+          "identity_schema_version": 1,
+          "implementation": {
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "module_name": "gometry._lib",
+            "native_libraries": [
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+                "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+                "size_bytes": 42243504
+              }
+            ],
+            "native_library_status": "identified",
+            "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+            "runtime": "gometry",
+            "source_commit": "23423935d74d153ea1919716371777ead0e77d74",
+            "source_receipt": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+            },
+            "source_wheel": {
+              "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+            }
+          },
+          "loaded_native_libraries": [
+            {
+              "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+              "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+              "size_bytes": 196968
+            },
+            {
+              "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+              "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+              "size_bytes": 128936
+            },
+            {
+              "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+              "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+              "size_bytes": 3235776
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+              "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+              "size_bytes": 276272
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+              "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+              "size_bytes": 2470400
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+              "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+              "size_bytes": 15688
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+              "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+              "size_bytes": 1283232
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+              "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+              "size_bytes": 16536
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+              "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+              "size_bytes": 16408
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+              "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+              "size_bytes": 15512
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+              "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+              "size_bytes": 2862249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+              "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+              "size_bytes": 275553
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+              "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+              "size_bytes": 24325657
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+              "size_bytes": 10633225
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+              "size_bytes": 235897
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+              "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+              "size_bytes": 5254185
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+              "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+              "size_bytes": 649249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+              "size_bytes": 382993
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+              "size_bytes": 69816
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+              "size_bytes": 290689
+            },
+            {
+              "build_info": {
+                "debug_assertions": false,
+                "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+                "opt_level": "3",
+                "profile_family": "release",
+                "schema_version": 1,
+                "source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+                "target": "x86_64-unknown-linux-gnu",
+                "target_arch": "x86_64",
+                "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+              },
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            }
+          ],
+          "packages": {
+            "geopandas": {
+              "available": true,
+              "display_name": "GeoPandas",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                  "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                  "size_bytes": 2008
+                },
+                "name": "geopandas",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                  "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                  "size_bytes": 6982
+                },
+                "record_available": true,
+                "version": "1.2.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+                "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+                "size_bytes": 944
+              },
+              "native_libraries": [],
+              "version": "1.2.0"
+            },
+            "gometry": {
+              "available": true,
+              "display_name": "gometry",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                  "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                  "size_bytes": 8180
+                },
+                "name": "gometry",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                  "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                  "size_bytes": 1842
+                },
+                "record_available": true,
+                "version": "0.0.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+                "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+                "size_bytes": 9463
+              },
+              "native_libraries": [],
+              "version": "0.0.0"
+            },
+            "h3": {
+              "available": true,
+              "display_name": "h3-py",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                  "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                  "size_bytes": 17745
+                },
+                "name": "h3",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                  "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                  "size_bytes": 4411
+                },
+                "record_available": true,
+                "version": "4.5.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+                "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+                "size_bytes": 676
+              },
+              "native_libraries": [],
+              "version": "4.5.0"
+            },
+            "mercantile": {
+              "available": true,
+              "display_name": "Mercantile",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                  "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                  "size_bytes": 4766
+                },
+                "name": "mercantile",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                  "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                  "size_bytes": 1024
+                },
+                "record_available": true,
+                "version": "1.2.1"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+                "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+                "size_bytes": 23164
+              },
+              "native_libraries": [],
+              "version": "1.2.1"
+            },
+            "numpy": {
+              "available": true,
+              "display_name": "NumPy",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                  "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                  "size_bytes": 6635
+                },
+                "name": "numpy",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                  "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                  "size_bytes": 86058
+                },
+                "record_available": true,
+                "version": "2.5.4"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+                "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+                "size_bytes": 25220
+              },
+              "native_libraries": [],
+              "version": "2.5.4"
+            },
+            "pyarrow": {
+              "available": true,
+              "display_name": "pyarrow",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                  "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                  "size_bytes": 3031
+                },
+                "name": "pyarrow",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                  "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                  "size_bytes": 71409
+                },
+                "record_available": true,
+                "version": "26.0.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+                "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+                "size_bytes": 19385
+              },
+              "native_libraries": [],
+              "version": "26.0.0"
+            },
+            "pygeohash": {
+              "available": true,
+              "display_name": "pygeohash",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                  "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                  "size_bytes": 17134
+                },
+                "name": "pygeohash",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                  "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                  "size_bytes": 1919
+                },
+                "record_available": true,
+                "version": "3.5.1"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+                "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+                "size_bytes": 5285
+              },
+              "native_libraries": [],
+              "version": "3.5.1"
+            },
+            "pyproj": {
+              "available": true,
+              "display_name": "pyproj",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                  "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                  "size_bytes": 40573
+                },
+                "name": "pyproj",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                  "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                  "size_bytes": 7496
+                },
+                "record_available": true,
+                "version": "3.8.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+                "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+                "size_bytes": 3116
+              },
+              "native_libraries": [],
+              "version": "3.8.0"
+            },
+            "shapely": {
+              "available": true,
+              "display_name": "Shapely",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                  "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                  "size_bytes": 6746
+                },
+                "name": "shapely",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                  "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                  "size_bytes": 13643
+                },
+                "record_available": true,
+                "version": "2.2.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+                "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+                "size_bytes": 1534
+              },
+              "native_libraries": [],
+              "version": "2.2.0"
+            }
+          },
+          "python": {
+            "build": {
+              "build": [
+                "main",
+                "Oct 14 2026 01:05:07"
+              ],
+              "debug": false,
+              "implementation": "CPython",
+              "version": "3.15.0"
+            },
+            "cache_tag": "cpython-315",
+            "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+            "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+            "gil_disabled": false,
+            "gil_enabled": true,
+            "implementation": "CPython",
+            "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+            "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+            "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+          },
+          "runtime_binding": {
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "extension": {
+              "build_info": {
+                "debug_assertions": false,
+                "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+                "opt_level": "3",
+                "profile_family": "release",
+                "schema_version": 1,
+                "source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+                "target": "x86_64-unknown-linux-gnu",
+                "target_arch": "x86_64",
+                "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+              },
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            },
+            "facade": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "kind": "wheel",
+            "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "profile": "release-dist",
+            "python_members": {
+              "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+              "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+              "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+              "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+              "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+              "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+              "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+              "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+              "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+              "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+              "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+              "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+            "wheel": {
+              "archive": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+                "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+                "size_bytes": 15264379
+              },
+              "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+            }
+          },
+          "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+          "uv_lock": {
+            "path": "/home/user/Source/pkgs/gometry/uv.lock",
+            "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+            "size_bytes": 824509
+          }
+        },
+        "schema_version": 1,
+        "useful_work": {
+          "count": 1,
+          "unit": "equivalent-case-invocation"
+        },
+        "warmup": {
+          "completed": true,
+          "iterations": 2
+        }
+      },
+      "provenance_after": {
+        "arm": {
+          "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+          "side": "A"
+        },
+        "extension": {
+          "build_info": {
+            "debug_assertions": false,
+            "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+            "opt_level": "3",
+            "profile_family": "release",
+            "schema_version": 1,
+            "source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+            "target": "x86_64-unknown-linux-gnu",
+            "target_arch": "x86_64",
+            "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+          },
+          "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+          "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+          "size_bytes": 42243504
+        },
+        "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+        "identity_schema_version": 1,
+        "implementation": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "module": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "module_name": "gometry._lib",
+          "native_libraries": [
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            }
+          ],
+          "native_library_status": "identified",
+          "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+          "runtime": "gometry",
+          "source_commit": "23423935d74d153ea1919716371777ead0e77d74",
+          "source_receipt": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+          },
+          "source_wheel": {
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+          }
+        },
+        "loaded_native_libraries": [
+          {
+            "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+            "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+            "size_bytes": 196968
+          },
+          {
+            "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+            "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+            "size_bytes": 128936
+          },
+          {
+            "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+            "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+            "size_bytes": 3235776
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+            "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+            "size_bytes": 276272
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+            "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+            "size_bytes": 2470400
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+            "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+            "size_bytes": 15688
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+            "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+            "size_bytes": 1283232
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+            "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+            "size_bytes": 16536
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+            "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+            "size_bytes": 16408
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+            "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+            "size_bytes": 15512
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+            "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+            "size_bytes": 2862249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+            "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+            "size_bytes": 275553
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+            "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+            "size_bytes": 24325657
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+            "size_bytes": 10633225
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+            "size_bytes": 235897
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+            "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+            "size_bytes": 5254185
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+            "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+            "size_bytes": 649249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+            "size_bytes": 382993
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+            "size_bytes": 69816
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+            "size_bytes": 290689
+          },
+          {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          }
+        ],
+        "packages": {
+          "geopandas": {
+            "available": true,
+            "display_name": "GeoPandas",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                "size_bytes": 2008
+              },
+              "name": "geopandas",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                "size_bytes": 6982
+              },
+              "record_available": true,
+              "version": "1.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+              "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+              "size_bytes": 944
+            },
+            "native_libraries": [],
+            "version": "1.2.0"
+          },
+          "gometry": {
+            "available": true,
+            "display_name": "gometry",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "native_libraries": [],
+            "version": "0.0.0"
+          },
+          "h3": {
+            "available": true,
+            "display_name": "h3-py",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                "size_bytes": 17745
+              },
+              "name": "h3",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                "size_bytes": 4411
+              },
+              "record_available": true,
+              "version": "4.5.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+              "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+              "size_bytes": 676
+            },
+            "native_libraries": [],
+            "version": "4.5.0"
+          },
+          "mercantile": {
+            "available": true,
+            "display_name": "Mercantile",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                "size_bytes": 4766
+              },
+              "name": "mercantile",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                "size_bytes": 1024
+              },
+              "record_available": true,
+              "version": "1.2.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+              "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+              "size_bytes": 23164
+            },
+            "native_libraries": [],
+            "version": "1.2.1"
+          },
+          "numpy": {
+            "available": true,
+            "display_name": "NumPy",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                "size_bytes": 6635
+              },
+              "name": "numpy",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                "size_bytes": 86058
+              },
+              "record_available": true,
+              "version": "2.5.4"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+              "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+              "size_bytes": 25220
+            },
+            "native_libraries": [],
+            "version": "2.5.4"
+          },
+          "pyarrow": {
+            "available": true,
+            "display_name": "pyarrow",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                "size_bytes": 3031
+              },
+              "name": "pyarrow",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                "size_bytes": 71409
+              },
+              "record_available": true,
+              "version": "26.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+              "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+              "size_bytes": 19385
+            },
+            "native_libraries": [],
+            "version": "26.0.0"
+          },
+          "pygeohash": {
+            "available": true,
+            "display_name": "pygeohash",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                "size_bytes": 17134
+              },
+              "name": "pygeohash",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                "size_bytes": 1919
+              },
+              "record_available": true,
+              "version": "3.5.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+              "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+              "size_bytes": 5285
+            },
+            "native_libraries": [],
+            "version": "3.5.1"
+          },
+          "pyproj": {
+            "available": true,
+            "display_name": "pyproj",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                "size_bytes": 40573
+              },
+              "name": "pyproj",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                "size_bytes": 7496
+              },
+              "record_available": true,
+              "version": "3.8.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+              "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+              "size_bytes": 3116
+            },
+            "native_libraries": [],
+            "version": "3.8.0"
+          },
+          "shapely": {
+            "available": true,
+            "display_name": "Shapely",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                "size_bytes": 6746
+              },
+              "name": "shapely",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                "size_bytes": 13643
+              },
+              "record_available": true,
+              "version": "2.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+              "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+              "size_bytes": 1534
+            },
+            "native_libraries": [],
+            "version": "2.2.0"
+          }
+        },
+        "python": {
+          "build": {
+            "build": [
+              "main",
+              "Oct 14 2026 01:05:07"
+            ],
+            "debug": false,
+            "implementation": "CPython",
+            "version": "3.15.0"
+          },
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "gil_enabled": true,
+          "implementation": "CPython",
+          "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "runtime_binding": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "facade": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "kind": "wheel",
+          "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+          "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+          "profile": "release-dist",
+          "python_members": {
+            "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+            "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+            "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+            "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+            "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+            "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+            "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+            "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+            "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+            "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+            "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+            "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          },
+          "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+          "wheel": {
+            "archive": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+              "size_bytes": 15264379
+            },
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+          }
+        },
+        "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+        "uv_lock": {
+          "path": "/home/user/Source/pkgs/gometry/uv.lock",
+          "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+          "size_bytes": 824509
+        }
+      },
+      "provenance_before": {
+        "arm": {
+          "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+          "side": "A"
+        },
+        "extension": {
+          "build_info": {
+            "debug_assertions": false,
+            "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+            "opt_level": "3",
+            "profile_family": "release",
+            "schema_version": 1,
+            "source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+            "target": "x86_64-unknown-linux-gnu",
+            "target_arch": "x86_64",
+            "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+          },
+          "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+          "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+          "size_bytes": 42243504
+        },
+        "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+        "identity_schema_version": 1,
+        "implementation": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "module": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "module_name": "gometry._lib",
+          "native_libraries": [
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            }
+          ],
+          "native_library_status": "identified",
+          "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+          "runtime": "gometry",
+          "source_commit": "23423935d74d153ea1919716371777ead0e77d74",
+          "source_receipt": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+          },
+          "source_wheel": {
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a"
+          }
+        },
+        "loaded_native_libraries": [
+          {
+            "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+            "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+            "size_bytes": 196968
+          },
+          {
+            "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+            "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+            "size_bytes": 128936
+          },
+          {
+            "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+            "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+            "size_bytes": 3235776
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+            "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+            "size_bytes": 276272
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+            "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+            "size_bytes": 2470400
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+            "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+            "size_bytes": 15688
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+            "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+            "size_bytes": 1283232
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+            "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+            "size_bytes": 16536
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+            "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+            "size_bytes": 16408
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+            "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+            "size_bytes": 15512
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+            "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+            "size_bytes": 2862249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+            "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+            "size_bytes": 275553
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+            "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+            "size_bytes": 24325657
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+            "size_bytes": 10633225
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+            "size_bytes": 235897
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+            "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+            "size_bytes": 5254185
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+            "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+            "size_bytes": 649249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+            "size_bytes": 382993
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+            "size_bytes": 69816
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+            "size_bytes": 290689
+          },
+          {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          }
+        ],
+        "packages": {
+          "geopandas": {
+            "available": true,
+            "display_name": "GeoPandas",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                "size_bytes": 2008
+              },
+              "name": "geopandas",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                "size_bytes": 6982
+              },
+              "record_available": true,
+              "version": "1.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+              "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+              "size_bytes": 944
+            },
+            "native_libraries": [],
+            "version": "1.2.0"
+          },
+          "gometry": {
+            "available": true,
+            "display_name": "gometry",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "native_libraries": [],
+            "version": "0.0.0"
+          },
+          "h3": {
+            "available": true,
+            "display_name": "h3-py",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                "size_bytes": 17745
+              },
+              "name": "h3",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                "size_bytes": 4411
+              },
+              "record_available": true,
+              "version": "4.5.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+              "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+              "size_bytes": 676
+            },
+            "native_libraries": [],
+            "version": "4.5.0"
+          },
+          "mercantile": {
+            "available": true,
+            "display_name": "Mercantile",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                "size_bytes": 4766
+              },
+              "name": "mercantile",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                "size_bytes": 1024
+              },
+              "record_available": true,
+              "version": "1.2.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+              "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+              "size_bytes": 23164
+            },
+            "native_libraries": [],
+            "version": "1.2.1"
+          },
+          "numpy": {
+            "available": true,
+            "display_name": "NumPy",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                "size_bytes": 6635
+              },
+              "name": "numpy",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                "size_bytes": 86058
+              },
+              "record_available": true,
+              "version": "2.5.4"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+              "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+              "size_bytes": 25220
+            },
+            "native_libraries": [],
+            "version": "2.5.4"
+          },
+          "pyarrow": {
+            "available": true,
+            "display_name": "pyarrow",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                "size_bytes": 3031
+              },
+              "name": "pyarrow",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                "size_bytes": 71409
+              },
+              "record_available": true,
+              "version": "26.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+              "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+              "size_bytes": 19385
+            },
+            "native_libraries": [],
+            "version": "26.0.0"
+          },
+          "pygeohash": {
+            "available": true,
+            "display_name": "pygeohash",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                "size_bytes": 17134
+              },
+              "name": "pygeohash",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                "size_bytes": 1919
+              },
+              "record_available": true,
+              "version": "3.5.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+              "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+              "size_bytes": 5285
+            },
+            "native_libraries": [],
+            "version": "3.5.1"
+          },
+          "pyproj": {
+            "available": true,
+            "display_name": "pyproj",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                "size_bytes": 40573
+              },
+              "name": "pyproj",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                "size_bytes": 7496
+              },
+              "record_available": true,
+              "version": "3.8.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+              "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+              "size_bytes": 3116
+            },
+            "native_libraries": [],
+            "version": "3.8.0"
+          },
+          "shapely": {
+            "available": true,
+            "display_name": "Shapely",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                "size_bytes": 6746
+              },
+              "name": "shapely",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                "size_bytes": 13643
+              },
+              "record_available": true,
+              "version": "2.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+              "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+              "size_bytes": 1534
+            },
+            "native_libraries": [],
+            "version": "2.2.0"
+          }
+        },
+        "python": {
+          "build": {
+            "build": [
+              "main",
+              "Oct 14 2026 01:05:07"
+            ],
+            "debug": false,
+            "implementation": "CPython",
+            "version": "3.15.0"
+          },
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "gil_enabled": true,
+          "implementation": "CPython",
+          "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "runtime_binding": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "facade": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "kind": "wheel",
+          "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+          "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+          "profile": "release-dist",
+          "python_members": {
+            "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+            "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+            "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+            "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+            "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+            "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+            "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+            "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+            "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+            "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+            "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+            "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          },
+          "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+          "wheel": {
+            "archive": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+              "size_bytes": 15264379
+            },
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+          }
+        },
+        "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+        "uv_lock": {
+          "path": "/home/user/Source/pkgs/gometry/uv.lock",
+          "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+          "size_bytes": 824509
+        }
+      },
+      "row": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+      "started_monotonic_ns": 674827333159451
+    },
+    "B": {
+      "case_process": {
+        "identity_sha256": "cbce378829a4b582e82b4eac39f70455ea41cabbc0dc9cd8aa92fb538bea9f9c",
+        "invocation_id": "f562a7caf3014fa3bf6138a31e3b3ba0",
+        "pid": 2478829,
+        "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1"
+      },
+      "ended_monotonic_ns": 674827391684151,
+      "observation": {
+        "batch": {
+          "iterations": 1,
+          "raw_seconds": [
+            0.005632288,
+            0.005629517,
+            0.005645028,
+            0.005629488,
+            0.005698568
+          ],
+          "result_lifetime": "released-inside-timer"
+        },
+        "calibration": {
+          "completed": true,
+          "iterations": 1,
+          "strategy": "bounded-doubling"
+        },
+        "case_process": {
+          "identity_sha256": "cbce378829a4b582e82b4eac39f70455ea41cabbc0dc9cd8aa92fb538bea9f9c",
+          "invocation_id": "f562a7caf3014fa3bf6138a31e3b3ba0",
+          "pid": 2478829,
+          "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1"
+        },
+        "measurement": {
+          "direction": "lower_is_better",
+          "estimate": {
+            "median_seconds": 0.005632288
+          },
+          "metric": "duration",
+          "raw": {
+            "raw_seconds": [
+              0.005632288,
+              0.005629517,
+              0.005645028,
+              0.005629488,
+              0.005698568
+            ]
+          },
+          "unit": "seconds"
+        },
+        "observation_type": "gometry-benchmark-observation",
+        "oracle": {
+          "identity": "public:gometry.index.nearest/1k_queries_10k_polygons_k1:oracle",
+          "status": "passed"
+        },
+        "phase": "warm",
+        "producer_identity": {
+          "arm": {
+            "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+            "side": "B"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+          "identity_schema_version": 1,
+          "implementation": {
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                "size_bytes": 6746
+              },
+              "name": "shapely",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                "size_bytes": 13643
+              },
+              "record_available": true,
+              "version": "2.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+              "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+              "size_bytes": 1534
+            },
+            "module_name": "shapely",
+            "native_libraries": [
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+                "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+                "size_bytes": 5254185
+              },
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+                "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+                "size_bytes": 649249
+              },
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+                "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+                "size_bytes": 382993
+              },
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+                "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+                "size_bytes": 69816
+              },
+              {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+                "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+                "size_bytes": 290689
+              }
+            ],
+            "native_library_status": "identified",
+            "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+            "runtime": "comparator",
+            "source_commit": null,
+            "source_receipt": null,
+            "source_wheel": null
+          },
+          "loaded_native_libraries": [
+            {
+              "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+              "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+              "size_bytes": 196968
+            },
+            {
+              "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+              "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+              "size_bytes": 128936
+            },
+            {
+              "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+              "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+              "size_bytes": 3235776
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+              "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+              "size_bytes": 276272
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+              "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+              "size_bytes": 2470400
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+              "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+              "size_bytes": 15688
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+              "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+              "size_bytes": 1283232
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+              "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+              "size_bytes": 16536
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+              "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+              "size_bytes": 16408
+            },
+            {
+              "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+              "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+              "size_bytes": 15512
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+              "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+              "size_bytes": 2862249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+              "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+              "size_bytes": 275553
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+              "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+              "size_bytes": 24325657
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+              "size_bytes": 10633225
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+              "size_bytes": 235897
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+              "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+              "size_bytes": 5254185
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+              "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+              "size_bytes": 649249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+              "size_bytes": 382993
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+              "size_bytes": 69816
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+              "size_bytes": 290689
+            },
+            {
+              "build_info": {
+                "debug_assertions": false,
+                "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+                "opt_level": "3",
+                "profile_family": "release",
+                "schema_version": 1,
+                "source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+                "target": "x86_64-unknown-linux-gnu",
+                "target_arch": "x86_64",
+                "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+              },
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            }
+          ],
+          "packages": {
+            "geopandas": {
+              "available": true,
+              "display_name": "GeoPandas",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                  "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                  "size_bytes": 2008
+                },
+                "name": "geopandas",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                  "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                  "size_bytes": 6982
+                },
+                "record_available": true,
+                "version": "1.2.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+                "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+                "size_bytes": 944
+              },
+              "native_libraries": [],
+              "version": "1.2.0"
+            },
+            "gometry": {
+              "available": true,
+              "display_name": "gometry",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                  "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                  "size_bytes": 8180
+                },
+                "name": "gometry",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                  "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                  "size_bytes": 1842
+                },
+                "record_available": true,
+                "version": "0.0.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+                "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+                "size_bytes": 9463
+              },
+              "native_libraries": [],
+              "version": "0.0.0"
+            },
+            "h3": {
+              "available": true,
+              "display_name": "h3-py",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                  "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                  "size_bytes": 17745
+                },
+                "name": "h3",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                  "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                  "size_bytes": 4411
+                },
+                "record_available": true,
+                "version": "4.5.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+                "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+                "size_bytes": 676
+              },
+              "native_libraries": [],
+              "version": "4.5.0"
+            },
+            "mercantile": {
+              "available": true,
+              "display_name": "Mercantile",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                  "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                  "size_bytes": 4766
+                },
+                "name": "mercantile",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                  "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                  "size_bytes": 1024
+                },
+                "record_available": true,
+                "version": "1.2.1"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+                "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+                "size_bytes": 23164
+              },
+              "native_libraries": [],
+              "version": "1.2.1"
+            },
+            "numpy": {
+              "available": true,
+              "display_name": "NumPy",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                  "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                  "size_bytes": 6635
+                },
+                "name": "numpy",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                  "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                  "size_bytes": 86058
+                },
+                "record_available": true,
+                "version": "2.5.4"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+                "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+                "size_bytes": 25220
+              },
+              "native_libraries": [],
+              "version": "2.5.4"
+            },
+            "pyarrow": {
+              "available": true,
+              "display_name": "pyarrow",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                  "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                  "size_bytes": 3031
+                },
+                "name": "pyarrow",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                  "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                  "size_bytes": 71409
+                },
+                "record_available": true,
+                "version": "26.0.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+                "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+                "size_bytes": 19385
+              },
+              "native_libraries": [],
+              "version": "26.0.0"
+            },
+            "pygeohash": {
+              "available": true,
+              "display_name": "pygeohash",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                  "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                  "size_bytes": 17134
+                },
+                "name": "pygeohash",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                  "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                  "size_bytes": 1919
+                },
+                "record_available": true,
+                "version": "3.5.1"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+                "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+                "size_bytes": 5285
+              },
+              "native_libraries": [],
+              "version": "3.5.1"
+            },
+            "pyproj": {
+              "available": true,
+              "display_name": "pyproj",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                  "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                  "size_bytes": 40573
+                },
+                "name": "pyproj",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                  "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                  "size_bytes": 7496
+                },
+                "record_available": true,
+                "version": "3.8.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+                "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+                "size_bytes": 3116
+              },
+              "native_libraries": [],
+              "version": "3.8.0"
+            },
+            "shapely": {
+              "available": true,
+              "display_name": "Shapely",
+              "distribution": {
+                "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+                "metadata": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                  "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                  "size_bytes": 6746
+                },
+                "name": "shapely",
+                "record": {
+                  "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                  "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                  "size_bytes": 13643
+                },
+                "record_available": true,
+                "version": "2.2.0"
+              },
+              "module": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+                "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+                "size_bytes": 1534
+              },
+              "native_libraries": [],
+              "version": "2.2.0"
+            }
+          },
+          "python": {
+            "build": {
+              "build": [
+                "main",
+                "Oct 14 2026 01:05:07"
+              ],
+              "debug": false,
+              "implementation": "CPython",
+              "version": "3.15.0"
+            },
+            "cache_tag": "cpython-315",
+            "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+            "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+            "gil_disabled": false,
+            "gil_enabled": true,
+            "implementation": "CPython",
+            "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+            "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+            "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+          },
+          "runtime_binding": {
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "extension": {
+              "build_info": {
+                "debug_assertions": false,
+                "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+                "opt_level": "3",
+                "profile_family": "release",
+                "schema_version": 1,
+                "source_inputs_format": "sha256-path-nul-content-nul-v1",
+                "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+                "target": "x86_64-unknown-linux-gnu",
+                "target_arch": "x86_64",
+                "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+              },
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "size_bytes": 42243504
+            },
+            "facade": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "kind": "wheel",
+            "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "profile": "release-dist",
+            "python_members": {
+              "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+              "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+              "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+              "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+              "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+              "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+              "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+              "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+              "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+              "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+              "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+              "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+            "wheel": {
+              "archive": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+                "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+                "size_bytes": 15264379
+              },
+              "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+              "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+              "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+            }
+          },
+          "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+          "uv_lock": {
+            "path": "/home/user/Source/pkgs/gometry/uv.lock",
+            "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+            "size_bytes": 824509
+          }
+        },
+        "schema_version": 1,
+        "useful_work": {
+          "count": 1,
+          "unit": "equivalent-case-invocation"
+        },
+        "warmup": {
+          "completed": true,
+          "iterations": 2
+        }
+      },
+      "provenance_after": {
+        "arm": {
+          "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+          "side": "B"
+        },
+        "extension": {
+          "build_info": {
+            "debug_assertions": false,
+            "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+            "opt_level": "3",
+            "profile_family": "release",
+            "schema_version": 1,
+            "source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+            "target": "x86_64-unknown-linux-gnu",
+            "target_arch": "x86_64",
+            "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+          },
+          "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+          "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+          "size_bytes": 42243504
+        },
+        "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+        "identity_schema_version": 1,
+        "implementation": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+              "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+              "size_bytes": 6746
+            },
+            "name": "shapely",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+              "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+              "size_bytes": 13643
+            },
+            "record_available": true,
+            "version": "2.2.0"
+          },
+          "module": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+            "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+            "size_bytes": 1534
+          },
+          "module_name": "shapely",
+          "native_libraries": [
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+              "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+              "size_bytes": 5254185
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+              "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+              "size_bytes": 649249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+              "size_bytes": 382993
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+              "size_bytes": 69816
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+              "size_bytes": 290689
+            }
+          ],
+          "native_library_status": "identified",
+          "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+          "runtime": "comparator",
+          "source_commit": null,
+          "source_receipt": null,
+          "source_wheel": null
+        },
+        "loaded_native_libraries": [
+          {
+            "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+            "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+            "size_bytes": 196968
+          },
+          {
+            "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+            "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+            "size_bytes": 128936
+          },
+          {
+            "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+            "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+            "size_bytes": 3235776
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+            "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+            "size_bytes": 276272
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+            "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+            "size_bytes": 2470400
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+            "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+            "size_bytes": 15688
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+            "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+            "size_bytes": 1283232
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+            "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+            "size_bytes": 16536
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+            "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+            "size_bytes": 16408
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+            "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+            "size_bytes": 15512
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+            "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+            "size_bytes": 2862249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+            "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+            "size_bytes": 275553
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+            "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+            "size_bytes": 24325657
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+            "size_bytes": 10633225
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+            "size_bytes": 235897
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+            "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+            "size_bytes": 5254185
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+            "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+            "size_bytes": 649249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+            "size_bytes": 382993
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+            "size_bytes": 69816
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+            "size_bytes": 290689
+          },
+          {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          }
+        ],
+        "packages": {
+          "geopandas": {
+            "available": true,
+            "display_name": "GeoPandas",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                "size_bytes": 2008
+              },
+              "name": "geopandas",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                "size_bytes": 6982
+              },
+              "record_available": true,
+              "version": "1.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+              "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+              "size_bytes": 944
+            },
+            "native_libraries": [],
+            "version": "1.2.0"
+          },
+          "gometry": {
+            "available": true,
+            "display_name": "gometry",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "native_libraries": [],
+            "version": "0.0.0"
+          },
+          "h3": {
+            "available": true,
+            "display_name": "h3-py",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                "size_bytes": 17745
+              },
+              "name": "h3",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                "size_bytes": 4411
+              },
+              "record_available": true,
+              "version": "4.5.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+              "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+              "size_bytes": 676
+            },
+            "native_libraries": [],
+            "version": "4.5.0"
+          },
+          "mercantile": {
+            "available": true,
+            "display_name": "Mercantile",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                "size_bytes": 4766
+              },
+              "name": "mercantile",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                "size_bytes": 1024
+              },
+              "record_available": true,
+              "version": "1.2.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+              "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+              "size_bytes": 23164
+            },
+            "native_libraries": [],
+            "version": "1.2.1"
+          },
+          "numpy": {
+            "available": true,
+            "display_name": "NumPy",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                "size_bytes": 6635
+              },
+              "name": "numpy",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                "size_bytes": 86058
+              },
+              "record_available": true,
+              "version": "2.5.4"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+              "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+              "size_bytes": 25220
+            },
+            "native_libraries": [],
+            "version": "2.5.4"
+          },
+          "pyarrow": {
+            "available": true,
+            "display_name": "pyarrow",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                "size_bytes": 3031
+              },
+              "name": "pyarrow",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                "size_bytes": 71409
+              },
+              "record_available": true,
+              "version": "26.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+              "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+              "size_bytes": 19385
+            },
+            "native_libraries": [],
+            "version": "26.0.0"
+          },
+          "pygeohash": {
+            "available": true,
+            "display_name": "pygeohash",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                "size_bytes": 17134
+              },
+              "name": "pygeohash",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                "size_bytes": 1919
+              },
+              "record_available": true,
+              "version": "3.5.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+              "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+              "size_bytes": 5285
+            },
+            "native_libraries": [],
+            "version": "3.5.1"
+          },
+          "pyproj": {
+            "available": true,
+            "display_name": "pyproj",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                "size_bytes": 40573
+              },
+              "name": "pyproj",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                "size_bytes": 7496
+              },
+              "record_available": true,
+              "version": "3.8.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+              "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+              "size_bytes": 3116
+            },
+            "native_libraries": [],
+            "version": "3.8.0"
+          },
+          "shapely": {
+            "available": true,
+            "display_name": "Shapely",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                "size_bytes": 6746
+              },
+              "name": "shapely",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                "size_bytes": 13643
+              },
+              "record_available": true,
+              "version": "2.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+              "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+              "size_bytes": 1534
+            },
+            "native_libraries": [],
+            "version": "2.2.0"
+          }
+        },
+        "python": {
+          "build": {
+            "build": [
+              "main",
+              "Oct 14 2026 01:05:07"
+            ],
+            "debug": false,
+            "implementation": "CPython",
+            "version": "3.15.0"
+          },
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "gil_enabled": true,
+          "implementation": "CPython",
+          "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "runtime_binding": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "facade": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "kind": "wheel",
+          "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+          "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+          "profile": "release-dist",
+          "python_members": {
+            "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+            "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+            "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+            "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+            "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+            "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+            "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+            "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+            "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+            "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+            "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+            "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          },
+          "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+          "wheel": {
+            "archive": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+              "size_bytes": 15264379
+            },
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+          }
+        },
+        "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+        "uv_lock": {
+          "path": "/home/user/Source/pkgs/gometry/uv.lock",
+          "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+          "size_bytes": 824509
+        }
+      },
+      "provenance_before": {
+        "arm": {
+          "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+          "side": "B"
+        },
+        "extension": {
+          "build_info": {
+            "debug_assertions": false,
+            "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+            "opt_level": "3",
+            "profile_family": "release",
+            "schema_version": 1,
+            "source_inputs_format": "sha256-path-nul-content-nul-v1",
+            "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+            "target": "x86_64-unknown-linux-gnu",
+            "target_arch": "x86_64",
+            "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+          },
+          "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+          "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+          "size_bytes": 42243504
+        },
+        "harness_commit": "6a538156ffcb884fe3e60054cd06ef1f3a0dd0e2",
+        "identity_schema_version": 1,
+        "implementation": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+              "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+              "size_bytes": 6746
+            },
+            "name": "shapely",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+              "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+              "size_bytes": 13643
+            },
+            "record_available": true,
+            "version": "2.2.0"
+          },
+          "module": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+            "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+            "size_bytes": 1534
+          },
+          "module_name": "shapely",
+          "native_libraries": [
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+              "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+              "size_bytes": 5254185
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+              "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+              "size_bytes": 649249
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+              "size_bytes": 382993
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+              "size_bytes": 69816
+            },
+            {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+              "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+              "size_bytes": 290689
+            }
+          ],
+          "native_library_status": "identified",
+          "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+          "runtime": "comparator",
+          "source_commit": null,
+          "source_receipt": null,
+          "source_wheel": null
+        },
+        "loaded_native_libraries": [
+          {
+            "path": "/nix/store/0vw7gvcazcjqc762x7vg3l31cpx65l7i-gcc-15.3.0-libgcc/lib/libgcc_s.so.1",
+            "sha256": "3229a31b1f26283f7e81e2567155e532fbebef55237bff771f0d73a8cf9fe5d1",
+            "size_bytes": 196968
+          },
+          {
+            "path": "/nix/store/6s4wm3zl2y0v5g998n2g88k1zh3vf2pr-zlib-1.3.2/lib/libz.so.1.3.2",
+            "sha256": "076ea971eb576cd38c7a41deac73ab0c70db2ed7c712f89ed75cc8f0e4ded57d",
+            "size_bytes": 128936
+          },
+          {
+            "path": "/nix/store/dqj57l1prad38vjrad4bs9d977i4q5zm-gcc-15.3.0-lib/lib/libstdc++.so.6.0.34",
+            "sha256": "c7a8b46b4a8fc28d781e559ec1d3ace35b1ecb4bc38d6032374b36cdcfddb773",
+            "size_bytes": 3235776
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+            "sha256": "e2e9975273f65f7cb730f4fcc8a9a5aae62763b6263de877a8b896311819d7b6",
+            "size_bytes": 276272
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6",
+            "sha256": "ef3843ed24108fc3cfde4095cdb12e0643b9953f4b902bad8152d002fc0cbbe3",
+            "size_bytes": 2470400
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libdl.so.2",
+            "sha256": "29d114d265aca2acbd4843cf20b9a5151e1742e3974c4b0145d27fd0eeeaf32d",
+            "size_bytes": 15688
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libm.so.6",
+            "sha256": "935fd3fa15c35746041cfa475003571dc51b9ce0c395034ac9d50bb8e1583919",
+            "size_bytes": 1283232
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0",
+            "sha256": "244961bf4e6c9211890bf0fe41689e3d7e7ee4eb3d6c58c3eb3841178384f529",
+            "size_bytes": 16536
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/librt.so.1",
+            "sha256": "abebd5298296179bc627024d0ba238d4375f221c27c612e9342103e087a64189",
+            "size_bytes": 16408
+          },
+          {
+            "path": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libutil.so.1",
+            "sha256": "ffd276cea35f2963fdc6794575e6baffb9021ae57dcbf373e82b290b04381040",
+            "size_bytes": 15512
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libgfortran-83c28eba-468e71e5.so.5.0.0",
+            "sha256": "a6a368328d02a5d8a149746f13f6268f8cc9192df5c18777b25c3c9b5ef52160",
+            "size_bytes": 2862249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libquadmath-2284e583-a9307bba.so.0.0.0",
+            "sha256": "6bc3069003caec1f075be3c51ae8355332f081fa9465910c4b5724e7fe7d8ad4",
+            "size_bytes": 275553
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so",
+            "sha256": "432e1c1739731468ba305771af96773939e43016643e2d630f58cb45b6670e96",
+            "size_bytes": 24325657
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/_core/_multiarray_umath.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "e46e925f1f993acbce1e8395942241001a09d9cae36bb8dc632519f449358109",
+            "size_bytes": 10633225
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/linalg/_umath_linalg.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "ab10122fadb0962e90913f85438c192ff90f97d60f5593606eeab5cbb6d81629",
+            "size_bytes": 235897
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos-d1e818bb.so.3.14.1",
+            "sha256": "1e9192b9f1b9f43cd7adbb9999d23d9efda34695cc057bb1911bfc1f9c1d1c9d",
+            "size_bytes": 5254185
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely.libs/libgeos_c-ac38a227.so.1.20.5",
+            "sha256": "47a714ef803c586c8ec85473efe42fab96dadc1fe51663fc7123dd4743acb9a8",
+            "size_bytes": 649249
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geometry_helpers.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "9e56c108fa7f00892dfad36680f8a62f9ef262c6a6786d126468594c381af15f",
+            "size_bytes": 382993
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/_geos.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "c216332a091e16b865206c7bd4b09f205cf7f6ae8409232f83df7978d50165a4",
+            "size_bytes": 69816
+          },
+          {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "fbaef6a2aa3e7791e6c018915df902a15d79d4d1f49422a776b0d95e980f5c89",
+            "size_bytes": 290689
+          },
+          {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          }
+        ],
+        "packages": {
+          "geopandas": {
+            "available": true,
+            "display_name": "GeoPandas",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/METADATA",
+                "sha256": "8e88c22d2ad9465a370c005aa5bfbfd1566ca8589382b430856a48407ee18193",
+                "size_bytes": 2008
+              },
+              "name": "geopandas",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas-1.2.0.dist-info/RECORD",
+                "sha256": "86d1508a3a0720c775f471bf374f6d7f821f85f0db663e026038c43b24fb4341",
+                "size_bytes": 6982
+              },
+              "record_available": true,
+              "version": "1.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/geopandas/__init__.py",
+              "sha256": "19540a9a10229caac7bd59d6a3d8add649d9d156251b5d517c98dece28a04b42",
+              "size_bytes": 944
+            },
+            "native_libraries": [],
+            "version": "1.2.0"
+          },
+          "gometry": {
+            "available": true,
+            "display_name": "gometry",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+                "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+                "size_bytes": 8180
+              },
+              "name": "gometry",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+                "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+                "size_bytes": 1842
+              },
+              "record_available": true,
+              "version": "0.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+              "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+              "size_bytes": 9463
+            },
+            "native_libraries": [],
+            "version": "0.0.0"
+          },
+          "h3": {
+            "available": true,
+            "display_name": "h3-py",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/METADATA",
+                "sha256": "099d8e16f4b293b73d467ef7ccaa8636f8b2596b7b145488b6f47527769182e6",
+                "size_bytes": 17745
+              },
+              "name": "h3",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3-4.5.0.dist-info/RECORD",
+                "sha256": "a150021573cad00c6fca6413d5e6421a708d001279bd074ad7ad768b6c4e9d8a",
+                "size_bytes": 4411
+              },
+              "record_available": true,
+              "version": "4.5.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/h3/__init__.py",
+              "sha256": "f3583158519d45c3421bc0c218d6ebb53a0770de9f583aabb897024d7865a4ee",
+              "size_bytes": 676
+            },
+            "native_libraries": [],
+            "version": "4.5.0"
+          },
+          "mercantile": {
+            "available": true,
+            "display_name": "Mercantile",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/METADATA",
+                "sha256": "a03591cf6341163dc917b955b269f84a6dc360193ed0bb2657701d951ae5fea1",
+                "size_bytes": 4766
+              },
+              "name": "mercantile",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile-1.2.1.dist-info/RECORD",
+                "sha256": "0d60c705f9054a7974cc37d4521d6247708070f25f5b8ad6f2453f80e7a5f53c",
+                "size_bytes": 1024
+              },
+              "record_available": true,
+              "version": "1.2.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/mercantile/__init__.py",
+              "sha256": "37e17cc8b92d0260ff62307a908cf7b99737e2a36fe82c2f13d18a7a00ede0fa",
+              "size_bytes": 23164
+            },
+            "native_libraries": [],
+            "version": "1.2.1"
+          },
+          "numpy": {
+            "available": true,
+            "display_name": "NumPy",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/METADATA",
+                "sha256": "e2b909d6a37d76c2bc130f528d7fed0c517322bce16dc7846b6a6df30e200403",
+                "size_bytes": 6635
+              },
+              "name": "numpy",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy-2.5.4.dist-info/RECORD",
+                "sha256": "0af14b8c5db1897114118432ca543dec948d4506abd81b9e226e83bc1037bd06",
+                "size_bytes": 86058
+              },
+              "record_available": true,
+              "version": "2.5.4"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/numpy/__init__.py",
+              "sha256": "09295a80660f17925ae23765ce8cbd7ff7ceae968d5f2f89349f1cb74c0b9e11",
+              "size_bytes": 25220
+            },
+            "native_libraries": [],
+            "version": "2.5.4"
+          },
+          "pyarrow": {
+            "available": true,
+            "display_name": "pyarrow",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/METADATA",
+                "sha256": "be4adabcb9b03f3a468f17bb0f42b48e7e17cdd58741ba15753f28610c2497fb",
+                "size_bytes": 3031
+              },
+              "name": "pyarrow",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow-26.0.0.dist-info/RECORD",
+                "sha256": "dfa0c7eea5cc2ae36f47bb6970b6f45dc922e1fbae61e2f638c166610d40fcf9",
+                "size_bytes": 71409
+              },
+              "record_available": true,
+              "version": "26.0.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyarrow/__init__.py",
+              "sha256": "c43d79464ff3772907a7a2d50ccc61497d0ba717d80ddf01bac52d8d4b0578ed",
+              "size_bytes": 19385
+            },
+            "native_libraries": [],
+            "version": "26.0.0"
+          },
+          "pygeohash": {
+            "available": true,
+            "display_name": "pygeohash",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/METADATA",
+                "sha256": "c9cb8485513ec4c3466364c8423921dead8f8692a55ee865963c7811cb005f10",
+                "size_bytes": 17134
+              },
+              "name": "pygeohash",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash-3.5.1.dist-info/RECORD",
+                "sha256": "76996d72af9e2af1aee4b4aeebf48de272211d3ab6444ca51414ecee89d5e5b0",
+                "size_bytes": 1919
+              },
+              "record_available": true,
+              "version": "3.5.1"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pygeohash/__init__.py",
+              "sha256": "c3b4ec81e8ebaf98410123127b0e29da87417cd9dbee42f64ede23a4b0b7ea6f",
+              "size_bytes": 5285
+            },
+            "native_libraries": [],
+            "version": "3.5.1"
+          },
+          "pyproj": {
+            "available": true,
+            "display_name": "pyproj",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/METADATA",
+                "sha256": "836b51705e613c29ae7829b61a37789b226cf0f8576cc49e86aaad8d9aaf5967",
+                "size_bytes": 40573
+              },
+              "name": "pyproj",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj-3.8.0.dist-info/RECORD",
+                "sha256": "12d68f383f8e36805964c2f6c0a844a891e3596affb3f72e9aeeaeeb6277b211",
+                "size_bytes": 7496
+              },
+              "record_available": true,
+              "version": "3.8.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/pyproj/__init__.py",
+              "sha256": "eca0388eb28354c2a185131134df407e2c17ec3018610651ecd5e17dfdb583c7",
+              "size_bytes": 3116
+            },
+            "native_libraries": [],
+            "version": "3.8.0"
+          },
+          "shapely": {
+            "available": true,
+            "display_name": "Shapely",
+            "distribution": {
+              "location": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages",
+              "metadata": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/METADATA",
+                "sha256": "ce7d4ab6a5e625f674d0c434dbd2629d50b95816e7e059b596366eddc9e88950",
+                "size_bytes": 6746
+              },
+              "name": "shapely",
+              "record": {
+                "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely-2.2.0.dist-info/RECORD",
+                "sha256": "6426127c535313c8a0aea76274935c054e7ad9a5fc6527af529008f7743a19e9",
+                "size_bytes": 13643
+              },
+              "record_available": true,
+              "version": "2.2.0"
+            },
+            "module": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/cpython315/lib/python3.15/site-packages/shapely/__init__.py",
+              "sha256": "26ba09928e7945b320f06725894ebf7c52743dab8fc1dc3b4255574a42d80157",
+              "size_bytes": 1534
+            },
+            "native_libraries": [],
+            "version": "2.2.0"
+          }
+        },
+        "python": {
+          "build": {
+            "build": [
+              "main",
+              "Oct 14 2026 01:05:07"
+            ],
+            "debug": false,
+            "implementation": "CPython",
+            "version": "3.15.0"
+          },
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/gometry-benchmark-refresh/cpython315/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "gil_enabled": true,
+          "implementation": "CPython",
+          "prefix": "/tmp/opencode/gometry-benchmark-refresh/cpython315",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "runtime_binding": {
+          "distribution": {
+            "location": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+            "metadata": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/METADATA",
+              "sha256": "11923279764a8a6de2655bc57deb7ef344c8102295e06a9dfecec92500051fcb",
+              "size_bytes": 8180
+            },
+            "name": "gometry",
+            "record": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry-0.0.0.dist-info/RECORD",
+              "sha256": "6538b264eb486a3fe09825057032cc664aae76b58a2e253646a15a542f7510e4",
+              "size_bytes": 1842
+            },
+            "record_available": true,
+            "version": "0.0.0"
+          },
+          "extension": {
+            "build_info": {
+              "debug_assertions": false,
+              "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "native_source_inputs_sha256": "0d846257c29b6364e923d16dd325c370be5e9074764da5c2313399e203f29bf5",
+              "opt_level": "3",
+              "profile_family": "release",
+              "schema_version": 1,
+              "source_inputs_format": "sha256-path-nul-content-nul-v1",
+              "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+              "target": "x86_64-unknown-linux-gnu",
+              "target_arch": "x86_64",
+              "target_features": "cmpxchg16b,fxsr,lahfsahf,popcnt,sse,sse2,sse3,sse4.1,sse4.2,ssse3,x87"
+            },
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "size_bytes": 42243504
+          },
+          "facade": {
+            "path": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d/gometry/__init__.py",
+            "sha256": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "size_bytes": 9463
+          },
+          "kind": "wheel",
+          "package_root": "/tmp/opencode/gometry-benchmark-refresh/wheel-extracted-23423935d",
+          "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+          "profile": "release-dist",
+          "python_members": {
+            "gometry/__init__.py": "ef3029fd5eca932da9bb6f6055e9e2cf11cd5a22944fbeb65be72afe62765f1b",
+            "gometry/_arrow.py": "7d4455ac31716dbc4801d5b9299ee78c18745c776ee1e809a9034f55eeeb76d9",
+            "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+            "gometry/_from_pandas.py": "464140170622aa866330151d3f9e1db3c73af5ba6a4ac7c20d9524c7e40ada25",
+            "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+            "gometry/_geoparquet.py": "8e7cddc6332c0f439439d704c701f47f2968ae5bb35d4c0776200e21169cc696",
+            "gometry/_lib.pyi": "d5286afe0d7362f9a415988528e577f845229134c4416c3d10d9094c1a9684ff",
+            "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+            "gometry/_pandas.py": "433b6bd251a34ae6a046e422b934e93e5f077eddef541c48ad61089dd0185d90",
+            "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+            "gometry/_types.py": "f2a8db501b50448037c56ea89237f2a4e9a587f57aa33cb7a540391720a1f390",
+            "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+            "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          },
+          "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+          "wheel": {
+            "archive": {
+              "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+              "sha256": "f65fd8960a0012508761da740be7842454603257dfe552993e9a4451c0997c9a",
+              "size_bytes": 15264379
+            },
+            "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+            "extension_sha256": "d4d0b16007401e06825b8d95914ffe1ee56c4e5880f03b84aa80533a3d3dd14c",
+            "filename": "gometry-0.0.0-cp315-cp315-linux_x86_64.whl",
+            "path": "/tmp/opencode/gometry-benchmark-refresh/artifacts-23423935d/gometry-0.0.0-cp315-cp315-linux_x86_64.whl"
+          }
+        },
+        "source_inputs_sha256": "e15930b2ce6fa52748db01d9f93821d9fa9b714485be76421a6611ccc75fe3bc",
+        "uv_lock": {
+          "path": "/home/user/Source/pkgs/gometry/uv.lock",
+          "sha256": "8f69fc2b48775797189580efd6310b922b8782ba83e9c92f5d30bf380c4e3cf2",
+          "size_bytes": 824509
+        }
+      },
+      "row": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+      "started_monotonic_ns": 674827363446322
+    }
+  },
+  "artifact_type": "gometry-paired-block",
+  "block_id": "competitors-pair-37-block-05-ab",
+  "lead_order": [
+    "A",
+    "B"
+  ],
+  "operation": {
+    "canonical_symbols": [
+      "SpatialIndex.nearest",
+      "Groups.to_pairs"
+    ],
+    "competitor": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+    "gometry": "gometry.index.nearest/1k_queries_10k_polygons_k1",
+    "phase": "warm",
+    "scaling": null
+  },
+  "pair_id": "competitors-pair-37",
+  "process": {
+    "executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+    "invocation_id": "f562a7caf3014fa3bf6138a31e3b3ba0",
+    "pid": 2478829,
+    "platform": "Linux-7.2.9-x86_64-with-glibc2.44"
+  },
+  "sampling": {
+    "calibration_strategy": "bounded-doubling",
+    "min_sample_ns": 1000000,
+    "phase": "warm",
+    "repetitions": 5,
+    "scaling": null,
+    "warmup_iterations": 2
+  },
+  "schema_version": 1,
+  "state_scope": "shared-process-prepared-fixture",
+  "timestamps_monotonic_ns": {
+    "block_ended": 674827500488573,
+    "block_started": 674827321676423
+  }
+}
