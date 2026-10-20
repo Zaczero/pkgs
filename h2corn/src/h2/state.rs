@@ -40,7 +40,9 @@ const INPUT_COPY_MAX_FRAGMENT_BYTES: usize = 128;
 #[derive(Debug)]
 pub(super) struct InboundStream {
     pub(super) delivery: InputDelivery,
-    pub(super) counts_toward_read_timeout: bool,
+    /// WebSocket input shutdown remains owned by its session, not HTTP's
+    /// early-response retirement.
+    pub(super) is_http: bool,
     pub(super) receive_window: ReceiveWindowState,
     pub(super) state: StreamLifecycle,
     pub(super) body: RequestBodyState,
@@ -146,6 +148,18 @@ impl InputDelivery {
         matches!(self, Self::Backlogged(_))
     }
 
+    pub(super) fn is_stopped(&self) -> bool {
+        match self {
+            Self::Stopped => true,
+            Self::Open(sender) => sender.is_closed(),
+            Self::Backlogged(queued) => queued.tx.is_closed(),
+        }
+    }
+
+    pub(super) fn retire(&mut self) {
+        *self = Self::Stopped;
+    }
+
     /// Abandon delivery and enqueue a terminal event only when it fits
     /// immediately. A reset must never await a full application channel: the
     /// app may be suspended away from receive(), and cancellation is what
@@ -159,14 +173,6 @@ impl InputDelivery {
         };
         if let Some(sender) = sender {
             drop(sender.try_send(terminal));
-        }
-    }
-
-    pub(super) const fn sender(&self) -> Option<&mpsc::Sender<StreamInput>> {
-        match self {
-            Self::Open(tx) => Some(tx),
-            Self::Backlogged(queued) => Some(&queued.tx),
-            Self::Stopped => None,
         }
     }
 }
@@ -405,11 +411,13 @@ pub(super) struct RequestTasks {
     runtime: tokio::runtime::Handle,
     completed_tx: mpsc::Sender<StreamId>,
     completed_rx: mpsc::Receiver<StreamId>,
+    retired_inputs: Vec<StreamId>,
 }
 
 struct RequestTask {
     task: Option<JoinHandle<()>>,
     cancellation: Option<RequestTaskCancellation>,
+    pending_cancel: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 pub(super) enum RequestTaskCancellation {
@@ -418,35 +426,48 @@ pub(super) enum RequestTaskCancellation {
 }
 
 impl RequestTask {
-    async fn cancel(&mut self) {
-        if self.task.is_none() {
+    fn begin_cancel(&mut self) {
+        if self.task.is_none() || self.cancellation.is_none() {
             return;
         }
         if let Some(RequestTaskCancellation::AfterPendingReceive(disconnect)) =
             self.cancellation.take()
-            && let Some(pending) = disconnect.pending_resolution()
         {
-            let pending = pending.wait();
-            tokio::pin!(pending);
-            let joined = {
-                let task = self.task.as_mut().expect("live request task is retained");
-                tokio::select! {
-                    biased;
-                    () = &mut pending => None,
-                    joined = task => Some(joined),
-                }
-            };
-            if let Some(joined) = joined {
-                Self::report_join(joined);
-                self.task = None;
-                // A task may panic before the pending receive settles. Observe
-                // it now, but retain the disconnect-before-cancel ordering.
-                pending.await;
-                return;
+            disconnect.retire();
+            if let Some(pending) = disconnect.pending_resolution() {
+                self.pending_cancel = Some(Box::pin(pending.wait()));
+            }
+        }
+        if self.pending_cancel.is_none()
+            && let Some(task) = &self.task
+        {
+            task.abort();
+        }
+    }
+
+    fn poll_cancellation(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(pending) = &mut self.pending_cancel {
+            std::task::ready!(pending.as_mut().poll(cx));
+            self.pending_cancel = None;
+            if let Some(task) = &self.task {
+                task.abort();
+            }
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
+    async fn settle_cancellation(&mut self) {
+        self.begin_cancel();
+        if let Some(pending) = &mut self.pending_cancel {
+            pending.await;
+            self.pending_cancel = None;
+            if let Some(task) = &self.task {
+                task.abort();
             }
         }
         if let Some(task) = self.task.as_mut() {
-            task.abort();
             Self::report_join(task.await);
         }
         self.task = None;
@@ -475,6 +496,7 @@ impl RequestTasks {
             runtime: tokio::runtime::Handle::current(),
             completed_tx,
             completed_rx,
+            retired_inputs: Vec::new(),
         }
     }
 
@@ -504,13 +526,14 @@ impl RequestTasks {
         let previous = self.active.insert(stream_id, RequestTask {
             task: Some(task),
             cancellation: Some(cancellation),
+            pending_cancel: None,
         });
         debug_assert!(previous.is_none(), "HTTP/2 stream ids are never reused");
     }
 
-    pub(super) async fn cancel(&mut self, stream_id: StreamId) {
+    pub(super) fn cancel(&mut self, stream_id: StreamId) {
         if let Some(task) = self.active.get_mut(&stream_id) {
-            task.cancel().await;
+            task.begin_cancel();
         }
         // Settlement may already have won the race while cancellation was
         // awaited. Reap only completion ids; never release the budget merely
@@ -526,18 +549,33 @@ impl RequestTasks {
         let stream_ids: Vec<StreamId> = self.active.keys().copied().collect();
         for stream_id in stream_ids {
             if let Some(task) = self.active.get_mut(&stream_id) {
-                task.cancel().await;
+                task.settle_cancellation().await;
             }
         }
         self.active.clear();
         self.reap_completed();
     }
 
+    pub(super) fn begin_cancel_all(&mut self) {
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "every cancellation is published before settlement is awaited"
+        )]
+        for task in self.active.values_mut() {
+            task.begin_cancel();
+        }
+    }
+
     fn take_completed_task(&mut self, stream_id: StreamId, joins: &mut Vec<JoinHandle<()>>) {
-        if let Some(mut request) = self.active.remove(&stream_id)
-            && let Some(task) = request.task.take()
-        {
-            joins.push(task);
+        if let Some(mut request) = self.active.remove(&stream_id) {
+            if let Some(RequestTaskCancellation::AfterPendingReceive(input)) = &request.cancellation
+            {
+                input.retire();
+            }
+            self.retired_inputs.push(stream_id);
+            if let Some(task) = request.task.take() {
+                joins.push(task);
+            }
         }
     }
 
@@ -572,11 +610,26 @@ impl RequestTasks {
     }
 
     pub(super) async fn wait_for_completion(&mut self) {
-        let stream_id = self
-            .completed_rx
-            .recv()
-            .await
-            .expect("RequestTasks retains the completion sender");
+        let stream_id = std::future::poll_fn(|cx| {
+            let mut cancelled = false;
+            #[expect(
+                clippy::iter_over_hash_type,
+                reason = "each pending cancellation registers the same connection waker"
+            )]
+            for task in self.active.values_mut() {
+                cancelled |= task.poll_cancellation(cx).is_ready();
+            }
+            match self.completed_rx.poll_recv(cx) {
+                Poll::Ready(Some(id)) => Poll::Ready(Some(id)),
+                Poll::Ready(None) => unreachable!("RequestTasks retains the completion sender"),
+                Poll::Pending if cancelled => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await;
+        let Some(stream_id) = stream_id else {
+            return;
+        };
         let mut joins = Vec::new();
         self.take_completed_task(stream_id, &mut joins);
         self.take_completed_tasks(&mut joins);
@@ -585,6 +638,18 @@ impl RequestTasks {
 
     pub(super) fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    pub(super) fn take_retired_inputs(&mut self) -> Vec<StreamId> {
+        std::mem::take(&mut self.retired_inputs)
+    }
+
+    pub(super) fn retire_input(&self, stream_id: StreamId) {
+        if let Some(request) = self.active.get(&stream_id)
+            && let Some(RequestTaskCancellation::AfterPendingReceive(input)) = &request.cancellation
+        {
+            input.retire();
+        }
     }
 
     pub(super) fn is_at_capacity(&self) -> bool {
@@ -679,8 +744,11 @@ impl ReceiveWindowState {
             .pending_update
             .filter(|increment| increment.get() >= threshold)?;
         self.pending_update = None;
-        self.recv_window.release(increment);
         Some(increment)
+    }
+
+    pub(super) fn commit_update(&mut self, increment: WindowIncrement) {
+        self.recv_window.release(increment);
     }
 }
 
@@ -699,7 +767,7 @@ impl InboundStream {
 
     pub(super) fn new(
         input: Option<mpsc::Sender<StreamInput>>,
-        counts_toward_read_timeout: bool,
+        is_http: bool,
         end_stream: bool,
         expected_content_length: Option<u64>,
         body_bytes: Option<RequestBodyCounter>,
@@ -712,7 +780,7 @@ impl InboundStream {
         }
         Self {
             delivery,
-            counts_toward_read_timeout,
+            is_http,
             receive_window: ReceiveWindowState::new(initial_window),
             state: if end_stream {
                 StreamLifecycle::RequestClosed
@@ -767,6 +835,13 @@ impl InboundStream {
 }
 
 impl<R, W> H2ConnectionState<R, W> {
+    #[expect(
+        clippy::boxed_local,
+        reason = "consume the boxed connection without moving its transport owners onto the caller stack"
+    )]
+    pub(super) fn into_request_tasks(self: Box<Self>) -> RequestTasks {
+        self.request_tasks
+    }
     pub(super) fn new(
         reader: h2_frame::BufferedConnectionReader<R>,
         connection: H2WriterHandle,
@@ -873,7 +948,7 @@ impl<R, W> H2ConnectionState<R, W> {
     pub(super) fn refresh_body_deadline(&mut self, stream_id: StreamId) {
         let key = RequestInputDeadlineKey::body(stream_id);
         let should_schedule = self.streams.get(&stream_id).is_some_and(|stream| {
-            stream.counts_toward_read_timeout && !stream.state.request_is_closed()
+            stream.is_http && !stream.state.request_is_closed() && !stream.delivery.is_stopped()
         });
         match (
             should_schedule,
@@ -1217,7 +1292,8 @@ mod tests {
                         let _completion = completion;
                         pending::<()>().await;
                     });
-                    tasks.cancel(cancelled).await;
+                    tasks.cancel(cancelled);
+                    tasks.wait_for_completion().await;
                     assert_eq!(tasks.active_count(), 0);
 
                     let panicked = StreamId::new(3).expect("non-zero stream id");
@@ -1318,7 +1394,7 @@ mod tests {
         assert_eq!(tasks.active_count(), 2);
         assert!(tasks.is_at_capacity());
 
-        tasks.cancel(first).await;
+        tasks.cancel(first);
         tasks.reap_completed();
         assert_eq!(
             tasks.active_count(),
@@ -1529,7 +1605,7 @@ mod tests {
         assert_eq!(bodies[1].as_ptr(), second.as_ptr());
     }
 
-    async fn fragmented_backlog_is_byte_bounded(counts_toward_read_timeout: bool) {
+    async fn fragmented_backlog_is_byte_bounded(is_http: bool) {
         const FRAME_BYTES: usize = 128;
         const FRAME_COUNT: usize = 2 * INPUT_CHUNK_MAX_BYTES / FRAME_BYTES + 3;
         const BODY_BYTES: usize = FRAME_COUNT * FRAME_BYTES;
@@ -1537,15 +1613,8 @@ mod tests {
         let flow = Arc::new(H2InputCreditQueue::default());
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let (tx, mut rx) = mpsc::channel(1);
-        let mut stream = InboundStream::new(
-            Some(tx),
-            counts_toward_read_timeout,
-            false,
-            None,
-            None,
-            None,
-            0x7FFF_FFFF,
-        );
+        let mut stream =
+            InboundStream::new(Some(tx), is_http, false, None, None, None, 0x7FFF_FFFF);
 
         for index in 0..FRAME_COUNT {
             let body = if index & 1 == 0 {
@@ -1696,7 +1765,12 @@ mod tests {
             .receive(max)
             .expect("the maximum window fits exactly");
         window.release(max);
-        assert_eq!(window.take_update(max).map(WindowIncrement::get), Some(max));
+        let update = window
+            .take_update(max)
+            .expect("released maximum becomes an update");
+        assert_eq!(update.get(), max);
+        assert_eq!(window.recv_window.0, 0);
+        window.commit_update(update);
         assert_eq!(window.recv_window.0, i32::MAX);
     }
 
@@ -1710,8 +1784,15 @@ mod tests {
         connection.release(6);
         stream.release(6);
 
-        assert_eq!(connection.take_update(6).map(WindowIncrement::get), Some(6));
-        assert_eq!(stream.take_update(6).map(WindowIncrement::get), Some(6));
+        let connection_update = connection.take_update(6).expect("connection update");
+        let stream_update = stream.take_update(6).expect("stream update");
+        assert_eq!(connection_update.get(), 6);
+        assert_eq!(stream_update.get(), 6);
+        assert_eq!(connection.recv_window.0, 4);
+        assert_eq!(stream.recv_window.0, 0);
+        connection.commit_update(connection_update);
+        assert_eq!(stream.recv_window.0, 0);
+        stream.commit_update(stream_update);
         assert_eq!(connection.recv_window.0, 10);
         assert_eq!(stream.recv_window.0, 6);
     }
@@ -1762,5 +1843,17 @@ mod tests {
                 .sum::<u32>(),
             9,
         );
+    }
+
+    #[test]
+    fn released_receive_credit_is_not_advertised_until_output_commit() {
+        let mut window = super::ReceiveWindowState::new(8);
+        window.receive(8).unwrap();
+        window.release(8);
+        let update = window.take_update(1).unwrap();
+        assert!(window.receive(1).is_err());
+        window.commit_update(update);
+        window.receive(8).unwrap();
+        assert!(window.receive(1).is_err());
     }
 }

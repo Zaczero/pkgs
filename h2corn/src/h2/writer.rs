@@ -1,13 +1,15 @@
-mod driver;
-mod flush;
+mod connection;
 mod header_encode;
 mod ingress;
 mod stream_state;
+mod wire;
 
+#[cfg(test)]
+pub(super) use connection::tests::GatedWriter;
 use smallvec::SmallVec;
 
 use crate::bridge::PayloadBytes;
-pub(super) use crate::h2::writer::driver::{
+pub(super) use crate::h2::writer::connection::{
     H2WriterHandle, WindowOverflow, WriterState, init_writer,
 };
 use crate::h2_frame::{ErrorCode, StreamId, WindowIncrement};
@@ -19,7 +21,6 @@ use crate::websocket::EncodedFrameHeader;
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 const ENCODED_HEADER_BLOCK_CAPACITY: usize = 1024;
 const FRAME_BUFFER_CAPACITY: usize = 64;
-const FAIR_WRITE_QUANTUM: usize = 64 * 1024;
 const H2_WRITER_BUFFER_CAPACITY: usize = 8 * 1024;
 const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 /// Per-connection payload retention limit for HTTP response bodies. One
@@ -28,18 +29,18 @@ const H2_OUTBOUND_DATA_FRAME_SIZE_TARGET: usize = 64 * 1024;
 const H2_OUTBOUND_RESPONSE_BYTE_CAPACITY: u32 = 2 * 1024 * 1024;
 
 type ResponseCloseBatch = SmallVec<[(ResponseClose, StreamId); 8]>;
-type ResponseDeadlineUpdateBatch = SmallVec<[StreamId; 8]>;
 pub(super) type WriterCommandBatch = InlineFifo<WriterCommand, 3>;
 
 /// A response lifecycle transition observed by the connection owner.
 ///
-/// A clean completion has already consumed the drained command batch. An
-/// abort may leave an undrained batch behind, so it still needs ingress
-/// cleanup before the read side finalizes the stream.
+/// Clean completion follows the transport flush. A producer failure leaves the
+/// response-driving task to settle its known error; a transport abort also
+/// requires connection-owned application cancellation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ResponseClose {
     Clean,
     Abort,
+    ProducerFailed,
 }
 
 /// One WebSocket frame carried as a single H2 DATA payload: frame header plus
@@ -115,15 +116,17 @@ pub(super) enum WriterCommand {
         segment: FileSegment,
         end_stream: bool,
     },
-    FlushBufferedOutput,
+    FlushStream(StreamId),
     SendReset {
         stream_id: StreamId,
         error_code: ErrorCode,
     },
-    SendSettingsAck,
-    PeerReset {
+    ResetStream {
         stream_id: StreamId,
+        error_code: ErrorCode,
     },
+    SendSettingsAck,
+    StopRequest(StreamId),
     SendWindowUpdate {
         target: WindowTarget,
         increment: WindowIncrement,
@@ -133,7 +136,6 @@ pub(super) enum WriterCommand {
         last_stream_id: Option<StreamId>,
         error_code: ErrorCode,
         debug: Vec<u8>,
-        close: bool,
     },
 }
 
@@ -148,9 +150,10 @@ impl WriterCommand {
             | Self::SendWebSocketData { stream_id, .. }
             | Self::SendFile { stream_id, .. }
             | Self::SendReset { stream_id, .. }
-            | Self::PeerReset { stream_id } => Some(*stream_id),
-            Self::FlushBufferedOutput
-            | Self::SendSettingsAck
+            | Self::ResetStream { stream_id, .. }
+            | Self::FlushStream(stream_id) => Some(*stream_id),
+            Self::SendSettingsAck
+            | Self::StopRequest(_)
             | Self::SendWindowUpdate { .. }
             | Self::PingAck(_)
             | Self::Goaway { .. } => None,

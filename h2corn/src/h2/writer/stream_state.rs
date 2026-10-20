@@ -6,7 +6,7 @@ use tokio::time::Instant;
 use crate::bridge::PayloadBytes;
 use crate::error::{ErrorExt as _, H2CornError, H2Error};
 use crate::h2::StreamMap;
-use crate::h2::writer::{ResponseClose, ResponseCloseBatch, WebSocketData};
+use crate::h2::writer::WebSocketData;
 use crate::h2_frame::StreamId;
 use crate::http::pathsend::FileStreamer;
 use crate::http::response::ResponseBytePermit;
@@ -141,6 +141,7 @@ pub(super) enum ResponseWriteState {
 #[derive(Debug)]
 pub(super) struct StreamWriteState {
     pub(super) send_window: i32,
+    pub(super) timeout_response_stall: Option<std::time::Duration>,
     pub(super) scheduled: bool,
     pending_body_since: Option<Instant>,
     response: ResponseWriteState,
@@ -151,6 +152,7 @@ impl StreamWriteState {
         Self {
             send_window: i32::try_from(initial_window)
                 .expect("HTTP/2 stream send windows fit the signed 31-bit domain"),
+            timeout_response_stall: None,
             scheduled: false,
             pending_body_since: None,
             response: ResponseWriteState::AwaitingHeaders,
@@ -178,8 +180,29 @@ impl StreamWriteState {
 
     pub(super) fn has_pending_output(&self) -> bool {
         match &self.response {
-            ResponseWriteState::Open { body, .. } => body.has_pending_output(),
+            ResponseWriteState::Open { body, trailers } => {
+                body.has_pending_output() || trailers.is_some()
+            },
             ResponseWriteState::AwaitingHeaders | ResponseWriteState::Closed => false,
+        }
+    }
+
+    pub(super) fn can_write_without_window(&self) -> bool {
+        match &self.response {
+            ResponseWriteState::Open {
+                body: StreamBodyState::Body(queue),
+                ..
+            } => match queue.front() {
+                Some(BodyItem::Chunk(chunk)) => chunk.remaining_len() == 0,
+                Some(BodyItem::File(file)) => file.is_drained(),
+                None => false,
+            },
+            ResponseWriteState::AwaitingHeaders
+            | ResponseWriteState::Closed
+            | ResponseWriteState::Open {
+                body: StreamBodyState::Idle,
+                ..
+            } => false,
         }
     }
 
@@ -319,18 +342,6 @@ impl StreamWriteState {
             },
         }
     }
-
-    pub(super) fn finish(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
-        self.response = ResponseWriteState::Closed;
-        self.pending_body_since = None;
-        notify_response_complete(response_closes, stream_id);
-    }
-
-    pub(super) fn abort(&mut self, stream_id: StreamId, response_closes: &mut ResponseCloseBatch) {
-        self.response = ResponseWriteState::Closed;
-        self.pending_body_since = None;
-        notify_response_abort(response_closes, stream_id);
-    }
 }
 
 impl StreamBodyState {
@@ -349,20 +360,6 @@ impl StreamBodyState {
         match self {
             Self::Body(queue) if queue.is_empty() => Self::Idle,
             other @ (Self::Idle | Self::Body(_)) => other,
-        }
-    }
-}
-
-impl BodyItem {
-    /// The buffered chunk, when this item is one.
-    ///
-    /// The vectored frame collector walks the queue with this: a file segment
-    /// has no in-memory slice to hand a `writev`, so it stops the batch rather
-    /// than joining it.
-    pub(super) const fn as_chunk(&self) -> Option<&PendingChunk> {
-        match self {
-            Self::Chunk(chunk) => Some(chunk),
-            Self::File(_) => None,
         }
     }
 }
@@ -416,17 +413,6 @@ pub(super) fn writer_stream(
     streams
         .entry(stream_id)
         .or_insert_with(|| StreamWriteState::new(initial_stream_send_window))
-}
-
-pub(super) fn notify_response_complete(
-    response_closes: &mut ResponseCloseBatch,
-    stream_id: StreamId,
-) {
-    response_closes.push((ResponseClose::Clean, stream_id));
-}
-
-pub(super) fn notify_response_abort(response_closes: &mut ResponseCloseBatch, stream_id: StreamId) {
-    response_closes.push((ResponseClose::Abort, stream_id));
 }
 
 #[cfg(test)]

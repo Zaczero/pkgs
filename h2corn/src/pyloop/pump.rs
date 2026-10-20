@@ -240,7 +240,12 @@ fn fill_app_slot(
     outcome: Result<(), H2CornError>,
     object: Option<&Bound<'_, PyAny>>,
 ) {
-    if let Err(Err(error)) = slot.fill(outcome) {
+    let failed = outcome.is_err();
+    let unaccepted = slot.fill(outcome);
+    if failed {
+        slot.guard().application_failed();
+    }
+    if let Err(Err(error)) = unaccepted {
         report_unaccepted_error(py, into_pyerr(error), object);
     }
 }

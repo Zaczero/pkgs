@@ -9,6 +9,7 @@ use crate::buffered_events::BufferedState;
 #[cfg(unix)]
 use crate::config::QUEUED_FILE_SEGMENT_MIN_CHARGE;
 use crate::http::response::{ResponseByteBudget, ResponseBytePermit};
+use crate::runtime::ApplicationFailure;
 
 enum HttpSendMode {
     Inline {
@@ -110,6 +111,7 @@ impl HttpSendPhase {
 type FinishedWaiter = Box<dyn FnOnce() + Send + pyo3::marker::Ungil>;
 
 struct HttpSendControl {
+    failure: Option<Arc<dyn ApplicationFailure>>,
     mode: HttpSendMode,
     phase: HttpSendPhase,
     close_signal: Option<watch::Sender<()>>,
@@ -206,12 +208,31 @@ impl HttpSendState {
         Self::with_optional_response_budget(Some(budget))
     }
 
+    pub(crate) fn with_response_failure(
+        budget: ResponseByteBudget,
+        failure: Option<Arc<dyn ApplicationFailure>>,
+    ) -> (Self, HttpSendBuffer) {
+        let pair = Self::with_response_budget(budget);
+        pair.0.shared.lock().state.failure = failure;
+        pair
+    }
+
+    pub(crate) fn failure_notification(&self) -> Option<Arc<dyn ApplicationFailure>> {
+        self.shared
+            .lock()
+            .state
+            .failure
+            .as_ref()
+            .map(|_| Arc::clone(&self.shared) as Arc<dyn ApplicationFailure>)
+    }
+
     /// The state and its buffer are minted together and the buffer cannot be
     /// minted again: they share one inline queue and one streaming receiver,
     /// and a second buffer would both compete for those and close the outbound
     /// side out from under the first when it dropped.
     fn with_optional_response_budget(budget: Option<ResponseByteBudget>) -> (Self, HttpSendBuffer) {
         let shared = Arc::new(BufferedState::new(HttpSendControl {
+            failure: None,
             mode: HttpSendMode::Inline { accepted: 0 },
             phase: HttpSendPhase::AwaitingStart,
             close_signal: None,
@@ -439,6 +460,30 @@ impl HttpSendState {
     }
 }
 
+impl ApplicationFailure for BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2> {
+    fn application_failed(&self) {
+        let mut inner = self.lock();
+        let committed = matches!(
+            inner.state.phase,
+            HttpSendPhase::Terminal
+                | HttpSendPhase::Trailers
+                | HttpSendPhase::Body {
+                    body_started: true,
+                    ..
+                }
+        );
+        if !committed {
+            return;
+        }
+        HttpSendState::publish_phase(&mut inner.state, HttpSendPhase::Terminal);
+        let failure = inner.state.failure.clone();
+        drop(inner);
+        if let Some(failure) = failure {
+            failure.application_failed();
+        }
+    }
+}
+
 impl HttpSendWaiter {
     pub(crate) async fn send(self) -> bool {
         let Some(event) = self.state.admit_after_backpressure(self.event).await else {
@@ -515,6 +560,8 @@ impl HttpSendBuffer {
 impl Drop for HttpSendBuffer {
     fn drop(&mut self) {
         self.close_outbound();
+        let queued = std::mem::take(&mut self.shared.lock().queue);
+        drop(queued);
     }
 }
 
@@ -1059,6 +1106,23 @@ mod tests {
                 .expect("waiter task joins"),
             "a torn-down request must not leave an ASGI send waiting for credit"
         );
+    }
+
+    #[test]
+    fn dropping_request_buffer_releases_inline_credit_with_retained_sender() {
+        let budget = ResponseByteBudget::new(64);
+        let (send, buffer) = HttpSendState::with_response_budget(budget.clone());
+        assert!(matches!(
+            send.push_or_forward(HttpOutboundEvent::Body {
+                body: Bytes::from(vec![0x61; 64]).into(),
+                more_body: true,
+            }),
+            HttpSendDisposition::Buffered
+        ));
+        assert_eq!(budget.available(), 0);
+        drop(buffer);
+        assert!(send.is_closed());
+        assert_eq!(budget.available(), 64);
     }
 
     #[test]

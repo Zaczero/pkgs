@@ -26,12 +26,20 @@ struct HttpReceiveState {
 
 #[derive(Debug)]
 enum HttpReceiveInput {
-    Open(mpsc::Receiver<StreamInput>),
+    Open,
     Disconnected,
 }
 
 #[derive(Debug, Default)]
+struct HttpInputQueue {
+    receiver: Option<mpsc::Receiver<StreamInput>>,
+    waker: Option<std::task::Waker>,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct RequestInputShared {
+    input: Mutex<HttpInputQueue>,
+    retired: AtomicBool,
     app_started: OnceLock<()>,
     started: AtomicU64,
     queued: AtomicU64,
@@ -46,6 +54,29 @@ pub(crate) struct RequestBodyCounter {
 }
 
 impl RequestInputShared {
+    fn bind_input(&self, receiver: mpsc::Receiver<StreamInput>) {
+        let mut input = self.input.lock();
+        if !self.retired.load(Ordering::Acquire) {
+            input.receiver = Some(receiver);
+        }
+    }
+
+    pub(crate) fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        let mut input = self.input.lock();
+        let receiver = input.receiver.take();
+        let waker = input.waker.take();
+        drop(input);
+        drop(receiver);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
     pub(crate) fn mark_app_started(&self) {
         self.app_started.get_or_init(|| ());
         self.notify.notify_one();
@@ -178,9 +209,16 @@ impl HttpReceiveState {
                 // an unreachable "disconnected but still retaining input"
                 // state until the Python receive object itself was dropped.
                 self.input = HttpReceiveInput::Disconnected;
+                self.disconnect.retire();
                 HttpInboundEvent::HttpDisconnect
             },
         }
+    }
+}
+
+impl Drop for HttpReceiveState {
+    fn drop(&mut self) {
+        self.disconnect.retire();
     }
 }
 
@@ -190,10 +228,19 @@ impl EventSource for HttpReceiveState {
     fn try_pull(&mut self) -> Option<Self::Event> {
         let input = match &mut self.input {
             HttpReceiveInput::Disconnected => return Some(HttpInboundEvent::HttpDisconnect),
-            HttpReceiveInput::Open(rx) => match rx.try_recv() {
-                Ok(input) => Some(input),
-                Err(TryRecvError::Empty) => return None,
-                Err(TryRecvError::Disconnected) => None,
+            HttpReceiveInput::Open => {
+                let received = self
+                    .disconnect
+                    .input
+                    .lock()
+                    .receiver
+                    .as_mut()
+                    .map(mpsc::Receiver::try_recv);
+                match received {
+                    Some(Ok(input)) => Some(input),
+                    Some(Err(TryRecvError::Empty)) => return None,
+                    None | Some(Err(TryRecvError::Disconnected)) => None,
+                }
             },
         };
         Some(self.map_input(input))
@@ -202,13 +249,30 @@ impl EventSource for HttpReceiveState {
     async fn pull(&mut self) -> Self::Event {
         let input = match &mut self.input {
             HttpReceiveInput::Disconnected => return HttpInboundEvent::HttpDisconnect,
-            HttpReceiveInput::Open(rx) => rx.recv().await,
+            HttpReceiveInput::Open => {
+                std::future::poll_fn(|cx| {
+                    let mut input = self.disconnect.input.lock();
+                    let Some(receiver) = &mut input.receiver else {
+                        return std::task::Poll::Ready(None);
+                    };
+                    let result = receiver.poll_recv(cx);
+                    if result.is_pending() {
+                        input.waker = Some(cx.waker().clone());
+                    }
+                    result
+                })
+                .await
+            },
         };
         self.map_input(input)
     }
 
     fn wait_signal(&self) -> Option<Arc<RequestInputShared>> {
         Some(Arc::clone(&self.disconnect))
+    }
+
+    fn is_retired(&self) -> bool {
+        self.disconnect.is_retired()
     }
 }
 
@@ -234,11 +298,12 @@ impl PyHttpReceive {
         rx: mpsc::Receiver<StreamInput>,
         disconnect: Arc<RequestInputShared>,
     ) -> Self {
+        disconnect.bind_input(rx);
         Self {
             shard,
             kind: HttpReceiveKind::Stream(Arc::new(AsyncMutex::new(Requeueable::new(
                 HttpReceiveState {
-                    input: HttpReceiveInput::Open(rx),
+                    input: HttpReceiveInput::Open,
                     disconnect,
                 },
             )))),
@@ -271,13 +336,22 @@ mod tests {
     use crate::h2_frame::{ErrorCode, StreamId};
     use crate::runtime::{H2InputCreditQueue, StreamInput};
 
+    fn receive_state(rx: mpsc::Receiver<StreamInput>) -> HttpReceiveState {
+        let disconnect = Arc::new(RequestInputShared::default());
+        disconnect.bind_input(rx);
+        HttpReceiveState {
+            input: HttpReceiveInput::Open,
+            disconnect,
+        }
+    }
+
     #[test]
     fn receive_generation_exhaustion_does_not_wrap_ordering() {
         let signal = Arc::new(RequestInputShared::default());
         signal.started.store(u64::MAX, Ordering::Relaxed);
         signal.queued.store(u64::MAX, Ordering::Relaxed);
 
-        let result = std::panic::catch_unwind(|| signal.begin_wait());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| signal.begin_wait()));
 
         assert!(result.is_err());
         assert_eq!(signal.started.load(Ordering::Relaxed), u64::MAX);
@@ -295,10 +369,7 @@ mod tests {
             credit: Some(flow.credit(stream_id, NonZeroU32::new(14).unwrap())),
         })
         .unwrap();
-        let mut state = HttpReceiveState {
-            input: HttpReceiveInput::Open(rx),
-            disconnect: Arc::new(RequestInputShared::default()),
-        };
+        let mut state = receive_state(rx);
 
         let Some(HttpInboundEvent::Request {
             body,
@@ -333,10 +404,7 @@ mod tests {
             credit: Some(flow.credit(stream_id, NonZeroU32::new(14).unwrap())),
         })
         .unwrap();
-        let mut state = HttpReceiveState {
-            input: HttpReceiveInput::Open(rx),
-            disconnect: Arc::new(RequestInputShared::default()),
-        };
+        let mut state = receive_state(rx);
 
         let Some(HttpInboundEvent::RequestBatch {
             bodies,
@@ -366,10 +434,7 @@ mod tests {
         tx.try_send(StreamInput::Reset(ErrorCode::CANCEL)).unwrap();
         tx.try_send(StreamInput::data(bytes::Bytes::from_static(b"queued")))
             .unwrap();
-        let mut state = HttpReceiveState {
-            input: HttpReceiveInput::Open(rx),
-            disconnect: Arc::new(RequestInputShared::default()),
-        };
+        let mut state = receive_state(rx);
 
         assert!(matches!(
             state.try_pull(),
@@ -380,6 +445,45 @@ mod tests {
             "terminal input must drop the receiver immediately"
         );
         assert!(matches!(state.input, HttpReceiveInput::Disconnected));
+    }
+
+    #[test]
+    fn input_retirement_releases_queued_and_compensated_credit_once() {
+        let flow = Arc::new(H2InputCreditQueue::default());
+        let id = StreamId::new(1).unwrap();
+        let (tx, rx) = mpsc::channel(2);
+        for body in [b"first".as_slice(), b"second".as_slice()] {
+            tx.try_send(StreamInput::h2_data(
+                Bytes::copy_from_slice(body),
+                flow.credit(id, NonZeroU32::new(body.len() as u32).unwrap()),
+            ))
+            .unwrap();
+        }
+        let state = receive_state(rx);
+        let signal = Arc::clone(&state.disconnect);
+        let mut source = crate::bridge::Requeueable::new(state);
+        let raw = source.try_next().unwrap();
+        assert!(!flow.has_pending());
+        signal.retire();
+        assert!(tx.is_closed());
+        source.requeue(raw);
+        signal.retire();
+        assert!(matches!(
+            source.try_next(),
+            Some(HttpInboundEvent::HttpDisconnect)
+        ));
+        let mut released = Vec::new();
+        flow.drain_into(&mut released);
+        assert_eq!(
+            released
+                .iter()
+                .map(|credit| credit.bytes.get())
+                .sum::<u32>(),
+            11
+        );
+        released.clear();
+        flow.drain_into(&mut released);
+        assert!(released.is_empty());
     }
 }
 

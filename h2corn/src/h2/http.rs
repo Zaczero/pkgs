@@ -50,7 +50,10 @@ struct H2HttpRequestContext {
 
 impl HttpResponseTransport for H2HttpTransport<'_> {
     fn new_http_send_state(&self) -> (HttpSendState, HttpSendBuffer) {
-        HttpSendState::with_response_budget(self.connection.response_byte_budget())
+        HttpSendState::with_response_failure(
+            self.connection.response_byte_budget(),
+            self.connection.failure_notification(self.stream_id),
+        )
     }
 
     async fn admit_outbound_event(
@@ -72,6 +75,10 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
     }
 
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
+        if matches!(action, ResponseAction::AbortIncomplete) {
+            self.connection.abort_response(self.stream_id);
+            return Ok(());
+        }
         let mut commands = WriterCommandBatch::new();
         append_response_action(
             self.stream_id,
@@ -98,6 +105,14 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
         if actions.is_empty() {
             return Ok(());
         }
+        if actions
+            .iter()
+            .any(|action| matches!(action, ResponseAction::AbortIncomplete))
+        {
+            actions.clear();
+            self.connection.abort_response(self.stream_id);
+            return Ok(());
+        }
 
         // One batch, one handoff to the writer task: the per-action default
         // would send each command on its own.
@@ -117,27 +132,14 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
     }
 }
 
-pub(super) async fn spawn_request_stream(
-    stream_id: StreamId,
-    request: RequestHead,
-    end_stream: bool,
-    connection: &H2WriterHandle,
-    context: RequestSpawnContext<'_>,
-) -> Result<(), H2CornError> {
-    if let Some(RejectedResponse { status, headers }) =
-        prepare_and_spawn_request(stream_id, request, end_stream, connection, context)
-    {
-        connection
-            .send_headers(stream_id, status, headers, true)
-            .await?;
-    }
-    Ok(())
-}
-
 /// Perform the common request planning, registration, and task launch without
-/// suspension. Only the uncommon immediate-response path is returned to the
-/// connection future for asynchronous writer backpressure.
-fn prepare_and_spawn_request(
+/// suspension. Return a pre-admission rejection to the connection owner for
+/// ordered output.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the match transfers each prepared admission and input owner into its request task"
+)]
+pub(super) fn spawn_request_stream(
     stream_id: StreamId,
     request: RequestHead,
     end_stream: bool,
@@ -149,21 +151,36 @@ fn prepare_and_spawn_request(
     let websocket = request
         .protocol_is_websocket()
         .then(|| validate_websocket_request(&request));
-    let plan = match plan_request(
+    let prepared = match plan_request(
         &request,
         websocket,
         end_stream,
         config.access_log,
         config.max_request_body_size,
-    ) {
-        Ok(plan) => plan,
-        Err(rejection) => return Some(rejection),
-    };
-    let Some(prepared) = prepare_request_execution(&context.connection.app, plan) else {
-        return Some(RejectedResponse {
+    )
+    .and_then(|plan| {
+        prepare_request_execution(&context.connection.app, plan).ok_or_else(|| RejectedResponse {
             status: status_code::SERVICE_UNAVAILABLE,
             headers: ResponseHeaders::new(),
-        });
+        })
+    }) {
+        Ok(prepared) => prepared,
+        Err(rejection) => {
+            register_inbound_stream(
+                &mut context,
+                stream_id,
+                InboundStream::new(
+                    None,
+                    true,
+                    end_stream,
+                    content_length,
+                    None,
+                    None,
+                    config.http2.initial_stream_window_size.get(),
+                ),
+            );
+            return Some(rejection);
+        },
     };
     let request = RequestContext::new(std::sync::Arc::clone(context.connection), request);
     match prepared {
@@ -463,7 +480,7 @@ fn append_response_action(
             headers: ResponseHeaders::new(),
             end_stream: true,
         }),
-        ResponseAction::AbortIncomplete => commands.push_back(WriterCommand::SendReset {
+        ResponseAction::AbortIncomplete => commands.push_back(WriterCommand::ResetStream {
             stream_id,
             error_code: ErrorCode::INTERNAL_ERROR,
         }),
@@ -525,10 +542,11 @@ mod tests {
             | WriterCommand::SendData { .. }
             | WriterCommand::SendWebSocketData { .. }
             | WriterCommand::SendFile { .. }
-            | WriterCommand::FlushBufferedOutput
+            | WriterCommand::FlushStream(_)
             | WriterCommand::SendReset { .. }
+            | WriterCommand::ResetStream { .. }
             | WriterCommand::SendSettingsAck
-            | WriterCommand::PeerReset { .. }
+            | WriterCommand::StopRequest(_)
             | WriterCommand::SendWindowUpdate { .. }
             | WriterCommand::PingAck(_)
             | WriterCommand::Goaway { .. }) => {
@@ -579,10 +597,11 @@ mod tests {
             | WriterCommand::SendData { .. }
             | WriterCommand::SendWebSocketData { .. }
             | WriterCommand::SendFile { .. }
-            | WriterCommand::FlushBufferedOutput
+            | WriterCommand::FlushStream(_)
             | WriterCommand::SendReset { .. }
+            | WriterCommand::ResetStream { .. }
             | WriterCommand::SendSettingsAck
-            | WriterCommand::PeerReset { .. }
+            | WriterCommand::StopRequest(_)
             | WriterCommand::SendWindowUpdate { .. }
             | WriterCommand::PingAck(_)
             | WriterCommand::Goaway { .. }) => {

@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::io::{Error, ErrorKind};
+use std::task::{Context, Poll};
 
 #[cfg(target_os = "linux")]
 use rustix::fs::sendfile;
@@ -17,6 +18,19 @@ use tokio::net::unix::OwnedWriteHalf as UnixOwnedWriteHalf;
 /// The caller owns framing and must flush before calling `send_file`.
 pub(crate) trait WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
     const SUPPORTS_SENDFILE: bool;
+
+    fn poll_send_file(
+        _writer: &mut BufWriter<Self>,
+        _file: &File,
+        _offset: &mut u64,
+        _len: usize,
+        _cx: &mut Context<'_>,
+    ) -> Poll<io::Result<usize>>
+    where
+        Self: Sized,
+    {
+        Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
+    }
 
     /// Send `len` bytes of `file` starting at `*offset`, advancing it.
     async fn send_file(
@@ -37,6 +51,26 @@ pub(crate) trait WriteTarget: AsyncWrite + Unpin + Send + Sync + 'static {
 
 impl WriteTarget for TcpOwnedWriteHalf {
     const SUPPORTS_SENDFILE: bool = cfg!(target_os = "linux");
+
+    #[cfg(target_os = "linux")]
+    fn poll_send_file(
+        writer: &mut BufWriter<Self>,
+        file: &File,
+        offset: &mut u64,
+        len: usize,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<usize>> {
+        let stream = writer.get_ref().as_ref();
+        loop {
+            std::task::ready!(stream.poll_write_ready(cx))?;
+            match stream.try_io(Interest::WRITABLE, || {
+                sendfile(stream, file, Some(offset), len).map_err(io::Error::from)
+            }) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {},
+                result => return Poll::Ready(result),
+            }
+        }
+    }
 
     #[cfg(target_os = "linux")]
     async fn send_file(

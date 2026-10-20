@@ -236,6 +236,7 @@ pub(super) fn start_websocket_app(
             send_tx,
         ),
         admission,
+        None,
     );
 
     RunningWebSocketApp {

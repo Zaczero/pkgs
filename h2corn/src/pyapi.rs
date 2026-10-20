@@ -218,6 +218,7 @@ impl<'py> PyConfig<'py> {
             )
             .expect("configured connection window is non-zero"),
             timeout_response_stall: self.optional_duration("h2_timeout_response_stall")?,
+            timeout_write: self.optional_duration("h2_timeout_write")?,
         })
     }
 
@@ -1440,6 +1441,7 @@ mod tests {
         config.setattr("timeout_request_header", 4.5).unwrap();
         config.setattr("timeout_request_body_idle", 5.5).unwrap();
         config.setattr("h2_timeout_response_stall", 6.0).unwrap();
+        config.setattr("h2_timeout_write", 7.0).unwrap();
         config.setattr("timeout_lifespan_startup", 6.5).unwrap();
         config.setattr("timeout_lifespan_shutdown", 8.5).unwrap();
         config.setattr("limit_concurrency", 23).unwrap();
@@ -1565,6 +1567,7 @@ mod tests {
             extracted.http2.timeout_response_stall,
             Some(Duration::from_secs_f64(6.0))
         );
+        assert_eq!(extracted.http2.timeout_write, Some(Duration::from_secs(7)));
         assert_eq!(extracted.limit_concurrency.map(NonZeroUsize::get), Some(23));
         assert_eq!(extracted.limit_connections.map(NonZeroUsize::get), Some(29));
     }

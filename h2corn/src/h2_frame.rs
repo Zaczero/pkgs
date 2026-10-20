@@ -60,8 +60,6 @@ impl From<H2CornError> for FrameReadError {
 pub(crate) struct FramePayloadLen(u32);
 
 impl FramePayloadLen {
-    pub(crate) const ZERO: Self = Self(0);
-
     /// Build from a runtime length, rejecting anything the wire cannot carry.
     pub(crate) const fn new(len: usize) -> Option<Self> {
         if len > MAX_FRAME_SIZE_UPPER_BOUND {
@@ -95,60 +93,6 @@ impl FramePayloadLen {
 
     pub(crate) const fn as_usize(self) -> usize {
         self.0 as usize
-    }
-
-    pub(crate) const fn is_zero(self) -> bool {
-        self.0 == 0
-    }
-}
-
-/// A frame payload whose length is known to fit the wire length field.
-///
-/// The bytes and their encoded length are produced together, so they cannot
-/// disagree, and there is no way to build one that is too long.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct FramePayload<'a> {
-    bytes: &'a [u8],
-    len: FramePayloadLen,
-}
-
-impl<'a> FramePayload<'a> {
-    pub(crate) const EMPTY: Self = Self {
-        bytes: &[],
-        len: FramePayloadLen::ZERO,
-    };
-
-    /// A payload whose size is fixed by its type.
-    pub(crate) const fn fixed<const N: usize>(bytes: &'a [u8; N]) -> Self {
-        Self {
-            bytes,
-            len: FramePayloadLen::constant(N),
-        }
-    }
-
-    /// Split off at most `limit` bytes; the remainder feeds the next frame.
-    pub(crate) const fn take(bytes: &'a [u8], limit: FramePayloadLen) -> (Self, &'a [u8]) {
-        let len = limit.min_usize(bytes.len());
-        let (payload, rest) = bytes.split_at(len.as_usize());
-        (
-            Self {
-                bytes: payload,
-                len,
-            },
-            rest,
-        )
-    }
-
-    pub(crate) const fn len(self) -> FramePayloadLen {
-        self.len
-    }
-
-    pub(crate) const fn as_bytes(self) -> &'a [u8] {
-        self.bytes
-    }
-
-    pub(crate) const fn is_empty(self) -> bool {
-        self.len.is_zero()
     }
 }
 
@@ -620,7 +564,6 @@ where
             // would immediately drop.
             self.buffer.advance(FRAME_HEADER_LEN);
             self.discard_payload_len = payload_len;
-            self.discard_rejected_payload().await?;
             return Ok(Some(FrameRead::Ignored(FrameHeader {
                 frame_type,
                 flags,
@@ -1004,6 +947,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ignored_frame_header_survives_interrupted_payload_discard() {
+        use std::future::poll_fn;
+
+        use tokio::io::{AsyncWriteExt as _, duplex};
+
+        let (mut client, server) = duplex(64);
+        client
+            .write_all(&[0, 0, 3, 0xFE, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        let mut reader = BufferedConnectionReader::new(server);
+        let first = poll_fn(|cx| {
+            let mut read = std::pin::pin!(reader.read_frame(DEFAULT_MAX_FRAME_SIZE));
+            std::task::Poll::Ready(read.as_mut().poll(cx))
+        })
+        .await;
+        assert!(matches!(
+            first,
+            std::task::Poll::Ready(Ok(Some(FrameRead::Ignored(_))))
+        ));
+        let pending = poll_fn(|cx| {
+            let mut read = std::pin::pin!(reader.read_frame(DEFAULT_MAX_FRAME_SIZE));
+            std::task::Poll::Ready(read.as_mut().poll(cx))
+        })
+        .await;
+        assert!(pending.is_pending());
+        client
+            .write_all(&[
+                0x51, 0x52, 0x53, 0, 0, 8, 6, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+            ])
+            .await
+            .unwrap();
+        let next = reader
+            .read_frame(DEFAULT_MAX_FRAME_SIZE)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            next,
+            FrameRead::Handled(_, HandledFrameKind::Ping)
+        ));
+    }
+
+    #[tokio::test]
     async fn malformed_control_length_fails_without_waiting_for_its_payload() {
         use tokio::io::{AsyncWriteExt as _, duplex};
         use tokio::time::{Duration, timeout};
@@ -1206,6 +1193,10 @@ mod tests {
         drop(client);
 
         let mut reader = BufferedConnectionReader::new(server);
+        assert!(matches!(
+            reader.read_frame(DEFAULT_MAX_FRAME_SIZE).await.unwrap(),
+            Some(FrameRead::Ignored(_))
+        ));
         let error = reader
             .read_frame(DEFAULT_MAX_FRAME_SIZE)
             .await

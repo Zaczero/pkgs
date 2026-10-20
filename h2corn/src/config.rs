@@ -54,6 +54,7 @@ pub(crate) struct Http2Config {
     /// Receive-side connection flow-control window.
     pub initial_connection_window_size: NonZeroU32,
     pub timeout_response_stall: Option<Duration>,
+    pub timeout_write: Option<Duration>,
 }
 
 bitflags! {
@@ -87,6 +88,7 @@ impl Default for Http2Config {
             initial_connection_window_size: NonZeroU32::new(8 << 20)
                 .expect("default connection window is non-zero"),
             timeout_response_stall: None,
+            timeout_write: None,
         }
     }
 }

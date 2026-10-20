@@ -7,8 +7,6 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 
-use crate::error::{ErrorExt as _, H2CornError};
-
 pub(crate) enum TryPush<T> {
     Sent,
     Full(T),
@@ -38,25 +36,6 @@ pub(crate) fn try_push<T>(tx: &mpsc::Sender<T>, value: T) -> TryPush<T> {
         Ok(()) => TryPush::Sent,
         Err(TrySendError::Full(value)) => TryPush::Full(value),
         Err(TrySendError::Closed(value)) => TryPush::Closed(value),
-    }
-}
-
-pub(crate) async fn send_with_backpressure<T, F, E>(
-    tx: &mpsc::Sender<T>,
-    value: T,
-    closed_error: F,
-) -> Result<(), H2CornError>
-where
-    F: Fn() -> E + Copy,
-    E: Into<H2CornError>,
-{
-    match try_push(tx, value) {
-        TryPush::Sent => Ok(()),
-        TryPush::Full(value) => tx
-            .send(value)
-            .await
-            .map_err(|_| closed_error().into_error()),
-        TryPush::Closed(_) => Err(closed_error().into_error()),
     }
 }
 

@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import h2.errors
 import h2.events
 import h2.settings
 import pytest
@@ -227,6 +228,83 @@ async def test_h2_response_body_byte_budget_waits_for_flow_control_progress() ->
 
     assert status == 200
     assert len(body) == H2_OUTBOUND_RESPONSE_BYTE_CAPACITY + 64 * 1024
+
+
+async def test_application_failure_aborts_terminal_body_waiting_for_peer_credit() -> (
+    None
+):
+    fail = asyncio.Event()
+
+    async def app(scope, _receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({
+            'type': 'http.response.body',
+            'body': b'queued' if scope['path'] == '/fail' else b'sibling',
+        })
+        if scope['path'] == '/fail':
+            await fail.wait()
+            raise RuntimeError('failure after terminal admission')
+
+    async with running_server(
+        app, Config(port=0, lifespan='off', h2_timeout_response_stall=0)
+    ) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server), initial_window_size=0
+        )
+        try:
+            conn.send_headers(
+                1,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', b'/fail'),
+                ],
+                end_stream=True,
+            )
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            started = False
+            while not started:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                started = any(
+                    isinstance(event, h2.events.ResponseReceived)
+                    and event.stream_id == 1
+                    for event in conn.receive_data(data)
+                )
+            fail.set()
+            reset = None
+            while reset is None:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    assert not isinstance(event, h2.events.DataReceived)
+                    if (
+                        isinstance(event, h2.events.StreamReset)
+                        and event.stream_id == 1
+                    ):
+                        reset = int(event.error_code)
+            assert reset == int(h2.errors.ErrorCodes.INTERNAL_ERROR)
+            conn.send_headers(
+                3,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', b'http'),
+                    (b':authority', authority),
+                    (b':path', b'/short'),
+                ],
+                end_stream=True,
+            )
+            conn.increment_flow_control_window(16, stream_id=3)
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            status, body, _ = await read_h2_response(reader, writer, conn, 3)
+            assert status == 200
+            assert body == b'sibling'
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
 async def test_empty_body_request_gets_empty_state_and_terminal_receive_event() -> None:

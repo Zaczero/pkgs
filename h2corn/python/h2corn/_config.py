@@ -659,6 +659,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
             'timeout_request_header',
             'timeout_request_body_idle',
             'h2_timeout_response_stall',
+            'h2_timeout_write',
         ),
     ),
     OptionGroup(
@@ -1092,6 +1093,13 @@ class Config:
         doc='Timeout in seconds for HTTP/2 response body bytes pinned behind peer flow control. Use 0 to disable.',
         env_parse=float,
         converter=_non_negative_float('h2_timeout_response_stall'),
+        cli_type=float,
+    )
+    h2_timeout_write: float = _option(
+        default=60.0,
+        doc='Maximum time in seconds to finish pending HTTP/2 frame output and transport flushing. Progress does not renew the deadline; expiry closes the connection and every stream. Use 0 to disable.',
+        env_parse=float,
+        converter=_non_negative_float('h2_timeout_write'),
         cli_type=float,
     )
     websocket_max_message_size: int = _option(

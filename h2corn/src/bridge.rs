@@ -780,6 +780,10 @@ pub(crate) trait EventSource: Send + pyo3::marker::Ungil + 'static {
 
     fn try_pull(&mut self) -> Option<Self::Event>;
 
+    fn is_retired(&self) -> bool {
+        false
+    }
+
     /// Mark a slow-path waiter as live. Request ownership uses this to
     /// distinguish an application already awaiting disconnect from an
     /// abandoned task that can be cancelled immediately.
@@ -815,6 +819,9 @@ impl<S: EventSource> Requeueable<S> {
     }
 
     fn try_next(&mut self) -> Option<S::Event> {
+        if self.source.is_retired() {
+            self.requeued = None;
+        }
         self.requeued.take().or_else(|| self.source.try_pull())
     }
 
@@ -826,6 +833,9 @@ impl<S: EventSource> Requeueable<S> {
     }
 
     fn requeue(&mut self, event: S::Event) {
+        if self.source.is_retired() {
+            return;
+        }
         debug_assert!(self.requeued.is_none(), "at most one receive in flight");
         self.requeued = Some(event);
     }

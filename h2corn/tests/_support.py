@@ -58,10 +58,12 @@ async def open_h2_connection(
     conn = h2.connection.H2Connection(
         config=h2.config.H2Configuration(client_side=True, header_encoding=None)
     )
+    settings = {
+        h2.settings.SettingCodes(key): value
+        for key, value in conn.local_settings.items()
+    }
     if max_header_list_size is not None:
-        conn.local_settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = (
-            max_header_list_size
-        )
+        settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = max_header_list_size
         # h2 applies an advertised setting to its decoder on the peer's ACK.
         # A peer may answer the opening request in the same read as that ACK,
         # so accept the advertised limit from the first response frame too.
@@ -70,9 +72,8 @@ async def open_h2_connection(
         # Advertised in the opening SETTINGS, so the server never has stream
         # credit to write DATA into. Only the connection's own outbound byte
         # budget can bound what it queues.
-        conn.local_settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = (
-            initial_window_size
-        )
+        settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = initial_window_size
+    conn.local_settings = h2.settings.Settings(client=True, initial_values=settings)
     conn.initiate_connection()
     writer.write(prefix + conn.data_to_send())
     await writer.drain()
@@ -122,16 +123,22 @@ async def read_h2_response(
             break
         for event in conn.receive_data(data):
             if isinstance(event, h2.events.ResponseReceived):
-                status = int(dict(event.headers)[b':status'])
+                if event.stream_id == stream_id:
+                    status = int(dict(event.headers)[b':status'])
             elif isinstance(event, h2.events.TrailersReceived):
-                response_trailers.extend(event.headers)
+                if event.stream_id == stream_id:
+                    response_trailers.extend(event.headers)
             elif isinstance(event, h2.events.DataReceived):
-                response_body.extend(event.data)
+                if event.stream_id == stream_id:
+                    response_body.extend(event.data)
                 conn.acknowledge_received_data(
                     event.flow_controlled_length,
-                    stream_id,
+                    event.stream_id,
                 )
-            elif isinstance(event, h2.events.StreamEnded):
+            elif (
+                isinstance(event, h2.events.StreamEnded)
+                and event.stream_id == stream_id
+            ):
                 pending = conn.data_to_send()
                 if pending:
                     writer.write(pending)

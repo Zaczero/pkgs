@@ -305,8 +305,12 @@ impl RequestAdmission {
     }
 }
 
-/// Slot-owned request state, alive from launch until the Python task's
-/// done-callback releases the slot.
+pub(crate) trait ApplicationFailure: Send + Sync + pyo3::marker::Ungil {
+    fn application_failed(&self);
+}
+
+/// Slot-owned request state, retained until the native application driver and
+/// the Python task have both settled.
 ///
 /// A request keeps its **connection** alive rather than taking owners of its
 /// own: the connection already holds the `AppRuntime` handle and the one
@@ -314,13 +318,15 @@ impl RequestAdmission {
 /// connection-local refcount instead of two global ones plus two counter
 /// updates.
 ///
-/// Field order is the settlement protocol: `admission` releases capacity,
+/// Field order is the settlement protocol: the failure observer drops before
+/// `admission` releases capacity,
 /// records worker completion, and publishes the protocol-specific completion;
 /// `connection` drops last, and its own field order then releases the
 /// `AppRuntime` owner before the tracker token wakes teardown. Teardown's
 /// `Arc::try_unwrap` therefore never observes a guard-held owner after the
 /// tracker drains.
 pub(crate) struct RequestTaskGuard {
+    failure: Option<Arc<dyn ApplicationFailure>>,
     #[expect(
         dead_code,
         reason = "RAII: settles admission state in field order on drop"
@@ -336,8 +342,15 @@ pub(crate) struct RequestTaskGuard {
 impl RequestTaskGuard {
     pub(crate) const fn new(admission: RequestAdmission, connection: ConnectionContext) -> Self {
         Self {
+            failure: None,
             admission,
             connection,
+        }
+    }
+
+    pub(crate) fn application_failed(&self) {
+        if let Some(failure) = &self.failure {
+            failure.application_failed();
         }
     }
 }
@@ -889,9 +902,12 @@ pub(crate) fn start_app_call(
     connection: ConnectionContext,
     args: Box<AppCallArgs>,
     admission: RequestAdmission,
+    failure: Option<Arc<dyn ApplicationFailure>>,
 ) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
     let shard = connection.app.pick_shard();
-    let slot = TaskSlot::with_guard(RequestTaskGuard::new(admission, connection));
+    let mut guard = RequestTaskGuard::new(admission, connection);
+    guard.failure = failure;
+    let slot = TaskSlot::with_guard(guard);
     shard.push(PumpEvent::StartTask {
         args,
         slot: Arc::clone(&slot),
@@ -951,6 +967,7 @@ pub(crate) mod test_fixtures {
                 initial_stream_window_size: NonZeroU32::new(8 << 20).expect("non-zero"),
                 initial_connection_window_size: NonZeroU32::new(8 << 20).expect("non-zero"),
                 timeout_response_stall: None,
+                timeout_write: None,
             },
             max_request_body_size: None,
             timeout_graceful_shutdown: Duration::from_secs(30),

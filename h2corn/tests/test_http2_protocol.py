@@ -700,6 +700,8 @@ async def test_short_content_length_cancels_app_suspended_away_from_receive() ->
 
 
 async def test_incomplete_streaming_response_resets_stream() -> None:
+    prefix_received = asyncio.Event()
+
     async def app(scope, receive, send):
         await send({
             'type': 'http.response.start',
@@ -711,6 +713,7 @@ async def test_incomplete_streaming_response_resets_stream() -> None:
             'body': b'partial',
             'more_body': True,
         })
+        await prefix_received.wait()
 
     config = Config(port=0)
     async with running_server(app, config) as server:
@@ -744,6 +747,7 @@ async def test_incomplete_streaming_response_resets_stream() -> None:
                         status = int(dict(event.headers)[b':status'])
                     elif isinstance(event, h2.events.DataReceived):
                         body.extend(event.data)
+                        prefix_received.set()
                         conn.acknowledge_received_data(
                             event.flow_controlled_length,
                             event.stream_id,

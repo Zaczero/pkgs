@@ -68,10 +68,12 @@ pub(crate) fn start_asgi_http_request(
     // the teardown tracker alive with it.
     let connection = Arc::clone(&ctx.connection);
 
+    let failure = send_state.failure_notification();
     let app_task = start_app_call(
         connection,
         AppCallArgs::http(ctx, request_body, send_state),
         admission,
+        failure,
     );
 
     RunningHttpRequest {
@@ -194,7 +196,11 @@ where
                         .await
                 {
                     send_buffer.close_send_gate();
-                    return finalize_response(response, transport, actions, response_log, Err(err))
+                    let error = match poll_app_task_once(app_task.as_mut()) {
+                        Poll::Ready(Err(app_error)) => app_error,
+                        Poll::Ready(Ok(())) | Poll::Pending => err,
+                    };
+                    return finalize_response(response, transport, actions, response_log, Err(error))
                         .await;
                 }
             }
@@ -246,7 +252,14 @@ where
             apply_admitted_http_event(response, transport, actions, response_log, event).await
         {
             send_buffer.close_send_gate();
-            return finalize_response(response, transport, actions, response_log, Err(err)).await;
+            return finalize_response(
+                response,
+                transport,
+                actions,
+                response_log,
+                Err(app_result.err().unwrap_or(err)),
+            )
+            .await;
         }
     }
     send_buffer.close_send_gate();

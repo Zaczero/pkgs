@@ -1,13 +1,7 @@
-use bytes::{Bytes, BytesMut};
-use tokio::io::AsyncWrite;
+use bytes::BytesMut;
 
-use crate::error::H2CornError;
 use crate::h2::writer::ENCODED_HEADER_BLOCK_CAPACITY;
-use crate::h2::writer::flush::write_frame;
 use crate::h2_frame;
-use crate::h2_frame::{
-    FrameFlags, FrameHeader, FramePayload, FramePayloadLen, FrameType, StreamId,
-};
 use crate::hpack::Encoder;
 use crate::http::digits;
 use crate::http::types::{
@@ -34,6 +28,9 @@ pub(super) struct HeaderEncodeState {
 }
 
 impl HeaderEncodeState {
+    pub(super) fn block(&self) -> &[u8] {
+        &self.block
+    }
     pub(super) fn new() -> Self {
         Self {
             encoder: Encoder::new(),
@@ -67,11 +64,11 @@ impl HeaderEncodeState {
         self.block.as_ref()
     }
 
-    pub(super) fn encode_trailers(&mut self, trailers: &ResponseTrailers) -> Bytes {
+    pub(super) fn encode_trailers(&mut self, trailers: &ResponseTrailers) -> &[u8] {
         self.block.clear();
         self.encoder.begin_block(&mut self.block);
         encode_header_fields(&mut self.encoder, &mut self.block, trailers.as_fields());
-        self.block.clone().freeze()
+        &self.block
     }
 
     pub(super) fn update_max_size(&mut self, peer: usize) {
@@ -96,58 +93,6 @@ impl HeaderEncodeState {
 }
 
 common_status_codes!(common_status_hpack_index_match);
-
-pub(super) async fn write_header_block<W>(
-    writer: &mut W,
-    stream_id: StreamId,
-    end_stream: bool,
-    header_block: &[u8],
-    max_frame_size: FramePayloadLen,
-) -> Result<(), H2CornError>
-where
-    W: AsyncWrite + Unpin,
-{
-    // One HEADERS frame followed by CONTINUATIONs, each carrying at most one
-    // frame's worth of the block. `take` produces the payload and the rest
-    // together, so no chunk can exceed what its length field can express.
-    let mut rest = header_block;
-    let mut first = true;
-    loop {
-        let (payload, remaining) = FramePayload::take(rest, max_frame_size);
-        rest = remaining;
-
-        let is_last = rest.is_empty();
-        let mut flags = if is_last {
-            FrameFlags::END_HEADERS
-        } else {
-            FrameFlags::EMPTY
-        };
-        if first && end_stream {
-            flags |= FrameFlags::END_STREAM;
-        }
-        let frame_type = if first {
-            FrameType::HEADERS
-        } else {
-            FrameType::CONTINUATION
-        };
-
-        write_frame(
-            writer,
-            FrameHeader {
-                frame_type,
-                flags,
-                stream_id: Some(stream_id),
-            },
-            payload,
-        )
-        .await?;
-
-        if is_last {
-            return Ok(());
-        }
-        first = false;
-    }
-}
 
 fn encode_header_block(
     encoder: &mut Encoder,

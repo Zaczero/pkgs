@@ -95,6 +95,7 @@ async def _send_h2_pair(
     first_path: bytes,
     second_path: bytes = b'/sibling',
     ping: bytes | None = None,
+    first_body_received: asyncio.Event | None = None,
 ) -> tuple[dict[int, int], dict[int, bytes], set[int], set[bytes]]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
     first = conn.get_next_available_stream_id()
@@ -143,6 +144,8 @@ async def _send_h2_pair(
                     statuses[event.stream_id] = int(dict(event.headers)[b':status'])
                 elif isinstance(event, h2.events.DataReceived):
                     chunks[event.stream_id].extend(event.data)
+                    if event.stream_id == first and first_body_received is not None:
+                        first_body_received.set()
                     conn.acknowledge_received_data(
                         event.flow_controlled_length, event.stream_id
                     )
@@ -971,6 +974,8 @@ async def test_streaming_content_length_mismatch_closes_http1(mismatch: str) -> 
 async def test_streaming_content_length_mismatch_resets_only_h2_stream(
     mismatch: str,
 ) -> None:
+    prefix_received = asyncio.Event()
+
     async def app(scope, receive, send):
         if scope['path'] == '/sibling':
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
@@ -982,12 +987,15 @@ async def test_streaming_content_length_mismatch_resets_only_h2_stream(
             'headers': [(b'content-length', b'3')],
         })
         await send({'type': 'http.response.body', 'body': b'a', 'more_body': True})
+        await prefix_received.wait()
         tail = b'b' if mismatch == 'short' else b'bcd'
         await send({'type': 'http.response.body', 'body': tail})
 
     async with running_server(app, Config(port=0)) as server:
         statuses, bodies, resets, _ping_acks = await _send_h2_pair(
-            port=server_port(server), first_path=b'/bad'
+            port=server_port(server),
+            first_path=b'/bad',
+            first_body_received=prefix_received,
         )
 
     assert statuses[1] == 200

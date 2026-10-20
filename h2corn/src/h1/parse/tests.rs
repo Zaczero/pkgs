@@ -49,6 +49,7 @@ fn test_server_config() -> &'static ServerConfig {
             initial_stream_window_size: NonZeroU32::new(1 << 20).expect("non-zero"),
             initial_connection_window_size: NonZeroU32::new(2 << 20).expect("non-zero"),
             timeout_response_stall: None,
+            timeout_write: None,
         },
         max_request_body_size: None,
         timeout_graceful_shutdown: Duration::from_secs(30),

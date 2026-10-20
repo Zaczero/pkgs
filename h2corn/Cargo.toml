@@ -51,6 +51,7 @@ pyo3-build-config = { workspace = true, features = ["resolve-config"] }
 [dev-dependencies]
 rstest.workspace = true
 tempfile = "3.27"
+tokio = { version = "1.48", features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
 # `http.response.zerocopysend` duplicates a descriptor the application names by

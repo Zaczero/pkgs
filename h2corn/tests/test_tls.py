@@ -1,16 +1,18 @@
 import asyncio
 import os
 import signal
+import socket
 import ssl
 import subprocess
 import sys
 import textwrap
 from contextlib import suppress
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import h2.config
 import h2.connection
+import h2.settings
 import pytest
 import trustme
 from cryptography import x509
@@ -237,6 +239,141 @@ async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
 
     assert status == 200
     assert body == b'https'
+
+
+@pytest.mark.parametrize('encrypted', [False, True], ids=['h2c', 'tls'])
+@pytest.mark.parametrize('outcome', ['reset', 'failure'])
+async def test_h2_socket_backpressure_preserves_upload_reset_and_sibling_response(
+    tmp_path: Path, encrypted: bool, outcome: str
+) -> None:
+    received = asyncio.Event()
+    cancelled = asyncio.Event()
+    fail = asyncio.Event()
+    short_admitted = asyncio.Event()
+    admitted: asyncio.Queue[int] = asyncio.Queue()
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        if scope['path'] == '/short':
+            await send({'type': 'http.response.body', 'body': b'sibling'})
+            short_admitted.set()
+            return
+
+        async def produce():
+            for index in range(512):
+                await send({
+                    'type': 'http.response.body',
+                    'body': b'x' * (64 * 1024),
+                    'more_body': True,
+                })
+                admitted.put_nowait(index)
+            await send({'type': 'http.response.body', 'body': b''})
+
+        producer = asyncio.create_task(produce())
+        try:
+            event = await receive()
+            assert event['body'] == b'probe'
+            received.set()
+            if outcome == 'failure':
+                await fail.wait()
+                raise RuntimeError('application failure during blocked output')
+            await producer
+        finally:
+            producer.cancel()
+            with suppress(asyncio.CancelledError, OSError):
+                await producer
+            cancelled.set()
+
+    certfile, keyfile = write_self_signed_cert(tmp_path) if encrypted else (None, None)
+    config = Config(
+        port=0,
+        lifespan='off',
+        certfile=certfile,
+        keyfile=keyfile,
+        h2_timeout_response_stall=0,
+        h2_timeout_write=0,
+    )
+    context = client_context(certfile, alpn=['h2']) if certfile is not None else None
+    async with running_server(app, config) as server:
+        reader, writer = await asyncio.open_connection(
+            '127.0.0.1',
+            server_port(server),
+            ssl=context,
+            server_hostname='localhost' if encrypted else None,
+        )
+        transport = cast('asyncio.Transport', writer.transport)
+        sock = writer.get_extra_info('socket')
+        assert sock is not None
+        receive_buffer = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        transport.pause_reading()
+        conn = h2.connection.H2Connection(
+            config=h2.config.H2Configuration(client_side=True, header_encoding=None)
+        )
+        conn.initiate_connection()
+        conn.update_settings({
+            h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 64 * 1024 * 1024
+        })
+        conn.increment_flow_control_window(64 * 1024 * 1024)
+        scheme = b'https' if encrypted else b'http'
+        authority = f'127.0.0.1:{server_port(server)}'.encode()
+        conn.send_headers(
+            1,
+            [
+                (b':method', b'POST'),
+                (b':scheme', scheme),
+                (b':authority', authority),
+                (b':path', b'/duplex'),
+            ],
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+        try:
+            assert await asyncio.wait_for(admitted.get(), timeout=5) == 0
+            while True:
+                try:
+                    index = await asyncio.wait_for(admitted.get(), timeout=0.1)
+                except TimeoutError:
+                    break
+                assert index < 511, (
+                    'the slow peer must leave response production backpressured'
+                )
+            conn.send_data(1, b'probe')
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            await asyncio.wait_for(received.wait(), timeout=5)
+            if outcome == 'reset':
+                conn.reset_stream(1)
+                writer.write(conn.data_to_send())
+                await writer.drain()
+            else:
+                fail.set()
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
+            conn.send_headers(
+                3,
+                [
+                    (b':method', b'GET'),
+                    (b':scheme', scheme),
+                    (b':authority', authority),
+                    (b':path', b'/short'),
+                ],
+                end_stream=True,
+            )
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            await asyncio.wait_for(short_admitted.wait(), timeout=5)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+            transport.resume_reading()
+            status, body, _ = await asyncio.wait_for(
+                read_h2_response(reader, writer, conn, 3), timeout=10
+            )
+            assert status == 200
+            assert body == b'sibling'
+        finally:
+            transport.resume_reading()
+            transport.abort()
+            with suppress(ConnectionError, ssl.SSLError):
+                await writer.wait_closed()
 
 
 async def test_tls_http2_overrides_spoofed_scheme(tmp_path: Path) -> None:

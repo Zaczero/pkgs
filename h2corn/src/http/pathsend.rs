@@ -42,7 +42,7 @@ pub(crate) struct FileStreamer {
     /// inline body queue. `None` for pathsend, so the allocation only happens
     /// for a credited zerocopysend segment -- next to the file I/O it is
     /// already doing.
-    _credit: Option<Box<ResponseBytePermit>>,
+    credit: Option<Box<ResponseBytePermit>>,
 }
 
 #[derive(Debug)]
@@ -66,7 +66,6 @@ impl SendfileCursor<'_> {
     pub(crate) const fn remaining(&self) -> usize {
         *self.unread_file_len
     }
-
     pub(crate) const fn parts(&mut self) -> (&mut File, &mut u64) {
         (self.file, self.file_offset)
     }
@@ -151,6 +150,7 @@ struct PathReadResult {
     file: File,
     buffer: Box<[u8]>,
     read: io::Result<usize>,
+    credit: Option<Box<ResponseBytePermit>>,
 }
 
 impl FileStreamer {
@@ -173,11 +173,18 @@ impl FileStreamer {
             cursor: PathCursor::new(start, len),
             end_stream,
             prefers_sendfile: len >= PATHSEND_SENDFILE_MIN,
-            _credit: credit,
+            credit,
         }
     }
 
     pub(crate) async fn fill(&mut self) -> Result<(), H2CornError> {
+        std::future::poll_fn(|cx| self.poll_fill(cx)).await
+    }
+
+    pub(crate) fn poll_fill(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), H2CornError>> {
         debug_assert!(self.cursor.buffered.is_empty());
         if let Some((file, buffer)) = self.read.take_ready() {
             // Sized to the segment, not to the constant: pathsend only reaches
@@ -196,6 +203,9 @@ impl FileStreamer {
             // never read and never moved -- the two paths cannot disagree, and
             // neither depends on holding an exclusive handle.
             let offset = self.cursor.file_offset;
+            // Cancelling the caller cannot stop a blocking read. Its
+            // descriptor credit follows the worker's actual file lifetime.
+            let credit = self.credit.take();
             self.read = PathReadState::Reading(spawn_blocking(move || {
                 let read = read_at(
                     &file,
@@ -204,30 +214,42 @@ impl FileStreamer {
                         .expect("read length is bounded by the buffer"),
                     offset,
                 );
-                PathReadResult { file, buffer, read }
+                PathReadResult {
+                    file,
+                    buffer,
+                    read,
+                    credit,
+                }
             }));
         }
 
         let joined = match &mut self.read {
-            PathReadState::Reading(task) => task.await,
+            PathReadState::Reading(task) => std::task::ready!(std::pin::Pin::new(task).poll(cx)),
             PathReadState::Ready { .. } | PathReadState::Failed => {
                 unreachable!("fill always owns or resumes one read task")
             },
         };
-        let PathReadResult { file, buffer, read } = match joined {
+        let PathReadResult {
+            file,
+            buffer,
+            read,
+            credit,
+        } = match joined {
             Ok(result) => result,
             Err(err) => {
                 self.read = PathReadState::Failed;
-                return Err(err.into());
+                return std::task::Poll::Ready(Err(err.into()));
             },
         };
         self.read = PathReadState::Ready {
             file,
             buffer: Some(buffer),
         };
-        let read = read?;
-        self.cursor.record_read(read)?;
-        Ok(())
+        self.credit = credit;
+        let result = read
+            .map_err(H2CornError::from)
+            .and_then(|read| self.cursor.record_read(read).map_err(Into::into));
+        std::task::Poll::Ready(result)
     }
 
     pub(crate) const fn is_drained(&self) -> bool {
@@ -419,6 +441,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancelled_file_read_retains_descriptor_credit_until_worker_finishes() {
+        use tokio::sync::oneshot;
+
+        use crate::http::response::ResponseByteBudget;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (started, running) = oneshot::channel();
+            let (release, waiting) = std::sync::mpsc::channel();
+            let worker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _received = waiting.recv();
+            });
+            running.await.unwrap();
+            let path = temp_file(b"owned");
+            let budget = ResponseByteBudget::new(64);
+            let credit = budget.acquire(64).await.unwrap().map(Box::new);
+            let mut streamer =
+                FileStreamer::with_credit(File::open(path).unwrap(), 0, 5, true, credit);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(streamer.poll_fill(&mut cx).is_pending());
+            drop(streamer);
+            assert_eq!(budget.available(), 0);
+            release.send(()).unwrap();
+            worker.await.unwrap();
+            let credit =
+                tokio::time::timeout(std::time::Duration::from_secs(5), budget.acquire(64))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(credit.is_some());
+        });
+    }
+
     fn temp_file(payload: &[u8]) -> TempPath {
         let mut file = NamedTempFile::new().expect("temporary pathsend file is allocated");
         file.write_all(payload)
@@ -509,7 +570,12 @@ mod tests {
             let read = file
                 .read_exact(&mut buffer[..payload_len])
                 .map(|()| payload_len);
-            PathReadResult { file, buffer, read }
+            PathReadResult {
+                file,
+                buffer,
+                read,
+                credit: None,
+            }
         }));
 
         let mut first_fill = Box::pin(streamer.fill());
