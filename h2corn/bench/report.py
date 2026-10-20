@@ -69,10 +69,14 @@ def render_accessible_results(record: dict[str, Any]) -> str:
     results = record['aggregate']
     failures = record.get('failures', {})
     websocket = record['type'] == 'ws'
+    rpc = record.get('benchmark_family') == 'grpc'
+    message_rate = rpc and record['rate_unit'] == 'messages/s'
     duration = 'session' if websocket else 'latency'
     headers = [
         'Server',
         record.get('rate_unit', 'Sessions/s' if websocket else 'Requests/s'),
+        *(['Complete RPC/s'] if message_rate else []),
+        *(['Median completed RPCs/trial'] if rpc else []),
         f'p50 {duration} (ms)',
         f'p99 {duration} (ms)',
         'PSS (MB)',
@@ -93,7 +97,9 @@ def render_accessible_results(record: dict[str, Any]) -> str:
                 if name in record.get('not_selected', {})
                 else 'unsupported'
             )
-            rows.append(f'| {name} | {status} | - | - | - | - |')
+            rows.append(
+                '| ' + ' | '.join([name, status, *(['-'] * (len(headers) - 2))]) + ' |'
+            )
             continue
         result = results[name]
         comparison = '-'
@@ -106,6 +112,8 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         cells = [
             record.get('stack_labels', {}).get(name, name),
             format_rate(result['rps']),
+            *([format_rate(result['rpc_rate'])] if message_rate else []),
+            *([f'{result["completed"]:,.1f}'.removesuffix('.0')] if rpc else []),
             *(
                 f'{percentiles[key] * 1000:,.3f}' if key in percentiles else '-'
                 for key in ('p50', 'p99')

@@ -119,7 +119,8 @@ tiny and bulk unary messages, upload, download, duplex, and representative
 verified TLS workloads. The client validates every message and terminal outcome.
 Streaming plots use verified response messages per second; upload and unary
 plots use complete RPCs per second. Latency percentiles are upper bounds from
-1%-width client histogram buckets, summarized across trials.
+1%-width client histogram buckets, summarized across trials. Tables also retain
+complete RPC rates and median completed calls per trial.
 
 The gRPC family uses one serving process and one standard asyncio loop per
 arm, identity compression, and no access logging. It retains native runtime

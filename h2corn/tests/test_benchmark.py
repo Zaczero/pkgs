@@ -354,6 +354,29 @@ def test_grpc_table_distinguishes_subset_omission_from_unsupported():
     assert '| grpclib | not selected |' in table
 
 
+def test_grpc_stream_table_reports_messages_complete_calls_and_trial_counts():
+    from bench.report import render_accessible_results
+
+    table = render_accessible_results({
+        'type': 'grpc',
+        'benchmark_family': 'grpc',
+        'rate_unit': 'messages/s',
+        'aggregate': {
+            'grpcio': {
+                'rps': 128,
+                'rpc_rate': 2,
+                'completed': 42.5,
+                'peak_memory_bytes': 3_000_000,
+                'latency_percentiles': {'p50': 0.001, 'p99': 0.005},
+            },
+        },
+        'requested_servers': ['grpcio'],
+    })
+    assert 'Complete RPC/s' in table
+    assert 'Median completed RPCs/trial' in table
+    assert '| grpcio | 128 | 2.00 | 42.5 | 1.000 | 5.000 | 3.0 | - |' in table
+
+
 @pytest.mark.parametrize(
     'arguments',
     [

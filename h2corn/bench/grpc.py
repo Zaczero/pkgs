@@ -791,6 +791,11 @@ def run_suite(args: Any) -> Path:
             identity='../evidence/grpc/identity.json',
             evidence=f'../evidence/grpc/trials/{scenario.slug()}',
         )
+        messages_per_rpc = (
+            scenario.messages if scenario.shape in {'download', 'duplex'} else 1
+        )
+        for result in record['aggregate'].values():
+            result['rpc_rate'] = result['rps'] / messages_per_rpc
         write_json(directory / 'raw' / f'{scenario.slug()}.json', record)
         plot_results(record, directory / 'plots' / f'{scenario.slug()}.svg')
     write_json(
