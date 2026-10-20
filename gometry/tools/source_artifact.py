@@ -839,15 +839,13 @@ def extract_sdist(archive: tarfile.TarFile, destination: Path) -> None:
         archive.extract(member, destination)
 
 
-def cargo_metadata(root: Path, *, locked: bool) -> dict[str, Any]:
+def _cargo_json(root: Path, arguments: list[str]) -> dict[str, Any]:
     command = [
         'cargo',
-        'metadata',
-        '--format-version=1',
+        *arguments,
+        '--manifest-path',
+        str(root / 'gometry' / 'Cargo.toml'),
     ]
-    if locked:
-        command.append('--locked')
-    command.extend(['--manifest-path', str(root / 'gometry' / 'Cargo.toml')])
     env = os.environ.copy()
     env.pop('RUSTC_WRAPPER', None)
     env['CARGO_TERM_COLOR'] = 'never'
@@ -861,18 +859,47 @@ def cargo_metadata(root: Path, *, locked: bool) -> dict[str, Any]:
     )
     if result.returncode:
         raise AssertionError(
-            f'cargo metadata {"--locked " if locked else ""}failed '
+            f'cargo {" ".join(arguments)} failed '
             f'(exit {result.returncode}): {result.stderr.strip()}'
         )
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise AssertionError(
-            f'cargo metadata returned invalid JSON: {error}'
+            f'cargo {arguments[0]} returned invalid JSON: {error}'
         ) from error
     if not isinstance(value, dict):
-        raise TypeError('cargo metadata returned a non-object')
+        raise TypeError(f'cargo {arguments[0]} returned a non-object')
     return value
+
+
+def cargo_metadata(root: Path, *, locked: bool) -> dict[str, Any]:
+    arguments = ['metadata', '--format-version=1']
+    if locked:
+        arguments.append('--locked')
+    return _cargo_json(root, arguments)
+
+
+def cargo_build_features(root: Path) -> dict[str, set[str]]:
+    # Metadata unifies the whole workspace, including features from sibling
+    # packages that are absent from this library's actual build.
+    graph = _cargo_json(
+        root,
+        ['build', '--locked', '--lib', '--unit-graph', '-Z', 'unstable-options'],
+    )
+    if graph.get('version') != 1 or not isinstance(graph.get('units'), list):
+        raise AssertionError('cargo build unit graph is malformed or unsupported')
+    features: dict[str, set[str]] = {}
+    for unit in graph['units']:
+        if not isinstance(unit, dict) or not isinstance(unit.get('pkg_id'), str):
+            raise TypeError('cargo build unit has no package id')
+        selected = unit.get('features')
+        if not isinstance(selected, list) or not all(
+            isinstance(feature, str) for feature in selected
+        ):
+            raise TypeError('cargo build unit has a malformed feature list')
+        features.setdefault(unit['pkg_id'], set()).update(selected)
+    return features
 
 
 def _lock_tuple(package: Mapping[str, Any]) -> tuple[str, str, str | None, str | None]:
@@ -945,11 +972,12 @@ def _metadata_external_tuples(
 
 
 def required_source_records(
-    metadata: Mapping[str, Any], *, root: Path | None = None
+    metadata: Mapping[str, Any], *, root: Path
 ) -> list[dict[str, Any]]:
     packages = metadata.get('packages')
     if not isinstance(packages, list):
         raise TypeError('cargo metadata has no packages array')
+    build_features = cargo_build_features(root)
     expected = (
         ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',), None),
         # These path packages and their selected features attest the bundled
@@ -1012,7 +1040,7 @@ def required_source_records(
                 f'from {source!r}; found {len(matches)}'
             )
         package = matches[0]
-        if relative_manifest is not None and root is not None:
+        if relative_manifest is not None:
             manifest_path = package.get('manifest_path')
             expected_manifest = root / relative_manifest / 'Cargo.toml'
             if (
@@ -1025,24 +1053,11 @@ def required_source_records(
         package_id = package.get('id')
         if not isinstance(package_id, str):
             raise TypeError(f'cargo metadata {name} has no package id')
-        resolve = metadata.get('resolve')
-        if not isinstance(resolve, dict) or not isinstance(resolve.get('nodes'), list):
-            raise TypeError('cargo metadata resolve graph is malformed')
-        nodes = [
-            node
-            for node in resolve['nodes']
-            if isinstance(node, dict) and node.get('id') == package_id
-        ]
-        if len(nodes) != 1:
+        selected_features = build_features.get(package_id)
+        if selected_features is None:
             raise AssertionError(
-                f'cargo metadata has no unique feature node for {name}'
+                f'cargo build unit graph has no required package {name}'
             )
-        selected = nodes[0].get('features')
-        if not isinstance(selected, list) or not all(
-            isinstance(feature, str) for feature in selected
-        ):
-            raise AssertionError(f'cargo metadata feature list for {name} is malformed')
-        selected_features = set(selected)
         expected_features = set(features)
         if selected_features != expected_features:
             raise AssertionError(
