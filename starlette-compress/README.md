@@ -109,7 +109,16 @@ remove_compress_type("application/json")
 
 ### Server-sent events (SSE)
 
-`text/event-stream` responses are compressed by default. The middleware flushes the compressor after each non-empty ASGI body message (it does not parse SSE frames — two events in one message share one flush; empty continuation messages are skipped). Streaming types bypass `minimum_size`. The middleware forwards `http.response.start` immediately so clients such as `EventSource` can open before the first event — though ASGI servers may still buffer that start until the first body. On pathsend-capable scopes, start is deferred to the first content message (body or pathsend) so a file send is never advertised as compressed.
+`text/event-stream` responses are compressed by default and bypass
+`minimum_size`. The compressor flushes after each non-empty continuing ASGI body
+message and finishes on the terminal message. It does not parse SSE frames:
+two events in one message share one flush, and empty continuation messages are
+skipped.
+
+The middleware forwards `http.response.start` immediately so clients such as
+`EventSource` can open before the first event, though the ASGI server may buffer
+it until the first body. On pathsend-capable scopes, start is deferred to the
+first body or pathsend message so a file send is never advertised as compressed.
 
 To opt out:
 
@@ -119,7 +128,8 @@ from starlette_compress import remove_compress_type
 remove_compress_type("text/event-stream")
 ```
 
-NDJSON / JSONL are **not registered by default** (they are neither compressed nor treated as streaming until added). Opt in when you need compression and/or low-latency line delivery:
+NDJSON / JSONL are not registered by default. Opt in for compressed,
+incremental line delivery:
 
 ```py
 from starlette_compress import add_compress_type
@@ -128,7 +138,8 @@ add_compress_type("application/x-ndjson", streaming=True)
 add_compress_type("application/jsonl", streaming=True)
 ```
 
-Flush guarantees that compressed bytes are available from the codec after each non-empty message; it does not control proxy or CDN buffering (this package does not set `X-Accel-Buffering` or similar).
+Flushing makes compressed bytes available from the codec; proxy and CDN
+buffering remain separate.
 
 ### Dropping Accept-Encoding header
 
@@ -157,10 +168,10 @@ merge `Accept-Encoding` into `Vary`, including the identity path, except
 ordinary bodies below threshold. Raw pathsend forwarding preserves the
 original headers.
 
-Ordinary streams have no per-message flush guarantee. Streaming-registered
-types flush after each non-empty continuing ASGI body message and finish on
-the terminal message; omitted `more_body` means false. Configure the
-process-wide registry before serving requests. Registration is
+Ordinary streams have no per-message flush guarantee; register a type as
+[streaming](#server-sent-events-sse) for incremental delivery. Omitted
+`more_body` means false. Configure the process-wide registry before serving
+requests. Registration is
 case-insensitive and idempotent; a plain re-add retains streaming membership,
 and removal clears both memberships.
 
