@@ -769,6 +769,41 @@ async fn consecutive_response_failure_discards_current_output_before_start() {
 }
 
 #[tokio::test]
+async fn duplicate_final_headers_reset_without_writing_the_body() {
+    let target = GatedWriter::new(usize::MAX, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let id = StreamId::new(1).unwrap();
+    writer
+        .send_headers(id, status_code::OK, ResponseHeaders::new(), false)
+        .unwrap();
+    writer.flush().await.unwrap();
+    gate.lock().bytes.clear();
+    writer
+        .process_command(WriterCommand::SendFinal {
+            stream_id: id,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            data: bytes::Bytes::from_static(b"unsent").into(),
+            credit: None,
+        })
+        .unwrap();
+    writer.flush().await.unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Abort,
+        id
+    )]);
+    assert_eq!(
+        frames(&gate.lock().bytes)
+            .iter()
+            .map(|frame| (frame.0, frame.2))
+            .collect::<Vec<_>>(),
+        [(3, id.get())]
+    );
+    drop(writer);
+}
+
+#[tokio::test]
 async fn reset_preserves_continuations_and_dynamic_header_history() {
     let target = GatedWriter::new(12, true);
     let gate = Arc::clone(&target.0);

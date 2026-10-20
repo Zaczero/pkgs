@@ -19,7 +19,7 @@ use crate::config::ServerConfig;
 use crate::error::H2CornError;
 use crate::h2::deadline::DeadlineQueue;
 use crate::h2::writer::header_encode::HeaderEncodeState;
-use crate::h2::writer::ingress::{QueuedCommandBatch, QueuedStreamCommands, WriterIngress};
+use crate::h2::writer::ingress::{QueuedStreamCommands, WriterIngress};
 use crate::h2::writer::stream_state::{
     BodyItem, ReadyStreamQueue, StreamBodyState, StreamWriteState, StreamWriteStates, writer_stream,
 };
@@ -299,6 +299,31 @@ impl<W: WriteTarget> WriterState<W> {
         self.output_started.get_or_insert_with(Instant::now);
     }
 
+    fn open_response_headers(
+        &mut self,
+        stream_id: StreamId,
+        status: HttpStatusCode,
+        headers: &ResponseHeaders,
+        end_stream: bool,
+    ) -> Result<bool, H2CornError> {
+        let stream = writer_stream(
+            &mut self.streams,
+            stream_id,
+            self.initial_stream_send_window,
+        );
+        if stream.open_response(end_stream).is_err() {
+            self.retire_stream(stream_id);
+            self.queue_command(WriterCommand::SendReset {
+                stream_id,
+                error_code: ErrorCode::INTERNAL_ERROR,
+            })?;
+            return Ok(false);
+        }
+        self.header_state.encode_response(status, headers);
+        self.begin_headers(stream_id, end_stream);
+        Ok(true)
+    }
+
     fn apply_command(&mut self, command: WriterCommand) -> Result<(), H2CornError> {
         match command {
             WriterCommand::SendHeaders {
@@ -307,20 +332,7 @@ impl<W: WriteTarget> WriterState<W> {
                 headers,
                 end_stream,
             } => {
-                let stream = writer_stream(
-                    &mut self.streams,
-                    stream_id,
-                    self.initial_stream_send_window,
-                );
-                if stream.open_response(end_stream).is_err() {
-                    self.retire_stream(stream_id);
-                    return self.queue_command(WriterCommand::SendReset {
-                        stream_id,
-                        error_code: ErrorCode::INTERNAL_ERROR,
-                    });
-                }
-                self.header_state.encode_response(status, &headers);
-                self.begin_headers(stream_id, end_stream);
+                self.open_response_headers(stream_id, status, &headers, end_stream)?;
             },
             WriterCommand::SendFinal {
                 stream_id,
@@ -330,13 +342,9 @@ impl<W: WriteTarget> WriterState<W> {
                 credit,
             } => {
                 let end_stream = data.is_empty();
-                self.apply_command(WriterCommand::SendHeaders {
-                    stream_id,
-                    status,
-                    headers,
-                    end_stream,
-                })?;
-                if !end_stream {
+                if self.open_response_headers(stream_id, status, &headers, end_stream)?
+                    && !end_stream
+                {
                     self.streams
                         .get_mut(stream_id)
                         .expect("response has headers")
@@ -519,7 +527,7 @@ impl<W: WriteTarget> WriterState<W> {
         }
         let mut progressed = false;
         'streams: while !drained.is_empty() {
-            while let Some(mut batch) = drained.last_mut().and_then(|entry| entry.1.pop_front()) {
+            while let Some(batch) = drained.last_mut().and_then(|entry| entry.1.front_mut()) {
                 while let Some(command) = batch.commands.pop_front() {
                     if let WriterCommand::FlushStream(id) = command {
                         let pending = self
@@ -536,9 +544,7 @@ impl<W: WriteTarget> WriterState<W> {
                                 commands.push_back(next);
                             }
                             batch.commands = commands;
-                            let (stream_id, mut queued) =
-                                drained.pop().expect("drained stream exists");
-                            prepend_batch(&mut queued, batch);
+                            let (stream_id, queued) = drained.pop().expect("drained stream exists");
                             self.ingress
                                 .restore_drained(std::iter::once((stream_id, queued)));
                             continue 'streams;
@@ -552,11 +558,12 @@ impl<W: WriteTarget> WriterState<W> {
                         progressed = true;
                     }
                     if self.active.is_some() || self.flushing {
-                        if !batch.commands.is_empty() {
-                            prepend_batch(
-                                &mut drained.last_mut().expect("drained stream exists").1,
-                                batch,
-                            );
+                        if batch.commands.is_empty() {
+                            drained
+                                .last_mut()
+                                .expect("drained stream exists")
+                                .1
+                                .pop_front();
                         }
                         if drained.last().is_some_and(|entry| entry.1.is_empty()) {
                             drained.pop();
@@ -565,6 +572,11 @@ impl<W: WriteTarget> WriterState<W> {
                         return Ok(progressed);
                     }
                 }
+                drained
+                    .last_mut()
+                    .expect("drained stream exists")
+                    .1
+                    .pop_front();
             }
             drained.pop();
         }
@@ -1134,15 +1146,6 @@ impl<W: WriteTarget> WriterState<W> {
         self.refresh_response_deadline(stream_id);
         Ok(())
     }
-}
-
-fn prepend_batch(queue: &mut QueuedStreamCommands, batch: QueuedCommandBatch) {
-    let mut restored = QueuedStreamCommands::new();
-    restored.push_back(batch);
-    while let Some(batch) = queue.pop_front() {
-        restored.push_back(batch);
-    }
-    *queue = restored;
 }
 
 fn initial_settings(config: &ServerConfig) -> Settings {
