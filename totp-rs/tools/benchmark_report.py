@@ -130,13 +130,7 @@ def _admit(
 
 
 def _caption(metadata: dict) -> str:
-    return (
-        f'{metadata["cpu_model_name"]} · {metadata["platform"]} · '
-        f'{metadata["python_implementation"]} {metadata["python_version"]}\n'
-        'Fixed timestamp · SHA-1, SHA-256, and SHA-512 · six digits · '
-        '30-second period · verification window ±1\n'
-        '12 independent worker-process means per workload'
-    )
+    return f'{metadata["cpu_model_name"]} · CPython {metadata["python_version"]}'
 
 
 def _markdown(
@@ -145,65 +139,46 @@ def _markdown(
     native_comparison: Report,
 ) -> str:
     summaries = {(item.case, item.name): item for item in comparison.results}
+    native_name = next(
+        item.name for item in comparison.results if item.name.startswith('totp-rs ')
+    )
+    pyotp_name = next(
+        item.name for item in comparison.results if item.name.startswith('pyotp ')
+    )
     rows = [
         '# TOTP generation and verification',
         '',
         _caption(metadata),
         '',
-        'Warmup-only runs remain in the raw JSON and are omitted from the table.',
+        'Fixed timestamp · Six digits · 30-second period · verification window ±1.',
+        'Median time per call; lower is faster.',
         '',
-        'Intervals are 95% percentile bootstrap intervals with 10,000 resamples '
-        'across worker-process means.',
+        '## Code generation and verification',
         '',
-        '## Matched PyOTP comparison',
-        '',
-        '| Workload | Implementation | Median time | 95% interval | Worker processes |',
-        '| --- | --- | ---: | ---: | ---: |',
+        '| Workload | ' + native_name + ' | ' + pyotp_name + ' |',
+        '| --- | ---: | ---: |',
     ]
     for case in case_definitions('pyotp'):
-        for implementation in ('totp-rs', 'pyotp'):
-            summary = next(
-                item
-                for (label, name), item in summaries.items()
-                if label == case['label'] and name.startswith(implementation + ' ')
-            )
-            interval = (
-                '—'
-                if summary.interval is None
-                else f'{_time(summary.interval[0])} to {_time(summary.interval[1])}'
-            )
-            rows.append(
-                f'| {case["label"]} | {summary.name} | {_time(summary.median)} | '
-                f'{interval} | {summary.runs} |'
-            )
+        values = [
+            _time(summaries[case['label'], name].median)
+            for name in (native_name, pyotp_name)
+        ]
+        rows.append(f'| {case["label"]} | ' + ' | '.join(values) + ' |')
 
     rows.extend([
         '',
-        '## Native-only input forms',
+        f'## Raw-key and time-counter calls · {native_name}',
         '',
-        '| Workload | Implementation | Median time | 95% interval | Worker processes |',
-        '| --- | --- | ---: | ---: | ---: |',
+        '| Workload | Median time per call |',
+        '| --- | ---: |',
     ])
     native_summaries = {item.case: item for item in native_comparison.results}
     for case in case_definitions('totp-rs'):
         if case['group'] != 'native-only':
             continue
         summary = native_summaries[case['label']]
-        interval = (
-            '—'
-            if summary.interval is None
-            else f'{_time(summary.interval[0])} to {_time(summary.interval[1])}'
-        )
-        rows.append(
-            f'| {case["label"]} | {summary.name} | {_time(summary.median)} | '
-            f'{interval} | {summary.runs} |'
-        )
-    rows.extend([
-        '',
-        'Raw-key generation, generation from a precomputed time counter, and time-counter '
-        'extraction have no PyOTP row and are not included in the speed comparison.',
-        '',
-    ])
+        rows.append(f'| {case["label"]} | {_time(summary.median)} |')
+    rows.append('')
     return '\n'.join(rows)
 
 
@@ -236,7 +211,7 @@ def report(
         axes = figure.axes[0]
         axes.set_xscale('log')
         axes.xaxis.set_major_formatter(EngFormatter(unit='s'))
-        axes.set_xlabel('Median time per call · logarithmic scale · lower is faster')
+        axes.set_xlabel('Median time per call · log scale · lower is faster')
         lower = min(
             item.interval[0] if item.interval is not None else item.median
             for item in comparison.results

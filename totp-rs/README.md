@@ -53,40 +53,39 @@ attempts; enforce those in your application.
 
 ## Benchmarks
 
-The matched comparison measures code generation and verification with PyOTP
-using SHA-1, SHA-256, and SHA-512. Lower time is faster.
+Matched cases generate and verify six-digit TOTP codes with SHA-1, SHA-256,
+and SHA-512, using the same Base32 secret and timestamp, 30-second period, and
+±1 verification window.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/results-dark.svg">
-  <img src="benchmarks/results.svg" alt="Median time to generate a current TOTP code, verify current and previous-step codes, and reject an incorrect code with SHA-1, SHA-256, and SHA-512. Rows compare totp-rs and PyOTP; the logarithmic horizontal axis is lower-is-faster, with 95% intervals across worker-process means.">
+  <img src="benchmarks/results.svg" alt="Median time to generate and verify TOTP codes with SHA-1, SHA-256, and SHA-512.">
 </picture>
 
-Both implementations use the same Base32 secret, timestamp, six-digit code,
-30-second period, and ±1 verification window. The separate native-only results
-measure generation from raw keys, generation from a precomputed time counter,
-and time-counter extraction; they are not compared with PyOTP.
+Median time per call; lower is faster.
 
-Across the four matched operations per algorithm, PyOTP median times were
-23.7–59.3 times as long for SHA-1, 20.6–52 times as long for SHA-256, and
-4.96–13.7 times as long for SHA-512 on this workstation.
+| Algorithm / implementation | Generate current code | Verify current | Verify previous step | Reject incorrect |
+| --- | ---: | ---: | ---: | ---: |
+| SHA-1 · totp-rs 1.0.0 | 386 ns | 394 ns | 476 ns | 568 ns |
+| SHA-1 · PyOTP 2.10.0 | 10.8 µs | 22.7 µs | 11.3 µs | 33.7 µs |
+| SHA-256 · totp-rs 1.0.0 | 451 ns | 449 ns | 558 ns | 647 ns |
+| SHA-256 · PyOTP 2.10.0 | 10.9 µs | 22.8 µs | 11.5 µs | 33.6 µs |
+| SHA-512 · totp-rs 1.0.0 | 1.79 µs | 1.77 µs | 2.48 µs | 3.17 µs |
+| SHA-512 · PyOTP 2.10.0 | 11.7 µs | 24.3 µs | 12.3 µs | 36.0 µs |
 
-The measured versions are totp-rs 1.0.0 and
-[PyOTP 2.10.0](https://pypi.org/project/pyotp/2.10.0/). Runs used CPython
-3.15.0 (Clang 23.1.3) with pyperf 2.10.0 on a shared Ryzen 9 5950X workstation
-(Linux 7.2.9, microcode `0xa201213`). Each case has twelve independent
-worker-process means from three calibrated readings of at least 0.1 seconds
-each after one warmup. Six-worker batches ran totp-rs then PyOTP, followed by
-PyOTP then totp-rs. The table reports medians and 95% percentile bootstrap
-intervals from 10,000 resamples of worker-process means. Native wheels used
-release builds with rustc 1.101.0-nightly (`4ebd25825`, LLVM 23.1.4) targeting
-x86-64-v2. Warmup-only runs remain in the raw JSON but are excluded from the
-reported values and intervals. Benchroom 0.1.0 and Matplotlib 3.11.2 generated
-the report.
+## Raw-key and time-counter calls
 
-[Full results, including native-only input forms](benchmarks/results.md), raw results
-([totp-rs](benchmarks/totp-rs.json), [PyOTP](benchmarks/pyotp.json)), and the
-[benchmark](benchmark.py) and [report generator](tools/benchmark_report.py)
-retain the measurement details.
+| Call | SHA-1 | SHA-256 | SHA-512 |
+| --- | ---: | ---: | ---: |
+| Generate from raw key | 326 ns | 340 ns | 1.58 µs |
+| Generate from a precomputed counter | 284 ns | 303 ns | 1.53 µs |
+| Extract time counter | 70.1 ns | — | — |
+
+Measured on CPython 3.15.0 on a Ryzen 9 5950X running Linux 7.2.9. Values are
+medians across twelve worker-process means; chart whiskers show 95% intervals.
+
+[Full results](benchmarks/results.md) · [Raw PyPerf results](benchmarks/totp-rs.json) ·
+[Benchmark source](benchmark.py)
 
 ## API reference and support
 
