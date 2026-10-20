@@ -159,72 +159,49 @@ def _time(value: float) -> str:
     raise AssertionError('time formatter exhausted its units')
 
 
+def _workload_label(case: dict) -> str:
+    return case['label'].removeprefix(f'{case["operation"].title()} · ')
+
+
 def _markdown(results: Report, definitions: tuple[dict, ...], metadata: dict) -> str:
-    captions = (
-        f'{metadata["cpu_model_name"]} · {metadata["platform"]} · '
-        f'{metadata["python_implementation"]} {metadata["python_version"]}\n'
-        f'Pillow {metadata["pillow_version"]} · NumPy {metadata["numpy_version"]}\n'
-        'Each value is a median of 12 independent worker-process means; '
-        '95% percentile bootstrap intervals use 10,000 resamples across those workers.\n'
-        'Warmup-only runs remain in the raw JSON and are omitted from the table.'
-    )
+    names = tuple(dict.fromkeys(item.name for item in results.results))
     summaries = {(item.case, item.name): item for item in results.results}
-    rows = [f'# {results.title}', '', captions, '']
+    rows = [
+        f'# {results.title}',
+        '',
+        f'{metadata["cpu_model_name"]} · CPython {metadata["python_version"]} · '
+        f'Pillow {metadata["pillow_version"]} · NumPy {metadata["numpy_version"]}',
+        '',
+        'Median time per image; lower is faster.',
+        '',
+    ]
     for operation, heading in (
-        ('encode', 'Encode a Pillow image'),
-        ('decode', 'Decode to a Pillow image'),
+        ('encode', 'Encode Pillow images'),
+        ('decode', 'Decode RGB Pillow images'),
     ):
         rows.extend([
             f'## {heading}',
             '',
-            '| Workload | Implementation | Median time | 95% interval | Worker processes |',
-            '| --- | --- | ---: | ---: | ---: |',
+            '| Workload | ' + ' | '.join(names) + ' |',
+            '| --- | ' + ' | '.join('---:' for _ in names) + ' |',
         ])
         for case in definitions:
             if case['operation'] != operation:
                 continue
-            for implementation in (
-                'blurhash-rs',
-                'blurhash',
-                'blurhash-python',
-            ):
-                summary = next(
-                    item
-                    for (label, name), item in summaries.items()
-                    if label == case['label'] and name.startswith(implementation + ' ')
-                )
-                interval = (
-                    '—'
-                    if summary.interval is None
-                    else f'{_time(summary.interval[0])} to {_time(summary.interval[1])}'
-                )
-                rows.append(
-                    f'| {case["label"]} | {summary.name} | '
-                    f'{_time(summary.median)} | {interval} | {summary.runs} |'
-                )
+            values = [_time(summaries[case['label'], name].median) for name in names]
+            rows.append(f'| {_workload_label(case)} | ' + ' | '.join(values) + ' |')
         rows.append('')
-    rows.extend([
-        'All three implementations use the same image dimensions and component counts. '
-        'Pillow-to-NumPy conversion, the RGB image copy required by blurhash-python, '
-        'and Pillow output construction are included where their interfaces require them.',
-        '',
-    ])
     return '\n'.join(rows)
 
 
 def _environment_caption(metadata: dict) -> str:
-    return (
-        f'{metadata["cpu_model_name"]} · {metadata["python_implementation"]} '
-        f'{metadata["python_version"]} · Pillow {metadata["pillow_version"]} · '
-        f'NumPy {metadata["numpy_version"]}\n'
-        '12 independent worker-process means per workload'
-    )
+    return f'{metadata["cpu_model_name"]} · CPython {metadata["python_version"]}'
 
 
 def _scaling_caption(metadata: dict) -> str:
     return (
         f'{_environment_caption(metadata)}\n'
-        'Dots: medians · Whiskers: 95% bootstrap intervals · lower is faster'
+        'Median time per image; whiskers show 95% intervals'
     )
 
 
@@ -299,7 +276,7 @@ def _save_variants(
         if case['operation'] == operation and case['group'] != 'square-size'
     ]
     series = tuple(
-        item
+        Series(_workload_label(case), item.name, item.values)
         for case in cases
         for implementation in ('blurhash-rs', 'blurhash', 'blurhash-python')
         for item in by_implementation[implementation][1]

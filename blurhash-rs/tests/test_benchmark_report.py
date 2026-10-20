@@ -84,11 +84,15 @@ def test_report_keeps_every_case_in_tables_and_charts(tmp_path: Path) -> None:
     report(paths, str(tmp_path / 'report'))
 
     markdown = (tmp_path / 'report/results.md').read_text()
-    assert 'Median time' in markdown
-    assert '95% interval' in markdown
-    assert '12 independent worker-process means' in markdown
+    assert (
+        '| Workload | blurhash-rs 1.1.0 | blurhash 1.1.5 | blurhash-python 1.2.2 |'
+        in markdown
+    )
+    assert 'Median time per image' in markdown
+    assert '95% interval' not in markdown
     for case in CASE_DEFINITIONS:
-        assert case['label'] in markdown
+        label = case['label'].removeprefix(f'{case["operation"].title()} · ')
+        assert label in markdown
     for operation in ('encode', 'decode'):
         for group in ('', '-workloads'):
             for theme in ('', '-dark'):
