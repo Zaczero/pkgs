@@ -1069,7 +1069,11 @@ async fn stream_flush_orders_close_after_all_data_without_blocking_siblings() {
         stream_id: first,
         error_code: ErrorCode::NO_ERROR,
     });
-    writer.ingress.enqueue_batch(first, commands).await.unwrap();
+    writer
+        .ingress
+        .enqueue_batch(first, &mut commands)
+        .await
+        .unwrap();
     writer.register_stream(sibling, None);
     writer
         .ingress

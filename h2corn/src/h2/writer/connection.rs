@@ -130,7 +130,7 @@ impl H2WriterHandle {
     pub(crate) async fn send_commands(
         &self,
         stream_id: StreamId,
-        commands: WriterCommandBatch,
+        commands: &mut WriterCommandBatch,
     ) -> Result<(), H2CornError> {
         self.ingress.enqueue_batch(stream_id, commands).await
     }

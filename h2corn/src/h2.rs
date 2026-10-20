@@ -2356,7 +2356,7 @@ mod tests {
         });
         state
             .connection
-            .send_commands(failed, commands)
+            .send_commands(failed, &mut commands)
             .await
             .unwrap();
         prepare_connection_egress(&mut state).await.unwrap();
@@ -2382,7 +2382,7 @@ mod tests {
         });
         state
             .connection
-            .send_commands(sibling, commands)
+            .send_commands(sibling, &mut commands)
             .await
             .unwrap();
         assert!(matches!(

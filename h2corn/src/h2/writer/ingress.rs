@@ -283,13 +283,13 @@ impl WriterIngress {
     ) -> Result<(), H2CornError> {
         let mut commands = WriterCommandBatch::new();
         commands.push_back(command);
-        self.enqueue_batch(stream_id, commands).await
+        self.enqueue_batch(stream_id, &mut commands).await
     }
 
     pub(super) async fn enqueue_batch(
         &self,
         stream_id: StreamId,
-        commands: WriterCommandBatch,
+        commands: &mut WriterCommandBatch,
     ) -> Result<(), H2CornError> {
         if commands.is_empty() {
             return Ok(());
@@ -317,7 +317,7 @@ impl WriterIngress {
             return H2Error::ConnectionWriterClosed.err();
         };
         queue.enqueue_batch(stream_id, QueuedCommandBatch {
-            commands,
+            commands: std::mem::take(commands),
             _permit: permit,
         })?;
         drop(guard);
@@ -372,12 +372,14 @@ impl WriterIngress {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::task::Poll;
 
     use tokio::task::yield_now;
 
     use super::{WRITER_CHANNEL_CAPACITY, WriterIngress};
-    use crate::h2::writer::WriterCommand;
+    use crate::h2::writer::{WriterCommand, WriterCommandBatch};
     use crate::h2_frame::StreamId;
+    use crate::http::response::ResponseByteBudget;
 
     #[tokio::test]
     async fn closed_typestate_rejects_new_commands() {
@@ -430,6 +432,43 @@ mod tests {
         );
         assert_eq!(ingress.permits.available_permits(), WRITER_CHANNEL_CAPACITY);
         assert!(!ingress.has_pending());
+        drop(ingress);
+    }
+
+    #[tokio::test]
+    async fn cancelling_batch_admission_preserves_the_callers_payload() {
+        let ingress = WriterIngress::new();
+        let stream_id = StreamId::new(1).unwrap();
+        ingress.register(stream_id);
+        for _ in 0..WRITER_CHANNEL_CAPACITY {
+            ingress
+                .enqueue(stream_id, WriterCommand::FlushStream(stream_id))
+                .await
+                .unwrap();
+        }
+        let budget = ResponseByteBudget::new(8);
+        let mut commands = WriterCommandBatch::new();
+        commands.push_back(WriterCommand::SendData {
+            stream_id,
+            data: bytes::Bytes::from_static(b"retained").into(),
+            credit: budget.acquire(8).await.unwrap(),
+            end_stream: true,
+        });
+        {
+            let mut admission = std::pin::pin!(ingress.enqueue_batch(stream_id, &mut commands));
+            let polled = std::future::poll_fn(|cx| {
+                Poll::Ready(std::future::Future::poll(admission.as_mut(), cx))
+            })
+            .await;
+            assert!(polled.is_pending());
+        }
+        assert_eq!(commands.len(), 1);
+        budget.try_acquire(8).unwrap_err();
+        assert_eq!(ingress.permits.available_permits(), 0);
+        drop(commands);
+        budget.try_acquire(8).unwrap();
+        ingress.close();
+        assert_eq!(ingress.permits.available_permits(), WRITER_CHANNEL_CAPACITY);
         drop(ingress);
     }
 

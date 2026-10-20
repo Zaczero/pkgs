@@ -88,7 +88,7 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
             self.connection.config(),
         )?;
         self.connection
-            .send_commands(self.stream_id, commands)
+            .send_commands(self.stream_id, &mut commands)
             .await
     }
 
@@ -128,7 +128,7 @@ impl HttpResponseTransport for H2HttpTransport<'_> {
         }
 
         self.connection
-            .send_commands(self.stream_id, commands)
+            .send_commands(self.stream_id, &mut commands)
             .await
     }
 }
