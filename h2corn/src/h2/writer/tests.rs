@@ -691,7 +691,7 @@ async fn application_failure_retires_terminal_output_before_flush() {
 }
 
 #[tokio::test]
-async fn application_failure_after_flush_preserves_clean_completion() {
+async fn application_failure_after_flush_cannot_poison_later_output() {
     let target = GatedWriter::new(usize::MAX, true);
     let gate = Arc::clone(&target.0);
     let mut writer = WriterState::new_test(target);
@@ -706,12 +706,65 @@ async fn application_failure_after_flush_preserves_clean_completion() {
         id
     )]);
     let bytes = gate.lock().bytes.clone();
+    let next = StreamId::new(3).unwrap();
+    writer
+        .send_headers(next, status_code::OK, ResponseHeaders::new(), true)
+        .unwrap();
     failure.application_failed();
     drop(failure);
-    let mut cx = Context::from_waker(std::task::Waker::noop());
-    assert!(writer.poll_egress(&mut cx).is_pending());
     assert!(writer.take_response_closes().is_empty());
-    assert_eq!(gate.lock().bytes, bytes);
+    writer.flush().await.unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Clean,
+        next
+    )]);
+    assert!(gate.lock().bytes.starts_with(&bytes));
+    assert!(frames(&gate.lock().bytes).iter().all(|frame| frame.0 != 3));
+    drop(writer);
+}
+
+#[tokio::test]
+async fn consecutive_response_failure_discards_current_output_before_start() {
+    let target = GatedWriter::new(usize::MAX, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let first = StreamId::new(1).unwrap();
+    writer
+        .send_headers(first, status_code::OK, ResponseHeaders::new(), true)
+        .unwrap();
+    writer.flush().await.unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Clean,
+        first
+    )]);
+    gate.lock().bytes.clear();
+    let next = StreamId::new(3).unwrap();
+    writer.register_stream(next, None);
+    writer
+        .ingress
+        .enqueue(next, WriterCommand::SendFinal {
+            stream_id: next,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            data: bytes::Bytes::from_static(b"unsent").into(),
+            credit: None,
+        })
+        .await
+        .unwrap();
+    writer.ingress.gate(next).unwrap().application_failed();
+    writer.drain_app_writes().unwrap();
+    writer.flush().await.unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::ProducerFailed,
+        next
+    )]);
+    assert_eq!(
+        frames(&gate.lock().bytes)
+            .iter()
+            .map(|frame| (frame.0, frame.2))
+            .collect::<Vec<_>>(),
+        [(3, next.get())]
+    );
     drop(writer);
 }
 

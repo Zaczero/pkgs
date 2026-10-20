@@ -25,6 +25,27 @@ pub(super) struct StreamGate {
 }
 
 impl StreamGate {
+    fn for_stream(
+        previous: Option<Arc<Self>>,
+        stream_id: StreamId,
+        ingress: &Arc<WriterIngress>,
+    ) -> Arc<Self> {
+        let gate = Self {
+            stream_id,
+            state: AtomicU8::new(OPEN),
+            closed: Notify::new(),
+            ingress: Arc::downgrade(ingress),
+        };
+        if let Some(mut previous) = previous
+            && let Some(unshared) = Arc::get_mut(&mut previous)
+        {
+            *unshared = gate;
+            previous
+        } else {
+            Arc::new(gate)
+        }
+    }
+
     fn is_open(&self) -> bool {
         self.state.load(Ordering::Acquire) == OPEN
     }
@@ -92,6 +113,7 @@ struct OpenWriterIngressQueue {
     ready_streams: VecDeque<StreamId>,
     streams: StreamMap<PendingAppWrites>,
     aborts: VecDeque<StreamId>,
+    completed_gate: Option<Arc<StreamGate>>,
 }
 
 enum WriterIngressQueue {
@@ -208,6 +230,7 @@ impl WriterIngress {
                 ready_streams: VecDeque::new(),
                 streams: new_stream_map(),
                 aborts: VecDeque::new(),
+                completed_gate: None,
             })),
             notify: Notify::new(),
             permits: Arc::new(Semaphore::new(WRITER_CHANNEL_CAPACITY)),
@@ -220,17 +243,13 @@ impl WriterIngress {
         let WriterIngressQueue::Open(queue) = &mut *queue else {
             return;
         };
+        let completed_gate = &mut queue.completed_gate;
         queue
             .streams
             .entry(stream_id)
             .or_insert_with(|| PendingAppWrites {
                 commands: QueuedStreamCommands::new(),
-                gate: Arc::new(StreamGate {
-                    stream_id,
-                    state: AtomicU8::new(OPEN),
-                    closed: Notify::new(),
-                    ingress: Arc::downgrade(self),
-                }),
+                gate: StreamGate::for_stream(completed_gate.take(), stream_id, self),
             });
     }
 
@@ -256,7 +275,11 @@ impl WriterIngress {
         {
             return false;
         }
-        queue.streams.remove(&stream_id);
+        let stream = queue
+            .streams
+            .remove(&stream_id)
+            .expect("completed stream exists");
+        queue.completed_gate = Some(stream.gate);
         true
     }
 
