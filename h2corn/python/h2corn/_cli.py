@@ -10,8 +10,6 @@ from typing import NoReturn, TypeAlias, cast
 
 from h2corn._config import (
     CONFIG_PATH_ENV_VAR,
-    CONVENIENCE_KEYS,
-    DEFAULT_BIND,
     OPTION_GROUPS,
     Config,
     ConfigOption,
@@ -341,6 +339,24 @@ def _add_development_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _overlay_tcp_bind_sugar(
+    base_bind: tuple[str, ...],
+    host: object,
+    port: object,
+) -> tuple[str, ...] | None:
+    if host is MISSING and port is MISSING:
+        return base_bind
+    convenience = tcp_bind_convenience(base_bind)
+    if convenience is None:
+        return None
+    base_host, base_port = convenience
+    host_value = base_host if host is MISSING else cast('str', host)
+    port_value = base_port if port is MISSING else cast('int', port)
+    bind = bind_from_convenience(host_value, port_value)
+    assert bind is not None
+    return bind
+
+
 def _apply_tcp_bind_sugar(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -357,14 +373,9 @@ def _apply_tcp_bind_sugar(
         return
     if host is MISSING and port is MISSING:
         return
-    convenience = tcp_bind_convenience(base.bind)
-    if convenience is None:
+    bind = _overlay_tcp_bind_sugar(base.bind, host, port)
+    if bind is None:
         parser.error('--host/--port require a single TCP listener base configuration')
-    base_host, base_port = convenience
-    host_value = base_host if host is MISSING else cast('str', host)
-    port_value = base_port if port is MISSING else cast('int', port)
-    bind = bind_from_convenience(host_value, port_value)
-    assert bind is not None
     values['bind'] = bind
 
 
@@ -397,16 +408,15 @@ def parse_cli(
                 )
                 for option in config_options()
             }
-            if CONVENIENCE_KEYS & environment_values.keys():
-                if tcp_bind_convenience(base.bind) is None:
+            host = environment_values.get('host', MISSING)
+            port = environment_values.get('port', MISSING)
+            if host is not MISSING or port is not MISSING:
+                bind = _overlay_tcp_bind_sugar(base.bind, host, port)
+                if bind is None:
                     raise ValueError(
                         'host/port environment overrides require a single configured TCP listener'
                     )
-                values['bind'] = DEFAULT_BIND
-                values |= {
-                    key: environment_values.get(key, getattr(base, key))
-                    for key in CONVENIENCE_KEYS
-                }
+                values['bind'] = bind
             base = Config(**values)
     except (ValueError, TypeError, OSError) as exc:
         parser = build_parser(base, config_path)

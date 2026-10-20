@@ -971,18 +971,44 @@ def test_cli_parser_defaults_and_flags_follow_config_option_schema() -> None:
             assert action.metavar == option.metadata.cli_metavar
 
 
-def test_parse_cli_applies_env_listener_convenience_overrides(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ('env', 'flags', 'expected_bind'),
+    [
+        pytest.param(
+            {'H2CORN_PORT': '9020'},
+            ['--port', '9020'],
+            ('192.0.2.1:9020',),
+            id='preserve-toml-host',
+        ),
+        pytest.param(
+            {'H2CORN_HOST': '198.51.100.7'},
+            ['--host', '198.51.100.7'],
+            ('198.51.100.7:9010',),
+            id='preserve-toml-port',
+        ),
+    ],
+)
+def test_parse_cli_preserves_unoverridden_toml_bind_component(
+    tmp_path: Path,
+    env: dict[str, str],
+    flags: list[str],
+    expected_bind: tuple[str, ...],
+) -> None:
     config_path = tmp_path / 'h2corn.toml'
-    config_path.write_text('port = 9010')
+    config_path.write_text('bind = ["192.0.2.1:9010"]')
 
-    cli_settings, import_settings, config = parse_cli(
+    cli_settings, import_settings, env_config = parse_cli(
         ['--config', str(config_path), 'example:app'],
-        {'H2CORN_PORT': '9020'},
+        env,
     )
-
+    _cli_settings, _import_settings, cli_config = parse_cli(
+        ['--config', str(config_path), *flags, 'example:app'],
+        {},
+    )
     assert cli_settings == CliSettings()
     assert import_settings == ImportSettings(target='example:app')
-    assert config.bind == ('127.0.0.1:9020',)
+    assert env_config.bind == expected_bind
+    assert cli_config.bind == expected_bind
 
 
 def test_request_policy_environment_and_cli_precedence(tmp_path: Path) -> None:
