@@ -240,6 +240,7 @@ def inspect_runtime_inputs(
     kind = receipt.get('kind')
     quality_receipt = kind == 'gometry-quality-runtime'
     sanitizer_receipt = kind == 'gometry-sanitizer-runtime'
+    benchmark_wheel_receipt = kind == 'gometry-benchmark-wheel'
     if sanitizer_receipt:
         from sanitizers import validate_sanitizer_producer_inputs
 
@@ -358,7 +359,9 @@ def inspect_runtime_inputs(
             wheel_inspection,
             target_policy,
             label=str(expected_wheel),
-            validate_tags=not (quality_receipt or sanitizer_receipt),
+            validate_tags=not (
+                quality_receipt or sanitizer_receipt or benchmark_wheel_receipt
+            ),
         )
         extension_records = wheel_inspection['extension_members']
         if len(extension_records) != 1:

@@ -870,6 +870,81 @@ def test_source_identity_accepts_null_commit_but_requires_bound_source_fields() 
         source_artifact.validate_source_identity(missing_commit)
 
 
+def test_source_manifest_wheel_subject_records_the_running_interpreter(
+    tmp_path: Path,
+    quality_artifact_root: Path,
+) -> None:
+    quality_receipt = quality_runtime.read_quality_receipt(quality_artifact_root)
+    source = quality_receipt['source']
+    version = source['version']
+    wheel_record = quality_receipt['wheel']
+    wheel = tmp_path / wheel_record['filename']
+    shutil.copyfile(quality_artifact_root.parent / wheel_record['path'], wheel)
+    sdist_name = f'gometry-{version}.tar.gz'
+    sdist = tmp_path / sdist_name
+    metadata = f'Metadata-Version: 2.4\nName: gometry\nVersion: {version}\n'.encode()
+    with tarfile.open(sdist, 'w:gz') as archive:
+        member = tarfile.TarInfo(f'gometry-{version}/PKG-INFO')
+        member.size = len(metadata)
+        archive.addfile(member, io.BytesIO(metadata))
+    prepared = quality_receipt['prepared_inputs']
+    target = quality_receipt['build']['target']
+    manifest = {
+        'schema': source_artifact.SOURCE_MANIFEST_SCHEMA,
+        'kind': 'gometry-source-manifest',
+        'package': 'gometry',
+        'commit': None,
+        'source_inputs_format': artifact_common.SOURCE_INPUTS_FORMAT,
+        'source_inputs_sha256': source['source_inputs_sha256'],
+        'python_members': source['python_members'],
+        'native_source_inputs_format': artifact_common.SOURCE_INPUTS_FORMAT,
+        'native_source_inputs_sha256': source['native_source_inputs_sha256'],
+        'prepared_inputs': prepared,
+        'generated_output_hashes': prepared['files'],
+        'sdist': {
+            'filename': sdist_name,
+            'sha256': artifact_common.sha256_file(sdist),
+            'version': version,
+        },
+        'cargo': {
+            'lock_preimage_sha256': 'a' * 64,
+            'lock_normalized_sha256': 'b' * 64,
+            'required_sources': [{'name': 'test fixture'}],
+        },
+        'toolchain': {
+            'channel': 'nightly',
+            'maturin': artifact_common.MATURIN_VERSION,
+            'cargo': 'cargo fixture',
+            'rustc': f'rustc fixture\nhost: {target}',
+            'maturin_pep517_args': artifact_common.RELEASE_MATURIN_ARGS,
+        },
+    }
+    source_artifact.validate_source_identity(source_artifact.source_identity(manifest))
+    source_manifest = tmp_path / source_artifact.SOURCE_MANIFEST_NAME
+    source_manifest.write_text(json.dumps(manifest), encoding='utf-8')
+
+    subject = benchmark_runtime.load_subject(wheel)
+
+    assert subject['kind'] == 'wheel'
+    assert subject['source']['source_inputs_sha256'] == source['source_inputs_sha256']
+    assert subject['runtime_receipt']['kind'] == 'gometry-benchmark-wheel'
+    assert (
+        subject['runtime_receipt']['build']['profile']
+        == release_artifact.RELEASE_PROFILE
+    )
+    assert (
+        subject['runtime_receipt']['wheel']['extension_sha256']
+        == wheel_record['extension_sha256']
+    )
+    interpreter = subject['runtime_receipt']['build']['interpreter']
+    assert interpreter['resolved_executable'] == str(Path(sys.executable).resolve())
+    assert interpreter['cache_tag'] == sys.implementation.cache_tag
+    assert interpreter['ext_suffix'] == sysconfig.get_config_var('EXT_SUFFIX')
+    assert interpreter['gil_disabled'] == bool(
+        sysconfig.get_config_var('Py_GIL_DISABLED')
+    )
+
+
 def test_source_manifest_rejects_an_unsupported_schema(tmp_path: Path) -> None:
     source_sdist = tmp_path / 'gometry-1.0.0.tar.gz'
     source_sdist.write_bytes(b'previous receipt')

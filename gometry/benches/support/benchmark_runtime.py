@@ -29,7 +29,7 @@ for _path in (_TOOLS, _DRIVERS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from _artifact_common import sha256_file
+from _artifact_common import _runtime_interpreter, sha256_file
 from bench_doctor import (
     PACKAGES,
     _loaded_native_libraries,
@@ -138,7 +138,7 @@ def load_subject(
             'build': {
                 'profile': release_artifact.RELEASE_PROFILE,
                 'target': target,
-                'interpreter': release_artifact._runtime_interpreter(),
+                'interpreter': _runtime_interpreter(),
             },
         }
         return {
