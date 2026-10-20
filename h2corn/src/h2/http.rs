@@ -493,14 +493,85 @@ fn append_response_action(
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
+    use std::sync::Arc;
 
     use super::{
-        FinalResponseBody, WriterCommand, WriterCommandBatch, push_final_response_commands,
+        FinalResponseBody, H2HttpTransport, WriterCommand, WriterCommandBatch,
+        push_final_response_commands,
     };
+    use crate::bridge::HttpOutboundEvent;
     use crate::config::ResponseHeaderConfig;
+    use crate::h2::writer::{GatedWriter, ResponseClose, init_writer};
     use crate::h2_frame::StreamId;
-    use crate::http::response::{FileSegment, ResponseStart};
-    use crate::http::types::{ResponseHeaders, status_code};
+    use crate::http::app::HttpSendDisposition;
+    use crate::http::header::ResponseConnectionDirective;
+    use crate::http::response::{
+        FileSegment, HttpResponseTransport as _, ResponseAction, ResponseStart,
+    };
+    use crate::http::types::{FinalResponseStatus, ResponseHeaders, status_code};
+    use crate::runtime::test_fixtures;
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the transport only borrows the connection; its sender pair escapes the transport scope"
+    )]
+    #[tokio::test]
+    async fn producer_failure_reaches_queued_output_after_send_buffer_teardown() {
+        let target = GatedWriter::new(usize::MAX, true);
+        let wire = Arc::clone(&target.0);
+        let (mut writer, connection) =
+            init_writer(target, Arc::new(test_fixtures::server_config_parts()), None)
+                .await
+                .unwrap();
+        wire.lock().bytes.clear();
+        let id = StreamId::new(1).unwrap();
+        writer.register_stream(id, None);
+        let (send, buffer) = {
+            let mut transport = H2HttpTransport::new(&connection, id);
+            let (send, buffer) = transport.new_http_send_state();
+            for event in [
+                HttpOutboundEvent::Start {
+                    status: FinalResponseStatus::new(status_code::OK).unwrap(),
+                    headers: ResponseHeaders::new(),
+                    trailers: false,
+                    directive: ResponseConnectionDirective::default(),
+                },
+                HttpOutboundEvent::Body {
+                    body: bytes::Bytes::new().into(),
+                    more_body: false,
+                },
+            ] {
+                assert!(matches!(
+                    send.push_or_forward(event),
+                    HttpSendDisposition::Buffered | HttpSendDisposition::Sent
+                ));
+            }
+            transport
+                .apply_response_action(ResponseAction::Final {
+                    start: ResponseStart::new(status_code::OK, ResponseHeaders::new()),
+                    body: FinalResponseBody::Empty,
+                })
+                .await
+                .unwrap();
+            (send, buffer)
+        };
+        drop(connection);
+        drop(buffer);
+        send.failure_notification()
+            .expect("HTTP/2 publishes producer failure independently of command admission")
+            .application_failed();
+        drop(send);
+        writer.drain_app_writes().unwrap();
+        writer.flush().await.unwrap();
+        assert_eq!(writer.take_response_closes().as_slice(), &[(
+            ResponseClose::ProducerFailed,
+            id
+        )]);
+        drop(writer);
+        assert_eq!(wire.lock().bytes.as_slice(), &[
+            0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 2
+        ]);
+    }
 
     #[test]
     fn final_file_response_batches_headers_then_pathsend() {
