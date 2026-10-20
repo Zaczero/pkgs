@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import secrets
@@ -42,6 +43,7 @@ try:
         RESULTS_DIRECTORY,
         BenchmarkError,
         MeasuredMetrics,
+        ResponseError,
         Scenario,
         allocated_listener,
         bootstrap_median_ci,
@@ -51,10 +53,12 @@ try:
         ensure_large_upload_payload,
         ensure_static_file_payload,
         measure_peak_memory,
+        peer_settings,
         request_response,
         rotations,
         run_load,
         running_server,
+        terminate_process_group,
         write_json,
     )
     from bench.evidence import build_wheel, run_identity, verify_workers
@@ -63,6 +67,7 @@ try:
         SERVER_LINESTYLES,
         SERVER_MARKERS,
         alt_text,
+        format_rate,
         render_accessible_results,
     )
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
@@ -70,6 +75,7 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         RESULTS_DIRECTORY,
         BenchmarkError,
         MeasuredMetrics,
+        ResponseError,
         Scenario,
         allocated_listener,
         bootstrap_median_ci,
@@ -79,10 +85,12 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         ensure_large_upload_payload,
         ensure_static_file_payload,
         measure_peak_memory,
+        peer_settings,
         request_response,
         rotations,
         run_load,
         running_server,
+        terminate_process_group,
         write_json,
     )
     from evidence import build_wheel, run_identity, verify_workers
@@ -91,6 +99,7 @@ except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
         SERVER_LINESTYLES,
         SERVER_MARKERS,
         alt_text,
+        format_rate,
         render_accessible_results,
     )
 
@@ -103,14 +112,14 @@ CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
 #: Fixed cold-start trials avoid stopping on a favourable confidence interval.
 MIN_TRIALS = 3
-MAX_TRIALS = 4
+MAX_TRIALS = 8
 #: Hard wall-clock ceiling per scenario and for the whole suite. Trial duration
 #: is never shortened to fit — the suite reports what it measured and says which
 #: scenarios stopped on time rather than completing the trial count. The suite ceiling has to
 #: cover every scenario spending its own, or a full run dies partway with
 #: nothing published; `main` refuses a combination that cannot fit.
-SCENARIO_BUDGET_SECONDS = 240.0
-SUITE_BUDGET_SECONDS = 7200.0
+SCENARIO_BUDGET_SECONDS = 1800.0
+SUITE_BUDGET_SECONDS = 48600.0
 SEED = 20_260_726
 
 NETEM_DELAY_MS = 25.0
@@ -659,7 +668,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
                 ),
             ],
             'http_backend': 'h2' if scenario.contract.protocol == '2' else 'python',
-            'http2_limits': {
+            'requested_http2_limits': {
                 'max_concurrent_streams': 256,
                 'initial_window_size': 8_388_608,
                 'max_frame_size': 65_536,
@@ -700,6 +709,24 @@ def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
     }
 
 
+class TrialError(BenchmarkError):
+    def __init__(self, phase: str, message: str) -> None:
+        super().__init__(message)
+        self.phase = phase
+
+
+def load_plan(scenario: Scenario, duration: str, warmup: str) -> dict[str, Any]:
+    if scenario.contract.request_body_path is not None:
+        concurrency = scenario.concurrency or CONCURRENCY
+        return {
+            'mode': 'fixed-count',
+            'requests': 2 * concurrency,
+            'warmup_requests': concurrency,
+            'timeout_seconds': 120,
+        }
+    return {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
+
+
 def measure_cell(
     name: str,
     scenario: Scenario,
@@ -712,13 +739,17 @@ def measure_cell(
 ) -> MeasuredMetrics:
     """One cold-start trial: start, prove correctness, warm up, measure, prove again."""
     concurrency = scenario.concurrency or CONCURRENCY
+    plan = load_plan(scenario, duration, warmup)
     evidence_directory.mkdir(parents=True)
+    identity_directory = evidence_directory / 'worker-identities'
+    identity_directory.mkdir()
     started = time.monotonic()
     trial: dict[str, Any] = {
         'server': name,
         'phase': 'listener',
         'status': 'running',
         'started_at': datetime.now(UTC).isoformat(),
+        'load_plan': plan,
     }
     try:
         with allocated_listener(scenario) as (live, listener):
@@ -742,23 +773,26 @@ def measure_cell(
                 socket_path=live.socket_path,
                 scenario=live,
                 listener_fd=listener.fileno(),
+                identity_directory=identity_directory,
             ) as server:
                 trial['phase'] = 'identity'
-                receipts = {}
-                deadline = time.monotonic() + 15
-                while len(receipts) < live.workers:
-                    receipt = json.loads(
-                        request_response(live, '/__bench/identity', timeout=5)
-                    )
-                    receipts[receipt['pid']] = receipt
-                    if time.monotonic() >= deadline:
-                        raise BenchmarkError(
-                            'worker identity collection exceeded 15 seconds'
-                        )
+                receipts = {
+                    pid: json.loads((identity_directory / f'{pid}.json').read_text())
+                    for pid in server.worker_pids
+                }
+                receipt = json.loads(
+                    request_response(live, '/__bench/identity', timeout=5)
+                )
+                if receipt['pid'] not in receipts:
+                    raise BenchmarkError('serving worker changed after readiness')
+                receipts[receipt['pid']] = receipt
                 trial['workers'] = receipts
                 if identity is not None:
                     verify_workers(trial, identity)
                 trial['supervisor_pid'] = server.pid
+                if live.contract.protocol == '2':
+                    trial['phase'] = 'settings'
+                    trial['http2_peer'] = peer_settings(live)
                 trial['phase'] = 'correctness-before'
                 check_response(live)
                 trial['correctness_before'] = 'passed'
@@ -768,6 +802,7 @@ def measure_cell(
                     duration=warmup,
                     concurrency=concurrency,
                     evidence_path=evidence_directory / 'warmup.json',
+                    requests=plan.get('warmup_requests'),
                 )
                 trial['phase'] = 'load'
                 metrics, peak_memory_bytes = measure_peak_memory(
@@ -777,6 +812,7 @@ def measure_cell(
                         duration=duration,
                         concurrency=concurrency,
                         evidence_path=evidence_directory / 'load.json',
+                        requests=plan.get('requests'),
                     ),
                     evidence_path=evidence_directory / 'memory.json',
                 )
@@ -791,7 +827,10 @@ def measure_cell(
                 trial['phase'] = 'cleanup'
     except (OSError, ValueError, RuntimeError) as error:
         trial.update(status='failed', error=str(error))
-        raise BenchmarkError(f'{name} {trial["phase"]} failed: {error}') from error
+        raise TrialError(
+            trial['phase'],
+            f'{name} {trial["phase"]} failed: {error}',
+        ) from error
     else:
         trial.update(status='completed', phase='completed')
         return measured
@@ -840,9 +879,9 @@ def workload_description(scenario: Scenario) -> str:
     concurrency = scenario.concurrency or CONCURRENCY
     return (
         descriptions[scenario.type]
-        + f'; {concurrency} client connections'
+        + f'; {concurrency} client connection{"s" if concurrency != 1 else ""}'
         + (
-            f' with {scenario.http2_parallelism} streams per connection'
+            f' with {scenario.http2_parallelism} stream{"s" if scenario.http2_parallelism != 1 else ""} per connection'
             if scenario.contract.protocol == '2'
             else ''
         )
@@ -864,12 +903,21 @@ def run_scenario(
     names = list(servers)
     samples: dict[str, list[MeasuredMetrics]] = {name: [] for name in names}
     excluded: dict[str, str] = {}
+    failures: dict[str, dict[str, Any]] = {}
     stopped = 'max-trials'
     trials = 0
     blocks = []
-    for trial, order in enumerate(rotations(names, max_trials, SEED), start=1):
-        blocks.append({'block': trial, 'order': order})
+    for trial in range(1, max_trials + 1):
+        remaining = [name for name in names if name not in failures]
+        order = rotations(remaining, max_trials, SEED)[trial - 1]
+        blocks.append({
+            'block': trial,
+            'order': order,
+            'not_repeated_after_failure': list(failures),
+        })
         for name in order:
+            if name in failures:
+                continue
             if time.monotonic() >= deadline:
                 raise BenchmarkError(
                     f'{scenario.name} deadline before block {trial}, {name}'
@@ -889,9 +937,9 @@ def run_scenario(
                             identity=identity,
                         )
                     )
-            except BenchmarkError as error:
+            except TrialError as error:
                 write_json(
-                    evidence_directory / 'failure.json',
+                    evidence_directory / f'failure-{name}.json',
                     {
                         'scenario': scenario.name,
                         'blocks': blocks,
@@ -900,13 +948,22 @@ def run_scenario(
                         'samples': samples,
                     },
                 )
-                raise
-        remaining = [name for name in names if name in samples]
+                if name == 'h2corn' or not isinstance(error.__cause__, ResponseError):
+                    raise
+                failures[name] = {
+                    'phase': error.phase,
+                    'error': str(error),
+                    'block': trial,
+                    'evidence': f'block-{trial:02d}/{name}',
+                    'status': 'response_validation_failed',
+                }
+                print(f'  FAILED {name}: {error}', flush=True)
+        remaining = [name for name in names if name not in failures]
         if not remaining:
             raise BenchmarkError(f'every server failed {scenario.name}')
         trials = trial
         medians = ', '.join(
-            f'{name} {statistics.median([s["rps"] for s in samples[name]]):,.0f}'
+            f'{name} {format_rate(statistics.median([s["rps"] for s in samples[name]]))}'
             for name in remaining
         )
         print(
@@ -916,20 +973,34 @@ def run_scenario(
         if trial < max_trials and time.monotonic() > deadline:
             stopped = 'time-budget'
             break
+    plan = load_plan(scenario, duration, warmup)
+    description = workload_description(scenario)
+    if plan['mode'] == 'fixed-count':
+        description += f'; {plan["requests"]} completed requests per trial'
     return {
         'scenario': scenario.name,
-        'workload': workload_description(scenario),
+        'status': 'attempted_with_failures' if failures else 'completed',
+        'workload': description,
+        'load_plan': plan,
         'type': scenario.type,
         'workers': scenario.workers,
         'trials': trials,
         'planned_trials': max_trials,
         'stopped': stopped,
         'excluded': excluded,
+        'failures': failures,
+        'requested_servers': names,
         'server_profiles': server_profiles(scenario),
         'blocks': blocks,
         'samples': samples,
-        'paired_contrasts': paired_contrasts(samples),
-        'aggregate': {name: aggregate(values) for name, values in samples.items()},
+        'paired_contrasts': paired_contrasts({
+            name: values for name, values in samples.items() if name not in failures
+        }),
+        'aggregate': {
+            name: aggregate(values)
+            for name, values in samples.items()
+            if name not in failures
+        },
     }
 
 
@@ -950,6 +1021,7 @@ def plot_results(
             record['scenario'],
             record['aggregate'],
             'sessions/s' if record['type'] == 'ws' else 'requests/s',
+            record.get('failures'),
         )
     )
 
@@ -960,19 +1032,38 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     summary = record['system_summary']
     websocket = record['type'] == 'ws'
     excluded = record['excluded']
+    failures = record.get('failures', {})
     figure, axes = plt.subplots(1, 3, figsize=(15, 6), layout='constrained')
     figure.suptitle(title, fontsize=17, fontweight='bold')
 
-    names = sorted(results, key=lambda name: list(SERVER_COLORS).index(name))
+    names = sorted(
+        {*results, *failures},
+        key=lambda name: list(SERVER_COLORS).index(name),
+    )
     versions = record['package_versions']
-    labels = [f'{name}\n{versions.get(name)}' for name in names]
-    rates = [results[name]['rps'] for name in names]
+    labels = [
+        f'{name}\n{versions.get(name)}'
+        + (' (source)' if name == 'h2corn' and record.get('source_build') else '')
+        for name in names
+    ]
+    rates = [results[name]['rps'] if name in results else math.nan for name in names]
     colors = [SERVER_COLORS[name][dark] for name in names]
     foreground = mpl.rcParams['text.color']
 
     throughput = axes[0]
     bars = throughput.bar(labels, rates, color=colors)
     for bar, name in zip(bars, names, strict=True):
+        if name in failures:
+            throughput.text(
+                bar.get_x() + bar.get_width() / 2,
+                0.05,
+                f'Failed\n{failures[name]["phase"]}',
+                ha='center',
+                va='bottom',
+                transform=throughput.get_xaxis_transform(),
+                fontsize=9,
+            )
+            continue
         low, high = results[name]['rps_range']
         median = results[name]['rps']
         if high > low:
@@ -993,8 +1084,10 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
                 for index in range(len(samples))
             ],
             samples,
-            s=16,
-            color=foreground,
+            s=20,
+            facecolors='#111923' if dark else '#ffffff',
+            edgecolors=foreground,
+            linewidths=0.8,
             zorder=3,
         )
     unit = 'sessions/s' if websocket else 'requests/s'
@@ -1006,13 +1099,15 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     figure.canvas.draw()
     baseline = throughput.transData.transform((0, 0))[1]
     for bar, name in zip(bars, names, strict=True):
+        if name in failures:
+            continue
         _, high = results[name]['rps_range']
         value = results[name]['rps']
         center = bar.get_x() + bar.get_width() / 2
         top = max(value, high)
         height_pixels = throughput.transData.transform((0, value))[1] - baseline
         throughput.annotate(
-            f'{value:,.0f}',
+            format_rate(value),
             (center, top),
             xytext=(0, 4 if height_pixels >= 28 else 20),
             textcoords='offset points',
@@ -1022,9 +1117,19 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
         )
 
     memory = axes[2]
-    memory_values = [results[name]['peak_memory_bytes'] / 1e6 for name in names]
+    memory_values = [
+        results[name]['peak_memory_bytes'] / 1e6 if name in results else math.nan
+        for name in names
+    ]
     memory_bars = memory.bar(labels, memory_values, color=colors)
-    memory.bar_label(memory_bars, fmt='%.1f', padding=4)
+    memory.bar_label(
+        memory_bars,
+        labels=[
+            '' if name in failures else f'{value:.1f}'
+            for name, value in zip(names, memory_values, strict=True)
+        ],
+        padding=4,
+    )
     memory.set_ylabel('Maximum sampled PSS (decimal MB)')
     memory.set_title('Deployment memory · lower is better')
     memory.margins(y=0.16)
@@ -1032,6 +1137,8 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     latency = axes[1]
     plotted = False
     for name, label in zip(names, labels, strict=True):
+        if name in failures:
+            continue
         percentiles = results[name]['latency_percentiles']
         if not percentiles:
             continue
@@ -1065,7 +1172,8 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
     footer = (
         summary.replace('\n', ' · ')
         + '\nBars: median rate · Dots: fresh-start trials · Whiskers: observed range'
-        + f'\n{record["trials"]} fresh starts · Latency: median trial percentiles'
+        + f'\nTrials per timed server: {record["trials"]} · Fresh server starts'
+        + '\nLatency: median trial percentiles · Failed cells have no timing'
         + '\n'
         + textwrap.fill(record.get('workload', ''), width=145)
     )
@@ -1079,6 +1187,13 @@ def _plot_results(record: dict[str, Any], path: Path, *, dark: bool) -> None:
             ),
             width=135,
         )
+    if failures:
+        footer += '\nTiming unavailable: ' + '; '.join(
+            f'{name} failed {failure["phase"]}'
+            for name, failure in sorted(failures.items())
+        )
+    if build := record.get('source_build'):
+        footer += f'\nh2corn: source {build["revision"][:12]} · release profile'
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
     plt.close(figure)
@@ -1170,7 +1285,7 @@ def run_rtt50_namespace(
 ) -> tuple[int | None, str | None]:
     """Start the 50 ms profile in a throwaway unprivileged network namespace."""
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [
                 'unshare',
                 '-rn',
@@ -1182,19 +1297,24 @@ def run_rtt50_namespace(
             env={**os.environ, NETEM_NAMESPACE_ENV: '1'},
             stderr=subprocess.PIPE,
             text=True,
-            check=False,
-            timeout=timeout,
+            start_new_session=True,
         )
     except OSError as error:
         return None, str(error)
+    try:
+        _, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        terminate_process_group(process)
         raise BenchmarkError(
             '50 ms RTT namespace exceeded its suite deadline'
         ) from error
-    detail = result.stderr.strip() or None
-    if result.returncode and detail:
+    except BaseException:
+        terminate_process_group(process)
+        raise
+    detail = stderr.strip() or None
+    if process.returncode and detail:
         print(detail, file=sys.stderr)
-    return result.returncode, detail
+    return process.returncode, detail
 
 
 def publish(run_directories: Sequence[Path]) -> None:
@@ -1252,11 +1372,20 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
             raise BenchmarkError(f'no identified release build in {run_directory}')
         for record_path in records:
             record = json.loads(record_path.read_text())
+            if record.get('planned_trials', 0) < MIN_TRIALS:
+                incomplete.append(f'{record["scenario"]}: insufficient planned trials')
             if record.get('status') == 'skipped':
                 incomplete.append(record['scenario'])
                 continue
             if record.get('stopped') == 'time-budget' or not record.get('aggregate'):
                 incomplete.append(record['scenario'])
+            represented = set(record.get('aggregate', {})) | set(
+                record.get('failures', {})
+            )
+            if represented != set(record['requested_servers']):
+                incomplete.append(
+                    f'{record["scenario"]}: unrepresented requested servers'
+                )
             for name, result in record.get('aggregate', {}).items():
                 if len(result['rps_samples']) != record['planned_trials']:
                     incomplete.append(
@@ -1279,6 +1408,22 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                         incomplete.append(
                             f'{record["scenario"]}: incomplete {name} block {block}'
                         )
+            for name, failure in record.get('failures', {}).items():
+                trial_path = (
+                    run_directory
+                    / 'evidence'
+                    / record_path.stem
+                    / failure['evidence']
+                    / 'trial.json'
+                )
+                if (
+                    name in record['aggregate']
+                    or not trial_path.is_file()
+                    or json.loads(trial_path.read_text()).get('status') != 'failed'
+                ):
+                    incomplete.append(
+                        f'{record["scenario"]}: missing failed-cell evidence for {name}'
+                    )
     if incomplete:
         raise BenchmarkError(
             f'incomplete benchmark scenarios: {", ".join(incomplete)}; '
@@ -1353,6 +1498,11 @@ def run_suite(
         record['measured_rtt_ms'] = measured_rtt_ms
         record['system_summary'] = summary
         record['package_versions'] = versions
+        if identity['build'] is not None:
+            record['source_build'] = {
+                'revision': identity['build']['source']['revision'],
+                'wheel_sha256': identity['wheel']['sha256'],
+            }
         record['duration'] = duration
         record['warmup_duration'] = warmup
         record['identity'] = f'../evidence/{profile.name}/identity.json'
@@ -1370,14 +1520,21 @@ def run_suite(
                 'raise --suite-budget or select fewer scenarios'
             )
 
+    failed_cells = {
+        record['scenario']: record['failures']
+        for record in records
+        if record['failures']
+    }
+    completed_profile = profile_record(
+        profile,
+        'completed_with_failures' if failed_cells else 'completed',
+        measured_rtt_ms=measured_rtt_ms,
+        netem=netem,
+    )
+    completed_profile['failed_cells'] = failed_cells
     write_json(
         run_directory / 'profile.json',
-        profile_record(
-            profile,
-            'completed',
-            measured_rtt_ms=measured_rtt_ms,
-            netem=netem,
-        ),
+        completed_profile,
     )
     return run_directory
 
@@ -1512,7 +1669,10 @@ def main() -> int:
                 )
             if shaped_scenarios:
                 shaped_directory = suite_directory / RTT50_PROFILE.name
-                result, namespace_reason = run_rtt50_namespace(shaped_directory)
+                result, namespace_reason = run_rtt50_namespace(
+                    shaped_directory,
+                    timeout=args.suite_budget + 60,
+                )
                 profile_path = shaped_directory / 'profile.json'
                 status = (
                     json.loads(profile_path.read_text()).get('status')
@@ -1524,7 +1684,7 @@ def main() -> int:
                     raise BenchmarkError(
                         f'50 ms RTT profile exited with {result}{detail}'
                     )
-                if status == 'completed':
+                if status in {'completed', 'completed_with_failures'}:
                     complete.append(shaped_directory)
                 elif status == 'skipped':
                     # Preserve the explicit skip record in checked-in raw data
@@ -1566,7 +1726,10 @@ def main() -> int:
             )
             if profile is RTT50_PROFILE:
                 if os.environ.get(NETEM_NAMESPACE_ENV) != '1':
-                    result, namespace_reason = run_rtt50_namespace(run_directory)
+                    result, namespace_reason = run_rtt50_namespace(
+                        run_directory,
+                        timeout=args.suite_budget + 60,
+                    )
                     profile_path = run_directory / 'profile.json'
                     status = (
                         json.loads(profile_path.read_text()).get('status')

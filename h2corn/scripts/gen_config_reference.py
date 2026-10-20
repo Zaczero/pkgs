@@ -262,7 +262,7 @@ def render_benchmark_results() -> str:
             raise RuntimeError(f'{raw_path.name} has no dark plot')
         results = record['aggregate']
         unit = 'sessions/s' if record['type'] == 'ws' else 'requests/s'
-        description = alt_text(scenario, results, unit)
+        description = alt_text(scenario, results, unit, record.get('failures'))
         sections.extend((
             f'### {scenario} — {profile}\n\n',
             f'![{description}]({relative_plot}#only-light)\n'

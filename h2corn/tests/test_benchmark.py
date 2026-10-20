@@ -28,12 +28,22 @@ from bench.bench import (
 )
 from bench.evidence import verify_workers
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'linux',
+    reason='the benchmark harness requires Linux inherited listeners and PSS accounting',
+)
+
 
 @pytest.mark.parametrize('name', ['h2corn', 'uvicorn', 'hypercorn', 'gunicorn'])
 @pytest.mark.parametrize('protocol', ['h1', 'h1_uds', 'h2'])
-def test_benchmark_inherited_listener_and_protocol_readiness(name, protocol, tmp_path):
-    scenario = Scenario('Listener readiness', 1, protocol)
+@pytest.mark.parametrize('workers', [1, 4])
+def test_benchmark_inherited_listener_and_protocol_readiness(
+    name, protocol, workers, tmp_path
+):
+    scenario = Scenario('Listener readiness', workers, protocol)
     config = tmp_path / 'hypercorn.toml'
+    identity_directory = tmp_path / 'worker-identities'
+    identity_directory.mkdir()
     write_hypercorn_config(config)
     with allocated_listener(scenario) as (live, listener):
         command = server_command(
@@ -44,16 +54,21 @@ def test_benchmark_inherited_listener_and_protocol_readiness(name, protocol, tmp
         )
         with running_server(
             command,
-            workers=1,
+            workers=workers,
             socket_path=live.socket_path,
             scenario=live,
             listener_fd=listener.fileno(),
+            identity_directory=identity_directory,
         ) as server:
             check_response(live)
             receipt = json.loads(request_response(live, '/__bench/identity', timeout=5))
             assert receipt['pid'] in server.worker_pids
             assert receipt['executable'] == sys.executable
             assert receipt['event_loop'] == 'asyncio.unix_events'
+            assert len(server.worker_pids) == workers
+            for pid in server.worker_pids:
+                startup = json.loads((identity_directory / f'{pid}.json').read_text())
+                assert startup['pid'] == pid
             assert server.memory_bytes() > 0
         assert listener.fileno() >= 0
 

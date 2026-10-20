@@ -40,6 +40,15 @@ uv run --no-sync python bench/bench.py \
   --scenario-budget 60 --suite-budget 120
 ```
 
+The 8 MiB network-upload case instead uses sixteen completed requests on
+eight connections, after eight warmup requests. Its phase deadline is
+120 seconds; `--duration` does not shorten that fixed batch.
+
+The full matrix uses eight fixed trial blocks. Allow several hours for a
+complete run; scenario and suite budgets are upper bounds rather than an
+estimate of normal runtime. Pilot runs establish the trial count before
+the final measurements, without stopping when a preferred interval appears.
+
 The default suite measures loopback, then tries selected streaming and
 multiplexing scenarios with 50 ms round-trip latency in a network namespace.
 That profile needs `unshare`, `ip`, `tc`, and user/network namespace support.
@@ -58,15 +67,18 @@ not substituted.
 - Results report median rates, individual trial observations, and observed
   ranges across fresh starts. Rate-ratio intervals resample complete paired
   blocks, retaining their server order.
-- Sampling uses a fixed configured trial count. A deadline or execution
-  failure retains its evidence and prevents publication of an incomplete
-  comparison.
+- Sampling uses a fixed configured trial count. Response-validation failures
+  remain explicit failed cells with no numeric rate or ratio; later blocks
+  do not repeat an already verified failure. Infrastructure, identity,
+  load-generator, and deadline failures prevent publication.
 - All four selected releases support the suite's cleartext protocols.
   HTTP/1 uses h11 for Uvicorn and the Python parser for Gunicorn; HTTP/2 uses
   zttp and h2 respectively. Optional accelerated HTTP/1 configurations are
   outside this comparison.
 - Maximum sampled PSS sums unique supervisor and worker PIDs. Missing
   accounting is an error, never zero memory.
+- HTTP/2 trials retain the effective peer SETTINGS after a PING round trip,
+  independently of the requested CLI limits.
 - Listeners remain owned by the harness and are inherited by each server;
   ports, Unix sockets, and load-generator files are private to the trial.
 

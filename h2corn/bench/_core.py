@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -85,6 +86,10 @@ BenchmarkType = Literal[
 
 class BenchmarkError(RuntimeError):
     """A benchmark could not be measured, so no number may be reported."""
+
+
+class ResponseError(BenchmarkError):
+    """A serving process failed the workload's response contract."""
 
 
 @contextmanager
@@ -626,6 +631,7 @@ def running_server(
     output: int = subprocess.DEVNULL,
     scenario: Scenario | None = None,
     listener_fd: int | None = None,
+    identity_directory: Path | None = None,
 ) -> Generator[ServerRun, None, None]:
     """Run a server for the duration of the block.
 
@@ -650,6 +656,14 @@ def running_server(
                 start_new_session=True,
                 pass_fds=() if listener_fd is None else (listener_fd,),
                 cwd=Path(__file__).resolve().parents[1],
+                env={
+                    **os.environ,
+                    **(
+                        {'ASGI_BENCH_WORKER_RECEIPTS': str(identity_directory)}
+                        if identity_directory is not None
+                        else {}
+                    ),
+                },
             )
         except OSError as error:
             raise BenchmarkError(f'failed to start {argv[0]}: {error}') from error
@@ -794,13 +808,13 @@ def _validate_oha(raw: dict[str, Any], max_deadline_aborts: int) -> None:
     errors: dict[str, int] = raw.get('errorDistribution', {})
     unexpected = set(errors) - shutdown
     if unexpected:
-        raise BenchmarkError(f'oha reported request errors: {errors!r}')
+        raise ResponseError(f'oha reported request errors: {errors!r}')
     if sum(errors.get(key, 0) for key in shutdown) > max_deadline_aborts:
-        raise BenchmarkError(f'oha reported excessive deadline aborts: {errors!r}')
+        raise ResponseError(f'oha reported excessive deadline aborts: {errors!r}')
     statuses: dict[str, int] = raw.get('statusCodeDistribution', {})
     ok = statuses.get('200', 0)
     if not ok or ok != sum(statuses.values()):
-        raise BenchmarkError(f'oha saw non-200 responses: {statuses!r}')
+        raise ResponseError(f'oha saw non-200 responses: {statuses!r}')
 
 
 def _oha_metrics(raw: dict[str, Any]) -> Metrics:
@@ -833,11 +847,12 @@ def run_oha(
     socket_path: Path | None = None,
     port: int = PORT,
     evidence_path: Path | None = None,
+    requests: int | None = None,
 ) -> Metrics:
     command = [
         'oha',
-        '-z',
-        duration,
+        '-z' if requests is None else '-n',
+        duration if requests is None else str(requests),
         '-c',
         str(concurrency),
         '-p',
@@ -869,7 +884,7 @@ def run_oha(
 
     stdout = _run(
         command,
-        duration_seconds(duration) + LOAD_GRACE_SECONDS,
+        duration_seconds(duration) + LOAD_GRACE_SECONDS if requests is None else 120,
         evidence_path=evidence_path.with_suffix('.process.json')
         if evidence_path
         else None,
@@ -890,8 +905,10 @@ def run_oha(
         else contract.response_body
     )
     completed = sum(raw['statusCodeDistribution'].values())
+    if requests is not None and completed != requests:
+        raise ResponseError(f'oha completed {completed}/{requests} required requests')
     if raw.get('summary', {}).get('totalData') != completed * len(expected):
-        raise BenchmarkError(
+        raise ResponseError(
             'oha response-byte total differs from completed response bodies'
         )
     return _oha_metrics(raw)
@@ -907,7 +924,7 @@ def _validate_k6(raw: dict[str, Any]) -> None:
         values = metrics.get(name, {})
         values = values.get('values', values)
         if values.get('fails') or not values.get('passes'):
-            raise BenchmarkError(
+            raise ResponseError(
                 f'k6 {name} did not pass on every iteration: {values!r}'
             )
 
@@ -999,6 +1016,7 @@ def run_load(
     duration: str,
     concurrency: int,
     evidence_path: Path | None = None,
+    requests: int | None = None,
 ) -> Metrics:
     contract = scenario.contract
     if contract.driver == 'k6':
@@ -1017,6 +1035,7 @@ def run_load(
         socket_path=scenario.socket_path,
         port=scenario.port,
         evidence_path=evidence_path,
+        requests=requests,
     )
 
 
@@ -1124,9 +1143,46 @@ def _probe_http1(
     socket_path: Path | None,
     port: int = PORT,
 ) -> None:
-    headers, body = _http1_response(contract, socket_path, port)
-    _check_content_length(contract, headers)
-    _check_body(contract, body, headers.get('content-type', ''))
+    connection = http.client.HTTPConnection(HOST, port, timeout=10)
+    try:
+        if socket_path is not None:
+            connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.sock.settimeout(10)
+            connection.sock.connect(str(socket_path))
+        for request_number in (1, 2):
+            try:
+                connection.request(
+                    contract.method,
+                    contract.path,
+                    body=contract.request_body or None,
+                    headers={
+                        'Connection': 'keep-alive',
+                        **(
+                            {'Content-Type': 'application/octet-stream'}
+                            if contract.request_body
+                            else {}
+                        ),
+                    },
+                )
+                with connection.getresponse() as response:
+                    if response.status != 200:
+                        raise BenchmarkError(
+                            f'expected HTTP 200, got {response.status}'
+                        )
+                    headers = {
+                        name.lower(): value for name, value in response.getheaders()
+                    }
+                    _check_content_length(contract, headers)
+                    body = response.read(len(contract.response_body) + 1)
+                    _check_body(contract, body, headers.get('content-type', ''))
+                    if response.will_close:
+                        break
+            except (OSError, http.client.HTTPException) as error:
+                raise BenchmarkError(
+                    f'HTTP/1 persistent request {request_number} failed: {error}'
+                ) from error
+    finally:
+        connection.close()
 
 
 def _text(value: str | bytes) -> str:
@@ -1239,6 +1295,44 @@ def request_response(
     return body
 
 
+def peer_settings(scenario: Scenario) -> dict[str, Any]:
+    """Read effective HTTP/2 settings after a round-trip ordering barrier."""
+    connection = h2.connection.H2Connection()
+    connection.initiate_connection()
+    connection.ping(b'bench-h2')
+    changes = []
+    deadline = time.monotonic() + 5
+    with socket.create_connection((HOST, scenario.port), timeout=5) as transport:
+        transport.sendall(connection.data_to_send())
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BenchmarkError('HTTP/2 settings probe exceeded five seconds')
+            transport.settimeout(remaining)
+            data = transport.recv(65536)
+            if not data:
+                raise BenchmarkError(
+                    'HTTP/2 settings probe ended before PING acknowledgment'
+                )
+            for event in connection.receive_data(data):
+                if isinstance(event, h2.events.RemoteSettingsChanged):
+                    changes.append({
+                        getattr(key, 'name', str(key)): value.new_value
+                        for key, value in event.changed_settings.items()
+                    })
+                elif isinstance(event, h2.events.PingAckReceived):
+                    return {
+                        'effective_settings': {
+                            getattr(key, 'name', str(key)): value
+                            for key, value in connection.remote_settings.items()
+                        },
+                        'connection_send_credit': connection.outbound_flow_control_window,
+                        'settings_frames': changes,
+                    }
+            if outbound := connection.data_to_send():
+                transport.sendall(outbound)
+
+
 def _protocol_ready(scenario: Scenario) -> bool:
     try:
         return request_response(scenario, '/') == b'Hello, World!'
@@ -1345,7 +1439,7 @@ def check_response(scenario: Scenario) -> None:
             )
         else:
             _probe_http1(contract, scenario.socket_path, scenario.port)
-    except OSError as error:
-        raise BenchmarkError(
+    except (OSError, BenchmarkError) as error:
+        raise ResponseError(
             f'{scenario.type} correctness probe transport failed: {error}'
         ) from error

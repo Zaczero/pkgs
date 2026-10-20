@@ -19,15 +19,22 @@ throughput across servers despite different processing costs.
 
 Connections go directly to each server, without a reverse proxy or TLS.
 Each trial checks status, content type, response body, and worker readiness
-before and after load. A failed response or load trial retains its diagnostics
-and prevents publishing an incomplete comparison.
+before and after load, including a second HTTP/1.1 request on a persistent
+connection when the server keeps it open. A response-validation failure retains its diagnostics
+and appears as a failed cell without numeric timing or ratios. Configuration,
+artifact-identity, load-generator, or deadline failures stop the run. A complete
+attempted matrix containing failed response cells is labelled accordingly;
+it is not a complete passing comparison.
 All servers use standard asyncio. HTTP/1.1 uses Uvicorn's h11 parser and
 Gunicorn's Python HTTP parser. This controlled profile does not rank their
 optional native-parser or uvloop configurations. HTTP/2 uses Uvicorn's
 experimental zttp backend and Gunicorn's h2 backend in explicit prior-knowledge
-mode; the exact backend versions and applicable limits are retained with
+mode; the exact backend versions and requested limits are retained with
 the results. Settings without an exposed equivalent are recorded rather
-than silently described as equal.
+than silently described as equal. Every HTTP/2 trial also records the peer's
+effective SETTINGS after a PING round trip, including settings changes and
+initial connection credit. This exposes requested overrides that a backend
+does not actually retain on the wire.
 TCP listeners are shared by inheritance and have `TCP_NODELAY` enabled for
 every server, avoiding a listener-construction difference in asyncio's
 accepted-socket handling. Hypercorn's per-connection request-retirement limit
@@ -44,12 +51,23 @@ establish equivalent performance. Latencies are medians of the per-trial
 percentiles, not pooled percentiles. Load is closed-loop, so these are not
 latency guarantees under an independent arrival rate.
 
+The 8 MiB network upload uses a fixed batch of sixteen completed requests on
+eight connections, after eight warmup requests. These uploads can outlast a
+short time window with a small HTTP/2 receive window. Batch throughput counts
+all sixteen completions over the actual elapsed time, rather than counting
+cancelled attempts or declaring valid long uploads to be zero throughput.
+
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
 across unique supervisor and worker processes. PSS shares mapped-page cost
 between processes; one-second sampling can miss shorter peaks. Missing PSS,
-a failed correctness probe, or a measurement failure prevents publication
-of that comparison. Raw load-generator output, trial order, sampled memory,
+a failed correctness probe, or a measurement failure cannot become a numeric
+comparison result. Raw load-generator output, trial order, sampled memory,
 worker module identities, and source/wheel identities accompany the results.
+Memory sampling covers measured load after warmup.
+
+The [raw scenario records](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw)
+and [per-trial evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/evidence)
+retain the commands, observations, and identities behind the figures.
 
 ### Workloads {#workloads-and-limits}
 

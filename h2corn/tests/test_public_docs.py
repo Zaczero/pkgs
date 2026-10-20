@@ -184,6 +184,7 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
                 'rps': 100.0,
                 'rps_range': [98.0, 102.0],
                 'rps_samples': [98.0, 100.0, 102.0],
+                'completed': 1000,
                 'peak_memory_bytes': 1_500_000,
                 'latency_percentiles': {'p50': 0.0008, 'p99': 0.004},
             },
@@ -191,6 +192,7 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
                 'rps': 40.0,
                 'rps_range': [38.0, 42.0],
                 'rps_samples': [38.0, 40.0, 42.0],
+                'completed': 400,
                 'peak_memory_bytes': 2_500_000,
                 'latency_percentiles': {'p50': 0.002, 'p99': 0.01},
             },
@@ -204,6 +206,7 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
         },
         'scenario': 'HTTP/1 GET (1 worker)',
         'planned_trials': 3,
+        'requested_servers': ['h2corn', 'uvicorn'],
         'package_versions': {'h2corn': '1.6.0', 'uvicorn': '0.43.0'},
         'network_profile': 'loopback',
         'system_summary': 'Python 3.14; Linux; x86_64\nCPU: Example CPU',
@@ -246,7 +249,7 @@ def test_benchmark_table_uses_observed_ranges_and_names_uncertainty() -> None:
     markdown = render_accessible_results(_benchmark_record())
 
     assert 'Observed rate range' in markdown
-    assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98-102 |' in markdown
+    assert '| h2corn (1.6.0) | Median rate (requests/s) | 100 | 98.00-102 |' in markdown
     assert '| h2corn (1.6.0) | Maximum sampled PSS (MB) | 1.5 | - |' in markdown
     assert '| h2corn / uvicorn | 2.500 | 2.300-2.700 |' in markdown
     assert 'not a confidence interval' in markdown
@@ -257,6 +260,37 @@ def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
 
     assert 'Median rate (sessions/s)' in markdown
     assert 'Median p99 session duration (ms)' in markdown
+
+
+def test_benchmark_table_preserves_sub_request_per_second_rates() -> None:
+    record = _benchmark_record()
+    del record['aggregate']['uvicorn']
+    record['paired_contrasts'] = {}
+    result = record['aggregate']['h2corn']
+    result.update(rps=0.25, rps_range=[0.24, 0.26], rps_samples=[0.24, 0.25, 0.26])
+    markdown = render_accessible_results(record)
+    assert '| Median rate (requests/s) | 0.25 | 0.24-0.26 |' in markdown
+
+
+def test_benchmark_failed_response_has_no_numeric_rate_or_ratio() -> None:
+    record = _benchmark_record()
+    del record['aggregate']['uvicorn']
+    del record['paired_contrasts']['uvicorn']
+    record['failures'] = {
+        'uvicorn': {
+            'block': 1,
+            'phase': 'correctness-before',
+            'error': 'response body mismatch',
+        }
+    }
+    markdown = render_accessible_results(record)
+    assert 'no complete cross-server timing comparison' in markdown
+    assert (
+        '| uvicorn (0.43.0) | Timing unavailable | Failed correctness-before | - |'
+        in markdown
+    )
+    assert '| h2corn / uvicorn |' not in markdown
+    assert 'Failed cells (not performance results)' in markdown
 
 
 def test_benchmark_table_does_not_claim_a_winner_without_a_comparator() -> None:

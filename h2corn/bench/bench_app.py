@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -41,6 +43,16 @@ async def worker_receipt(request):
     from starlette.responses import JSONResponse
 
     return JSONResponse(worker_identity())
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    if directory := os.environ.get('ASGI_BENCH_WORKER_RECEIPTS'):
+        path = Path(directory) / f'{os.getpid()}.json'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(worker_identity()))
+        temporary.replace(path)
+    yield
 
 
 async def static_file(request):
@@ -109,6 +121,7 @@ async def websocket_endpoint(websocket):
 
 
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route('/', homepage),
         Route('/__bench/worker-pid', worker_pid),
@@ -120,5 +133,5 @@ app = Starlette(
         Route('/response-content-length', response_content_length),
         Route('/streaming-download', streaming_download),
         WebSocketRoute('/ws', websocket_endpoint),
-    ]
+    ],
 )
