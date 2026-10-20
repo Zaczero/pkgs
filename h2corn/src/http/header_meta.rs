@@ -1,9 +1,9 @@
 use std::num::NonZeroU32;
 
+use base64::alphabet::STANDARD;
 use bitflags::bitflags;
 use bytes::Bytes;
 
-use crate::base64;
 use crate::config::ForwardedFields;
 use crate::http::header::protocol_token_is_valid;
 use crate::http::types::{BytesStr, KnownRequestHeaderName, RequestHeaderNameRef};
@@ -362,9 +362,10 @@ pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(Proxy
 
 fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
     value.len() == WEBSOCKET_KEY_LEN
-        && value
-            .strip_suffix(b"==")
-            .is_some_and(|head| head.iter().all(|byte| base64::is_base64(*byte)))
+        && value.strip_suffix(b"==").is_some_and(|head| {
+            head.iter()
+                .all(|byte| STANDARD.as_str().as_bytes().contains(byte))
+        })
 }
 
 /// Parse one `Sec-WebSocket-Protocol` field value into `out`.

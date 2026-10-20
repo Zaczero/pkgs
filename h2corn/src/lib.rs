@@ -14,7 +14,6 @@
 mod app_call;
 mod ascii;
 mod async_util;
-mod base64;
 mod bridge;
 mod buffered_events;
 mod config;

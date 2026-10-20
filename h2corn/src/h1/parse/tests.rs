@@ -132,40 +132,38 @@ const fn unlimited_fields() -> super::FieldLimits {
     }
 }
 
-fn base64url_encode(src: &[u8]) -> Vec<u8> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+#[test]
+fn parse_http2_settings_rejects_zero_max_frame_size() {
+    let err = parse_http2_settings(b"AAUAAAAA").unwrap_err();
+    assert_eq!(err.to_string(), "invalid SETTINGS_MAX_FRAME_SIZE value");
+}
 
-    let mut out = Vec::with_capacity(src.len().div_ceil(3).saturating_mul(4));
-    let (chunks, remainder) = src.as_chunks::<3>();
-    for &[c0, c1, c2] in chunks {
-        out.push(TABLE[usize::from(c0 >> 2)]);
-        out.push(TABLE[usize::from(((c0 & 0x03) << 4) | (c1 >> 4))]);
-        out.push(TABLE[usize::from(((c1 & 0x0F) << 2) | (c2 >> 6))]);
-        out.push(TABLE[usize::from(c2 & 0x3F)]);
-    }
+#[rstest::rstest]
+#[case::url_safe_hyphen(b"AAH-7wAA".as_slice(), 0xFEEF_0000)]
+#[case::url_safe_underscore(b"AAH_____".as_slice(), u32::MAX)]
+#[case::outer_whitespace(b" \tAAH-7wAA\t ".as_slice(), 0xFEEF_0000)]
+fn parse_http2_settings_accepts_unpadded_url_safe_values(
+    #[case] encoded: &[u8],
+    #[case] header_table_size: u32,
+) {
+    let settings = parse_http2_settings(encoded).expect("valid base64url settings decode");
+    assert_eq!(settings.header_table_size, Some(header_table_size as usize));
+}
 
-    match remainder {
-        &[a] => {
-            out.push(TABLE[usize::from(a >> 2)]);
-            out.push(TABLE[usize::from((a & 0x03) << 4)]);
-        },
-        &[a, b] => {
-            out.push(TABLE[usize::from(a >> 2)]);
-            out.push(TABLE[usize::from(((a & 0x03) << 4) | (b >> 4))]);
-            out.push(TABLE[usize::from((b & 0x0F) << 2)]);
-        },
-        [] => {},
-        _ => unreachable!("remainder from as_chunks::<3>() is at most 2 bytes"),
-    }
-
-    out
+#[rstest::rstest]
+#[case::one_sextet(b"A".as_slice())]
+#[case::padding(b"AA==".as_slice())]
+#[case::standard_alphabet(b"a+b/".as_slice())]
+#[case::internal_whitespace(b"AA A".as_slice())]
+fn parse_http2_settings_rejects_invalid_base64url_values(#[case] encoded: &[u8]) {
+    let err = parse_http2_settings(encoded).unwrap_err();
+    assert_eq!(err.to_string(), "invalid HTTP2-Settings base64url payload");
 }
 
 #[test]
-fn parse_http2_settings_rejects_zero_max_frame_size() {
-    let encoded = base64url_encode(&[0x00, 0x05, 0x00, 0x00, 0x00, 0x00]);
-    let err = parse_http2_settings(&encoded).unwrap_err();
-    assert_eq!(err.to_string(), "invalid SETTINGS_MAX_FRAME_SIZE value");
+fn parse_http2_settings_preserves_noncanonical_trailing_bit_acceptance() {
+    let err = parse_http2_settings(b"AB").unwrap_err();
+    assert_eq!(err.to_string(), "invalid HTTP2-Settings payload length");
 }
 
 #[tokio::test]
