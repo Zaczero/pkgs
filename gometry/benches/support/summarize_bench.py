@@ -754,12 +754,7 @@ def format_speedup(row: OpRow) -> str:
         label = f'{row.ratio:.2f}× faster'  # ruff: ignore[ambiguous-unicode-character-string]
     else:
         label = f'{1.0 / row.ratio:.2f}× slower'  # ruff: ignore[ambiguous-unicode-character-string]
-    low, high = row.ratio_ci95
-    return (
-        f'<span class="benchmark-status">{label}</span>'
-        f'<small class="benchmark-detail">Paired ratio {row.ratio:.3g}&times; '
-        f'(95% CI {low:.3g} to {high:.3g})</small>'
-    )
+    return f'<span class="benchmark-status">{label}</span>'
 
 
 def _section_table(

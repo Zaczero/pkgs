@@ -165,7 +165,7 @@ def test_real_block_populates_both_arm_stats_without_ordinal_matching(
     assert stats['gometry.op/10k'].blocks == stats['shapely.op/10k'].blocks
 
 
-def test_report_shows_paired_interval_and_separates_reference_implementations() -> None:
+def test_report_separates_reference_implementations() -> None:
     documents = {
         Path(f'{index}.json'): _block(
             block_id=f'block-{index}',
@@ -191,7 +191,8 @@ def test_report_shows_paired_interval_and_separates_reference_implementations() 
     report = '\n'.join(sb.render([row, reference], publishable=True))
     comparisons = report.split('[start:comparisons]')[1].split('[end:comparisons]')[0]
     references = report.split('[start:references]')[1].split('[end:references]')[0]
-    assert 'Paired ratio 1&times; (95% CI 0.5 to 2)' in comparisons
+    assert '<span class="benchmark-status">Inconclusive</span>' in comparisons
+    assert 'Paired ratio' not in comparisons
     assert 'Country boundary length' not in comparisons
     assert 'Country boundary length' in references
     assert 'Python/NumPy quadrature reference' in references
