@@ -2292,6 +2292,150 @@ mod tests {
 
     #[expect(
         clippy::significant_drop_tightening,
+        reason = "connection state retains the writer while the test advances its input and output phases"
+    )]
+    #[tokio::test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    async fn prepared_flush_after_producer_failure_resumes_admitted_sibling() {
+        use pyo3::Python;
+        use tokio::io::duplex;
+
+        use crate::h2::writer::{WriterCommand, WriterCommandBatch};
+        use crate::http::response::ResponseByteBudget;
+        use crate::runtime::test_fixtures;
+
+        Python::initialize();
+        let mut config = test_fixtures::server_config_parts();
+        config.http2.timeout_write = None;
+        config.timeout_keep_alive = None;
+        let context =
+            Python::attach(|py| test_fixtures::connection_context_with(py, Arc::new(config)));
+        let target = writer::GatedWriter::new(usize::MAX, true);
+        let gate = Arc::clone(&target.0);
+        let (mut output, handle) = writer::init_writer(target, Arc::clone(&context.config), None)
+            .await
+            .unwrap();
+        let failed = StreamId::new(1).unwrap();
+        let sibling = StreamId::new(3).unwrap();
+        output.register_stream(failed, None);
+        output
+            .send_headers(failed, status_code::OK, ResponseHeaders::new(), false)
+            .unwrap();
+        output.flush().await.unwrap();
+        gate.lock().bytes.clear();
+        gate.lock().allowance = 12;
+        let (_peer, input) = duplex(256);
+        let (_shutdown, shutdown_rx) = watch::channel(ShutdownState::Running);
+        let mut state = H2ConnectionState::new(
+            h2_frame::BufferedConnectionReader::new(input),
+            handle,
+            output,
+            context,
+            shutdown_rx,
+            ConnectionDrainState::Accepting,
+        );
+        state.streams.insert(
+            failed,
+            InboundStream::new(
+                None,
+                true,
+                false,
+                None,
+                None,
+                ResolvedRequestPolicy::default(),
+                8 << 20,
+            ),
+        );
+        let budget = ResponseByteBudget::new(32 * 1024);
+        let mut commands = WriterCommandBatch::new();
+        commands.push_back(WriterCommand::SendData {
+            stream_id: failed,
+            data: bytes::Bytes::from(vec![b'x'; 32 * 1024]).into(),
+            credit: budget.acquire(32 * 1024).await.unwrap(),
+            end_stream: false,
+        });
+        state
+            .connection
+            .send_commands(failed, commands)
+            .await
+            .unwrap();
+        prepare_connection_egress(&mut state).await.unwrap();
+        assert_eq!(gate.lock().bytes.len(), 12);
+
+        state
+            .connection
+            .failure_notification(failed)
+            .unwrap()
+            .application_failed();
+        prepare_connection_egress(&mut state).await.unwrap();
+        assert!(!state.streams.contains_key(&failed));
+        budget.try_acquire(32 * 1024).unwrap_err();
+
+        state.writer.register_stream(sibling, None);
+        let mut commands = WriterCommandBatch::new();
+        commands.push_back(WriterCommand::SendFinal {
+            stream_id: sibling,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            data: bytes::Bytes::from_static(b"sibling").into(),
+            credit: None,
+        });
+        state
+            .connection
+            .send_commands(sibling, commands)
+            .await
+            .unwrap();
+        assert!(matches!(
+            ingest_connection_input(&mut state).await.unwrap(),
+            IngestEvent::Continue
+        ));
+        prepare_connection_egress(&mut state).await.unwrap();
+        gate.lock().allowance = usize::MAX;
+        prepare_connection_egress(&mut state).await.unwrap();
+        let event = std::future::poll_fn(|cx| {
+            Poll::Ready(
+                std::pin::pin!(ingest_connection_input(&mut state))
+                    .as_mut()
+                    .poll(cx),
+            )
+        })
+        .await;
+        assert!(
+            matches!(event, Poll::Ready(Ok(IngestEvent::Continue))),
+            "a prepared flush must expose admitted sibling output without another peer event"
+        );
+        prepare_connection_egress(&mut state).await.unwrap();
+        let output = gate.lock().bytes.clone();
+        let mut reader = h2_frame::BufferedConnectionReader::new(output.as_slice());
+        let mut frames = Vec::new();
+        while let Some(frame) = reader.read_frame(16 * 1024).await.unwrap() {
+            let FrameRead::Handled(frame, _) = frame else {
+                panic!("unexpected extension frame");
+            };
+            frames.push(frame);
+        }
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[0].header.frame_type, FrameType::DATA);
+        assert_eq!(frames[0].header.stream_id, Some(failed));
+        assert_eq!(frames[0].payload.as_ref(), &[b'x'; 16 * 1024]);
+        assert_eq!(frames[1].header.frame_type, FrameType::RST_STREAM);
+        assert_eq!(frames[1].header.stream_id, Some(failed));
+        assert_eq!(
+            frames[1].payload.as_ref(),
+            ErrorCode::INTERNAL_ERROR.to_be_bytes()
+        );
+        assert_eq!(frames[2].header.frame_type, FrameType::HEADERS);
+        assert_eq!(frames[2].header.stream_id, Some(sibling));
+        assert_eq!(frames[2].payload.as_ref(), &[0x88]);
+        assert_eq!(frames[3].header.frame_type, FrameType::DATA);
+        assert_eq!(frames[3].header.stream_id, Some(sibling));
+        assert!(frames[3].header.flags.contains(FrameFlags::END_STREAM));
+        assert_eq!(frames[3].payload.as_ref(), b"sibling");
+        budget.try_acquire(32 * 1024).unwrap();
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
         reason = "the context moves into connection state, whose writer is inspected after the driver returns"
     )]
     #[tokio::test(start_paused = true)]

@@ -809,6 +809,9 @@ impl<W: WriteTarget> WriterState<W> {
                         })?;
                     }
                 }
+                // Admission may already have notified a blocked driver. Expose
+                // its queued work before preparation consumes this completion.
+                self.drain_app_writes()?;
                 return Poll::Ready(Ok(()));
             }
             let replan = if let Some(ActiveOutput::Data(data)) = &mut self.active {
