@@ -111,24 +111,15 @@ def _admit(
                 f'{pyotp_metadata.get(field)!r} != {native_metadata.get(field)!r}'
             )
 
+    groups = {case['label']: case['group'] for case in case_definitions('totp-rs')}
     pyotp_names = {item.case: item for item in pyotp_series}
     native_comparison = tuple(
-        item
-        for item in native_series
-        if next(
-            case for case in case_definitions('totp-rs') if case['label'] == item.case
-        )['group']
-        == 'comparison'
+        item for item in native_series if groups[item.case] == 'comparison'
     )
     if set(pyotp_names) != {item.case for item in native_comparison}:
         raise ValueError('PyOTP and totp-rs do not contain matching comparison cases')
     native_only = tuple(
-        item
-        for item in native_series
-        if next(
-            case for case in case_definitions('totp-rs') if case['label'] == item.case
-        )['group']
-        == 'native-only'
+        item for item in native_series if groups[item.case] == 'native-only'
     )
     if len(native_only) != 7:
         raise ValueError(f'expected 7 native-only results, got {len(native_only)}')
@@ -146,8 +137,7 @@ def _caption(metadata: dict) -> str:
         f'{metadata["python_implementation"]} {metadata["python_version"]}\n'
         'Fixed timestamp · SHA-1, SHA-256, and SHA-512 · six digits · '
         '30-second period · verification window ±1\n'
-        'Medians of 12 independent worker-process means; intervals are '
-        '95% percentile bootstrap intervals across those workers.'
+        '12 independent worker-process means per workload'
     )
 
 
@@ -253,7 +243,11 @@ def report(
             for item in comparison.results
         )
         axes.set_xlim(lower * 0.7, upper * 1.8)
-        for index, item in enumerate(comparison.results):
+        case_order = {
+            case['label']: index for index, case in enumerate(case_definitions('pyotp'))
+        }
+        ordered = sorted(comparison.results, key=lambda item: case_order[item.case])
+        for index, item in enumerate(ordered):
             axes.annotate(
                 _time(item.median),
                 (item.median, index),
