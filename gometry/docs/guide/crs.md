@@ -431,7 +431,7 @@ apply on that path. Antimeridian-crossing bounds use the separate EPSG:4326
 #### Geographic geodesic numerical domain
 
 With CRS-aware units, geographic point-to-point inverse/direct calculations and
-operations that explicitly follow geodesic routes use the pinned order-six
+operations that explicitly follow geodesic routes use an order-six
 binary64 series backend. In this model, geographic chart-edge length uses
 ellipsoidal quadrature, while point-to-chart-edge minimization uses geodesic
 inverse samples inside its own bounded search. Continuous geographic Hausdorff
@@ -443,8 +443,7 @@ positive and finite, and its flattening must be within the supported domain
 `|f| <= 0.02`. Geodesic admission also checks that the squared axes, half the
 squared semi-major axis, authalic radius squared, and full ellipsoid area are
 representable as normal binary64 values. A CRS outside that domain raises
-`CRSError` before the geodesic object is constructed. Exact elliptic support is
-not shipped for wider flattenings.
+`CRSError` before the geodesic object is constructed.
 
 The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
 identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an

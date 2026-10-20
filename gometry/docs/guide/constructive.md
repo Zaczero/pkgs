@@ -618,7 +618,7 @@ is a certified circumscribed 64-gon around that minimum disk: its edges enclose
 the disk and its vertices lie outside it. It raises `OverflowError` rather than
 silently changing the scalar radius or publishing a non-finite, invalid, or
 non-enclosing result when binary64 cannot represent the polygon.
-The existing realization-work budget also bounds recovery from intermediate
+The realization-work budget also bounds recovery from intermediate
 rounding failures without changing the requested segment count.
 For a projected CRS with `unit='meters'`, the exact squared radius is scaled
 before the single binary64 radius rounding.
@@ -642,9 +642,7 @@ On arrays, the radius method returns a read-only `float64` NumPy column.
 [`polygonize_all(..., diagnostics=True)`][gometry.polygonize_all] returns the
 pooled polygons plus source-row groups for cut edges, dangles, and invalid
 rings. Geographic faces and diagnostics use one topology classification, so
-an edge of a returned face is not also reported as an invalid ring. A closed
-polar-cap ring with no leftover linework returns one polygon and empty
-diagnostic groups. Planar inputs retain their planar diagnostic classification.
+an edge of a returned face is not also reported as an invalid ring.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

@@ -295,8 +295,7 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 ## Pickle, multiprocessing, and copies
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
-`GeometryArray` (packed point, line, and polygon columns round-trip as raw
-coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
+`GeometryArray`, [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
 [`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
 [`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
@@ -304,9 +303,7 @@ protocol supports [`multiprocessing`](https://docs.python.org/3/library/multipro
 [`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
 storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepcopy`](https://docs.python.org/3/library/copy.html#copy.deepcopy) use it as well. Spatial indexes and prepared
 geometries serialize durable input state and rebuild derived acceleration
-structures when loaded; loaded objects do not contain warm-cache snapshots. There is
-no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
-containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
+structures when loaded. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
 view, preserving its selected layout and flattened row indexes; iterator types
 are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
 immutable parent view; it is reconstructed from its geometry when unpickled.

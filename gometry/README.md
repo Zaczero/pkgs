@@ -43,7 +43,7 @@
   separate from exact `query`
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
-- **Apache-2.0 OR MIT** · **CPython 3.11–3.14; free-threaded CPython 3.14t**
+- **Apache-2.0 OR MIT** · [Python compatibility](https://gometry.monicz.dev/about/compatibility/)
 
 ## Install
 

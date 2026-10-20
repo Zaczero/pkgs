@@ -129,46 +129,12 @@ print(panels(
 ))
 ```
 
-Geographic cleaning handles full-turn boundaries around a pole, including when
-the inner cap is listed before its surrounding cap. `overlap_rule` still
-determines which row owns an overlapping face. For geographic inputs, `max_area`
+For geographic inputs, `max_area`
 and `min_area` rank rows by ellipsoidal area in square metres, while
 `longest_border` ranks shared borders by ellipsoidal arclength in metres along
 the retained chart-straight edges.
 `gap_width` remains in the CRS's native angular units; it is not converted to
 physical units. Projected and CRS-free inputs keep coordinate-space rankings.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-crs = "+proj=longlat +a=7000000 +rf=150 +type=crs"
-
-def polar_cap(latitude: float) -> gm.Polygon:
-    return gm.Polygon(
-        [
-            (0, latitude),
-            (90, latitude),
-            (180, latitude),
-            (270, latitude),
-            (0, latitude),
-        ],
-        crs=crs,
-    )
-
-outer = polar_cap(80)
-inner = polar_cap(85)
-probes = [gm.Point(0, 89, crs=crs), gm.Point(45, 82, crs=crs)]
-
-for rows, expected in (
-    ((outer, inner), [[True, False], [True, False]]),
-    ((inner, outer), [[True, False], [False, True]]),
-):
-    cleaned = gm.coverage_clean(rows, grid_size=0, overlap_rule="min_index")
-    assert gm.coverage_is_valid(cleaned)
-    observed = [[gm.covers(row, point) for row in cleaned] for point in probes]
-    assert observed == expected
-    print(observed)
-```
 
 ## See also
 

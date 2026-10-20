@@ -397,7 +397,6 @@ vectorized operations. Batch ingest ([`from_wkt`][gometry.from_wkt] / [`from_wkb
 `GeometryArray([...])`) keeps native GeoArrow typing when some rows are missing rather
 than downgrading the whole column to WKB:
 
-The following three-row flow puts every row-preserving lane beside its source.
 The columns after `geometry` are `is_missing`, `area`, and `contains(window)`:
 
 ```python exec="on" source="block" result="text"
@@ -425,9 +424,9 @@ contribute no vertices, but `geoms.is_missing` distinguishes a missing row from
 an empty geometry.
 
 One rule set everywhere: **predicates → `False`, measures → `NaN`, row-aligned geometry results
-and ragged groups stay missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
+and ragged groups stay missing, aggregates skip, exports emit `None`.** Fixed-width columns that cannot hold
 `None` keep their ndarray shape with **sentinels** — for example bounds use `NaN`,
-topological dimensions use `-1`, and some curve-key lanes use `0`. Those sentinels can
+topological dimensions use `-1`, and some curve-key columns use `0`. Those sentinels can
 collide with valid values, so **[`is_missing`][gometry.GeometryArray.is_missing] is authoritative**. Flattening and
 explode-style operations ([`parts`][gometry.GeometryArray.parts], triangulations, sampled points) keep
 the missing source row as a `None` group; its flat payload has no placeholder geometry.
@@ -621,6 +620,6 @@ portable GeoArrow interchange or GeoParquet storage, see [Arrow & storage](../ec
 - [Grids](grids.md) — [`CellArray`][gometry.CellArray], coverages, and grid pre-filtering.
 - [DataFrames](../ecosystem/dataframes.md) — dataframe geometry columns.
 - [Arrow & storage](../ecosystem/arrow.md) — portable GeoArrow interchange and GeoParquet storage.
-- [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
+- [NumPy handoff](../ecosystem/numpy.md) — numeric arrays and coordinate views.
 - [Benchmarks](../about/benchmarks.md) — measurements and methodology.
 - [API: GeometryArray][gometry.GeometryArray] · [points][gometry.points] · [Groups][gometry.Groups] · [CellArray][gometry.CellArray] · [from_wkb][gometry.from_wkb]

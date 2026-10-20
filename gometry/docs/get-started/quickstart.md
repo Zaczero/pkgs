@@ -6,7 +6,8 @@ description: Find blocks within 500 meters of a station, then cover the area wit
 
 Find which blocks intersect a station's 500-meter radius, then cover the area
 with H3 cells. We'll use three fictional blocks near the Eiffel Tower.
-Requires **CPython 3.11–3.14** or free-threaded CPython 3.14t.
+Requires **CPython 3.11 or newer**; see the [installation requirements](installation.md#requirements)
+for supported runtimes and platforms.
 
 ## Install
 

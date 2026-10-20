@@ -45,9 +45,8 @@ See [Installation](../get-started/installation.md#optional-extras) for all extra
 
 ### Zero import cost when unused
 
-`import gometry` never pulls pandas, Polars, PyArrow, arro3, GeoPandas, or lonboard. A
-script that only calls [`gm.Point`][gometry.Point], [`gm.distance`][gometry.distance], and [`gm.h3_cover`][gometry.h3_cover] imports none
-of them. Converter calls import the requested framework as needed.
+`import gometry` does not import pandas, Polars, PyArrow, arro3, GeoPandas, or
+lonboard. Adapters import the requested framework when called.
 
 ## Python Array API compatibility
 

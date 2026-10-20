@@ -171,17 +171,11 @@ result must itself remain a GeoArrow extension array with CRS and epoch metadata
 
 ## Capsule consumers without pyarrow
 
-For dependency-free producers, pass the gometry object itself to any consumer that
-understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
-or `__arrow_c_stream__` and imports the GeoArrow buffers according to its own
-ownership contract. When gometry is the consumer, pass the provider object itself
-to `from_arrow`. The `(schema_capsule, array_capsule)` pair returned by calling
-`__arrow_c_array__()` is the protocol's transfer value, not a supported
-`from_arrow` input.
+Pass the gometry object to a consumer that supports the Arrow PyCapsule
+protocol and GeoArrow. To import, pass the provider object to `from_arrow`.
 
-Consumers with Arrow-C support can consume these capsules directly, subject to
-their own GeoArrow and extension-type support. Gometry's supported
-[`to_polars()`][gometry.GeometryArray.to_polars] / [`from_polars()`][gometry.from_polars] adapter instead uses a batched WKB/EWKB `Binary`
+Gometry's [`to_polars()`][gometry.GeometryArray.to_polars] /
+[`from_polars()`][gometry.from_polars] adapter instead uses a batched WKB/EWKB `Binary`
 Series so it remains independent of PyArrow; that boundary is covered in
 [DataFrames](dataframes.md). The lonboard adapter passes the geometry array, or
 an Arrow-compatible table when attributes are supplied, through the direct

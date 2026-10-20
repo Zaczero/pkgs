@@ -13,18 +13,16 @@ package bundle its geometry and CRS engines together.
 | Layer | Responsibility |
 | --- | --- |
 | Native geometry core | Construction, predicates, overlay, measurement, CRS handling, geodesy, grids, indexing, validation, repair, and geometry I/O. |
-| Python facade | Curated public exports, Python protocols, type-facing declarations, and optional adapters. It does not reimplement geometry kernels or per-coordinate loops. |
+| Python interface | Python protocols, type annotations, and optional adapters. |
 | CRS authority | The bundled PROJ backend supplies CRS definitions, datum pipelines, grid-aware transforms, and standards parsing. Gometry owns frame checks, X/Y ordering, Z/M policy, and Python errors around that boundary. |
 | Interchange adapters | Arrow/GeoArrow, WKB, dataframe, GeoParquet, and map adapters translate at explicit boundaries and state when they copy or lose metadata. |
 
 ## Bundled CRS transformations {#crs-authority-boundary}
 
-CRS transformation is a standards-heavy domain. Gometry bundles libPROJ rather
-than asking the host to provide a shared library, and delegates CRS database,
-datum, grid, and general pipeline semantics to it. The Python API remains
-always X/Y even when an authority definition declares a different native axis
-order. See [CRS, units & measurement](../guide/crs.md) for the user-facing
-frame and operation-family rules.
+Gometry bundles PROJ and its CRS database; no system installation is needed.
+The Python API uses X/Y even when an authority definition declares a different
+native axis order. See [CRS, units & measurement](../guide/crs.md) for frame
+matching, units, and transformation resources.
 
 ## Geographic topology {#geographic-quotient-embedding}
 

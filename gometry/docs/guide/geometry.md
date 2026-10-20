@@ -249,7 +249,7 @@ print("dict keys:", list(coords.to_dict().keys()))
 [`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y] (and [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m] when present) are zero-copy columns; [`.to_dict()`][gometry.Coordinates.to_dict] returns
 read-only NumPy columns such as `{'x': ndarray, 'y': ndarray}` for direct use
 with `pd.DataFrame` or `pl.DataFrame` (forced Z/M use `NaN` where absent);
-`np.asarray(coords)` materializes an `(N, dims)` array; and [`.index`][gometry.Coordinates.index] tags each vertex
+`np.asarray(coords)` materializes an `(N, dims)` array; and [`.row_index`][gometry.Coordinates.row_index] tags each vertex
 with its source row when the geometry is a [`GeometryArray`](arrays.md).
 
 ## Geometry types
@@ -270,11 +270,6 @@ print(type(gm.box(0, 0, 1, 1)).__name__)
 print(isinstance(gm.box(0, 0, 1, 1), gm.Polygon))
 
 ```
-
-A `Point` exposes [`.x`][gometry.Point.x]/[`.y`][gometry.Point.y]/[`.z`][gometry.Point.z]/[`.m`][gometry.Point.m]; a `Polygon` exposes [`.exterior`][gometry.Polygon.exterior] (a closed
-`LineString`) and
-[`.interiors`][gometry.Polygon.interiors] (its holes); and the multi-part / collection types are real
-sequences — iterate them, index them, and take `len(...)`, with each part typed:
 
 The multi-part classes are also registered as `collections.abc.Sequence`, so
 `isinstance` checks and ABC-based dispatch recognize the sequence interface.

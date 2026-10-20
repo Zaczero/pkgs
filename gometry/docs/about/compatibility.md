@@ -17,8 +17,6 @@ NumPy is required; system GEOS, GDAL, and PROJ installations are not.
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |
 
-The package contains the geometry engine and its CRS authority resources. A core
-installation requires NumPy; it does not require system GEOS, GDAL, or PROJ.
 See [Installation](../get-started/installation.md) for CPU requirements and
 optional extras.
 
@@ -71,11 +69,8 @@ not converted to binary64 merely because they arrived as GeoJSON text.
 
 ## No legacy aliases
 
-gometry does not keep a second spelling solely for compatibility. Unary geometry
-facts are properties ([`geom.area`][gometry.Geometry.area]), unary transforms are methods ([`geom.buffer`][gometry.Geometry.buffer]),
-and binary relationships are free functions ([`gm.contains(a, b)`][gometry.contains]). The
-[migration guide](../migrating/index.md) maps common source-library names to
-these canonical entry points.
+The [migration guide](../migrating/index.md) maps source-library names to
+gometry's [API conventions](design.md). Compatibility aliases are not provided.
 
 ## See also
 

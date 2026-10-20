@@ -225,9 +225,7 @@ gometry implements the NumPy interchange protocols (`__array__` and
 `__array_ufunc__ = None`) and returns typed ndarrays. Numeric input columns can
 consume PEP-3118 buffers, but geometry and cell containers do not export numeric
 PEP-3118 buffers. gometry is **not** a [Python Array API](https://data-apis.org/array-api/)
-provider and does not expose `__array_namespace__`. The Array API standard
-targets numeric array libraries for elementwise math and linear algebra; gometry
-arrays hold geometries or cells, not numbers. Use gometry to produce coordinate
+provider and does not expose `__array_namespace__`. Use gometry to produce coordinate
 arrays, then pass them to NumPy, SciPy, or scikit-learn.
 
 ## See also

@@ -58,9 +58,9 @@ print(panels(
 ```
 
 Binary predicates are free functions: [`gm.contains(left, right)`][gometry.contains]. The same
-spelling handles scalar and array combinations; [`covers`][gometry.covers] is also
-available as a free function. Repeated probing needs no preparation step: a
-geometry builds its point index after its first few probes and keeps it.
+spelling handles scalar and array combinations. Repeated probing needs no
+preparation step: a geometry builds its point index after its first few probes
+and keeps it.
 
 ## Vectorization
 
@@ -302,13 +302,6 @@ node; `covers(lines, point)` is true for both on-line points. The inverse
 `within` and `covered_by` results follow the same distinction. `touches` is
 true only for the odd-incidence boundary point, while `intersects` is true for
 both on-line points and `disjoint` is true only for the off-line point.
-
-Known GEOS difference for this exact WKT pair: local Shapely 2.1.2 reports
-`shapely.geos_version_string == "3.13.1"` and returns `F0FFFF1F2` for
-`relate(POINT (0 0), MULTILINESTRING ((0 0, 4 0), (4 0, 4 4)))`, whereas
-gometry reports the OGC-mod-2 result `F0FFFF102`. This is empirical evidence
-for GEOS 3.13.1 and this input only, not a universal claim about GEOS versions
-or other boundary-node rules.
 
 !!! note "Planar computation, strict metadata"
     Predicates read ordinates as a flat plane and require matching CRS and

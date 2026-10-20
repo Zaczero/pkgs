@@ -64,7 +64,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/constructors-bulk-factories',
         'Constructors & bulk factories',
-        'Build packed geometry columns from coordinates. Scalar constructors are the typed geometry classes linked from this page.',
+        'Construct geometry values and packed coordinate columns.',
         (
             section(
                 'box',
@@ -232,7 +232,7 @@ PAGES: tuple[Page, ...] = (
     Page(
         'geometry/coordinates',
         'Coordinates, parts & groups',
-        'Coordinate views, lazy multipart views, and CSR-style ragged result groups.',
+        'Coordinate views, multipart views, and grouped results.',
         (section('Coordinates', 'GeometryParts', 'Groups'),),
         (('Arrays & performance', '../../guide/arrays.md'),),
     ),
