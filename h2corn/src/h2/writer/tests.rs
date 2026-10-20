@@ -803,6 +803,141 @@ async fn duplicate_final_headers_reset_without_writing_the_body() {
     drop(writer);
 }
 
+#[rstest::rstest]
+#[case::partial_headers(false)]
+#[case::unstarted_data(true)]
+#[tokio::test(start_paused = true)]
+async fn final_body_preserves_stall_anchor_when_settings_reduce_credit(
+    #[case] headers_complete: bool,
+) {
+    let target = GatedWriter::new(0, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    writer.writer = BufWriter::with_capacity(1, GatedWriter(Arc::clone(&gate)));
+    let id = StreamId::new(1).unwrap();
+    let budget = ResponseByteBudget::new(8);
+    writer.register_stream(id, Some(Duration::from_secs(10)));
+    writer
+        .process_command(WriterCommand::SendFinal {
+            stream_id: id,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            data: bytes::Bytes::from_static(b"terminal").into(),
+            credit: budget.acquire(8).await.unwrap(),
+        })
+        .unwrap();
+    let prefix = if headers_complete {
+        writer.header_state.block().len().wrapping_add(9)
+    } else {
+        5
+    };
+    gate.lock().allowance = prefix;
+    let anchor = tokio::time::Instant::now();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    assert_eq!(gate.lock().bytes.len(), prefix);
+    tokio::time::advance(Duration::from_secs(4)).await;
+    writer
+        .update_peer_settings(PeerSettings {
+            initial_window_size: Some(0),
+            ..PeerSettings::default()
+        })
+        .unwrap();
+    assert!(matches!(
+        writer.poll_egress(&mut cx),
+        Poll::Pending | Poll::Ready(Ok(()))
+    ));
+    let deadline = Some((id, anchor.checked_add(Duration::from_secs(10)).unwrap()));
+    assert_eq!(writer.next_response_stall_deadline(), deadline);
+    release(&gate);
+    writer.flush().await.unwrap();
+    assert_eq!(writer.next_response_stall_deadline(), deadline);
+    let headers = frames(&gate.lock().bytes);
+    assert_eq!(headers.len(), 1);
+    assert_eq!((headers[0].0, headers[0].1, headers[0].2), (1, 4, 1));
+    assert!(writer.take_response_closes().is_empty());
+    budget.try_acquire(8).unwrap_err();
+    writer
+        .grant_stream_window(id, WindowIncrement::new(8).unwrap())
+        .unwrap();
+    gate.lock().flushable = false;
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    assert!(writer.take_response_closes().is_empty());
+    release(&gate);
+    writer.flush().await.unwrap();
+    let output = frames(&gate.lock().bytes);
+    assert_eq!(output.len(), 2);
+    assert_eq!((output[1].0, output[1].1, output[1].2), (0, 1, 1));
+    assert_eq!(output[1].3.as_ref(), b"terminal");
+    assert_eq!(writer.connection_send_window, 0xFFFF - 8);
+    budget.try_acquire(8).unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Clean,
+        id
+    )]);
+}
+
+#[rstest::rstest]
+#[case::headers(false)]
+#[case::data(true)]
+#[tokio::test]
+async fn failed_final_response_finishes_only_the_started_frame(#[case] data_started: bool) {
+    let target = GatedWriter::new(0, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    writer.writer = BufWriter::with_capacity(1, GatedWriter(Arc::clone(&gate)));
+    let id = StreamId::new(1).unwrap();
+    let budget = ResponseByteBudget::new(8);
+    writer
+        .process_command(WriterCommand::SendFinal {
+            stream_id: id,
+            status: status_code::OK,
+            headers: ResponseHeaders::new(),
+            data: bytes::Bytes::from_static(b"terminal").into(),
+            credit: budget.acquire(8).await.unwrap(),
+        })
+        .unwrap();
+    let prefix = if data_started {
+        writer.header_state.block().len().wrapping_add(12)
+    } else {
+        5
+    };
+    gate.lock().allowance = prefix;
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    assert_eq!(gate.lock().bytes.len(), prefix);
+    writer.ingress.gate(id).unwrap().application_failed();
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    if data_started {
+        budget.try_acquire(8).unwrap_err();
+    } else {
+        budget.try_acquire(8).unwrap();
+    }
+    release(&gate);
+    writer.flush().await.unwrap();
+    let output = frames(&gate.lock().bytes);
+    let kinds: Vec<_> = output.iter().map(|frame| frame.0).collect();
+    assert_eq!(
+        kinds,
+        if data_started {
+            vec![1, 0, 3]
+        } else {
+            vec![1, 3]
+        }
+    );
+    if data_started {
+        assert_eq!(output[1].3.as_ref(), b"terminal");
+    }
+    let reset = output.last().unwrap();
+    assert_eq!(reset.2, 1);
+    assert_eq!(reset.3.as_ref(), &2_u32.to_be_bytes());
+    budget.try_acquire(8).unwrap();
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::ProducerFailed,
+        id
+    )]);
+}
+
 #[tokio::test]
 async fn reset_preserves_continuations_and_dynamic_header_history() {
     let target = GatedWriter::new(12, true);

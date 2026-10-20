@@ -828,8 +828,8 @@ impl<W: WriteTarget> WriterState<W> {
                     unreachable!()
                 };
                 if let Some(stream) = self.streams.get_mut(data.stream_id) {
+                    // Replanning an unstarted frame has not advanced the body.
                     stream.restore_body(StreamBodyState::Body(data.body));
-                    stream.note_body_progress(Instant::now());
                     if self.connection_send_window > 0 && stream.send_window > 0 {
                         self.ready_streams.schedule(stream, data.stream_id, false);
                     }
