@@ -1633,9 +1633,17 @@ async def test_http1_request_policy_owns_body_idle_timeout() -> None:
             message = await receive()
             await send({'type': f'{message["type"]}.complete'})
             return
-        body = await read_http_request_body(receive)
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                return
+            assert message['type'] == 'http.request', message
+            body.extend(message.get('body', b''))
+            if not message.get('more_body', False):
+                break
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': body})
+        await send({'type': 'http.response.body', 'body': bytes(body)})
 
     config = Config(
         port=0,
