@@ -44,9 +44,8 @@ onto your chosen background first.
 
 ## Benchmarks
 
-Measure Pillow image encoding and RGB image decoding across square sizes,
-landscape and portrait dimensions, component counts, RGBA input, and grayscale
-input.
+**About 130–380× faster encoding and 20–30× faster decoding** than
+`blurhash-python` on square Pillow images.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/encode-dark.svg">
