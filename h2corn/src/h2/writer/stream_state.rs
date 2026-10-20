@@ -56,17 +56,30 @@ pub(super) type PendingBody = InlineFifo<BodyItem, 2>;
 #[derive(Debug)]
 pub(super) struct ReadyStreamQueue {
     queue: VecDeque<StreamId>,
+    unexamined: usize,
 }
 
 impl ReadyStreamQueue {
     pub(super) const fn new() -> Self {
         Self {
             queue: VecDeque::new(),
+            unexamined: 0,
         }
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.queue.len()
+    pub(super) fn begin_scan(&mut self) -> usize {
+        if self.unexamined == 0 {
+            self.restart_scan();
+        }
+        self.unexamined
+    }
+
+    pub(super) fn restart_scan(&mut self) {
+        self.unexamined = self.queue.len();
+    }
+
+    pub(super) const fn has_unexamined(&self) -> bool {
+        self.unexamined != 0
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -80,6 +93,7 @@ impl ReadyStreamQueue {
         front: bool,
     ) {
         if stream.scheduled {
+            self.restart_scan();
             return;
         }
         stream.scheduled = true;
@@ -88,13 +102,25 @@ impl ReadyStreamQueue {
         } else {
             self.queue.push_back(stream_id);
         }
+        self.restart_scan();
+    }
+
+    pub(super) fn defer(&mut self, stream: &mut StreamWriteState, stream_id: StreamId) {
+        debug_assert!(!stream.scheduled);
+        stream.scheduled = true;
+        self.queue.push_back(stream_id);
     }
 
     pub(super) fn pop_scheduled(
         &mut self,
         streams: &mut StreamMap<StreamWriteState>,
     ) -> Option<StreamId> {
-        while let Some(stream_id) = self.queue.pop_front() {
+        while self.unexamined != 0 {
+            let Some(stream_id) = self.queue.pop_front() else {
+                self.unexamined = 0;
+                break;
+            };
+            self.unexamined = self.unexamined.wrapping_sub(1);
             let Some(stream) = streams.get_mut(&stream_id) else {
                 continue;
             };
@@ -417,9 +443,6 @@ pub(super) fn writer_stream(
 
 #[cfg(test)]
 mod tests {
-
-    use std::collections::VecDeque;
-
     use super::{ReadyStreamQueue, StreamWriteState};
     use crate::h2::new_stream_map;
     use crate::h2_frame::StreamId;
@@ -446,13 +469,5 @@ mod tests {
         assert_eq!(ready.pop_scheduled(&mut streams), Some(stream_id));
         assert!(!streams.get(&stream_id).expect("stream exists").scheduled);
         assert!(ready.is_empty());
-    }
-
-    #[test]
-    fn ready_queue_wrapper_has_no_layout_cost() {
-        assert_eq!(
-            size_of::<ReadyStreamQueue>(),
-            size_of::<VecDeque<StreamId>>()
-        );
     }
 }

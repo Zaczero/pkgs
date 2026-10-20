@@ -2,10 +2,12 @@ use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
 use std::{io, mem};
 
 use bytes::BytesMut;
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use tokio::io::{AsyncWrite as _, AsyncWriteExt as _, BufWriter};
 use tokio::sync::futures::Notified;
@@ -53,6 +55,7 @@ pub(crate) struct WriterState<W> {
     config: Arc<ServerConfig>,
     streams: StreamMap<StreamWriteState>,
     ready_streams: ReadyStreamQueue,
+    file_read_wake: Option<Arc<FileReadWake>>,
     drained_app_writes: Vec<(StreamId, QueuedStreamCommands)>,
     commands: VecDeque<WriterCommand>,
     active: Option<ActiveOutput>,
@@ -75,6 +78,31 @@ pub(crate) struct WindowOverflow;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InitialWindowAdjustmentOverflow;
+
+enum BodyPreparation {
+    Ready,
+    Yield,
+    Blocked,
+}
+
+// A file can complete after its stream was examined but before a yielded
+// scan resumes. Keep that notification until the driver starts a fresh pass.
+struct FileReadWake {
+    ready: AtomicBool,
+    driver: Mutex<Waker>,
+}
+
+impl Wake for FileReadWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ready.store(true, Ordering::Release);
+        let driver = self.driver.lock().clone();
+        driver.wake();
+    }
+}
 
 impl H2WriterHandle {
     pub(crate) fn failure_notification(
@@ -185,6 +213,7 @@ impl<W: WriteTarget> WriterState<W> {
             config,
             streams: new_stream_map(),
             ready_streams: ReadyStreamQueue::new(),
+            file_read_wake: None,
             drained_app_writes: Vec::new(),
             commands: VecDeque::new(),
             active: None,
@@ -551,8 +580,8 @@ impl<W: WriteTarget> WriterState<W> {
         Ok(())
     }
 
-    fn prepare_body(&mut self, cx: &mut Context<'_>) -> Result<bool, H2CornError> {
-        let turns = self.ready_streams.len().min(FRAME_QUANTUM);
+    fn prepare_body(&mut self, cx: &Context<'_>) -> Result<BodyPreparation, H2CornError> {
+        let turns = self.ready_streams.begin_scan().min(FRAME_QUANTUM);
         for _ in 0..turns {
             let Some(stream_id) = self.ready_streams.pop_scheduled(&mut self.streams) else {
                 break;
@@ -566,7 +595,7 @@ impl<W: WriteTarget> WriterState<W> {
                 if let Some(trailers) = stream.take_trailers_if_body_idle() {
                     self.header_state.encode_trailers(&trailers);
                     self.begin_headers(stream_id, true);
-                    return Ok(true);
+                    return Ok(BodyPreparation::Ready);
                 }
                 continue;
             };
@@ -592,10 +621,17 @@ impl<W: WriteTarget> WriterState<W> {
                     true
                 } else {
                     if file.needs_fill() {
-                        match file.poll_fill(cx) {
+                        let wake = self.file_read_wake.get_or_insert_with(|| {
+                            Arc::new(FileReadWake {
+                                ready: AtomicBool::new(false),
+                                driver: Mutex::new(cx.waker().clone()),
+                            })
+                        });
+                        let waker = Waker::from(Arc::clone(wake));
+                        match file.poll_fill(&mut Context::from_waker(&waker)) {
                             Poll::Pending => {
                                 stream.restore_body(StreamBodyState::Body(queue));
-                                self.ready_streams.schedule(stream, stream_id, false);
+                                self.ready_streams.defer(stream, stream_id);
                                 continue;
                             },
                             Poll::Ready(Err(_)) => {
@@ -660,9 +696,15 @@ impl<W: WriteTarget> WriterState<W> {
             }
             self.active = Some(ActiveOutput::Data(cursor));
             self.output_started.get_or_insert_with(Instant::now);
-            return Ok(true);
+            return Ok(BodyPreparation::Ready);
         }
-        Ok(false)
+        Ok(
+            if self.ready_streams.has_unexamined() || !self.commands.is_empty() {
+                BodyPreparation::Yield
+            } else {
+                BodyPreparation::Blocked
+            },
+        )
     }
 
     fn finish_active(&mut self) {
@@ -709,6 +751,16 @@ impl<W: WriteTarget> WriterState<W> {
 
     fn poll_output(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), H2CornError>> {
         self.apply_aborts()?;
+        if let Some(wake) = &self.file_read_wake {
+            let mut driver = wake.driver.lock();
+            if !driver.will_wake(cx.waker()) {
+                driver.clone_from(cx.waker());
+            }
+            drop(driver);
+            if wake.ready.swap(false, Ordering::AcqRel) {
+                self.ready_streams.restart_scan();
+            }
+        }
         let mut turns = 0_usize;
         let mut bytes = 0_usize;
         loop {
@@ -812,12 +864,22 @@ impl<W: WriteTarget> WriterState<W> {
             } else if let Some(command) = self.commands.pop_front() {
                 self.apply_command(command)?;
                 turns = turns.wrapping_add(1);
-            } else if !self.prepare_body(cx)? {
-                if self.dirty {
-                    self.flushing = true;
-                } else {
-                    self.output_started = None;
-                    return Poll::Pending;
+            } else {
+                match self.prepare_body(cx)? {
+                    BodyPreparation::Ready => {},
+                    BodyPreparation::Yield => {
+                        self.flushing |= self.dirty;
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    },
+                    BodyPreparation::Blocked => {
+                        if self.dirty {
+                            self.flushing = true;
+                        } else {
+                            self.output_started = None;
+                            return Poll::Pending;
+                        }
+                    },
                 }
             }
         }
@@ -1009,8 +1071,24 @@ impl<W: WriteTarget> WriterState<W> {
         if let Some(size) = settings.header_table_size {
             self.header_state.update_max_size(size);
         }
+        if delta != 0 {
+            self.reschedule_pending_streams();
+        }
         Ok(())
     }
+
+    fn reschedule_pending_streams(&mut self) {
+        let mut ids: SmallVec<[StreamId; 8]> = self.streams.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let stream = self.streams.get_mut(&id).expect("collected stream exists");
+            if stream.has_pending_output() && !stream.is_closed() {
+                self.ready_streams.schedule(stream, id, false);
+            }
+            self.refresh_response_deadline(id);
+        }
+    }
+
     pub(crate) fn grant_connection_window(
         &mut self,
         increment: WindowIncrement,
@@ -1022,16 +1100,7 @@ impl<W: WriteTarget> WriterState<W> {
             return Err(WindowOverflow);
         }
         self.connection_send_window = next;
-        let mut waiting: SmallVec<[StreamId; 8]> = self
-            .streams
-            .iter()
-            .filter(|(_, stream)| stream.has_pending_output() && !stream.is_closed())
-            .map(|(id, _)| *id)
-            .collect();
-        waiting.sort_unstable();
-        for id in waiting {
-            self.schedule(id, false);
-        }
+        self.reschedule_pending_streams();
         Ok(())
     }
     pub(crate) fn grant_stream_window(

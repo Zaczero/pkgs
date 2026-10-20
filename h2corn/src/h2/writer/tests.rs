@@ -3,8 +3,9 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 
 use tokio::io::{AsyncWrite, BufWriter};
 
@@ -71,6 +72,239 @@ impl AsyncWrite for GatedWriter {
 
 impl WriteTarget for GatedWriter {
     const SUPPORTS_SENDFILE: bool = false;
+}
+
+#[derive(Default)]
+struct WakeCount(AtomicUsize);
+
+impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn bounded_ready_scan_wakes_unexamined_writable_tail() {
+    let target = GatedWriter::new(usize::MAX, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let ids: Vec<_> = (0_u32..65)
+        .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+        .collect();
+    for &id in &ids {
+        writer
+            .send_headers(id, status_code::OK, ResponseHeaders::new(), false)
+            .unwrap();
+    }
+    writer.flush().await.unwrap();
+    gate.lock().bytes.clear();
+    writer.connection_send_window = 0;
+    for &id in &ids {
+        writer.streams.get_mut(&id).unwrap().send_window = 0;
+        writer
+            .process_command(WriterCommand::SendData {
+                stream_id: id,
+                data: bytes::Bytes::from_static(b"probe").into(),
+                credit: None,
+                end_stream: true,
+            })
+            .unwrap();
+    }
+    let tail = *ids.last().unwrap();
+    writer
+        .grant_stream_window(tail, WindowIncrement::new(5).unwrap())
+        .unwrap();
+    writer
+        .grant_connection_window(WindowIncrement::new(5).unwrap())
+        .unwrap();
+    let wakes = Arc::new(WakeCount::default());
+    let waker = Waker::from(Arc::clone(&wakes));
+    let mut cx = Context::from_waker(&waker);
+    assert!(writer.poll_egress(&mut cx).is_pending());
+    assert_eq!(
+        wakes.0.load(Ordering::Relaxed),
+        1,
+        "unexamined streams require a continuation"
+    );
+    assert!(gate.lock().bytes.is_empty());
+    assert!(writer.poll_egress(&mut cx).is_ready());
+    assert!(
+        frames(&gate.lock().bytes)
+            .iter()
+            .any(|frame| frame.0 == 0 && frame.2 == tail.get() && frame.3.as_ref() == b"probe")
+    );
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Clean,
+        tail
+    )]);
+    drop(writer);
+}
+
+#[test]
+fn bounded_ready_scan_sleeps_after_all_file_reads_are_pending() {
+    use std::io::Write as _;
+
+    use tokio::runtime::Builder;
+    use tokio::sync::oneshot;
+    use tokio::task::spawn_blocking;
+
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (started, running) = oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let worker = spawn_blocking(move || {
+            started.send(()).unwrap();
+            let _received = waiting.recv();
+        });
+        running.await.unwrap();
+        let target = GatedWriter::new(usize::MAX, true);
+        let gate = Arc::clone(&target.0);
+        let mut writer = WriterState::new_test(target);
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"owned").unwrap();
+        let ids: Vec<_> = (0_u32..65)
+            .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+            .collect();
+        for &id in &ids {
+            writer
+                .send_headers(id, status_code::OK, ResponseHeaders::new(), false)
+                .unwrap();
+        }
+        writer.flush().await.unwrap();
+        gate.lock().bytes.clear();
+        for &id in &ids {
+            writer
+                .streams
+                .get_mut(&id)
+                .unwrap()
+                .queue_file(FileStreamer::new(file.reopen().unwrap(), 0, 5, true))
+                .unwrap();
+            writer.schedule(id, false);
+        }
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+        assert!(writer.poll_egress(&mut cx).is_pending());
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(writer.poll_egress(&mut cx).is_pending());
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            1,
+            "a fully examined pass waits for file completion"
+        );
+        release.send(()).unwrap();
+        worker.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), writer.flush())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(writer.take_response_closes().len(), 65);
+        let output = frames(&gate.lock().bytes);
+        assert_eq!(
+            output
+                .iter()
+                .filter(|frame| frame.0 == 0 && frame.3.as_ref() == b"owned")
+                .count(),
+            65
+        );
+        drop(writer);
+    });
+}
+
+#[rstest::rstest]
+#[case::zero(false)]
+#[case::negative(true)]
+#[tokio::test(start_paused = true)]
+async fn settings_credit_resumes_parked_body_and_cancels_stall_deadline(#[case] negative: bool) {
+    let target = GatedWriter::new(usize::MAX, true);
+    let gate = Arc::clone(&target.0);
+    let mut writer = WriterState::new_test(target);
+    let id = StreamId::new(1).unwrap();
+    writer
+        .update_peer_settings(PeerSettings {
+            initial_window_size: Some(if negative { 3 } else { 0 }),
+            ..PeerSettings::default()
+        })
+        .unwrap();
+    writer.register_stream(id, Some(Duration::from_secs(10)));
+    writer
+        .send_headers(id, status_code::OK, ResponseHeaders::new(), false)
+        .unwrap();
+    if negative {
+        writer
+            .process_command(WriterCommand::SendData {
+                stream_id: id,
+                data: bytes::Bytes::from_static(b"old").into(),
+                credit: None,
+                end_stream: false,
+            })
+            .unwrap();
+    }
+    writer.flush().await.unwrap();
+    writer
+        .update_peer_settings(PeerSettings {
+            initial_window_size: Some(0),
+            ..PeerSettings::default()
+        })
+        .unwrap();
+    assert_eq!(
+        writer
+            .streams
+            .get(&id)
+            .expect("registered response stream")
+            .send_window,
+        if negative { -3 } else { 0 }
+    );
+    gate.lock().bytes.clear();
+    writer
+        .process_command(WriterCommand::SendData {
+            stream_id: id,
+            data: bytes::Bytes::from_static(b"probe").into(),
+            credit: None,
+            end_stream: true,
+        })
+        .unwrap();
+    assert!(
+        writer
+            .poll_egress(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(writer.next_response_stall_deadline().is_some());
+    writer
+        .update_peer_settings(PeerSettings {
+            initial_window_size: Some(16),
+            ..PeerSettings::default()
+        })
+        .unwrap();
+    assert!(
+        writer.next_response_stall_deadline().is_none(),
+        "usable SETTINGS credit cancels the old flow-control deadline"
+    );
+    tokio::time::advance(Duration::from_secs(20)).await;
+    assert!(
+        writer
+            .pop_expired_response_stall_deadline(tokio::time::Instant::now())
+            .is_none()
+    );
+    writer.flush().await.unwrap();
+    assert!(
+        frames(&gate.lock().bytes)
+            .iter()
+            .any(|frame| frame.0 == 0 && frame.2 == 1 && frame.3.as_ref() == b"probe")
+    );
+    assert_eq!(writer.take_response_closes().as_slice(), &[(
+        ResponseClose::Clean,
+        id
+    )]);
+    drop(writer);
 }
 
 pub(crate) fn release(gate: &Arc<parking_lot::Mutex<Gate>>) {
