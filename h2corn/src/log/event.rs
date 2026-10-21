@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::config::LogFormat;
 use crate::log::{AccessLogBuf, AccessLogWriter, sink};
 
-/// The encoding for this process's stderr, published once at serve start.
+/// The encoding for context-free diagnostics, last published by a server.
 ///
 /// Diagnostics are emitted from paths that never see a `ServerConfig` -- a
 /// panicking connection task, a supervisor signal -- so the choice is read
@@ -75,35 +75,48 @@ impl Event {
     /// Both renderings are given together so they cannot drift apart, and the
     /// encoding comes from the one place it was published.
     pub(crate) fn emit(self, text: fmt::Arguments<'_>, fields: impl FnOnce(&mut JsonObject<'_>)) {
-        let mut line = AccessLogBuf::new();
-        let out = &mut AccessLogWriter(&mut line);
+        let line = self.encode(text, fields);
+        sink::write_line(line.as_slice());
+    }
+
+    /// Encode without delivery so the sink can report its own failures directly.
+    pub(super) fn encode(
+        self,
+        text: fmt::Arguments<'_>,
+        fields: impl FnOnce(&mut JsonObject<'_>),
+    ) -> AccessLogBuf {
         match format() {
             LogFormat::Text => {
+                let mut line = AccessLogBuf::new();
+                let out = &mut AccessLogWriter(&mut line);
                 let _format_result = out.write_fmt(text);
                 let _format_result = out.write_char('\n');
+                line
             },
-            LogFormat::Json => {
-                let mut object = JsonObject::new(out);
-                object.str("level", self.level().as_str());
-                object.str("event", self.name());
-                fields(&mut object);
-                object.finish();
-            },
+            LogFormat::Json => self.encode_json(fields),
         }
-        sink::write_line(line.as_slice());
+    }
+
+    fn encode_json(self, fields: impl FnOnce(&mut JsonObject<'_>)) -> AccessLogBuf {
+        let mut line = AccessLogBuf::new();
+        let out = &mut AccessLogWriter(&mut line);
+        let mut object = JsonObject::new(out);
+        object.str("level", self.level().as_str());
+        object.str("event", self.name());
+        fields(&mut object);
+        object.finish();
+        line
     }
 
     /// The JSON arm for a producer that renders its own text.
     ///
     /// The aligned access line and the styled multi-line banner are richer
     /// than one sentence, so those two branch on the format themselves and
-    /// call this inside the JSON arm. No-ops on a text stream, so it cannot
-    /// leak an object into one.
+    /// call this inside the JSON arm. That producer's selection is authoritative,
+    /// even when another embedded server changes the diagnostic format.
     pub(crate) fn emit_json(self, fields: impl FnOnce(&mut JsonObject<'_>)) {
-        if format() != LogFormat::Json {
-            return;
-        }
-        self.emit(format_args!(""), fields);
+        let line = self.encode_json(fields);
+        sink::write_line(line.as_slice());
     }
 }
 
@@ -209,7 +222,23 @@ fn format() -> LogFormat {
 
 #[cfg(test)]
 mod tests {
-    use super::write_json_string;
+    use super::{Event, set_format, write_json_string};
+    use crate::config::LogFormat;
+
+    #[test]
+    fn selected_json_ignores_process_diagnostic_format() {
+        set_format(LogFormat::Text);
+        let line = Event::Request.encode_json(|fields| {
+            fields.str("target", "/selected-json");
+            fields.num("status", 201);
+            fields.num("duration_ms", format_args!("{:.3}", 12.3456));
+            set_format(LogFormat::Json);
+        });
+        assert_eq!(
+            line.as_slice(),
+            b"{\"level\":\"info\",\"event\":\"request\",\"target\":\"/selected-json\",\"status\":201,\"duration_ms\":12.346}\n"
+        );
+    }
 
     #[test]
     fn json_escaping_preserves_hostile_text_without_newlines() {

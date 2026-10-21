@@ -31,7 +31,65 @@ mod tests {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::net::UnixStream;
 
-    use super::fd_is_regular_file;
+    use pyo3::Python;
+    use pyo3::types::{PyAnyMethods as _, PyModule};
+
+    use super::{CAPACITY, LogSink, fd_is_regular_file};
+    use crate::config::LogFormat;
+    use crate::log::set_format;
+
+    #[rstest::rstest]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    #[case::text(LogFormat::Text, "dropped 3 access log lines: sink too slow")]
+    #[case::json(
+        LogFormat::Json,
+        "{\"level\":\"error\",\"event\":\"failed\",\"subject\":\"access log sink\",\"detail\":\"sink too slow\",\"dropped_lines\":3}"
+    )]
+    fn saturated_sink_reports_drops_directly_before_draining(
+        #[case] format: LogFormat,
+        #[case] notice: &str,
+    ) {
+        set_format(format);
+        let sink = LogSink::new();
+        let mut output = tempfile::NamedTempFile::new().unwrap();
+        assert!(fd_is_regular_file(output.as_raw_fd()));
+        let oversized = format!(
+            "{{\"event\":\"request\",\"target\":\"{}\"}}\n",
+            "x".repeat(CAPACITY)
+        );
+        sink.enqueue(oversized.as_bytes());
+        for _ in 0..3 {
+            sink.enqueue(b"{\"event\":\"request\",\"target\":\"/dropped\"}\n");
+        }
+
+        sink.drain_once(&mut output);
+        sink.enqueue(b"{\"event\":\"request\",\"target\":\"/after\"}\n");
+        sink.enqueue(b"{\"event\":\"request\",\"target\":\"/batch\"}\n");
+        sink.drain_once(&mut output);
+
+        let actual = std::fs::read_to_string(output.path()).unwrap();
+        if format == LogFormat::Json {
+            Python::initialize();
+            Python::attach(|py| {
+                let json = PyModule::import(py, "json").unwrap();
+                for line in actual.lines() {
+                    json.call_method1("loads", (line,)).unwrap();
+                }
+            });
+        }
+        let mut lines = actual.lines();
+        assert_eq!(lines.next(), Some(notice));
+        assert_eq!(lines.next(), Some(oversized.trim_end()));
+        assert_eq!(
+            lines.next(),
+            Some("{\"event\":\"request\",\"target\":\"/after\"}")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("{\"event\":\"request\",\"target\":\"/batch\"}")
+        );
+        assert_eq!(lines.next(), None);
+    }
 
     #[test]
     fn regular_file_is_classified_without_taking_ownership() {
@@ -61,6 +119,8 @@ use std::time::{Duration, Instant};
 use std::{mem, thread};
 
 use parking_lot::{Condvar, Mutex};
+
+use super::Event;
 
 /// Initial capacity of each buffer. A batch is never split to fit it: one
 /// batch is one `write(2)`, which is what keeps a line whole when several
@@ -109,16 +169,7 @@ pub(crate) fn start() {
         return;
     }
     START.call_once(|| {
-        let sink: &'static LogSink = Box::leak(Box::new(LogSink {
-            pending: Mutex::new(Pending {
-                lines: Vec::with_capacity(INITIAL_CAPACITY),
-                spare: Vec::with_capacity(INITIAL_CAPACITY),
-                writing: false,
-            }),
-            ready: Condvar::new(),
-            drained: Condvar::new(),
-            dropped: AtomicU64::new(0),
-        }));
+        let sink: &'static LogSink = Box::leak(Box::new(LogSink::new()));
         // Publish the buffer only once its writer exists. A queue nothing
         // drains is the one state `write_line` must never find.
         if thread::Builder::new()
@@ -138,20 +189,7 @@ pub(crate) fn write_line(line: &[u8]) {
         return;
     };
 
-    let mut pending = sink.pending.lock();
-    if !pending.lines.is_empty() && line.len() > CAPACITY.saturating_sub(pending.lines.len()) {
-        drop(pending);
-        sink.dropped.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    let was_empty = pending.lines.is_empty();
-    pending.lines.extend_from_slice(line);
-    drop(pending);
-    // Only the empty -> non-empty transition can have a parked writer to wake;
-    // while it is writing there is no waiter and the notify costs nothing.
-    if was_empty {
-        sink.ready.notify_one();
-    }
+    sink.enqueue(line);
 }
 
 /// Wait for queued lines to reach stderr, giving up after `timeout`.
@@ -198,38 +236,79 @@ fn fd_is_regular_file(fd: libc::c_int) -> bool {
 fn drain_forever(sink: &'static LogSink) -> ! {
     let mut stderr = io::stderr();
     loop {
+        sink.drain_once(&mut stderr);
+    }
+}
+
+impl LogSink {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(Pending {
+                lines: Vec::with_capacity(INITIAL_CAPACITY),
+                spare: Vec::with_capacity(INITIAL_CAPACITY),
+                writing: false,
+            }),
+            ready: Condvar::new(),
+            drained: Condvar::new(),
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    fn enqueue(&self, line: &[u8]) {
+        let mut pending = self.pending.lock();
+        if !pending.lines.is_empty() && line.len() > CAPACITY.saturating_sub(pending.lines.len()) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let was_empty = pending.lines.is_empty();
+        pending.lines.extend_from_slice(line);
+        drop(pending);
+        // Only the empty -> non-empty transition can have a parked writer to wake;
+        // while it is writing there is no waiter and the notify costs nothing.
+        if was_empty {
+            self.ready.notify_one();
+        }
+    }
+
+    fn drain_once(&self, output: &mut impl io::Write) {
         // The two buffers swap roles every round: producers fill one while the
         // writer drains the other, so a batch never blocks an append.
         let mut batch = {
-            let mut pending = sink.pending.lock();
+            let mut pending = self.pending.lock();
             while pending.lines.is_empty() {
-                sink.ready.wait(&mut pending);
+                self.ready.wait(&mut pending);
             }
             let spare = mem::take(&mut pending.spare);
             pending.writing = true;
             mem::replace(&mut pending.lines, spare)
         };
 
-        let dropped = sink.dropped.swap(0, Ordering::Relaxed);
+        let dropped = self.dropped.swap(0, Ordering::Relaxed);
         if dropped != 0 {
-            drop(writeln!(
-                stderr,
-                "dropped {dropped} access log lines: sink too slow"
-            ));
+            let notice = Event::Failed.encode(
+                format_args!("dropped {dropped} access log lines: sink too slow"),
+                |fields| {
+                    fields.str("subject", "access log sink");
+                    fields.str("detail", "sink too slow");
+                    fields.num("dropped_lines", dropped);
+                },
+            );
+            // Enqueueing here could drop the notice into the saturated sink again.
+            drop(output.write_all(notice.as_slice()));
         }
         // One batch, one write. Linux holds the file's lock for the whole of a
         // regular-file write, so a batch appended by one worker cannot have
         // another worker's batch spliced into the middle of a line. Splitting
         // it here — at any fixed size, since lines do not land on that
         // boundary — is what would break that.
-        drop(stderr.write_all(&batch));
+        drop(output.write_all(&batch));
 
         batch.clear();
-        let mut pending = sink.pending.lock();
+        let mut pending = self.pending.lock();
         pending.spare = mem::take(&mut batch);
         pending.writing = false;
         if pending.lines.is_empty() {
-            sink.drained.notify_all();
+            self.drained.notify_all();
         }
     }
 }
