@@ -49,8 +49,8 @@ and resource limits.
 ## Defaults that affect migration
 
 The comparisons below use the defaults in
-[Uvicorn 0.52.4](https://github.com/encode/uvicorn/blob/0.52.4/uvicorn/config.py),
-[Gunicorn 26.1.0](https://github.com/benoitc/gunicorn/blob/26.1.0/gunicorn/config.py),
+[Uvicorn 0.54.0](https://github.com/encode/uvicorn/blob/0.54.0/uvicorn/config.py),
+[Gunicorn 26.2.0](https://github.com/benoitc/gunicorn/blob/26.2.0/gunicorn/config.py),
 and [Hypercorn 0.18.0](https://github.com/pgjones/hypercorn/blob/0.18.0/src/hypercorn/config.py).
 
 | Setting | Other servers | h2corn |

@@ -14,10 +14,14 @@ import time
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 from bench._core import (
     BenchmarkError,
+    DeadlineError,
     Metrics,
     ResponseError,
     Scenario,
@@ -29,6 +33,12 @@ from bench._core import (
     write_json,
 )
 from bench.evidence import file_identity, run_identity, verify_workers
+from bench.sampling import (
+    CalibrationPoint,
+    calibration_duration,
+    calibration_record,
+    calibration_status,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ('h2corn', 'hypercorn', 'grpcio', 'grpclib')
@@ -296,20 +306,22 @@ def prepare(
     client_directory = ROOT / 'bench/grpc_client'
     binary = directory / 'grpc-client'
     command = ['go', 'build', '-buildvcs=false', '-trimpath', '-o', str(binary), '.']
-    subprocess.run(
-        command, cwd=client_directory, check=True, timeout=180, capture_output=True
+    _run(
+        command,
+        180,
+        evidence_path=directory / 'grpc-client-build.process.json',
+        cwd=client_directory,
     )
     descriptor = directory / 'notebook.pb'
-    subprocess.run(
+    _run(
         ['buf', 'build', '--as-file-descriptor-set', '-o', str(descriptor)],
+        30,
+        evidence_path=directory / 'buf-build.process.json',
         cwd=ROOT / 'examples/grpc',
-        check=True,
-        timeout=30,
-        capture_output=True,
     )
     cert = directory / 'tls'
     cert.mkdir()
-    subprocess.run(
+    _run(
         [
             'openssl',
             'req',
@@ -330,9 +342,8 @@ def prepare(
             '-addext',
             'basicConstraints=critical,CA:TRUE',
         ],
-        check=True,
-        timeout=30,
-        capture_output=True,
+        30,
+        evidence_path=directory / 'tls-certificate.process.json',
     )
     identity['rpc_client'] = {
         **file_identity(binary),
@@ -418,6 +429,71 @@ def validate_outcomes(raw: dict[str, Any], plan: dict[str, Any]) -> None:
         raise BenchmarkError('gRPC TLS connection did not negotiate H2')
 
 
+def calibrate_rpc_server(
+    name: str,
+    scenario: RpcScenario,
+    *,
+    plan: dict[str, Any],
+    probe: dict[str, Any],
+    warmup: str,
+    windows: Sequence[float],
+    identity: dict[str, Any],
+    server: Any,
+    evidence_directory: Path,
+) -> dict[str, Any]:
+    """Measure adaptive windows through one verified serving process."""
+    from bench._core import duration_seconds
+
+    load(
+        {**plan, 'duration_seconds': duration_seconds(warmup)},
+        identity,
+        evidence_directory / 'warmup.json',
+    )
+    before = process_snapshot(server.process_pids())
+    points: list[CalibrationPoint] = []
+    for window in windows:
+        window_directory = evidence_directory / f'window-{window:g}s'
+        raw = load(
+            {**plan, 'duration_seconds': window},
+            identity,
+            window_directory / 'load.json',
+        )
+        useful = (
+            raw['verified_ok'] if scenario.unit == 'RPC/s' else raw['verified_messages']
+        )
+        points.append(
+            CalibrationPoint(
+                duration_seconds=window,
+                rate=useful / raw['elapsed_seconds'],
+                elapsed_seconds=raw['elapsed_seconds'],
+                completed=raw['verified_ok'],
+            )
+        )
+        if calibration_duration(points, fixed_count=False) is None:
+            break
+    after = process_snapshot(server.process_pids())
+    if before.keys() != after.keys() or any(
+        before[pid]['start_ticks'] != after[pid]['start_ticks'] for pid in before
+    ):
+        raise BenchmarkError('serving process population changed during calibration')
+    final = load(probe, identity, evidence_directory / 'after.json')
+    worker = json.loads(final['server_identity'])
+    if worker['pid'] not in server.process_pids():
+        raise BenchmarkError('gRPC serving receipt belongs to an unowned process')
+    if worker['active'] or worker['readers']:
+        raise ResponseError('gRPC work remains active after calibration')
+    status, selected_duration = calibration_status(points, fixed_count=False)
+    return {
+        'server': name,
+        'status': status,
+        'selected_duration_seconds': selected_duration,
+        'windows': calibration_record(points),
+        'processes_before': before,
+        'processes_after': after,
+        'server_identity': worker,
+    }
+
+
 def measure_cell(
     name: str,
     scenario: RpcScenario,
@@ -428,6 +504,7 @@ def measure_cell(
     identity: dict[str, Any],
     qualification: bool = False,
     cancellation: bool = False,
+    calibration_windows: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     from bench._core import duration_seconds
     from bench.bench import TrialError
@@ -535,78 +612,115 @@ def measure_cell(
                     )
                     return {}
                 load(probe, identity, evidence_directory / 'before.json')
-                trial['phase'] = 'warmup'
-                if not qualification:
-                    load(
-                        {**plan, 'duration_seconds': duration_seconds(warmup)},
-                        identity,
-                        evidence_directory / 'warmup.json',
+                if calibration_windows is not None:
+                    trial['phase'] = 'calibration'
+                    measured = calibrate_rpc_server(
+                        name,
+                        scenario,
+                        plan=plan,
+                        probe=probe,
+                        warmup=warmup,
+                        windows=calibration_windows,
+                        identity=identity,
+                        server=server,
+                        evidence_directory=evidence_directory,
                     )
-                if qualification:
-                    plan = probe
-                before = process_snapshot(server.process_pids())
-                trial['phase'] = 'load'
-                raw: dict[str, Any] = {}
-
-                def action() -> Metrics:
-                    nonlocal raw
-                    raw = load(plan, identity, evidence_directory / 'load.json')
-                    return {
-                        'rps': (
-                            raw['verified_ok']
-                            if scenario.unit == 'RPC/s'
-                            else raw['verified_messages']
+                    worker = measured.pop('server_identity')
+                    trial['workers'] = {str(worker['pid']): worker}
+                    verify_workers(trial, identity)
+                    trial.update(
+                        calibration=measured,
+                        correctness_before='passed',
+                        correctness_after='passed',
+                        supervisor_pid=server.pid,
+                        tcp_nodelay=True if name != 'grpcio' else None,
+                        tcp_nodelay_source='inherited listener'
+                        if name != 'grpcio'
+                        else 'runtime-owned socket; not directly observed',
+                        listener_owner='runtime-port-zero'
+                        if name == 'grpcio'
+                        else 'harness-inherited',
+                    )
+                else:
+                    trial['phase'] = 'warmup'
+                    if not qualification:
+                        load(
+                            {**plan, 'duration_seconds': duration_seconds(warmup)},
+                            identity,
+                            evidence_directory / 'warmup.json',
                         )
-                        / raw['elapsed_seconds'],
-                        'completed': raw['verified_ok'],
-                        'latency_percentiles': raw['latency_percentiles'],
-                    }
+                    if qualification:
+                        plan = probe
+                    before = process_snapshot(server.process_pids())
+                    trial['phase'] = 'load'
+                    raw: dict[str, Any] = {}
 
-                metrics, peak = measure_peak_memory(
-                    server, action, evidence_path=evidence_directory / 'memory.json'
-                )
-                after = process_snapshot(server.process_pids())
-                if before.keys() != after.keys() or any(
-                    before[p]['start_ticks'] != after[p]['start_ticks'] for p in before
-                ):
-                    raise BenchmarkError(
-                        'serving process population changed during gRPC load'
+                    def action() -> Metrics:
+                        nonlocal raw
+                        raw = load(plan, identity, evidence_directory / 'load.json')
+                        return {
+                            'rps': (
+                                raw['verified_ok']
+                                if scenario.unit == 'RPC/s'
+                                else raw['verified_messages']
+                            )
+                            / raw['elapsed_seconds'],
+                            'completed': raw['verified_ok'],
+                            'latency_percentiles': raw['latency_percentiles'],
+                        }
+
+                    metrics, peak = measure_peak_memory(
+                        server, action, evidence_path=evidence_directory / 'memory.json'
                     )
-                trial['processes_before'] = before
-                trial['processes_after'] = after
-                trial['phase'] = 'correctness-after'
-                final = load(probe, identity, evidence_directory / 'after.json')
-                worker = json.loads(final['server_identity'])
-                trial['workers'] = {str(worker['pid']): worker}
-                verify_workers(trial, identity)
-                if worker['pid'] not in server.process_pids():
-                    raise BenchmarkError(
-                        'gRPC serving receipt belongs to an unowned process'
+                    after = process_snapshot(server.process_pids())
+                    if before.keys() != after.keys() or any(
+                        before[p]['start_ticks'] != after[p]['start_ticks']
+                        for p in before
+                    ):
+                        raise BenchmarkError(
+                            'serving process population changed during gRPC load'
+                        )
+                    trial['processes_before'] = before
+                    trial['processes_after'] = after
+                    trial['phase'] = 'correctness-after'
+                    final = load(probe, identity, evidence_directory / 'after.json')
+                    worker = json.loads(final['server_identity'])
+                    trial['workers'] = {str(worker['pid']): worker}
+                    verify_workers(trial, identity)
+                    if worker['pid'] not in server.process_pids():
+                        raise BenchmarkError(
+                            'gRPC serving receipt belongs to an unowned process'
+                        )
+                    if worker['active'] or worker['readers']:
+                        raise ResponseError(
+                            'gRPC work remains active after complete calls'
+                        )
+                    measured = {
+                        **metrics,
+                        'peak_memory_bytes': peak,
+                        'post_settlement_pss_bytes': server.memory_bytes(),
+                        'rpc_rate': raw['verified_ok'] / raw['elapsed_seconds'],
+                        'message_rate': raw['verified_messages']
+                        / raw['elapsed_seconds'],
+                        'payload_bytes_rate': raw['verified_payload_bytes']
+                        / raw['elapsed_seconds'],
+                    }
+                    trial.update(
+                        metrics=measured,
+                        correctness_before='passed',
+                        correctness_after='passed',
+                        supervisor_pid=server.pid,
+                        tcp_nodelay=True if name != 'grpcio' else None,
+                        tcp_nodelay_source='inherited listener'
+                        if name != 'grpcio'
+                        else 'runtime-owned socket; not directly observed',
+                        listener_owner='runtime-port-zero'
+                        if name == 'grpcio'
+                        else 'harness-inherited',
                     )
-                if worker['active'] or worker['readers']:
-                    raise ResponseError('gRPC work remains active after complete calls')
-                measured = {
-                    **metrics,
-                    'peak_memory_bytes': peak,
-                    'post_settlement_pss_bytes': server.memory_bytes(),
-                    'rpc_rate': raw['verified_ok'] / raw['elapsed_seconds'],
-                    'message_rate': raw['verified_messages'] / raw['elapsed_seconds'],
-                    'payload_bytes_rate': raw['verified_payload_bytes']
-                    / raw['elapsed_seconds'],
-                }
-                trial.update(
-                    metrics=measured,
-                    correctness_before='passed',
-                    correctness_after='passed',
-                    supervisor_pid=server.pid,
-                    tcp_nodelay=True if name != 'grpcio' else None,
-                    tcp_nodelay_source='inherited listener'
-                    if name != 'grpcio'
-                    else 'runtime-owned socket; not directly observed',
-                    listener_owner='runtime-port-zero'
-                    if name == 'grpcio'
-                    else 'harness-inherited',
-                )
+    except DeadlineError as error:
+        trial.update(status='failed', error=str(error))
+        raise
     except (OSError, ValueError, RuntimeError) as error:
         trial.update(status='failed', error=str(error))
         raise TrialError(
@@ -614,201 +728,21 @@ def measure_cell(
         ) from error
     else:
         trial.update(status='completed', phase='completed')
+        measured['elapsed_seconds'] = time.monotonic() - started
         return measured
     finally:
         trial['elapsed_seconds'] = time.monotonic() - started
         write_json(evidence_directory / 'trial.json', trial)
 
 
-def run_suite(args: Any) -> Path:
-    from bench.bench import (
-        assert_publishable,
-        plot_results,
-        publish,
-        run_scenario,
-        system_summary,
-    )
-
-    selected = [
-        s for s in scenarios() if not args.rpc_cases or s.case in args.rpc_cases
-    ]
-    servers = args.servers or list(SERVERS)
-    directory = (
-        args.run_directory
-        or args.output_directory.resolve() / 'runs' / f'grpc-{time.time_ns()}'
-    )
-    directory.mkdir(parents=True, exist_ok=False)
-    (directory / 'raw').mkdir()
-    (directory / 'plots').mkdir()
-    identity = prepare(
-        directory,
-        args.wheel,
-        connect_wheel=args.connect_wheel,
-        development_revision=args.connect_development_revision,
-        connect_source=args.connect_source,
-        comparator_selection=args.comparator_selection,
-    )
-    kind = identity['rpc_artifacts']['connectrpc']['kind']
-    write_json(directory / 'identity.json', identity)
-    write_json(
-        directory / 'profile.json',
-        {'profile': 'grpc', 'benchmark_family': 'grpc', 'status': 'running'},
-    )
-    deadline = time.monotonic() + args.suite_budget
-
-    def qualify() -> list[dict[str, Any]]:
-        from bench.bench import TrialError
-
-        qualifications = []
-        for scenario in selected:
-            for name in servers:
-                if name == 'grpclib' and not scenario.grpclib:
-                    continue
-                path = directory / 'evidence' / scenario.slug() / name
-                try:
-                    measure_cell(
-                        name,
-                        scenario,
-                        args.duration,
-                        args.warmup_duration,
-                        evidence_directory=path,
-                        identity=identity,
-                        qualification=True,
-                    )
-                except TrialError as error:
-                    if not isinstance(error.__cause__, ResponseError):
-                        raise
-                    qualifications.append({
-                        'case': scenario.case,
-                        'server': name,
-                        'status': 'failed',
-                        'error': str(error),
-                    })
-                else:
-                    qualifications.append({
-                        'case': scenario.case,
-                        'server': name,
-                        'status': 'passed',
-                    })
-        for name in ('h2corn', 'hypercorn', 'grpcio'):
-            if name not in servers:
-                continue
-            cancellation = RpcScenario('Cancellation', 'download', 32, 2, 1)
-            try:
-                measure_cell(
-                    name,
-                    cancellation,
-                    args.duration,
-                    args.warmup_duration,
-                    evidence_directory=directory / 'evidence/cancellation' / name,
-                    identity=identity,
-                    qualification=True,
-                    cancellation=True,
-                )
-            except TrialError as error:
-                if not isinstance(error.__cause__, ResponseError):
-                    raise
-                qualifications.append({
-                    'case': 'Cancellation',
-                    'server': name,
-                    'status': 'failed',
-                    'error': str(error),
-                })
-            else:
-                qualifications.append({
-                    'case': 'Cancellation',
-                    'server': name,
-                    'status': 'passed',
-                })
-        return qualifications
-
-    qualifications = {
-        'application_artifact_kind': kind,
-        'connect_sha256': identity['rpc_artifacts']['connectrpc']['sha256'],
-        'cells': qualify(),
-        'framework': asyncio.run(qualify_framework()),
-    }
-    write_json(directory / 'qualification.json', qualifications)
-    identity['rpc_qualification'] = qualifications['cells']
-    write_json(directory / 'identity.json', identity)
-    if args.qualify_only:
-        write_json(
-            directory / 'profile.json',
-            {
-                'profile': 'grpc',
-                'benchmark_family': 'grpc',
-                'status': 'qualified',
-                'application_artifact_kind': kind,
-            },
-        )
-        return directory
-    for scenario in selected:
-        record = run_scenario(
-            scenario,
-            servers,
-            duration=args.duration,
-            warmup=args.warmup_duration,
-            max_trials=args.max_trials,
-            deadline=min(deadline, time.monotonic() + args.scenario_budget),
-            hypercorn_config=directory / 'unused.toml',
-            evidence_directory=directory / 'evidence' / scenario.slug(),
-            identity=identity,
-        )
-        record.update(
-            benchmark_family='grpc',
-            application_artifact_kind=kind,
-            stack_labels={
-                **LABELS,
-                **(
-                    {
-                        n: LABELS[n]
-                        + f' (development {args.connect_development_revision[:7]})'
-                        for n in ('h2corn', 'hypercorn')
-                    }
-                    if kind == 'development'
-                    else {}
-                ),
-            },
-            rate_unit=scenario.unit,
-            reference_label='Connect / h2corn',
-            rpc_case=scenario.case,
-            qualification=qualifications,
-            system_summary=system_summary(),
-            network_profile='grpc',
-            duration=args.duration,
-            warmup_duration=args.warmup_duration,
-            package_versions={
-                n: importlib.metadata.version(n)
-                for n in (
-                    'connectrpc',
-                    'hypercorn',
-                    'grpcio',
-                    'grpclib',
-                    'protobuf-py',
-                    'protobuf-py-ext',
-                )
-            },
-            identity='../evidence/grpc/identity.json',
-            evidence=f'../evidence/grpc/trials/{scenario.slug()}',
-        )
-        messages_per_rpc = (
-            scenario.messages if scenario.shape in {'download', 'duplex'} else 1
-        )
-        for result in record['aggregate'].values():
-            result['rpc_rate'] = result['rps'] / messages_per_rpc
-        write_json(directory / 'raw' / f'{scenario.slug()}.json', record)
-        plot_results(record, directory / 'plots' / f'{scenario.slug()}.svg')
-    write_json(
-        directory / 'profile.json',
-        {'profile': 'grpc', 'benchmark_family': 'grpc', 'status': 'completed'},
-    )
-    if args.publish:
-        assert_publishable([directory])
-        publish([directory])
-    return directory
-
-
 def assert_rpc_publishable(directory: Path) -> None:
+    profile = json.loads((directory / 'profile.json').read_text())
+    if (
+        profile.get('benchmark_family') != 'grpc'
+        or profile.get('profile') != 'grpc'
+        or profile.get('status') not in {'completed', 'completed_with_failures'}
+    ):
+        raise BenchmarkError('gRPC profile did not complete')
     identity = json.loads((directory / 'identity.json').read_text())
     qualification_path = directory / 'qualification.json'
     if not qualification_path.is_file():
@@ -825,36 +759,75 @@ def assert_rpc_publishable(directory: Path) -> None:
         raise BenchmarkError(
             'gRPC publication requires matching released application identity'
         )
+    plan_path = directory / 'suite-plan.json'
+    if not plan_path.is_file():
+        raise BenchmarkError('gRPC publication has no frozen adaptive plan')
+    suite_plan = json.loads(plan_path.read_text())
+    if suite_plan.get('status') != 'frozen':
+        raise BenchmarkError('gRPC adaptive plan was not frozen before production')
+    planned = {
+        item['slug']: item
+        for item in suite_plan.get('scenarios', ())
+        if item.get('family') == 'grpc' and item.get('profile') == 'grpc'
+    }
     records = [json.loads(p.read_text()) for p in (directory / 'raw').glob('*.json')]
-    if (
-        {r.get('rpc_case') for r in records} != {s.case for s in scenarios()}
-        or len(records) != 8
-        or any(
-            r['planned_trials'] != 12 or set(r['requested_servers']) != set(SERVERS)
-            for r in records
-        )
-    ):
-        raise BenchmarkError(
-            'gRPC publication requires the complete eight-row, twelve-block matrix'
-        )
+    raw_paths = list((directory / 'raw').glob('*.json'))
+    if not records or {path.stem for path in raw_paths} != set(planned):
+        raise BenchmarkError('gRPC publication does not match its frozen scenario plan')
+    requested_servers = set(records[0]['requested_servers'])
+    if requested_servers != set(SERVERS):
+        raise BenchmarkError('gRPC publication requires every server')
+    if any(set(record['requested_servers']) != requested_servers for record in records):
+        raise BenchmarkError('gRPC rows do not share one requested-server set')
+    scenarios_by_slug = {scenario.slug(): scenario for scenario in scenarios()}
     expected = {
-        (s.case, name)
-        for s in scenarios()
-        for name in SERVERS
-        if name != 'grpclib' or s.grpclib
+        (scenarios_by_slug[slug].case, name)
+        for slug, item in planned.items()
+        for name in item['supported_servers']
     }
     cells = {(c['case'], c['server']): c for c in qualification['cells']}
     if not expected.issubset(cells) or any(
         cells[key]['status'] not in {'passed', 'failed'} for key in expected
     ):
         raise BenchmarkError('gRPC publication has missing per-shape qualification')
-    for key in expected:
-        scenario = next(s for s in scenarios() if s.case == key[0])
-        trial_path = directory / 'evidence' / scenario.slug() / key[1] / 'trial.json'
-        if not trial_path.is_file() or json.loads(trial_path.read_text())['status'] != (
-            'completed' if cells[key]['status'] == 'passed' else 'failed'
+    for slug, item in planned.items():
+        scenario = scenarios_by_slug[slug]
+        for name in item['supported_servers']:
+            key = (scenario.case, name)
+            calibration = item['calibration']['servers'][name]
+            expected_status = (
+                'failed' if calibration['status'] == 'failed' else 'passed'
+            )
+            if cells[key]['status'] != expected_status:
+                raise BenchmarkError(
+                    f'gRPC qualification disagrees with calibration for {key}'
+                )
+            trial_path = (
+                directory / 'evidence' / slug / 'calibration' / name / 'trial.json'
+            )
+            if not trial_path.is_file() or json.loads(trial_path.read_text())[
+                'status'
+            ] != ('failed' if expected_status == 'failed' else 'completed'):
+                raise BenchmarkError(f'gRPC calibration evidence is missing for {key}')
+
+    cancellation_cells = {
+        cell['server']: cell
+        for cell in qualification['cells']
+        if cell['case'] == 'Cancellation'
+    }
+    for name in ('h2corn', 'hypercorn', 'grpcio'):
+        if name not in requested_servers:
+            continue
+        cell = cancellation_cells.get(name)
+        if cell is None or cell['status'] not in {'passed', 'failed'}:
+            raise BenchmarkError(f'gRPC publication is missing {name} cancellation')
+        trial_path = directory / 'evidence' / 'cancellation' / name / 'trial.json'
+        expected_status = 'completed' if cell['status'] == 'passed' else 'failed'
+        if (
+            not trial_path.is_file()
+            or json.loads(trial_path.read_text())['status'] != expected_status
         ):
-            raise BenchmarkError(f'gRPC qualification evidence is missing for {key}')
+            raise BenchmarkError(f'gRPC cancellation evidence is missing for {name}')
     if {c['case'] for c in qualification['framework']} != {
         'reserved-flag',
         'truncated-suffix',

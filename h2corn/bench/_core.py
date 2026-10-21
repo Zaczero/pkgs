@@ -3,8 +3,10 @@
 Nothing is pinned to a CPU. Server and load generator run the way a deployment
 runs them, and the noise of a shared development host is handled where it
 belongs — in the statistics: trials are rotation-balanced and rate-ratio
-intervals resample paired blocks. Sampling uses the configured fixed trial
-count, bounded by a hard time ceiling.
+intervals compare paired production blocks. Each time-window scenario uses the
+same-process calibration result shared by its servers; pilot blocks allocate a
+fixed production count before measurement begins. One monotonic deadline bounds
+the combined benchmark run.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import math
 import os
 import random
 import secrets
+import select
 import signal
 import socket
 import statistics
@@ -57,11 +60,9 @@ K6_SCRIPT = Path('bench/k6/ws.js')
 #: is declared hung.
 LOAD_GRACE_SECONDS = 30.0
 SERVER_READY_TIMEOUT_SECONDS = 15.0
-#: Time between server start and the first request of a trial.
-SETTLE_SECONDS = 0.25
 #: ``smaps_rollup`` walks a process's mappings. One snapshot per second keeps
-#: that work far below the request path while still making a ten-second trial
-#: a high-water sample rather than a steady-state reading.
+#: that work far below the request path while retaining observations across an
+#: adaptive trial.
 PSS_SAMPLE_INTERVAL_SECONDS = 1.0
 
 BenchmarkType = Literal[
@@ -89,27 +90,73 @@ class BenchmarkError(RuntimeError):
     """A benchmark could not be measured, so no number may be reported."""
 
 
+class DeadlineError(BenchmarkError):
+    """The suite's absolute work deadline expired."""
+
+
 class ResponseError(BenchmarkError):
     """A serving process failed the workload's response contract."""
 
 
 @contextmanager
 def deadline_bound(deadline: float) -> Generator[None, None, None]:
-    """Interrupt a trial at its scenario deadline, then run bounded cleanup."""
+    """Bound work by a monotonic deadline while preserving an outer alarm."""
+    started = time.monotonic()
+    if deadline <= started:
+        raise DeadlineError('benchmark deadline expired')
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_remaining, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+    previous_due = started + previous_remaining if previous_remaining > 0 else None
+    effective_deadline = min(
+        deadline,
+        previous_due if previous_due is not None else deadline,
+    )
 
-    def expired(_signum: int, _frame: Any) -> None:
-        raise BenchmarkError('scenario deadline expired')
+    def expired(signum: int, frame: Any) -> None:
+        if previous_due is not None and time.monotonic() >= previous_due:
+            if previous_handler is signal.SIG_IGN:
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    signal.signal(signal.SIGALRM, expired)
+                    signal.setitimer(signal.ITIMER_REAL, remaining)
+                    return
+            elif previous_handler is signal.SIG_DFL:
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.raise_signal(signum)
+            elif callable(previous_handler):
+                previous_handler(signum, frame)
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    signal.signal(signal.SIGALRM, expired)
+                    signal.setitimer(signal.ITIMER_REAL, remaining)
+                    return
+            else:
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.raise_signal(signum)
+        raise DeadlineError('benchmark deadline expired')
 
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise BenchmarkError('scenario deadline expired')
-    previous = signal.signal(signal.SIGALRM, expired)
-    signal.setitimer(signal.ITIMER_REAL, remaining)
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(
+        signal.ITIMER_REAL,
+        max(1e-6, effective_deadline - time.monotonic()),
+    )
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_due is not None:
+            remaining = previous_due - time.monotonic()
+            if remaining <= 0 < previous_interval:
+                remaining += (
+                    math.floor(-remaining / previous_interval) + 1
+                ) * previous_interval
+            if remaining > 0:
+                signal.setitimer(
+                    signal.ITIMER_REAL,
+                    remaining,
+                    previous_interval,
+                )
 
 
 class Metrics(TypedDict):
@@ -126,6 +173,7 @@ class MeasuredMetrics(Metrics):
     """Load metrics together with the deployment's sampled peak PSS."""
 
     peak_memory_bytes: int
+    elapsed_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,21 +396,6 @@ def percentile(values: Sequence[float], fraction: float) -> float:
     return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
 
 
-def bootstrap_median_ci(
-    values: Sequence[float], seed: int, samples: int = 10_000
-) -> tuple[float, float]:
-    """Percentile bootstrap 95 % confidence interval for the median."""
-    if not values:
-        raise ValueError('bootstrap requires at least one value')
-    rng = random.Random(seed)
-    size = len(values)
-    medians = [
-        statistics.median(values[rng.randrange(size)] for _ in range(size))
-        for _ in range(samples)
-    ]
-    return percentile(medians, 0.025), percentile(medians, 0.975)
-
-
 def rotations(names: Sequence[str], rounds: int, seed: int) -> list[list[str]]:
     """Per-round orders in which every name leads an equal share of rounds.
 
@@ -470,6 +503,110 @@ def terminate_process_group(process: subprocess.Popen[Any]) -> None:
         os.killpg(process.pid, 9)
     except (OSError, PermissionError, ProcessLookupError):
         pass
+
+
+def terminate_process_tree(
+    process: subprocess.Popen[Any],
+    *,
+    timeout: float = 20.0,
+) -> list[int]:
+    """Stop an owned worker and descendants even when servers created sessions."""
+    deadline = time.monotonic() + timeout
+
+    def tree() -> set[int]:
+        pids: set[int] = set()
+        pending = [process.pid]
+        while pending:
+            pid = pending.pop()
+            if pid in pids:
+                continue
+            pids.add(pid)
+            try:
+                task_paths = list(Path(f'/proc/{pid}/task').iterdir())
+            except OSError:
+                continue
+            for task in task_paths:
+                try:
+                    children = (task / 'children').read_text().split()
+                except OSError:
+                    continue
+                pending.extend(int(child) for child in children)
+        return pids
+
+    pids = tree()
+
+    pidfds: dict[int, int] = {}
+    for pid in pids:
+        try:
+            pidfds[pid] = os.pidfd_open(pid)
+        except ProcessLookupError:
+            continue
+        except OSError as error:
+            raise BenchmarkError(
+                f'could not retain owned worker pid {pid}: {error}'
+            ) from error
+
+    try:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        for pid in tree() - pids:
+            try:
+                pidfds[pid] = os.pidfd_open(pid)
+                pids.add(pid)
+            except ProcessLookupError:
+                continue
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            pass
+
+        poller = select.poll()
+        for pid, pidfd in pidfds.items():
+            if pid != process.pid:
+                poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        pending_descendants = set(pidfds) - {process.pid}
+        while pending_descendants and time.monotonic() < deadline:
+            events = poller.poll(
+                max(1, min(50, int((deadline - time.monotonic()) * 1000)))
+            )
+            ready_fds = {fd for fd, _ in events}
+            ready = {pid for pid, pidfd in pidfds.items() if pidfd in ready_fds}
+            pending_descendants.difference_update(ready)
+
+        if process.poll() is None or pending_descendants:
+            for pid in sorted(pending_descendants, reverse=True):
+                try:
+                    signal.pidfd_send_signal(pidfds[pid], signal.SIGKILL)
+                except ProcessLookupError:
+                    pending_descendants.discard(pid)
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=max(1.0, timeout))
+            except subprocess.TimeoutExpired:
+                pass
+
+            kill_deadline = time.monotonic() + min(2.0, timeout)
+            while pending_descendants and time.monotonic() < kill_deadline:
+                events = poller.poll(
+                    max(1, min(50, int((kill_deadline - time.monotonic()) * 1000)))
+                )
+                ready_fds = {fd for fd, _ in events}
+                ready = {pid for pid, pidfd in pidfds.items() if pidfd in ready_fds}
+                pending_descendants.difference_update(ready)
+        if process.poll() is None:
+            raise BenchmarkError(
+                f'owned worker {process.pid} did not exit after termination'
+            )
+        if pending_descendants:
+            raise BenchmarkError(
+                f'owned worker descendants did not exit: {sorted(pending_descendants)}'
+            )
+        return sorted(pids)
+    finally:
+        for pidfd in pidfds.values():
+            os.close(pidfd)
 
 
 def _http_ready(url: str) -> bool:
@@ -593,11 +730,11 @@ def measure_peak_memory(
 ) -> tuple[Metrics, int]:
     """Run one measured action and return its maximum periodically sampled PSS.
 
-    ``smaps_rollup`` is deliberately read only once per second: a PSS snapshot
+    ``smaps_rollup`` is deliberately read once per second: a PSS snapshot
     requires walking every mapping of the supervisor and its workers, so a
     higher cadence would make the observer part of a short benchmark's load.
-    A normal ten-second trial still receives an initial sample, about nine
-    periodic samples, and a final sample.
+    Each trial receives initial and final samples, plus periodic samples when
+    its measured window is long enough.
     """
     started = time.monotonic()
     samples = [
@@ -731,7 +868,6 @@ def running_server(
             raise BenchmarkError(
                 f'{argv[0]} exposed {len(pids)}/{workers} workers: {sorted(pids)}'
             )
-        time.sleep(SETTLE_SECONDS)
         yield ServerRun(
             command=argv,
             pid=process.pid,
@@ -767,7 +903,11 @@ def duration_seconds(value: str) -> float:
 
 
 def _run(
-    command: list[str], timeout: float, *, evidence_path: Path | None = None
+    command: list[str],
+    timeout: float,
+    *,
+    evidence_path: Path | None = None,
+    cwd: Path | None = None,
 ) -> str:
     # oha parses NO_COLOR as its --no-color flag and rejects an empty value.
     environment = {key: value for key, value in os.environ.items() if key != 'NO_COLOR'}
@@ -780,6 +920,7 @@ def _run(
             stderr=subprocess.PIPE,
             text=True,
             env=environment,
+            cwd=cwd,
             start_new_session=True,
         )
         stdout, stderr = process.communicate(timeout=timeout)

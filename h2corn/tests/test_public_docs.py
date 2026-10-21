@@ -186,16 +186,18 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
         'aggregate': {
             'h2corn': {
                 'rps': 100.0,
-                'rps_range': [98.0, 102.0],
-                'rps_samples': [98.0, 100.0, 102.0],
+                'rps_range': [96.0, 104.0],
+                'rps_samples': [96.0, 98.0, 100.0, 102.0, 103.0, 104.0],
+                'elapsed_seconds': 1.25,
                 'completed': 1000,
                 'peak_memory_bytes': 1_500_000,
                 'latency_percentiles': {'p50': 0.0008, 'p99': 0.004},
             },
             'uvicorn': {
                 'rps': 40.0,
-                'rps_range': [38.0, 42.0],
-                'rps_samples': [38.0, 40.0, 42.0],
+                'rps_range': [36.0, 44.0],
+                'rps_samples': [36.0, 38.0, 40.0, 42.0, 43.0, 44.0],
+                'elapsed_seconds': 1.5,
                 'completed': 400,
                 'peak_memory_bytes': 2_500_000,
                 'latency_percentiles': {'p50': 0.002, 'p99': 0.01},
@@ -205,11 +207,13 @@ def _benchmark_record(kind: str = 'h1') -> dict[str, Any]:
         'paired_contrasts': {
             'uvicorn': {
                 'h2corn_over_competitor': 2.5,
-                'interval_95': [2.3, 2.7],
+                'interval': [2.3, 2.7],
+                'achieved_coverage': 62 / 64,
+                'decision': 'slower',
             },
         },
         'scenario': 'HTTP/1 GET (1 worker)',
-        'planned_trials': 3,
+        'planned_trials': 6,
         'requested_servers': ['h2corn', 'uvicorn'],
         'package_versions': {'h2corn': '1.6.0', 'uvicorn': '0.43.0'},
         'network_profile': 'loopback',
@@ -231,18 +235,90 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
     raw = tmp_path / 'raw'
     raw.mkdir()
     record = _benchmark_record()
+    record.update(
+        calibration_limited=False,
+        duration='1s',
+        warmup_duration='0.25s',
+        pilot_excluded=True,
+        sample_blocks={
+            'h2corn': [1, 2, 3, 4, 5, 6],
+            'uvicorn': [1, 2, 3, 4, 5, 6],
+        },
+        sampling={'pilot_blocks': 2, 'production_blocks': 6},
+        failures={},
+    )
     if unsupported_server:
         record['requested_servers'].append('gunicorn')
         record['unsupported'] = {
             'gunicorn': 'The selected release has no prior-knowledge cleartext HTTP/2 mode.'
         }
-    record['paired_contrasts']['uvicorn']['interval_95'] = [0.9, 1.1]
+    record['paired_contrasts']['uvicorn'].update(
+        interval=[0.9, 1.1],
+        decision='inconclusive',
+    )
     record['stopped'] = 'max-trials'
     (raw / 'comparison.json').write_text(json.dumps(record))
     (tmp_path / 'identity.json').write_text(
         json.dumps({'build': {'command': ['maturin']}})
     )
-    for block in range(1, 4):
+    (tmp_path / 'profile.json').write_text(
+        json.dumps({
+            'profile': 'loopback',
+            'benchmark_family': 'http',
+            'status': 'completed',
+        })
+    )
+    (tmp_path / 'suite-plan.json').write_text(
+        json.dumps({
+            'status': 'frozen',
+            'scenarios': [
+                {
+                    'family': 'http',
+                    'profile': 'loopback',
+                    'slug': 'comparison',
+                    'supported_servers': ['h2corn', 'uvicorn'],
+                    'production_blocks': 6,
+                    'calibration_limited': False,
+                    'calibration': {
+                        'servers': {
+                            'h2corn': {'status': 'stable'},
+                            'uvicorn': {'status': 'stable'},
+                        },
+                    },
+                }
+            ],
+        })
+    )
+    pilot = {
+        'record': {
+            'phase': 'pilot',
+            'planned_trials': 2,
+            'pilot_excluded': True,
+            'aggregate': {
+                'h2corn': {'rps_samples': [99.0, 101.0]},
+                'uvicorn': {'rps_samples': [39.0, 41.0]},
+            },
+        },
+    }
+    (tmp_path / 'evidence/comparison/pilot.json').parent.mkdir(parents=True)
+    (tmp_path / 'evidence/comparison/pilot.json').write_text(json.dumps(pilot))
+    for name in ('h2corn', 'uvicorn'):
+        calibration_trial = (
+            tmp_path / 'evidence/comparison/calibration' / name / 'trial.json'
+        )
+        calibration_trial.parent.mkdir(parents=True)
+        calibration_trial.write_text(json.dumps({'status': 'completed'}))
+        for block in (1, 2):
+            pilot_trial = (
+                tmp_path
+                / 'evidence/comparison/pilot'
+                / f'block-{block:02d}'
+                / name
+                / 'trial.json'
+            )
+            pilot_trial.parent.mkdir(parents=True)
+            pilot_trial.write_text(json.dumps({'status': 'completed'}))
+    for block in range(1, 7):
         for name in record['aggregate']:
             path = tmp_path / 'evidence/comparison' / f'block-{block:02d}' / name
             path.mkdir(parents=True)
@@ -260,8 +336,24 @@ def test_benchmark_publication_rejects_missing_results(tmp_path: Path) -> None:
 def test_benchmark_table_reports_rates_latency_memory_and_comparison() -> None:
     markdown = render_accessible_results(_benchmark_record())
 
-    assert '| h2corn | 100 | 0.800 | 4.000 | 1.5 | - |' in markdown
-    assert '| uvicorn | 40.00 | 2.000 | 10.000 | 2.5 | slower |' in markdown
+    assert '| h2corn | 100 | 6 | 0.800 | 4.000 | 1.5 | - |' in markdown
+    assert '| uvicorn | 40.00 | 6 | 2.000 | 10.000 | 2.5 | slower |' in markdown
+
+
+def test_benchmark_table_keeps_legacy_paired_interval_classification() -> None:
+    record = _benchmark_record()
+    record['planned_trials'] = 8
+    record['aggregate']['h2corn']['rps_samples'] = [100.0] * 8
+    record['aggregate']['uvicorn']['rps_samples'] = [40.0] * 8
+    record['paired_contrasts']['uvicorn'] = {
+        'h2corn_over_competitor': 2.5,
+        'interval_95': [1.2, 2.8],
+        'method': 'percentile bootstrap of paired-block median rate ratios',
+    }
+
+    markdown = render_accessible_results(record)
+
+    assert '| uvicorn | 40.00 | 8 | 2.000 | 10.000 | 2.5 | slower |' in markdown
 
 
 def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
@@ -283,11 +375,20 @@ def test_benchmark_table_classifies_paired_uncertainty(
     interval: list[float], classification: str
 ) -> None:
     record = _benchmark_record()
-    record['paired_contrasts']['uvicorn']['interval_95'] = interval
+    decision = (
+        'slower' if interval[0] > 1 else 'faster' if interval[1] < 1 else 'inconclusive'
+    )
+    record['paired_contrasts']['uvicorn'].update(
+        interval=interval,
+        decision=decision,
+        decision_reason=None,
+    )
 
     markdown = render_accessible_results(record)
 
-    assert f'| uvicorn | 40.00 | 2.000 | 10.000 | 2.5 | {classification} |' in markdown
+    assert (
+        f'| uvicorn | 40.00 | 6 | 2.000 | 10.000 | 2.5 | {classification} |' in markdown
+    )
 
 
 def test_benchmark_table_preserves_sub_request_per_second_rates() -> None:
@@ -312,7 +413,7 @@ def test_benchmark_failed_response_has_no_numeric_rate_or_ratio() -> None:
         }
     }
     markdown = render_accessible_results(record)
-    assert '| uvicorn | failed | - | - | - | - |' in markdown
+    assert '| uvicorn | failed | - | - | - | - | - |' in markdown
     assert 'response body mismatch' not in markdown
 
 
@@ -322,7 +423,7 @@ def test_benchmark_table_does_not_claim_a_winner_without_a_comparator() -> None:
 
     markdown = render_accessible_results(record)
 
-    assert '| uvicorn | unsupported | - | - | - | - |' in markdown
+    assert '| uvicorn | unsupported | - | - | - | - | - |' in markdown
 
 
 def test_api_docs_partition_every_top_level_export_once() -> None:

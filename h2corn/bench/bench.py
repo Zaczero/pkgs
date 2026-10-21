@@ -1,9 +1,9 @@
 """Cross-server benchmark suite: runs every scenario against every server and plots it.
 
 Servers and load generators run unpinned, exactly as a deployment runs them.
-Trials are rotation-balanced cold starts with a fixed configured count.
-Scenario and suite deadlines bound the run; confidence intervals describe the
-result without deciding when sampling stops.
+Same-process calibration selects an equal exposure per scenario; an excluded
+fresh-process pilot allocates six or nine rotation-balanced production blocks.
+One monotonic deadline bounds the combined run.
 
     uv run python bench/bench.py            # stage a run under bench/results/runs/
     uv run python bench/bench.py --publish  # also replace the checked-in plots
@@ -15,9 +15,7 @@ import argparse
 import importlib.metadata
 import json
 import math
-import os
 import platform
-import secrets
 import shutil
 import signal
 import socket
@@ -44,26 +42,23 @@ if not __package__:
 from bench._core import (
     RESULTS_DIRECTORY,
     BenchmarkError,
+    DeadlineError,
     MeasuredMetrics,
     ResponseError,
     Scenario,
+    _run,
     allocated_listener,
-    bootstrap_median_ci,
     check_response,
     deadline_bound,
-    duration_seconds,
-    ensure_large_upload_payload,
-    ensure_static_file_payload,
     measure_peak_memory,
     peer_settings,
     request_response,
     rotations,
     run_load,
     running_server,
-    terminate_process_group,
     write_json,
 )
-from bench.evidence import build_wheel, run_identity, verify_workers
+from bench.evidence import build_wheel, verify_workers
 from bench.grpc import RpcScenario
 from bench.report import (
     SERVER_COLORS,
@@ -73,24 +68,26 @@ from bench.report import (
     format_rate,
     render_accessible_results,
 )
+from bench.sampling import (
+    BASE_PRODUCTION_BLOCKS,
+    CLEANUP_RESERVE_SECONDS,
+    HARD_TOTAL_SECONDS,
+    NOISY_PRODUCTION_BLOCKS,
+    PILOT_BLOCKS,
+    REPORT_RESERVE_SECONDS,
+    CalibrationPoint,
+    ScenarioSamples,
+    calibration_duration,
+    calibration_record,
+    calibration_status,
+    median_order_interval,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
-DURATION = '10s'
-WARMUP_DURATION = '2s'
 CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
-#: Fixed cold-start trials avoid stopping on a favourable confidence interval.
-MIN_TRIALS = 3
-MAX_TRIALS = 8
-#: Hard wall-clock ceiling per scenario and for the whole suite. Trial duration
-#: is never shortened to fit — the suite reports what it measured and says which
-#: scenarios stopped on time rather than completing the trial count. The suite ceiling has to
-#: cover every scenario spending its own, or a full run dies partway with
-#: nothing published; `main` refuses a combination that cannot fit.
-SCENARIO_BUDGET_SECONDS = 1800.0
-SUITE_BUDGET_SECONDS = 48600.0
 SEED = 20_260_726
 
 NETEM_DELAY_MS = 25.0
@@ -98,7 +95,6 @@ NETEM_RTT_MS = NETEM_DELAY_MS * 2
 NETEM_RATE = '1gbit'
 NETEM_RTT_TOLERANCE_MS = 15.0
 NETEM_RTT_SAMPLES = 10
-NETEM_NAMESPACE_ENV = 'H2CORN_BENCH_NETEM_NAMESPACE'
 
 # Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
 # where it has one (uvicorn `--http h11`, gunicorn's Python parser). The
@@ -294,23 +290,13 @@ def rtt50_scenarios() -> tuple[Scenario, ...]:
 
 def _run_checked(command: list[str]) -> str:
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
+        return _run(command, 15)
     except OSError as error:
         raise BenchmarkError(f'failed to run {command[0]!r}: {error}') from error
-    except subprocess.TimeoutExpired as error:
-        raise BenchmarkError(f'setup command timed out: {" ".join(command)}') from error
-    if result.returncode:
-        detail = (
-            result.stderr.strip() or result.stdout.strip() or 'no diagnostic output'
-        )
-        raise BenchmarkError(f'{" ".join(command)} failed: {detail}')
-    return result.stdout
+    except DeadlineError:
+        raise
+    except BenchmarkError as error:
+        raise BenchmarkError(f'{" ".join(command)} failed: {error}') from error
 
 
 def loopback_rtt_ms() -> float:
@@ -623,7 +609,7 @@ def server_profiles(scenario: Scenario) -> dict[str, dict[str, object]]:
     return profiles
 
 
-def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
+def aggregate(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     rates = [sample['rps'] for sample in samples]
     peak_memory = [sample['peak_memory_bytes'] for sample in samples]
     percentile_names = sorted(
@@ -637,6 +623,9 @@ def aggregate(samples: Sequence[MeasuredMetrics]) -> dict[str, Any]:
         # answers once per connection and then stalls still reports a rate;
         # only this count against the cell's concurrency reveals it.
         'completed': statistics.median([sample['completed'] for sample in samples]),
+        'elapsed_seconds': statistics.median([
+            sample['elapsed_seconds'] for sample in samples
+        ]),
         'rps_range': [min(rates), max(rates)],
         # Throughput is the median trial, but deployment capacity must cover
         # the largest sampled PSS high-water mark from every measured trial.
@@ -679,26 +668,22 @@ def measure_cell(
     hypercorn_config: Path,
     evidence_directory: Path,
     identity: dict[str, Any] | None = None,
-) -> MeasuredMetrics:
-    """One cold-start trial: start, prove correctness, warm up, measure, prove again."""
+    calibration_windows: Sequence[float] | None = None,
+) -> MeasuredMetrics | dict[str, Any]:
+    """Calibrate in one verified process or measure one fresh production block."""
     if scenario.type == 'grpc':
         from bench.grpc import measure_cell as measure_rpc
 
         assert identity is not None
-        rpc_measured = measure_rpc(
+        return measure_rpc(
             name,
             scenario,
             duration,
             warmup,
             evidence_directory=evidence_directory,
             identity=identity,
+            calibration_windows=calibration_windows,
         )
-        return {
-            'rps': rpc_measured['rps'],
-            'completed': rpc_measured['completed'],
-            'latency_percentiles': rpc_measured['latency_percentiles'],
-            'peak_memory_bytes': rpc_measured['peak_memory_bytes'],
-        }
     concurrency = scenario.concurrency or CONCURRENCY
     plan = load_plan(scenario, duration, warmup)
     evidence_directory.mkdir(parents=True)
@@ -758,34 +743,87 @@ def measure_cell(
                 check_response(live)
                 trial['correctness_before'] = 'passed'
                 trial['phase'] = 'warmup'
-                run_load(
+                warmup_metrics = run_load(
                     live,
                     duration=warmup,
                     concurrency=concurrency,
                     evidence_path=evidence_directory / 'warmup.json',
                     requests=plan.get('warmup_requests'),
                 )
-                trial['phase'] = 'load'
-                metrics, peak_memory_bytes = measure_peak_memory(
-                    server,
-                    lambda: run_load(
-                        live,
-                        duration=duration,
-                        concurrency=concurrency,
-                        evidence_path=evidence_directory / 'load.json',
-                        requests=plan.get('requests'),
-                    ),
-                    evidence_path=evidence_directory / 'memory.json',
-                )
-                trial['phase'] = 'correctness-after'
-                check_response(live)
-                trial['correctness_after'] = 'passed'
-                measured: MeasuredMetrics = {
-                    **metrics,
-                    'peak_memory_bytes': peak_memory_bytes,
-                }
-                trial['metrics'] = measured
+                if calibration_windows is not None:
+                    fixed_count = plan['mode'] == 'fixed-count'
+                    calibration_pids = sorted(server.process_pids())
+                    points: list[CalibrationPoint] = []
+                    windows = (None,) if fixed_count else calibration_windows
+                    for window in windows:
+                        label = 'fixed-count' if window is None else f'{window:g}s'
+                        window_directory = evidence_directory / f'window-{label}'
+                        window_started = time.monotonic()
+                        trial['phase'] = f'calibration-{label}'
+                        metrics = run_load(
+                            live,
+                            duration='1s' if window is None else f'{window:g}s',
+                            concurrency=concurrency,
+                            evidence_path=window_directory / 'load.json',
+                            requests=plan.get('requests') if fixed_count else None,
+                        )
+                        points.append(
+                            CalibrationPoint(
+                                duration_seconds=window,
+                                rate=metrics['rps'],
+                                elapsed_seconds=time.monotonic() - window_started,
+                                completed=metrics['completed'],
+                            )
+                        )
+                        if (
+                            fixed_count
+                            or calibration_duration(points, fixed_count=False) is None
+                        ):
+                            break
+                    if calibration_pids != sorted(server.process_pids()):
+                        raise BenchmarkError(
+                            f'{name} process population changed during calibration'
+                        )
+                    trial['phase'] = 'correctness-after'
+                    check_response(live)
+                    trial['correctness_after'] = 'passed'
+                    status, selected_duration = calibration_status(
+                        points,
+                        fixed_count=fixed_count,
+                    )
+                    measured = {
+                        'server': name,
+                        'status': status,
+                        'selected_duration_seconds': selected_duration,
+                        'windows': calibration_record(points),
+                        'warmup': warmup_metrics,
+                    }
+                    trial['calibration'] = measured
+                else:
+                    trial['phase'] = 'load'
+                    metrics, peak_memory_bytes = measure_peak_memory(
+                        server,
+                        lambda: run_load(
+                            live,
+                            duration=duration,
+                            concurrency=concurrency,
+                            evidence_path=evidence_directory / 'load.json',
+                            requests=plan.get('requests'),
+                        ),
+                        evidence_path=evidence_directory / 'memory.json',
+                    )
+                    trial['phase'] = 'correctness-after'
+                    check_response(live)
+                    trial['correctness_after'] = 'passed'
+                    measured = {
+                        **metrics,
+                        'peak_memory_bytes': peak_memory_bytes,
+                    }
+                    trial['metrics'] = measured
                 trial['phase'] = 'cleanup'
+    except DeadlineError as error:
+        trial.update(status='failed', error=str(error))
+        raise
     except (OSError, ValueError, RuntimeError) as error:
         trial.update(status='failed', error=str(error))
         raise TrialError(
@@ -794,32 +832,63 @@ def measure_cell(
         ) from error
     else:
         trial.update(status='completed', phase='completed')
+        measured['elapsed_seconds'] = time.monotonic() - started
         return measured
     finally:
         trial['elapsed_seconds'] = time.monotonic() - started
         write_json(evidence_directory / 'trial.json', trial)
 
 
-def paired_contrasts(samples: dict[str, list[MeasuredMetrics]]) -> dict[str, Any]:
-    """Resample complete trial blocks, keeping each server pair together."""
+def paired_contrasts(
+    samples: Mapping[str, Sequence[Mapping[str, Any]]],
+    sample_blocks: dict[str, list[int]] | None = None,
+    *,
+    calibration_limited: bool = False,
+) -> dict[str, Any]:
+    """Compare medians of rates paired by their independent production block."""
     if 'h2corn' not in samples:
         return {}
-    candidate = samples['h2corn']
+    blocks = sample_blocks or {
+        name: list(range(len(values))) for name, values in samples.items()
+    }
+    candidate_by_block = dict(zip(blocks['h2corn'], samples['h2corn'], strict=True))
     contrasts = {}
     for name, values in samples.items():
         if name == 'h2corn':
             continue
+        competitor_by_block = dict(zip(blocks[name], values, strict=True))
+        common_blocks = sorted(candidate_by_block.keys() & competitor_by_block.keys())
         ratios = [
-            first['rps'] / second['rps']
-            for first, second in zip(candidate, values, strict=True)
+            candidate_by_block[block]['rps'] / competitor_by_block[block]['rps']
+            for block in common_blocks
         ]
-        low, high = bootstrap_median_ci(ratios, SEED)
-        contrasts[name] = {
-            'h2corn_over_competitor': statistics.median(ratios),
-            'interval_95': [low, high],
+        contrast = {
+            'h2corn_over_competitor': statistics.median(ratios) if ratios else None,
             'block_ratios': ratios,
-            'method': 'percentile bootstrap of paired-block median rate ratios',
+            'block_ids': common_blocks,
+            'sample_size': len(ratios),
         }
+        if len(ratios) >= BASE_PRODUCTION_BLOCKS:
+            contrast.update(median_order_interval(ratios))
+        else:
+            contrast.update(
+                h2corn_over_competitor=None,
+                interval=None,
+                achieved_coverage=None,
+                method='too few independent paired blocks for an interval',
+            )
+        if calibration_limited:
+            contrast['decision'] = 'inconclusive'
+            contrast['decision_reason'] = 'calibration-limited'
+        elif contrast['interval'] is None:
+            contrast['decision'] = 'inconclusive'
+            contrast['decision_reason'] = 'insufficient paired blocks'
+        else:
+            low, high = contrast['interval']
+            contrast['decision'] = (
+                'slower' if low > 1 else 'faster' if high < 1 else 'inconclusive'
+            )
+        contrasts[name] = contrast
     return contrasts
 
 
@@ -860,7 +929,13 @@ def run_scenario(
     hypercorn_config: Path,
     evidence_directory: Path,
     identity: dict[str, Any],
+    phase: str = 'production',
+    profile: str = 'loopback',
+    calibration: dict[str, Any] | None = None,
+    calibration_limited: bool = False,
+    initial_failures: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    scenario_started = time.monotonic()
     names = list(servers)
     rpc = scenario.type == 'grpc'
     rpc_case = scenario.case if isinstance(scenario, RpcScenario) else None
@@ -872,63 +947,82 @@ def run_scenario(
     unsupported = {
         name: reason for name in names if (reason := unsupported_reason(name, scenario))
     }
-    samples: dict[str, list[MeasuredMetrics]] = {
-        name: []
-        for name in names
-        if name not in unsupported and name not in not_selected
-    }
-    if not samples:
+    supported = tuple(
+        name for name in names if name not in unsupported and name not in not_selected
+    )
+    if not supported:
         raise BenchmarkError(f'no selected server supports {scenario.name}')
+    print(
+        f'phase={phase} profile={profile} scenario={scenario.name} '
+        f'duration={duration} warmup={warmup} blocks={max_trials}',
+        file=sys.stderr,
+        flush=True,
+    )
+    sampled = ScenarioSamples(supported)
     failures: dict[str, dict[str, Any]] = {
         cell['server']: {
             'phase': 'qualification',
             'error': cell['error'],
             'block': 0,
-            'evidence': cell['server'],
+            'evidence': f'calibration/{cell["server"]}',
             'status': 'response_validation_failed',
         }
         for cell in identity.get('rpc_qualification', [])
         if rpc
         and cell['case'] == rpc_case
         and cell['status'] == 'failed'
-        and cell['server'] in samples
+        and cell['server'] in supported
     }
+    for name, failure in (initial_failures or {}).items():
+        failures.setdefault(name, failure)
+    for name, failure in failures.items():
+        sampled.fail(name, failure)
     stopped = 'max-trials'
     trials = 0
     blocks = []
     for trial in range(1, max_trials + 1):
-        remaining = [name for name in samples if name not in failures]
+        remaining = sampled.remaining()
         if not remaining:
             break
         order = rotations(remaining, max_trials, SEED)[trial - 1]
         blocks.append({
             'block': trial,
             'order': order,
-            'not_repeated_after_failure': list(failures),
+            'not_repeated_after_failure': list(sampled.failures),
         })
         for name in order:
-            if name in failures:
+            if name in sampled.failures:
                 continue
             if time.monotonic() >= deadline:
-                raise BenchmarkError(
+                raise DeadlineError(
                     f'{scenario.name} deadline before block {trial}, {name}'
                 )
             try:
                 with deadline_bound(deadline):
-                    samples[name].append(
-                        measure_cell(
-                            name,
-                            scenario,
-                            duration,
-                            warmup,
-                            hypercorn_config=hypercorn_config,
-                            evidence_directory=evidence_directory
-                            / f'block-{trial:02d}'
-                            / name,
-                            identity=identity,
-                        )
+                    measured = measure_cell(
+                        name,
+                        scenario,
+                        duration,
+                        warmup,
+                        hypercorn_config=hypercorn_config,
+                        evidence_directory=evidence_directory
+                        / f'block-{trial:02d}'
+                        / name,
+                        identity=identity,
                     )
+                    if 'rps' not in measured or 'peak_memory_bytes' not in measured:
+                        raise BenchmarkError(
+                            f'{name} production block returned calibration data'
+                        )
+                    sampled.add(name, trial, measured)
             except TrialError as error:
+                failure = {
+                    'phase': error.phase,
+                    'error': str(error),
+                    'block': trial,
+                    'evidence': f'block-{trial:02d}/{name}',
+                    'status': 'response_validation_failed',
+                }
                 write_json(
                     evidence_directory / f'failure-{name}.json',
                     {
@@ -936,39 +1030,35 @@ def run_scenario(
                         'blocks': blocks,
                         'failed_server': name,
                         'error': str(error),
-                        'samples': samples,
+                        'samples': sampled.values(),
                     },
                 )
-                if (name == 'h2corn' and not rpc) or not isinstance(
-                    error.__cause__, ResponseError
-                ):
+                if not isinstance(error.__cause__, ResponseError):
                     raise
-                failures[name] = {
-                    'phase': error.phase,
-                    'error': str(error),
-                    'block': trial,
-                    'evidence': f'block-{trial:02d}/{name}',
-                    'status': 'response_validation_failed',
-                }
-                print(f'  FAILED {name}: {error}', flush=True)
-        remaining = [name for name in samples if name not in failures]
+                sampled.fail(name, failure)
+                print(
+                    f'  FAILED {phase} {scenario.name} {name}: {error}',
+                    file=sys.stderr,
+                    flush=True,
+                )
+        remaining = sampled.remaining()
         if not remaining:
-            if not rpc:
-                raise BenchmarkError(f'every server failed {scenario.name}')
             trials = trial
             break
         trials = trial
         medians = ', '.join(
-            f'{name} {format_rate(statistics.median([s["rps"] for s in samples[name]]))}'
+            f'{name} {format_rate(statistics.median([s["rps"] for s in sampled.values()[name]]))}'
             for name in remaining
         )
         print(
-            f'  after block {trial}/{max_trials}: median {medians}',
+            f'phase={phase} profile={profile} scenario={scenario.name} '
+            f'block={trial}/{max_trials} elapsed={time.monotonic() - scenario_started:.1f}s '
+            f'remaining={max(0.0, deadline - time.monotonic()):.1f}s median={medians}',
+            file=sys.stderr,
             flush=True,
         )
         if trial < max_trials and time.monotonic() > deadline:
-            stopped = 'time-budget'
-            break
+            raise DeadlineError(f'{scenario.name} deadline after block {trial}')
     plan = (
         {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
         if rpc
@@ -977,6 +1067,11 @@ def run_scenario(
     description = scenario.workload if rpc else workload_description(scenario)
     if plan['mode'] == 'fixed-count':
         description += f'; {plan["requests"]} completed requests per trial'
+        duration = 'fixed-count'
+    samples = sampled.values()
+    failures = sampled.failures
+    successful_samples = sampled.successful_values()
+    successful_blocks = sampled.successful_block_ids()
     return {
         'scenario': scenario.name,
         'status': 'attempted_with_failures' if failures else 'completed',
@@ -1006,13 +1101,16 @@ def run_scenario(
         ),
         'blocks': blocks,
         'samples': samples,
-        'paired_contrasts': paired_contrasts({
-            name: values for name, values in samples.items() if name not in failures
-        }),
+        'sample_blocks': sampled.block_ids(),
+        'calibration': calibration or {},
+        'calibration_limited': calibration_limited,
+        'paired_contrasts': paired_contrasts(
+            successful_samples,
+            successful_blocks,
+            calibration_limited=calibration_limited,
+        ),
         'aggregate': {
-            name: aggregate(values)
-            for name, values in samples.items()
-            if name not in failures
+            name: aggregate(values) for name, values in successful_samples.items()
         },
     }
 
@@ -1186,14 +1284,42 @@ def _plot_results(
     else:
         latency.set_title('Latency data unavailable')
 
+    fixed_count = record.get('load_plan', {}).get('mode') == 'fixed-count'
+    window = (
+        'fixed complete-request batch'
+        if fixed_count
+        else f'{record.get("duration", "adaptive")} load'
+    )
+    warmup = (
+        'fixed warmup request batch'
+        if fixed_count
+        else record.get('warmup_duration', '0.25s')
+    )
+    if record.get('sampling') is not None:
+        sampling = (
+            f'\nSampling: {window} · {warmup} warmup · '
+            f'{record.get("planned_trials", 0)} production blocks · pilot excluded'
+        )
+    else:
+        sampling = (
+            f'\nSampling: {window} · {warmup} warmup · '
+            f'{record.get("planned_trials", 0)} fixed blocks'
+        )
+    calibration_note = (
+        ' · calibration-limited; comparisons inconclusive'
+        if record.get('calibration_limited')
+        else ''
+    )
     footer = (
-        'Bars: median rate · Dots: fresh-start trials · Whiskers: observed range'
+        'Bars: median rate · Dots: fresh-start production blocks · Whiskers: observed range'
+        + sampling
+        + calibration_note
         + (
             '\nLatency: median trial histogram bounds (1% buckets)'
             if record.get('benchmark_family') == 'grpc'
             else '\nLatency: median trial percentiles'
         )
-        + ' · PSS: maximum sampled, decimal MB\n'
+        + ' · PSS: maximum of initial, 1s periodic, and final samples; decimal MB\n'
         + textwrap.fill(record.get('workload', ''), width=55 if narrow else 110)
     )
     if narrow:
@@ -1226,103 +1352,6 @@ def profile_record(
     return record
 
 
-def record_skipped_profile(
-    run_directory: Path,
-    profile: NetworkProfile,
-    scenarios: Sequence[Scenario],
-    reason: str,
-) -> None:
-    raw_directory = run_directory / 'raw'
-    raw_directory.mkdir(parents=True, exist_ok=True)
-    write_json(
-        run_directory / 'profile.json',
-        profile_record(profile, 'skipped', reason=reason),
-    )
-    for scenario in scenarios:
-        print(
-            f'  EXCLUDED {profile.description} from {scenario.name}: {reason}',
-            flush=True,
-        )
-        write_json(
-            raw_directory / f'{scenario.slug()}.json',
-            {
-                'scenario': scenario.name,
-                'type': scenario.type,
-                'workers': scenario.workers,
-                'network_profile': profile.name,
-                'target_rtt_ms': profile.target_rtt_ms,
-                'measured_rtt_ms': None,
-                'excluded': {profile.description: reason},
-                'server_profiles': server_profiles(scenario),
-                'status': 'skipped',
-            },
-        )
-
-
-def namespace_arguments(run_directory: Path) -> list[str]:
-    """Forward the user arguments once, replacing profile-local switches."""
-    forwarded = []
-    index = 1
-    while index < len(sys.argv):
-        argument = sys.argv[index]
-        if argument in {'--network-profile', '--run-directory'}:
-            index += 2
-        elif argument.startswith(('--network-profile=', '--run-directory=')):
-            index += 1
-        elif argument == '--publish':
-            # The parent publishes both staged profiles together. Passing this
-            # through would make the shaped child reject its partial profile.
-            index += 1
-        else:
-            forwarded.append(argument)
-            index += 1
-    return [
-        *forwarded,
-        '--network-profile',
-        RTT50_PROFILE.name,
-        '--run-directory',
-        str(run_directory),
-    ]
-
-
-def run_rtt50_namespace(
-    run_directory: Path,
-    timeout: float = SUITE_BUDGET_SECONDS + 60,
-) -> tuple[int | None, str | None]:
-    """Start the 50 ms profile in a throwaway unprivileged network namespace."""
-    try:
-        process = subprocess.Popen(
-            [
-                'unshare',
-                '-rn',
-                '--',
-                sys.executable,
-                sys.argv[0],
-                *namespace_arguments(run_directory),
-            ],
-            env={**os.environ, NETEM_NAMESPACE_ENV: '1'},
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as error:
-        return None, str(error)
-    try:
-        _, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        terminate_process_group(process)
-        raise BenchmarkError(
-            '50 ms RTT namespace exceeded its suite deadline'
-        ) from error
-    except BaseException:
-        terminate_process_group(process)
-        raise
-    detail = stderr.strip() or None
-    if process.returncode and detail:
-        print(detail, file=sys.stderr)
-    return process.returncode, detail
-
-
 def publish(run_directories: Sequence[Path]) -> None:
     profiles = [json.loads((d / 'profile.json').read_text()) for d in run_directories]
     if len({p.get('benchmark_family', 'http') for p in profiles}) != 1:
@@ -1340,6 +1369,7 @@ def publish(run_directories: Sequence[Path]) -> None:
         for name in (
             'identity.json',
             'profile.json',
+            'suite-plan.json',
             'hypercorn.toml',
             'build.log',
             'qualification.json',
@@ -1396,14 +1426,55 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
             if (run_directory / 'profile.json').exists()
             else {}
         )
-        if profile.get('benchmark_family') == 'grpc':
+        if profile.get('status') not in {'completed', 'completed_with_failures'}:
+            incomplete.append(f'{run_directory.name}: profile did not complete')
+        suite_plan_path = run_directory / 'suite-plan.json'
+        if not suite_plan_path.is_file():
+            raise BenchmarkError(
+                f'adaptive publication plan is missing in {run_directory}'
+            )
+        suite_plan = json.loads(suite_plan_path.read_text())
+        if suite_plan.get('status') != 'frozen':
+            raise BenchmarkError(
+                f'adaptive plan was not frozen before production in {run_directory}'
+            )
+        family = profile.get('benchmark_family', 'http')
+        profile_name = profile.get('profile')
+        planned = {
+            item['slug']: item
+            for item in suite_plan.get('scenarios', ())
+            if item.get('family') == family and item.get('profile') == profile_name
+        }
+        if set(planned) != {path.stem for path in records}:
+            incomplete.append(
+                f'{run_directory.name}: raw scenarios do not match the frozen plan'
+            )
+        if family == 'grpc':
             from bench.grpc import assert_rpc_publishable
 
             assert_rpc_publishable(run_directory)
         for record_path in records:
             record = json.loads(record_path.read_text())
-            if record.get('planned_trials', 0) < MIN_TRIALS:
-                incomplete.append(f'{record["scenario"]}: insufficient planned trials')
+            scenario_plan = planned.get(record_path.stem)
+            if scenario_plan is None:
+                continue
+            expected_blocks = scenario_plan['production_blocks']
+            if (
+                expected_blocks not in {BASE_PRODUCTION_BLOCKS, NOISY_PRODUCTION_BLOCKS}
+                or record.get('planned_trials') != expected_blocks
+                or record.get('sampling', {}).get('production_blocks')
+                != expected_blocks
+            ):
+                incomplete.append(
+                    f'{record["scenario"]}: production blocks differ from the frozen plan'
+                )
+            if (
+                record.get('pilot_excluded') is not True
+                or record.get('sampling', {}).get('pilot_blocks') != PILOT_BLOCKS
+            ):
+                incomplete.append(
+                    f'{record["scenario"]}: pilot data is not separated from production'
+                )
             if record.get('status') == 'skipped':
                 incomplete.append(record['scenario'])
                 continue
@@ -1421,12 +1492,113 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                 incomplete.append(
                     f'{record["scenario"]}: unrepresented requested servers'
                 )
-            for name, result in record.get('aggregate', {}).items():
-                if len(result['rps_samples']) != record['planned_trials']:
+            if record.get('calibration_limited') != scenario_plan.get(
+                'calibration_limited', False
+            ):
+                incomplete.append(
+                    f'{record["scenario"]}: calibration status differs from the frozen plan'
+                )
+            calibration = scenario_plan.get('calibration', {})
+            for name, cell in calibration.get('servers', {}).items():
+                trial_path = (
+                    run_directory
+                    / 'evidence'
+                    / record_path.stem
+                    / 'calibration'
+                    / name
+                    / 'trial.json'
+                )
+                expected_status = (
+                    'failed' if cell.get('status') == 'failed' else 'completed'
+                )
+                if (
+                    not trial_path.is_file()
+                    or json.loads(trial_path.read_text()).get('status')
+                    != expected_status
+                ):
                     incomplete.append(
-                        f'{record["scenario"]}: incomplete {name} samples'
+                        f'{record["scenario"]}: missing {name} calibration evidence'
                     )
-                for block in range(1, record['planned_trials'] + 1):
+            pilot_path = run_directory / 'evidence' / record_path.stem / 'pilot.json'
+            if not pilot_path.is_file():
+                incomplete.append(
+                    f'{record["scenario"]}: missing excluded pilot evidence'
+                )
+            else:
+                pilot = json.loads(pilot_path.read_text())
+                pilot_record = pilot.get('record', {})
+                if (
+                    pilot_record.get('phase') != 'pilot'
+                    or pilot_record.get('planned_trials') != PILOT_BLOCKS
+                    or pilot_record.get('pilot_excluded') is not True
+                ):
+                    incomplete.append(
+                        f'{record["scenario"]}: pilot is not clearly excluded'
+                    )
+                for name, result in pilot_record.get('aggregate', {}).items():
+                    if len(result.get('rps_samples', ())) != PILOT_BLOCKS:
+                        incomplete.append(
+                            f'{record["scenario"]}: incomplete {name} pilot samples'
+                        )
+                    for block in range(1, PILOT_BLOCKS + 1):
+                        trial_path = (
+                            run_directory
+                            / 'evidence'
+                            / record_path.stem
+                            / 'pilot'
+                            / f'block-{block:02d}'
+                            / name
+                            / 'trial.json'
+                        )
+                        if (
+                            not trial_path.is_file()
+                            or json.loads(trial_path.read_text()).get('status')
+                            != 'completed'
+                        ):
+                            incomplete.append(
+                                f'{record["scenario"]}: missing {name} pilot block {block}'
+                            )
+                for name, failure in pilot_record.get('failures', {}).items():
+                    if failure['evidence'].startswith('calibration/'):
+                        continue
+                    trial_path = (
+                        run_directory
+                        / 'evidence'
+                        / record_path.stem
+                        / 'pilot'
+                        / failure['evidence']
+                        / 'trial.json'
+                    )
+                    if (
+                        name in pilot_record.get('aggregate', {})
+                        or not trial_path.is_file()
+                        or json.loads(trial_path.read_text()).get('status') != 'failed'
+                    ):
+                        incomplete.append(
+                            f'{record["scenario"]}: missing failed pilot evidence for {name}'
+                        )
+                if any(
+                    contrast.get('sample_size', 0) < BASE_PRODUCTION_BLOCKS
+                    and (
+                        contrast.get('interval') is not None
+                        or contrast.get('h2corn_over_competitor') is not None
+                    )
+                    for contrast in pilot_record.get('paired_contrasts', {}).values()
+                ):
+                    incomplete.append(
+                        f'{record["scenario"]}: pilot was used as an interval'
+                    )
+            for name, result in record.get('aggregate', {}).items():
+                block_ids = record.get('sample_blocks', {}).get(name, [])
+                if (
+                    name in record.get('failures', {})
+                    or len(result['rps_samples']) != expected_blocks
+                    or block_ids != list(range(1, expected_blocks + 1))
+                ):
+                    incomplete.append(
+                        f'{record["scenario"]}: incomplete {name} paired production blocks'
+                    )
+                for block in range(1, expected_blocks + 1):
                     trial_path = (
                         run_directory
                         / 'evidence'
@@ -1466,120 +1638,17 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
         )
 
 
-def run_suite(
-    *,
-    servers: Sequence[str],
-    scenarios: Sequence[Scenario],
-    duration: str,
-    warmup: str,
-    max_trials: int,
-    scenario_budget: float,
-    suite_budget: float,
-    run_directory: Path,
-    profile: NetworkProfile,
-    measured_rtt_ms: float | None = None,
-    netem: RTT50Netem | None = None,
-    wheel: Path | None = None,
-) -> Path:
-    ensure_static_file_payload()
-    if any(scenario.type == 'h2_upload' for scenario in scenarios):
-        ensure_large_upload_payload()
-    for tool in {'oha'} | ({'k6'} if any(s.type == 'ws' for s in scenarios) else set()):
-        if shutil.which(tool) is None:
-            raise BenchmarkError(f'{tool} is required but not installed')
-
-    if run_directory.exists():
-        raise BenchmarkError(f'refusing to overwrite existing run {run_directory}')
-    (run_directory / 'raw').mkdir(parents=True)
-    (run_directory / 'plots').mkdir()
-    hypercorn_config = run_directory / 'hypercorn.toml'
-    write_hypercorn_config(hypercorn_config)
-    try:
-        identity = run_identity(Path(__file__).resolve().parents[2], wheel)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        raise BenchmarkError(f'cannot establish benchmark identity: {error}') from error
-    write_json(run_directory / 'identity.json', identity)
-    if identity['build'] is not None:
-        shutil.copy2(identity['build']['log']['path'], run_directory / 'build.log')
-
-    summary = system_summary()
-    versions = package_versions()
-    active_profile = profile_record(
-        profile,
-        'running',
-        measured_rtt_ms=measured_rtt_ms,
-        netem=netem,
-    )
-    write_json(run_directory / 'profile.json', active_profile)
-
-    suite_deadline = time.monotonic() + suite_budget
-    records = []
-    for scenario in scenarios:
-        print(f'\n=== {scenario.name} ===', flush=True)
-        record = run_scenario(
-            scenario,
-            servers,
-            duration=duration,
-            warmup=warmup,
-            max_trials=max_trials,
-            deadline=min(time.monotonic() + scenario_budget, suite_deadline),
-            hypercorn_config=hypercorn_config,
-            evidence_directory=run_directory / 'evidence' / scenario.slug(),
-            identity=identity,
-        )
-        records.append(record)
-        record['network_profile'] = profile.name
-        record['target_rtt_ms'] = profile.target_rtt_ms
-        record['measured_rtt_ms'] = measured_rtt_ms
-        record['system_summary'] = summary
-        record['package_versions'] = versions
-        if identity['build'] is not None:
-            record['source_build'] = {
-                'revision': identity['build']['source']['revision'],
-                'wheel_sha256': identity['wheel']['sha256'],
-            }
-        record['duration'] = duration
-        record['warmup_duration'] = warmup
-        record['identity'] = f'../evidence/{profile.name}/identity.json'
-        record['evidence'] = f'../evidence/{profile.name}/trials/{scenario.slug()}'
-        write_json(run_directory / 'raw' / f'{scenario.slug()}.json', record)
-        if record['stopped'] != 'max-trials':
-            raise BenchmarkError(f'incomplete trial blocks for {scenario.name}')
-        plot_results(
-            record,
-            run_directory / 'plots' / f'{scenario.slug()}.svg',
-        )
-        if time.monotonic() > suite_deadline:
-            raise BenchmarkError(
-                f'suite budget exhausted after {scenario.name}; '
-                'raise --suite-budget or select fewer scenarios'
-            )
-
-    failed_cells = {
-        record['scenario']: record['failures']
-        for record in records
-        if record['failures']
-    }
-    completed_profile = profile_record(
-        profile,
-        'completed_with_failures' if failed_cells else 'completed',
-        measured_rtt_ms=measured_rtt_ms,
-        netem=netem,
-    )
-    completed_profile['failed_cells'] = failed_cells
-    write_json(
-        run_directory / 'profile.json',
-        completed_profile,
-    )
-    return run_directory
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='h2corn cross-server benchmark suite',
+        description='Adaptive h2corn HTTP and RPC benchmark suite',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument('--family', choices=('http', 'grpc'), default='http')
+    parser.add_argument(
+        '--family',
+        choices=('all', 'http', 'grpc'),
+        default='all',
+        help='benchmark both families together or select one for a diagnostic run',
+    )
     parser.add_argument('--servers', nargs='+', choices=[*SERVERS, 'grpcio', 'grpclib'])
     parser.add_argument('--rpc-cases', nargs='+')
     parser.add_argument('--connect-wheel', type=Path)
@@ -1601,9 +1670,6 @@ def main() -> int:
         help='directory containing staged run artifacts',
     )
     parser.add_argument('--run-directory', type=Path, help=argparse.SUPPRESS)
-    parser.add_argument('--duration', default=DURATION)
-    parser.add_argument('--warmup-duration', default=WARMUP_DURATION)
-    parser.add_argument('--max-trials', type=int)
     parser.add_argument(
         '--wheel',
         type=Path,
@@ -1615,13 +1681,9 @@ def main() -> int:
         help='Build an identified release wheel into an empty directory, then exit',
     )
     parser.add_argument(
-        '--scenario-budget', type=float, default=SCENARIO_BUDGET_SECONDS
-    )
-    parser.add_argument('--suite-budget', type=float, default=SUITE_BUDGET_SECONDS)
-    parser.add_argument(
         '--publish',
         action='store_true',
-        help='replace the checked-in plots and raw records with this run',
+        help='replace both published benchmark families after the complete adaptive run',
     )
     args = parser.parse_args()
 
@@ -1645,241 +1707,92 @@ def main() -> int:
             return 1
         print(wheel)
         return 0
-    if args.max_trials is None:
-        args.max_trials = 12 if args.family == 'grpc' else MAX_TRIALS
-    if args.family == 'grpc':
-        from bench.grpc import SERVERS as RPC_SERVERS
-        from bench.grpc import run_suite as run_rpc_suite
-        from bench.grpc import scenarios
+    if not sys.platform.startswith('linux'):
+        parser.error('benchmark collection requires Linux PSS accounting and listeners')
+    from bench import grpc
 
-        if args.types or args.network_profile != 'all':
-            parser.error(
-                '--family grpc uses --rpc-cases and its own cleartext/TLS plans'
-            )
-        if args.servers and set(args.servers) - set(RPC_SERVERS):
-            parser.error('gRPC servers are h2corn, hypercorn, grpcio, and grpclib')
-        if args.rpc_cases and set(args.rpc_cases) - {s.case for s in scenarios()}:
-            parser.error('unknown --rpc-cases selection')
-        if not sys.platform.startswith('linux'):
-            parser.error('gRPC benchmarking requires Linux PSS accounting')
-        duration_seconds(args.duration)
-        duration_seconds(args.warmup_duration)
-        if args.connect_development_revision and (
-            not args.qualify_only or not args.rpc_cases or args.connect_source is None
-        ):
-            parser.error(
-                'development Connect requires --qualify-only, explicit --rpc-cases, and --connect-source'
-            )
-        if args.max_trials < MIN_TRIALS:
-            parser.error(f'--max-trials must be at least {MIN_TRIALS}')
-        if args.publish and (
-            args.wheel is None
-            or args.servers
-            or args.rpc_cases
-            or args.max_trials != 12
-            or args.connect_development_revision
-            or args.qualify_only
-        ):
-            parser.error(
-                'gRPC publication requires the full released matrix, --wheel, and 12 blocks'
-            )
-        try:
-            run_rpc_suite(args)
-        except (BenchmarkError, OSError, subprocess.SubprocessError) as error:
-            print(f'benchmark failed: {error}', file=sys.stderr)
-            return 1
-        return 0
+    if args.family == 'grpc' and (args.types or args.network_profile != 'all'):
+        parser.error('--family grpc uses --rpc-cases and its cleartext/TLS plans')
+    if args.family == 'http' and (
+        args.rpc_cases
+        or args.connect_wheel
+        or args.connect_development_revision
+        or args.connect_source
+        or args.comparator_selection
+        or args.qualify_only
+    ):
+        parser.error('RPC qualification and application options require --family grpc')
+    if args.family == 'all' and args.qualify_only:
+        parser.error('--qualify-only requires --family grpc')
+    if args.family == 'http' and args.servers and set(args.servers) - set(SERVERS):
+        parser.error('gRPC servers require --family grpc')
+    if args.family == 'grpc' and args.servers and set(args.servers) - set(grpc.SERVERS):
+        parser.error('gRPC servers are h2corn, hypercorn, grpcio, and grpclib')
     if (
-        args.qualify_only
+        args.family in {'all', 'grpc'}
+        and args.rpc_cases
+        and set(args.rpc_cases) - {scenario.case for scenario in grpc.scenarios()}
+    ):
+        parser.error('unknown --rpc-cases selection')
+    if (
+        args.family in {'all', 'http'}
+        and args.types
+        and set(args.types)
+        - {scenario.type for scenario in (*benchmark_scenarios(), *rtt50_scenarios())}
+    ):
+        parser.error('unknown HTTP scenario type')
+    if args.connect_development_revision and (
+        not args.qualify_only or not args.rpc_cases or args.connect_source is None
+    ):
+        parser.error(
+            'development Connect requires --qualify-only, explicit --rpc-cases, and --connect-source'
+        )
+    if args.connect_source is not None and args.connect_development_revision is None:
+        parser.error('--connect-source requires --connect-development-revision')
+    if args.publish and (
+        args.family != 'all'
+        or args.wheel is None
+        or args.servers
+        or args.types
         or args.rpc_cases
+        or args.network_profile != 'all'
+        or args.qualify_only
         or args.connect_wheel
         or args.connect_development_revision
         or args.connect_source
         or args.comparator_selection
     ):
-        parser.error('RPC qualification and application options require --family grpc')
-    if args.servers and set(args.servers) - set(SERVERS):
-        parser.error('grpcio and grpclib require --family grpc')
-    if args.publish and args.wheel is None:
-        parser.error('--publish requires --wheel to establish native artifact identity')
-    if not sys.platform.startswith('linux'):
         parser.error(
-            'this benchmark requires Linux PSS accounting and inherited listeners'
+            '--publish requires the complete HTTP+gRPC matrix, a released wheel, and no selectors'
         )
 
-    if args.max_trials < MIN_TRIALS:
-        parser.error(f'--max-trials must be at least {MIN_TRIALS}')
-    duration_seconds(args.duration)
-    duration_seconds(args.warmup_duration)
-
-    loopback_scenarios = [
-        scenario
-        for scenario in benchmark_scenarios()
-        if not args.types or scenario.type in args.types
-    ]
-    shaped_scenarios = [
-        scenario
-        for scenario in rtt50_scenarios()
-        if not args.types or scenario.type in args.types
-    ]
-    servers = args.servers or list(SERVERS)
-    if args.publish and (args.servers or args.types or args.network_profile != 'all'):
-        parser.error('--publish requires every server and both network profiles')
-    selected_count = {
-        'all': len(loopback_scenarios) + len(shaped_scenarios),
-        'loopback': len(loopback_scenarios),
-        'rtt50': len(shaped_scenarios),
-    }[args.network_profile]
-    if not selected_count:
-        parser.error('scenario selection is empty')
-    required = selected_count * args.scenario_budget
-    if args.suite_budget < required:
-        parser.error(
-            f'--suite-budget {args.suite_budget:.0f}s cannot cover {selected_count} '
-            f'scenarios at --scenario-budget {args.scenario_budget:.0f}s '
-            f'(needs {required:.0f}s)'
-        )
-
+    started = time.monotonic()
+    started_at = datetime.now(UTC)
+    hard_deadline = started + HARD_TOTAL_SECONDS
+    work_deadline = hard_deadline - REPORT_RESERVE_SECONDS - CLEANUP_RESERVE_SECONDS
     try:
-        output_directory = args.output_directory.resolve()
-        if args.network_profile == 'all':
-            suite_id = (
-                datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
-                + f'-{secrets.token_hex(3)}'
+        from bench.adaptive import run_adaptive_suite
+
+        with deadline_bound(hard_deadline):
+            suite_directory = run_adaptive_suite(
+                args,
+                sys.modules[__name__],
+                started=started,
+                started_at=started_at,
+                work_deadline=work_deadline,
+                hard_deadline=hard_deadline,
             )
-            suite_directory = output_directory / 'runs' / suite_id
-            complete = []
-            if loopback_scenarios:
-                complete.append(
-                    run_suite(
-                        servers=servers,
-                        scenarios=loopback_scenarios,
-                        duration=args.duration,
-                        warmup=args.warmup_duration,
-                        max_trials=args.max_trials,
-                        scenario_budget=args.scenario_budget,
-                        suite_budget=args.suite_budget,
-                        run_directory=suite_directory / LOOPBACK_PROFILE.name,
-                        profile=LOOPBACK_PROFILE,
-                        wheel=args.wheel,
-                    )
-                )
-            if shaped_scenarios:
-                shaped_directory = suite_directory / RTT50_PROFILE.name
-                result, namespace_reason = run_rtt50_namespace(
-                    shaped_directory,
-                    timeout=args.suite_budget + 60,
-                )
-                profile_path = shaped_directory / 'profile.json'
-                status = (
-                    json.loads(profile_path.read_text()).get('status')
-                    if profile_path.exists()
-                    else None
-                )
-                if result not in (0, None) and status != 'skipped':
-                    detail = f': {namespace_reason}' if namespace_reason else ''
-                    raise BenchmarkError(
-                        f'50 ms RTT profile exited with {result}{detail}'
-                    )
-                if status in {'completed', 'completed_with_failures'}:
-                    complete.append(shaped_directory)
-                elif status == 'skipped':
-                    # Preserve the explicit skip record in checked-in raw data
-                    # while emitting no unshaped plot for this profile.
-                    complete.append(shaped_directory)
-                elif status != 'skipped':
-                    reason = (
-                        f'unshare is unavailable: {namespace_reason}'
-                        if result is None
-                        else namespace_reason
-                        or 'unshare failed before the netem profile could start'
-                    )
-                    print(
-                        f'  SKIPPED {RTT50_PROFILE.description}: {reason}', flush=True
-                    )
-                    record_skipped_profile(
-                        shaped_directory, RTT50_PROFILE, shaped_scenarios, reason
-                    )
-                    complete.append(shaped_directory)
-            if args.publish:
-                assert_publishable(complete)
-                publish(complete)
-        else:
-            profile = (
-                LOOPBACK_PROFILE
-                if args.network_profile == 'loopback'
-                else RTT50_PROFILE
-            )
-            scenarios = (
-                loopback_scenarios if profile is LOOPBACK_PROFILE else shaped_scenarios
-            )
-            run_directory = args.run_directory or (
-                output_directory
-                / 'runs'
-                / (
-                    datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
-                    + f'-{secrets.token_hex(3)}'
-                )
-            )
-            if profile is RTT50_PROFILE:
-                if os.environ.get(NETEM_NAMESPACE_ENV) != '1':
-                    result, namespace_reason = run_rtt50_namespace(
-                        run_directory,
-                        timeout=args.suite_budget + 60,
-                    )
-                    profile_path = run_directory / 'profile.json'
-                    status = (
-                        json.loads(profile_path.read_text()).get('status')
-                        if profile_path.exists()
-                        else None
-                    )
-                    if result == 0 or status == 'skipped':
-                        return 0
-                    if status is not None:
-                        return result or 1
-                    reason = (
-                        f'unshare is unavailable: {namespace_reason}'
-                        if result is None
-                        else namespace_reason
-                        or 'unshare failed before the netem profile could start'
-                    )
-                    print(
-                        f'  SKIPPED {RTT50_PROFILE.description}: {reason}', flush=True
-                    )
-                    record_skipped_profile(run_directory, profile, scenarios, reason)
-                    return 0
-                try:
-                    netem = configure_rtt50_profile()
-                    measured_rtt_ms = netem['measured_rtt_ms']
-                except BenchmarkError as error:
-                    print(f'  SKIPPED {RTT50_PROFILE.description}: {error}', flush=True)
-                    record_skipped_profile(
-                        run_directory, profile, scenarios, str(error)
-                    )
-                    return 0
-            else:
-                measured_rtt_ms = None
-                netem = None
-            completed = run_suite(
-                servers=servers,
-                scenarios=scenarios,
-                duration=args.duration,
-                warmup=args.warmup_duration,
-                max_trials=args.max_trials,
-                scenario_budget=args.scenario_budget,
-                suite_budget=args.suite_budget,
-                run_directory=run_directory,
-                profile=profile,
-                measured_rtt_ms=measured_rtt_ms,
-                netem=netem,
-                wheel=args.wheel,
-            )
-            if args.publish:
-                assert_publishable([completed])
-                publish([completed])
-    except BenchmarkError as error:
-        print(f'benchmark failed: {error}', file=sys.stderr)
+    except (BenchmarkError, OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f'benchmark failed: {error}', file=sys.stderr, flush=True)
         return 1
+    except KeyboardInterrupt:
+        print('benchmark interrupted before publication', file=sys.stderr, flush=True)
+        return 1
+    print(
+        f'Benchmark evidence is staged in {suite_directory}',
+        file=sys.stderr,
+        flush=True,
+    )
     return 0
 
 

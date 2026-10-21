@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bench._core import (
     BenchmarkError,
+    DeadlineError,
     MeasuredMetrics,
     Scenario,
     ServerRun,
@@ -77,7 +78,9 @@ def test_benchmark_inherited_listener_and_protocol_readiness(
             check_response(live)
             receipt = json.loads(request_response(live, '/__bench/identity', timeout=5))
             assert receipt['pid'] in server.worker_pids
-            assert receipt['executable'] == sys.executable
+            assert (
+                Path(receipt['executable']).resolve() == Path(sys.executable).resolve()
+            )
             assert receipt['event_loop'] == 'asyncio.unix_events'
             assert len(server.worker_pids) == workers
             for pid in server.worker_pids:
@@ -105,27 +108,130 @@ def test_benchmark_pss_counts_a_single_process_once():
     assert 0 < measured < min(before, after) * 1.5
 
 
+def test_benchmark_deadline_cleanup_reaps_a_detached_child(tmp_path):
+    import json
+    import select
+    import subprocess
+
+    from bench._core import terminate_process_tree
+
+    child = (
+        'import json, os, subprocess, sys, time; '
+        'process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+        'start_new_session=True); '
+        'print(json.dumps({"pid": process.pid}), flush=True); '
+        'time.sleep(30)'
+    )
+    process = subprocess.Popen(
+        [sys.executable, '-c', child],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    child_pid = json.loads(process.stdout.readline())['pid']
+    child_pidfd = os.pidfd_open(child_pid)
+    try:
+        terminated = terminate_process_tree(process, timeout=0.1)
+        poller = select.poll()
+        poller.register(child_pidfd, select.POLLIN | select.POLLHUP)
+
+        assert process.returncode is not None
+        assert child_pid in terminated
+        assert poller.poll(0)
+    finally:
+        os.close(child_pidfd)
+        process.stdout.close()
+
+
 def test_benchmark_missing_pss_is_unavailable():
     server = ServerRun([], 2**30, ())
     with pytest.raises(BenchmarkError, match='PSS unavailable'):
         server.memory_bytes()
 
 
-def test_benchmark_rate_comparison_resamples_paired_blocks():
+def test_benchmark_nested_deadline_restores_outer_timer():
+    import signal
+    import time
+
+    from bench._core import deadline_bound
+
+    with deadline_bound(time.monotonic() + 30):
+        outer = signal.getitimer(signal.ITIMER_REAL)[0]
+        assert outer > 0
+        with deadline_bound(time.monotonic() + 20):
+            assert signal.getitimer(signal.ITIMER_REAL)[0] > 0
+        assert signal.getitimer(signal.ITIMER_REAL)[0] > 0
+
+
+def test_benchmark_deadline_reaps_load_child_and_retains_interruption(tmp_path):
+    import time
+
+    from bench._core import _run, deadline_bound
+
+    evidence = tmp_path / 'child.process.json'
+    with (
+        pytest.raises(DeadlineError, match='benchmark deadline expired'),
+        deadline_bound(time.monotonic() + 0.2),
+    ):
+        _run(
+            [sys.executable, '-c', 'import time; time.sleep(30)'],
+            60,
+            evidence_path=evidence,
+        )
+
+    receipt = json.loads(evidence.read_text())
+    assert receipt['status'] == 'interrupted'
+    assert isinstance(receipt['returncode'], int)
+
+
+def test_benchmark_rate_comparison_uses_order_interval_on_paired_blocks():
     def sample(rate: float) -> MeasuredMetrics:
         return {
             'rps': rate,
             'completed': 100,
             'peak_memory_bytes': 1000,
+            'elapsed_seconds': 1.0,
             'latency_percentiles': {},
         }
 
     contrasts = paired_contrasts({
-        'h2corn': [sample(rate) for rate in (20, 200, 40, 400)],
-        'baseline': [sample(rate) for rate in (10, 100, 20, 200)],
+        'h2corn': [sample(rate) for rate in (20, 200, 40, 400, 60, 600)],
+        'baseline': [sample(rate) for rate in (10, 100, 20, 200, 30, 300)],
     })
-    assert contrasts['baseline']['block_ratios'] == [2, 2, 2, 2]
-    assert contrasts['baseline']['interval_95'] == [2, 2]
+    assert contrasts['baseline']['block_ratios'] == [2, 2, 2, 2, 2, 2]
+    assert contrasts['baseline']['interval'] == [2, 2]
+    assert contrasts['baseline']['achieved_coverage'] == 62 / 64
+    assert contrasts['baseline']['decision'] == 'slower'
+
+
+def test_benchmark_paired_contrast_with_fewer_than_six_shared_blocks_is_inconclusive():
+    def sample(rate: float) -> MeasuredMetrics:
+        return {
+            'rps': rate,
+            'completed': 100,
+            'peak_memory_bytes': 1000,
+            'elapsed_seconds': 1.0,
+            'latency_percentiles': {},
+        }
+
+    contrasts = paired_contrasts(
+        {
+            'h2corn': [sample(rate) for rate in (20, 200, 40, 400, 60, 600)],
+            'baseline': [sample(rate) for rate in (10, 100, 20, 200, 30)],
+        },
+        {
+            'h2corn': [1, 2, 3, 4, 5, 6],
+            'baseline': [1, 2, 3, 4, 5],
+        },
+    )
+
+    assert contrasts['baseline']['sample_size'] == 5
+    assert contrasts['baseline']['block_ratios'] == [2, 2, 2, 2, 2]
+    assert contrasts['baseline']['h2corn_over_competitor'] is None
+    assert contrasts['baseline']['interval'] is None
+    assert contrasts['baseline']['decision'] == 'inconclusive'
+    assert contrasts['baseline']['decision_reason'] == 'insufficient paired blocks'
 
 
 def test_benchmark_multiplexing_is_one_connection_with_ten_streams():
@@ -335,6 +441,13 @@ def test_grpc_publication_requires_qualification_receipts(tmp_path):
     from bench.grpc import assert_rpc_publishable
 
     (tmp_path / 'identity.json').write_text('{}')
+    (tmp_path / 'profile.json').write_text(
+        json.dumps({
+            'profile': 'grpc',
+            'benchmark_family': 'grpc',
+            'status': 'completed',
+        })
+    )
     with pytest.raises(BenchmarkError, match='retained qualification'):
         assert_rpc_publishable(tmp_path)
 
@@ -364,6 +477,7 @@ def test_grpc_stream_table_reports_messages_complete_calls_and_trial_counts():
         'aggregate': {
             'grpcio': {
                 'rps': 128,
+                'rps_samples': [120, 124, 128, 132, 136, 140],
                 'rpc_rate': 2,
                 'completed': 42.5,
                 'peak_memory_bytes': 3_000_000,
@@ -375,7 +489,7 @@ def test_grpc_stream_table_reports_messages_complete_calls_and_trial_counts():
     assert 'Median messages/s' in table
     assert 'Median complete RPC/s' in table
     assert 'Median completed RPCs/trial' in table
-    assert '| grpcio | 128 | 2.00 | 42.5 | 1.000 | 5.000 | 3.0 | - |' in table
+    assert '| grpcio | 128 | 6 | 2.00 | 42.5 | 1.000 | 5.000 | 3.0 | - |' in table
 
 
 @pytest.mark.parametrize(
@@ -392,6 +506,7 @@ def test_grpc_stream_table_reports_messages_complete_calls_and_trial_counts():
             '--connect-development-revision',
             'abcdef',
         ],
+        ['--family', 'grpc', '--connect-source', '/missing/connect'],
     ],
 )
 def test_grpc_cli_rejects_incomplete_experiments_before_starting_work(arguments):

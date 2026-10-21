@@ -78,7 +78,7 @@ freethreaded = [
   "benchroom",
   "fastapi>=0.118.0",
   "griffe-inherited-docstrings>=1.0",
-  "gunicorn[http2]==25.1.0",
+  "gunicorn[http2]==26.2.0",
   "h2>=4.2.0",
   "h2corn[uvloop]",
   "hpack>=4.1.0",
@@ -89,7 +89,7 @@ freethreaded = [
   "pytest>=9.1",
   "starlette>=0.46.0",
   "trustme>=1.2.0",
-  "uvicorn==0.52.4",
+  "uvicorn==0.54.0",
   "websockets>=16.0",
 ]
 

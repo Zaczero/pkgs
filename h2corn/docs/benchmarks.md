@@ -20,6 +20,11 @@ selected grpclib subset, using common Python handlers and protobuf codecs over
 direct loopback HTTP/2. They measure these complete stacks, not the host
 server in isolation.
 
+The figures and raw records currently shown are the previous published
+collection. The adaptive sampling procedure below describes the current
+benchmark runner; those measurements will be replaced only after a complete
+combined run passes its publication checks.
+
 --8<-- "bench/results/_generated/benchmark-results.md"
 
 ## HTTP methodology {#measurement-method}
@@ -36,13 +41,34 @@ TCP listeners are shared by inheritance and have `TCP_NODELAY` enabled for
 every server. Hypercorn's per-connection request-retirement limit is raised
 beyond the trial workload.
 
-Trials use fresh server starts, rotated server order, and no CPU pinning.
-There are eight fixed trial blocks, with two seconds of warmup and ten seconds
-of measured load per trial. Rates are medians; dots show individual trials and
-whiskers show their observed range. Faster/slower classifications use paired
-rate ratios with per-comparison 95% bootstrap intervals, retained in the raw
-records. An interval including 1 is inconclusive. Latencies are medians of
-per-trial percentiles. Clients use closed-loop load.
+Each time-window scenario is calibrated in one verified serving process per
+server, using successive 0.5, 1, 2, and 4 second windows. Calibration stops
+when adjacent rates agree within 10%; every server in that scenario then uses
+the longest selected duration. A scenario that remains unstable at four
+seconds is marked calibration-limited, and its comparisons are inconclusive.
+The 8 MiB upload retains its fixed complete-request batch.
+
+Two fresh-process pilot blocks estimate paired log-ratio scatter and cell
+cost. They are excluded from results. Before production, the runner freezes six
+paired blocks per scenario, adding three blocks when the pilot's paired
+log-ratio scatter exceeds `log(1.1)` and the forecast stays within the
+30-minute target. Production does not stop early based on observed results.
+Fresh server processes, rotated server order, and unpinned CPU placement are
+used for every block.
+
+Comparisons use paired production-block throughput ratios and
+distribution-free order-statistic intervals for the common median of
+independent paired-block ratios. Six blocks use the minimum and maximum ratios
+(96.875% coverage); nine use the second and eighth ratios (96.09375% coverage).
+Each comparison records its method and achieved coverage. An interval
+containing one is inconclusive. Rates are medians; dots show individual blocks
+and whiskers show their observed range. Latencies are medians of per-trial
+percentiles. Clients use closed-loop load.
+
+One monotonic deadline covers the combined HTTP and gRPC collection. Thirty
+minutes is the target and 45 minutes is the hard total. If the complete
+six-block plan cannot fit the hard limit, the run retains diagnostic evidence,
+exits unsuccessfully, and does not publish.
 
 The 8 MiB network upload uses a fixed batch of sixteen completed requests on
 eight connections, after eight warmup requests. Throughput counts successful
@@ -50,8 +76,8 @@ completions over actual elapsed time.
 
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
 across unique supervisor and worker processes. PSS shares mapped-page cost
-between processes. One-second sampling covers measured load after warmup and
-can miss shorter peaks.
+between processes. Sampling includes initial and final readings plus
+one-second readings during measured load; short peaks can fall between samples.
 
 The [raw scenario records](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw)
 and [per-trial evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/evidence)
@@ -74,20 +100,19 @@ retain the commands, observations, and identities behind the figures.
 
 ## gRPC methodology {#grpc-measurement-method}
 
-Each of the 27 selected cells has twelve fresh-start trial blocks with
-position-balanced stack order, one serving process, standard asyncio, and
-one HTTP/2 client connection. Five grpclib cells are intentionally not
-selected. Compression is identity. TLS rows connect directly to each
-server; all measured TLS connections negotiated TLS 1.3 with
-TLS_AES_128_GCM_SHA256.
+The gRPC family uses the same adaptive calibration, excluded pilot, frozen
+production plan, and paired-median intervals described in the HTTP
+methodology. Its 27 supported cells use one serving process and one standard
+asyncio loop per server, with one HTTP/2 client connection per trial. Five
+grpclib cells are intentionally not selected. Compression is identity. TLS
+rows connect directly to each server; all measured TLS connections negotiated
+TLS 1.3 with TLS_AES_128_GCM_SHA256.
 
-A separate client process warms the server for two seconds. Each measured
-client opens a fresh connection and completes a control RPC before starting
-the clock. Closed-loop load starts work for ten seconds, then allows at most
-fifteen seconds to drain. Rates divide verified completed work by the actual
-start-window-plus-drain elapsed time. Response contents, message counts,
-and final gRPC status are checked; invalid or unfinished work is retained as
-a failure rather than credited as throughput.
+Calibration reuses the verified serving process across windows. Pilot and
+production trials start fresh processes, open a new client connection, and
+complete a control RPC before measurement. Closed-loop load verifies every
+response, message count, and final gRPC status; invalid or unfinished work is
+retained as a failure rather than credited as throughput.
 
 The Go client uses a common `GOMAXPROCS=16` for every stack and row.
 Download sensitivity controls found that a budget of two constrained the
@@ -97,18 +122,16 @@ diagnostic, not publication uncertainty. The published collection uses only
 the sixteen-processor budget. This removes the observed low-budget
 constraint without establishing unconstrained server capacity.
 
-Bars show median rates; dots and whiskers show individual trials and their
-observed range. Comparisons use paired per-block rate ratios and
-per-comparison 95% bootstrap intervals; an interval including one is
-inconclusive. These intervals describe this host and workload, not all
-deployments. Latency curves show medians of per-trial histogram percentile
-upper bounds, with one-percent buckets. PSS is the maximum one-second
-sampled simultaneous process sum and can miss shorter peaks.
+Bars show median rates; dots and whiskers show individual production blocks
+and their observed range. These intervals describe this host and workload,
+not all deployments. Latency curves show medians of per-trial histogram
+percentile upper bounds, with one-percent buckets. PSS is the maximum
+one-second sampled simultaneous process sum and can miss shorter peaks.
 
 Unary and Upload rows report complete RPCs per second. Download and Duplex
 report verified response messages per second. Their detailed tables also
 report complete RPC rates and the actual median completed RPC count per
-trial, which can be fractional for twelve trials.
+trial, which can be fractional when an even number of blocks is used.
 
 ### gRPC workloads {#grpc-workloads}
 
@@ -136,8 +159,6 @@ failed the reserved-flag, truncated-suffix, and expired-deadline witnesses
 shown in the qualification table. Positive-work throughput does not imply
 that these error paths conform.
 
-The separately labelled Connect development qualification passes those
-three application witnesses and is excluded from every timed comparison.
 The [gRPC records, plots, and evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/grpc)
 retain artifact identities, trial commands, verified counts, process
 measurements, qualification outcomes, and client-budget controls.

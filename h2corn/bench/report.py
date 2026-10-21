@@ -79,6 +79,7 @@ def render_accessible_results(record: dict[str, Any]) -> str:
             if rpc
             else record.get('rate_unit', 'Sessions/s' if websocket else 'Requests/s')
         ),
+        'Blocks',
         *(['Median complete RPC/s'] if message_rate else []),
         *(['Median completed RPCs/trial'] if rpc else []),
         f'p50 {duration} (ms)',
@@ -108,14 +109,27 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         result = results[name]
         comparison = '-'
         if name in contrasts:
-            low, high = contrasts[name]['interval_95']
-            comparison = (
-                'slower' if low > 1 else 'faster' if high < 1 else 'inconclusive'
-            )
+            contrast = contrasts[name]
+            comparison = contrast.get('decision')
+            if comparison is None:
+                if interval := contrast.get('interval_95'):
+                    low, high = interval
+                    comparison = (
+                        'slower'
+                        if low > 1
+                        else 'faster'
+                        if high < 1
+                        else 'inconclusive'
+                    )
+                else:
+                    comparison = 'inconclusive'
+            if contrast.get('decision_reason'):
+                comparison += f' ({contrast["decision_reason"]})'
         percentiles = result['latency_percentiles']
         cells = [
             record.get('stack_labels', {}).get(name, name),
             format_rate(result['rps']),
+            str(len(result['rps_samples'])),
             *([format_rate(result['rpc_rate'])] if message_rate else []),
             *([f'{result["completed"]:,.1f}'.removesuffix('.0')] if rpc else []),
             *(
