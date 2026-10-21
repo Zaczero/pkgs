@@ -48,11 +48,6 @@ impl PreparedPlan {
         self.prepare_point_queries(1)?
             .locate_probe_offset(probe, direction)
     }
-    /// Exact Cartesian location, admitted by this operand's accumulated demand.
-    pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
-        self.locate_stored(point).map(|location| location.location)
-    }
-
     pub(in crate::geometry) fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
         if let Some(product) = self
             .topology

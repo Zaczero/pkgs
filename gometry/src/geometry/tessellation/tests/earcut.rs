@@ -430,9 +430,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
             (corners[0].y + corners[1].y + corners[2].y) / 3.0,
         );
         assert_eq!(
-            source_plan
-                .cartesian_point_location(centroid_point)
-                .unwrap(),
+            source_plan.locate_stored(centroid_point).unwrap().location,
             crate::geometry::Loc::Interior,
             "triangle centroid outside source"
         );
