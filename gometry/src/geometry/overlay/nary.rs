@@ -603,11 +603,8 @@ fn exact_cartesian_line_polygon_overlay(
         .zip(polygon.bounds())
         .is_some_and(|(line, polygon)| !line.intersects(polygon))
     {
-        return Ok(if operation == OverlayOp::Intersection {
-            Some(empty_nary_overlay_shape(&inputs, operation))
-        } else {
-            None
-        });
+        return Ok((operation == OverlayOp::Intersection)
+            .then(|| empty_nary_overlay_shape(&inputs, operation)));
     }
     let inventory = ExactSourceInventory::from_shapes(&inputs)?;
     let mut budget = match partition_budget {
