@@ -294,9 +294,7 @@ pub(crate) use predicates::{
     shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
     validate_ring,
 };
-pub(in crate::geometry) use segments::clip::{
-    SegmentParameter, clip_segment_parameter, exact_crossing_parameter,
-};
+pub(in crate::geometry) use segments::clip::{SegmentParameter, clip_segment_parameter};
 pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, empty_geometry,

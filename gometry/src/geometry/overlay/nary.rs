@@ -12,10 +12,10 @@ use crate::geometry::overlay::{
     intersect_rectangle, overlay_declared_axes, rect_polygon, rectangle_bounds,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Dimension, GeographicTopologyRoute, GeometryErrorKind,
-    GeometryKind, HashSet, Loc, Point, PointKey, Shape, SharedShapeOwners, SourceArcContext,
-    SourceArcMetricAccess, TopologyDomain, XY, carry_overlay_ordinates, cartesian_point_location,
-    unique_xy_points,
+    Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, GeographicTopologyRoute,
+    GeometryErrorKind, GeometryKind, HashSet, Loc, Point, PointKey, Shape, SharedShapeOwners,
+    SourceArcContext, SourceArcMetricAccess, TopologyDomain, XY, carry_overlay_ordinates,
+    cartesian_point_location, unique_xy_points,
 };
 
 mod publication;

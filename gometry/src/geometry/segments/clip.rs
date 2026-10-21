@@ -1,7 +1,7 @@
 //! Exact clipping of source segments to rectangular bounds.
 
+use super::ExactDyadic;
 use super::contact::{PairOrientations, collinear_shared_span_exact, touch_endpoint};
-use super::{ExactDyadic, crossing_homogeneous};
 use crate::error::Result;
 use crate::geometry::numerics::product::ExactSign;
 use crate::geometry::tessellation::exact::{compare_ratios, round_ratio};
@@ -263,30 +263,6 @@ pub(in crate::geometry) fn clip_segment_parameter(
     };
     let numerator = ExactDyadic::from_f64(point).try_subtract(ExactDyadic::from_f64(start))?;
     let denominator = ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start))?;
-    Ok(SegmentParameter::Ratio {
-        num: numerator,
-        den: denominator,
-    })
-}
-
-/// Exact source parameter of a proper crossing, without first rounding the
-/// crossing coordinates. Linework consumers that order constructed contacts
-/// must not derive that order from the emitted binary64 witness.
-pub(in crate::geometry) fn exact_crossing_parameter(
-    segment: Segment,
-    other: Segment,
-) -> Result<SegmentParameter> {
-    let [x, y, weight] = crossing_homogeneous(segment, other)?;
-    let use_x = !same_topological_coordinate(segment.start.x, segment.end.x);
-    let (coordinate, start, end) = if use_x {
-        (x, segment.start.x, segment.end.x)
-    } else {
-        (y, segment.start.y, segment.end.y)
-    };
-    let start = ExactDyadic::from_f64(start);
-    let denominator =
-        weight.try_product(&ExactDyadic::from_f64(end).try_subtract(start.clone())?)?;
-    let numerator = coordinate.try_subtract(weight.try_product(&start)?)?;
     Ok(SegmentParameter::Ratio {
         num: numerator,
         den: denominator,
