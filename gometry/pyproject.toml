@@ -63,14 +63,14 @@ viz = ["arro3-core", "lonboard>=0.16.0"]
 [dependency-groups]
 dev = [
   { include-group = "freethreaded" },
-  "geopandas",
-  "h3",
+  "geopandas>=1.2.0",
+  "h3>=4.5.0",
   "libcst",
   "lonboard>=0.16.0; python_version<'3.15'",
   "markdownify>=1",
   "mkdocs-gen-files>=0.5",
   "polars",
-  "pygeohash",
+  "pygeohash>=3.5.1",
   "pymdown-extensions>=10.7",
   "pyo3stubs",
   "types-geopandas",
@@ -91,9 +91,10 @@ freethreaded = [
   "pandas",
   "pandas-stubs",
   "properdocs>=1.6",
-  "pyarrow",
+  "pyarrow>=26.0.0",
   "pyarrow-stubs",
-  "pyproj",
+  "pyproj>=3.7.2; python_version<'3.12'",
+  "pyproj>=3.8.0; python_version>='3.12'",
   "pytest-cov",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
@@ -102,7 +103,7 @@ freethreaded = [
   "rtree",
   "s2sphere",
   "scikit-learn",
-  "shapely",
+  "shapely>=2.2.0",
 ]
 
 [build-system]
