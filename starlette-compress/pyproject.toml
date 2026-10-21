@@ -42,9 +42,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
-# Free-threaded CPython starts in 3.13. Its ABI has no supported marker yet.
 dependencies = [
-  "brotlicffi>=1; platform_python_implementation == 'CPython' and python_version >= '3.13'",
   "brotli>=1",
   "starlette",
   "zstandard>=0.15; python_version<'3.14'",
@@ -57,7 +55,6 @@ Repository = "https://github.com/Zaczero/pkgs/tree/main/starlette-compress"
 
 [dependency-groups]
 dev = [
-  "brotlicffi",
   "coverage",
   "httpx2",
   "pyperf>=2.9",

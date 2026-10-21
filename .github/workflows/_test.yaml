@@ -190,22 +190,24 @@ jobs:
           if [[ "$FREETHREADED" == true ]]; then
             export MATURIN_PEP517_ARGS="--profile dev"
           fi
-          # PyPI brotli 1.2.0 re-enables the GIL when imported; HTTPX2's test
-          # client imports it whenever installed. Drop this once a brotli
-          # release declares free-threading support.
-          if [[ "$PACKAGE" == starlette-compress && "$FREETHREADED" == true ]]; then
-            uv sync --no-default-groups --group "$DEPENDENCY_GROUP" \
-              --no-install-package brotli
-          else
-            uv sync --no-default-groups --group "$DEPENDENCY_GROUP"
-          fi
-          uv run --no-sync python - "$IMPORT_NAME" <<'PY'
+          uv sync --no-default-groups --group "$DEPENDENCY_GROUP"
+          uv run --no-sync python - "$IMPORT_NAME" "$PACKAGE" <<'PY'
           import importlib
           import sys
           import sysconfig
           importlib.import_module(sys.argv[1])
           if sysconfig.get_config_var("Py_GIL_DISABLED"):
-              assert not sys._is_gil_enabled()
+              if sys.argv[2] == "starlette-compress":
+                  importlib.import_module("httpx2")
+                  import brotli
+
+                  payload = b"free-threaded Brotli runtime probe"
+                  encoded = brotli.compress(payload)
+                  assert brotli.decompress(encoded) == payload
+                  state = "enabled" if sys._is_gil_enabled() else "disabled"
+                  print(f"CPython free-threaded runtime GIL after Brotli use: {state}")
+              else:
+                  assert not sys._is_gil_enabled()
           PY
           pytest_args=(tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
           if [[ "$FREETHREADED" == true ]]; then

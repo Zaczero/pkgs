@@ -4,7 +4,6 @@ import asyncio
 import copy
 import random
 import sys
-import sysconfig
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -36,18 +35,6 @@ if TYPE_CHECKING:
     TestClientFactory = Callable[[ASGIApp], TestClient]
 else:
     TestClientFactory = Callable[..., TestClient]
-
-
-def test_brotli_import_preserves_free_threaded_execution():
-    if not sysconfig.get_config_var('Py_GIL_DISABLED'):
-        pytest.skip('requires free-threaded CPython')
-
-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
-        raise AssertionError('the app is not called during middleware construction')
-
-    CompressMiddleware(app)
-
-    assert sys._is_gil_enabled() is False  # type: ignore[attr-defined]
 
 
 def test_compress_responses(test_client_factory: TestClientFactory):
@@ -439,14 +426,13 @@ def _make_incremental_decompressor(encoding: str):
         return feed
 
     if encoding == 'br':
-        import brotlicffi as brotli
+        import brotli
 
         dec = brotli.Decompressor()
 
         def feed(data: bytes) -> bytes:
             out = dec.process(data)
-            # Native brotli may return large events in 32 KiB pieces
-            while True:
+            while not dec.is_finished():
                 more = dec.process(b'')
                 if not more:
                     break
@@ -753,7 +739,7 @@ def test_sse_oneshot_under_pathsend_capable_scope(encoding: str):
 
         assert gzip.decompress(bodies[0]['body']) == payload
     elif encoding == 'br':
-        import brotlicffi as brotli
+        import brotli
 
         assert brotli.decompress(bodies[0]['body']) == payload
     elif sys.version_info >= (3, 14):

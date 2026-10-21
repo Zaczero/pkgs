@@ -19,7 +19,6 @@ import inspect
 import json
 import math
 import sys
-import sysconfig
 from fnmatch import fnmatchcase
 from functools import partial
 from importlib.metadata import distribution
@@ -287,10 +286,7 @@ def decode_compressed_body(encoding: str, body: bytes) -> bytes:
 
         return gzip.decompress(body)
     if encoding == 'br':
-        if sysconfig.get_config_var('Py_GIL_DISABLED'):
-            import brotlicffi as brotli
-        else:
-            import brotli
+        import brotli
 
         return brotli.decompress(body)
     if encoding == 'zstd':
@@ -345,10 +341,7 @@ def incremental_decoder(encoding: str):
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
         return decoder.decompress, decoder.flush, lambda: decoder.eof
     if encoding == 'br':
-        if sysconfig.get_config_var('Py_GIL_DISABLED'):
-            import brotlicffi as brotli
-        else:
-            import brotli
+        import brotli
 
         decoder = brotli.Decompressor()
         return decoder.process, lambda: b'', decoder.is_finished
