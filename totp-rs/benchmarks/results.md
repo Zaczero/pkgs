@@ -7,29 +7,29 @@ Median time per call; lower is faster.
 
 ## Code generation and verification
 
-| Workload | totp-rs 1.0.0 | pyotp 2.10.0 |
+| Workload | totp-rs 2.0.0 | pyotp 2.10.0 |
 | --- | ---: | ---: |
-| Generate current code · SHA-1 | 386 ns | 10.8 µs |
-| Verify current code · SHA-1 | 394 ns | 22.7 µs |
-| Verify previous-step code · SHA-1 | 476 ns | 11.3 µs |
-| Reject incorrect code · SHA-1 | 568 ns | 33.7 µs |
-| Generate current code · SHA-256 | 451 ns | 10.9 µs |
-| Verify current code · SHA-256 | 449 ns | 22.8 µs |
-| Verify previous-step code · SHA-256 | 558 ns | 11.5 µs |
-| Reject incorrect code · SHA-256 | 647 ns | 33.6 µs |
-| Generate current code · SHA-512 | 1.79 µs | 11.7 µs |
-| Verify current code · SHA-512 | 1.77 µs | 24.3 µs |
-| Verify previous-step code · SHA-512 | 2.48 µs | 12.3 µs |
-| Reject incorrect code · SHA-512 | 3.17 µs | 36 µs |
+| Generate current code · SHA-1 | 396 ns | 10.9 µs |
+| Verify current code · SHA-1 | 455 ns | 23 µs |
+| Verify previous-step code · SHA-1 | 509 ns | 11.3 µs |
+| Reject incorrect code · SHA-1 | 592 ns | 34.5 µs |
+| Generate current code · SHA-256 | 436 ns | 11 µs |
+| Verify current code · SHA-256 | 459 ns | 23.3 µs |
+| Verify previous-step code · SHA-256 | 550 ns | 12.4 µs |
+| Reject incorrect code · SHA-256 | 651 ns | 37.1 µs |
+| Generate current code · SHA-512 | 1.82 µs | 13.2 µs |
+| Verify current code · SHA-512 | 1.73 µs | 24.6 µs |
+| Verify previous-step code · SHA-512 | 2.47 µs | 11.8 µs |
+| Reject incorrect code · SHA-512 | 3.16 µs | 35 µs |
 
-## Raw-key and time-counter calls · totp-rs 1.0.0
+## Raw-key and time-counter calls · totp-rs 2.0.0
 
 | Workload | Median time per call |
 | --- | ---: |
-| Generate from raw key · SHA-1 | 326 ns |
-| Generate from time counter · SHA-1 | 284 ns |
-| Generate from raw key · SHA-256 | 340 ns |
-| Generate from time counter · SHA-256 | 303 ns |
-| Generate from raw key · SHA-512 | 1.58 µs |
-| Generate from time counter · SHA-512 | 1.53 µs |
-| Extract time counter | 70.1 ns |
+| Generate from raw key · SHA-1 | 299 ns |
+| Generate from time counter · SHA-1 | 268 ns |
+| Generate from raw key · SHA-256 | 336 ns |
+| Generate from time counter · SHA-256 | 295 ns |
+| Generate from raw key · SHA-512 | 1.55 µs |
+| Generate from time counter · SHA-512 | 1.5 µs |
+| Extract time counter | 68.4 ns |

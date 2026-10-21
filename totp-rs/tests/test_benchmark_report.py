@@ -12,7 +12,7 @@ from tools.benchmark_report import _admit, report
 def _write_results(
     path: Path, implementation: str, *, source_revision: str = 'a' * 40
 ) -> None:
-    version = {'pyotp': '2.10.0', 'totp-rs': '1.0.0'}[implementation]
+    version = {'pyotp': '2.10.0', 'totp-rs': '2.0.0'}[implementation]
     definitions = case_definitions(implementation)
     common = {
         'benchmark_sha256': hashlib.sha256(
@@ -26,7 +26,7 @@ def _write_results(
         'implementation_name': implementation,
         'implementation_version': version,
         'native_extension_sha256': 'extension-sha',
-        'native_package_version': '1.0.0',
+        'native_package_version': '2.0.0',
         'platform': 'Linux-test',
         'pyotp_version': '2.10.0',
         'pyperf_version': '2.10.0',
@@ -67,8 +67,8 @@ def test_report_separates_matched_and_native_only_workloads(tmp_path: Path) -> N
 
     markdown = (tmp_path / 'results.md').read_text()
     assert '## Code generation and verification' in markdown
-    assert '## Raw-key and time-counter calls · totp-rs 1.0.0' in markdown
-    assert '| Workload | totp-rs 1.0.0 | pyotp 2.10.0 |' in markdown
+    assert '## Raw-key and time-counter calls · totp-rs 2.0.0' in markdown
+    assert '| Workload | totp-rs 2.0.0 | pyotp 2.10.0 |' in markdown
     assert '95% interval' not in markdown
     for case in case_definitions('totp-rs'):
         assert case['label'] in markdown
