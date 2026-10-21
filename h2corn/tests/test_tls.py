@@ -459,7 +459,7 @@ async def test_tls_http1_absolute_form_preserves_tls_scheme(tmp_path: Path) -> N
             tls_http1_request(
                 server_port(server),
                 context,
-                request=b'GET http://localhost/absolute?x=1 HTTP/1.1\r\n\r\n',
+                request=b'GET http://localhost/absolute?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n',
             ),
             timeout=5,
         )
