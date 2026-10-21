@@ -2,9 +2,6 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str;
 use std::sync::LazyLock;
 
-use base64::engine::DecodePaddingMode;
-use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
-use base64::{Engine as _, alphabet};
 use bytes::{Buf as _, Bytes, BytesMut};
 use http::{Method, Uri};
 use memchr::{memchr, memchr2, memmem};
@@ -50,16 +47,6 @@ static HEADER_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
     LazyLock::new(|| memmem::Finder::new(HEADER_TERMINATOR));
 static LINE_TERMINATOR_FINDER: LazyLock<memmem::Finder<'static>> =
     LazyLock::new(|| memmem::Finder::new(LINE_TERMINATOR));
-
-// Keep the unpadded URL-safe dialect's existing acceptance of nonzero unused
-// trailing bits while enforcing RFC 7540's alphabet and no-padding rules.
-const HTTP2_SETTINGS_BASE64: GeneralPurpose = GeneralPurpose::new(
-    &alphabet::URL_SAFE,
-    GeneralPurposeConfig::new()
-        .with_encode_padding(false)
-        .with_decode_padding_mode(DecodePaddingMode::RequireNone)
-        .with_decode_allow_trailing_bits(true),
-);
 
 struct BufferedTerminatorFinder<'a> {
     finder: &'a memmem::Finder<'static>,
@@ -1332,10 +1319,8 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
 }
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {
-    let mut decoded = Vec::new();
-    HTTP2_SETTINGS_BASE64
-        .decode_vec(value.trim_ascii(), &mut decoded)
-        .map_err(|_| Http1Error::InvalidHttp2SettingsBase64UrlPayload.into_error())?;
+    let decoded = crate::base64::decode_url(value.trim_ascii())
+        .map_err(|()| Http1Error::InvalidHttp2SettingsBase64UrlPayload.into_error())?;
     if !decoded.len().is_multiple_of(SETTING_ENTRY_LEN) {
         return Http1Error::InvalidHttp2SettingsPayloadLength.err();
     }

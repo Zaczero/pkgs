@@ -1,9 +1,9 @@
 use std::num::NonZeroU32;
 
-use base64::alphabet::STANDARD;
 use bitflags::bitflags;
 use bytes::Bytes;
 
+use crate::base64;
 use crate::config::ForwardedFields;
 use crate::http::header::protocol_token_is_valid;
 use crate::http::types::{BytesStr, KnownRequestHeaderName, RequestHeaderNameRef};
@@ -405,10 +405,9 @@ pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(Proxy
 
 fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
     value.len() == WEBSOCKET_KEY_LEN
-        && value.strip_suffix(b"==").is_some_and(|head| {
-            head.iter()
-                .all(|byte| STANDARD.as_str().as_bytes().contains(byte))
-        })
+        && value
+            .strip_suffix(b"==")
+            .is_some_and(|head| head.iter().all(|byte| base64::is_base64(*byte)))
 }
 
 /// Parse one `Sec-WebSocket-Protocol` field value into `out`.
@@ -450,7 +449,10 @@ fn push_requested_subprotocols(
 mod tests {
     use bytes::Bytes;
 
-    use super::{ParsedWebSocketKey, ParsedWebSocketVersion, ProxyHeaderSlots, RequestHeaderMeta};
+    use super::{
+        ParsedWebSocketKey, ParsedWebSocketVersion, ProxyHeaderSlots, RequestHeaderMeta,
+        websocket_key_is_syntactically_valid,
+    };
     use crate::http::types::{BytesStr, KnownRequestHeaderName};
     use crate::websocket::{ParsedRequestedSubprotocols, RequestedSubprotocols};
 
@@ -589,6 +591,16 @@ mod tests {
             ParsedRequestedSubprotocols::Valid(expected)
         );
         assert!(websocket.request.per_message_deflate);
+    }
+
+    #[rstest::rstest]
+    #[case::rfc_example(b"dGhlIHNhbXBsZSBub25jZQ==".as_slice(), true)]
+    #[case::standard_symbols(b"++++++++++++++++++++++==".as_slice(), true)]
+    #[case::url_safe_hyphen(b"----------------------==".as_slice(), false)]
+    #[case::url_safe_underscore(b"______________________==".as_slice(), false)]
+    #[case::invalid_alphabet_byte(b"?GhlIHNhbXBsZSBub25jZQ==".as_slice(), false)]
+    fn websocket_key_uses_the_standard_base64_alphabet(#[case] key: &[u8], #[case] expected: bool) {
+        assert_eq!(websocket_key_is_syntactically_valid(key), expected);
     }
 
     #[rstest::rstest]

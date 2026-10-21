@@ -2,9 +2,8 @@
 //! RFC 6455 GUID, base64-encoded.
 
 use aws_lc_rs::digest::{SHA1_FOR_LEGACY_USE_ONLY, digest};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 
+use crate::base64;
 use crate::websocket::{WEBSOCKET_KEY_LEN, WebSocketKey};
 
 const LEN: usize = 28;
@@ -17,11 +16,21 @@ pub(crate) fn websocket_accept(key: &WebSocketKey) -> [u8; LEN] {
     guid_input.copy_from_slice(GUID);
 
     let digest = digest(&SHA1_FOR_LEGACY_USE_ONLY, &input);
+    let digest: &[u8; 20] = digest
+        .as_ref()
+        .try_into()
+        .expect("a SHA-1 digest contains 20 bytes");
+    let groups = [
+        base64::encode_triplet(digest[0], digest[1], digest[2]),
+        base64::encode_triplet(digest[3], digest[4], digest[5]),
+        base64::encode_triplet(digest[6], digest[7], digest[8]),
+        base64::encode_triplet(digest[9], digest[10], digest[11]),
+        base64::encode_triplet(digest[12], digest[13], digest[14]),
+        base64::encode_triplet(digest[15], digest[16], digest[17]),
+        base64::encode_remainder(digest[18], digest[19]),
+    ];
     let mut output = [0; LEN];
-    let encoded_len = STANDARD
-        .encode_slice(digest.as_ref(), &mut output)
-        .expect("a SHA-1 digest fits its fixed-size base64 output");
-    debug_assert_eq!(encoded_len, LEN);
+    output.copy_from_slice(groups.as_flattened());
     output
 }
 

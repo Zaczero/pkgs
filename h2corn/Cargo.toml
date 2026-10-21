@@ -16,7 +16,6 @@ name = "_lib"
 anstream.workspace = true
 aws-lc-rs = { version = "1.18.2", default-features = false }
 atoi_simd = { version = "0.18", default-features = false }
-base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 bitflags = "2.13"
 bytes = "1.11"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
