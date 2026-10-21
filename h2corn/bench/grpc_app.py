@@ -366,6 +366,7 @@ async def serve(args: argparse.Namespace) -> None:
 
             config = H2Config(
                 bind=(f'fd://{listener.fileno()}',),
+                grpc=True,
                 lifespan='on',
                 loop='asyncio',
                 access_log=False,

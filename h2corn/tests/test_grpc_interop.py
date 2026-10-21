@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sysconfig
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -16,13 +17,24 @@ if sysconfig.get_config_var('Py_GIL_DISABLED'):
 grpc = pytest.importorskip('grpc')
 pytest.importorskip('connectrpc')
 
-from asgi_lifespan import LifespanManager  # ruff: ignore[module-import-not-at-top-of-file]
+from asgi_lifespan import (  # ruff: ignore[module-import-not-at-top-of-file]
+    LifespanManager,
+)
 from connectrpc.code import Code  # ruff: ignore[module-import-not-at-top-of-file]
-from connectrpc.errors import ConnectError  # ruff: ignore[module-import-not-at-top-of-file]
+from connectrpc.errors import (  # ruff: ignore[module-import-not-at-top-of-file]
+    ConnectError,
+)
 from h2corn import Config, Server  # ruff: ignore[module-import-not-at-top-of-file]
-from starlette.applications import Starlette  # ruff: ignore[module-import-not-at-top-of-file]
-from starlette.responses import PlainTextResponse  # ruff: ignore[module-import-not-at-top-of-file]
-from starlette.routing import Mount, Route  # ruff: ignore[module-import-not-at-top-of-file]
+from starlette.applications import (  # ruff: ignore[module-import-not-at-top-of-file]
+    Starlette,
+)
+from starlette.responses import (  # ruff: ignore[module-import-not-at-top-of-file]
+    PlainTextResponse,
+)
+from starlette.routing import (  # ruff: ignore[module-import-not-at-top-of-file]
+    Mount,
+    Route,
+)
 
 from examples.grpc.gen.h2corn.interop.v1.notebook_connect import (  # ruff: ignore[module-import-not-at-top-of-file]
     NotebookService,
@@ -244,7 +256,9 @@ def _connect_app(
     config: Config | None = None,
 ) -> tuple[Starlette, Config]:
     if config is None:
-        config = Config(port=0, lifespan='on')
+        config = Config(port=0, lifespan='on', grpc=True)
+    else:
+        config = replace(config, grpc=True)
     return _app(service), config
 
 
@@ -615,6 +629,7 @@ async def test_factory_and_lifespan_use_the_serving_loop() -> None:
             create_app,
             Config(
                 port=0,
+                grpc=True,
                 lifespan='on',
                 timeout_graceful_shutdown=2.0,
             ),
@@ -680,7 +695,7 @@ async def test_rpc_and_ordinary_http_share_one_listener() -> None:
     from examples.grpc.app import create_app
 
     app = create_app()
-    config = Config(port=0, lifespan='on')
+    config = Config(port=0, grpc=True, lifespan='on')
 
     async with running_server(app, config) as server:
         port = server_port(server)
@@ -702,7 +717,7 @@ async def test_rpc_and_ordinary_http_share_one_listener() -> None:
     assert body == b'ok'
 
 
-async def test_rpc_upload_is_exempt_from_the_global_body_cap_by_default() -> None:
+async def test_enabled_grpc_upload_is_exempt_from_the_global_body_cap() -> None:
     config = Config(
         port=0,
         lifespan='on',
@@ -726,7 +741,7 @@ async def test_rpc_upload_is_exempt_from_the_global_body_cap_by_default() -> Non
     assert (summary.chunks_received, summary.bytes_received) == (1, 4096)
 
 
-async def test_duplex_stream_default_allows_an_idle_gap() -> None:
+async def test_enabled_grpc_duplex_stream_allows_an_idle_gap() -> None:
     service = _NotebookService()
     config = Config(
         port=0,

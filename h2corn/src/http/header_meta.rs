@@ -110,7 +110,7 @@ bitflags! {
     pub(crate) struct RequestHeaderFlags: u8 {
         const HAS_CONTENT_LENGTH = 1 << 0;
         const ACCEPTS_TRAILERS = 1 << 1;
-        const IS_RPC_STREAM = 1 << 2;
+        const IS_GRPC = 1 << 2;
     }
 }
 
@@ -132,8 +132,8 @@ impl RequestHeaderMeta {
         self.flags.contains(RequestHeaderFlags::ACCEPTS_TRAILERS)
     }
 
-    pub(crate) const fn is_rpc_stream(&self) -> bool {
-        self.flags.contains(RequestHeaderFlags::IS_RPC_STREAM)
+    pub(crate) const fn is_grpc(&self) -> bool {
+        self.flags.contains(RequestHeaderFlags::IS_GRPC)
     }
 
     pub(crate) const fn set_accepts_trailers(&mut self) {
@@ -306,8 +306,8 @@ impl RequestHeaderMeta {
                     offers_compatible_permessage_deflate(value_bytes);
             },
             KnownRequestHeaderName::ContentType => {
-                if is_rpc_stream_content_type(value_bytes) {
-                    self.flags = self.flags.union(RequestHeaderFlags::IS_RPC_STREAM);
+                if is_grpc_content_type(value_bytes) {
+                    self.flags = self.flags.union(RequestHeaderFlags::IS_GRPC);
                 }
             },
             KnownRequestHeaderName::Accept
@@ -337,7 +337,7 @@ impl RequestHeaderMeta {
     }
 }
 
-fn is_rpc_stream_content_type(value: &[u8]) -> bool {
+fn is_grpc_content_type(value: &[u8]) -> bool {
     let media_type = value
         .split(|byte| *byte == b';')
         .next()
@@ -358,9 +358,7 @@ fn is_rpc_stream_content_type(value: &[u8]) -> bool {
     if subtype.eq_ignore_ascii_case(b"grpc") {
         return true;
     }
-    if !subtype_has_nonempty_extension(subtype, b"grpc+")
-        && !subtype_has_nonempty_extension(subtype, b"connect+")
-    {
+    if !subtype_has_nonempty_extension(subtype, b"grpc+") {
         return false;
     }
     protocol_token_is_valid(subtype)
@@ -474,16 +472,19 @@ mod tests {
     }
 
     #[test]
-    fn content_type_classifies_rpc_streams_without_a_sidecar() {
+    fn content_type_classifies_native_grpc_without_a_sidecar() {
         for (content_type, expected) in [
             (Some(b"application/grpc".as_slice()), true),
             (Some(b"application/grpc+proto"), true),
             (Some(b"APPLICATION/GRPC"), true),
+            (Some(b"APPLICATION/GRPC+PROTO"), true),
             (Some(b"application/grpc; charset=utf-8"), true),
-            (Some(b"application/connect+proto"), true),
+            (Some(b"application/grpc+proto; charset=utf-8"), true),
             (Some(b"application/grpc-web"), false),
             (Some(b"application/grpc-web+proto"), false),
             (Some(b"application/grpc+"), false),
+            (Some(b"application/grpc+proto/invalid"), false),
+            (Some(b"application/connect+proto"), false),
             (Some(b"application/proto"), false),
             (None, false),
         ] {
@@ -498,7 +499,7 @@ mod tests {
             }
 
             assert_eq!(
-                meta.is_rpc_stream(),
+                meta.is_grpc(),
                 expected,
                 "unexpected classification for {content_type:?}"
             );

@@ -223,6 +223,7 @@ impl<'py> PyConfig<'py> {
     }
 
     fn request_policies(&self) -> PyResult<RequestPolicies> {
+        let grpc_enabled = self.get("grpc")?;
         let default = ResolvedRequestPolicy {
             max_request_body_size: self.nonzero_u64("max_request_body_size")?,
             timeout_request_body_idle: self.optional_duration("timeout_request_body_idle")?,
@@ -250,7 +251,7 @@ impl<'py> PyConfig<'py> {
                 h2_timeout_response_stall,
             }));
         }
-        RequestPolicies::new(default, rules).map_err(PyValueError::new_err)
+        RequestPolicies::new(grpc_enabled, default, rules).map_err(PyValueError::new_err)
     }
 
     fn websocket(&self) -> PyResult<WebSocketConfig> {
@@ -1240,7 +1241,9 @@ mod tests {
     use super::*;
     use crate::config::LogFormat;
     use crate::http::header_meta::RequestHeaderMeta;
-    use crate::http::types::{BytesStr, HttpVersion, RequestHead, RequestHeaders, RequestTarget};
+    use crate::http::types::{
+        BytesStr, HttpVersion, KnownRequestHeaderName, RequestHead, RequestHeaders, RequestTarget,
+    };
     use crate::proxy_protocol::Cidr;
 
     fn config_stub(py: Python<'_>) -> Bound<'_, PyAny> {
@@ -1436,6 +1439,7 @@ mod tests {
 
     fn set_core_options(config: &Bound<'_, PyAny>) {
         config.setattr("bind", ("127.0.0.9:48123",)).unwrap();
+        config.setattr("grpc", true).unwrap();
         config.setattr("max_requests", 41).unwrap();
         config.setattr("max_requests_jitter", 7).unwrap();
         config.setattr("timeout_worker_healthcheck", 0.0).unwrap();
@@ -1689,7 +1693,7 @@ mod tests {
             assert_http_config(&extracted);
             assert_timeout_and_limit_config(&extracted);
             assert_websocket_and_proxy_config(&extracted);
-            let request = RequestHead {
+            let mut request = RequestHead {
                 http_version: HttpVersion::Http2,
                 method: Method::POST,
                 target: RequestTarget::normal(
@@ -1699,7 +1703,16 @@ mod tests {
                 headers: RequestHeaders::default(),
                 header_meta: RequestHeaderMeta::default(),
             };
-            let policy = extracted.request_policies.resolve(&request);
+            request.header_meta.observe_known_header_slice(
+                KnownRequestHeaderName::ContentType,
+                b"application/grpc",
+                0,
+                false,
+            );
+            let policy = extracted
+                .request_policies
+                .resolve(&request)
+                .expect("Config.grpc enables native gRPC admission");
             assert_eq!(
                 policy.max_request_body_size.map(NonZeroU64::get),
                 Some(123_456)

@@ -917,7 +917,7 @@ async def test_h2_content_length_limit_returns_413() -> None:
     assert body == b''
 
 
-async def test_h2_grpc_content_length_exceeds_global_body_cap_by_default() -> None:
+async def test_h2_enabled_native_grpc_exceeds_global_body_cap() -> None:
     async def app(scope, receive, send):
         if scope['type'] == 'lifespan':
             message = await receive()
@@ -927,7 +927,7 @@ async def test_h2_grpc_content_length_exceeds_global_body_cap_by_default() -> No
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': body})
 
-    config = Config(port=0, max_request_body_size=4)
+    config = Config(port=0, grpc=True, max_request_body_size=4)
     async with running_server(app, config) as server:
         grpc_status, grpc_body = await h2_request(
             port=server_port(server),
@@ -949,6 +949,40 @@ async def test_h2_grpc_content_length_exceeds_global_body_cap_by_default() -> No
     assert grpc_body == b'hello'
     assert ordinary_status == 413
     assert ordinary_body == b''
+
+
+@pytest.mark.parametrize(
+    'content_type',
+    [
+        pytest.param(b'application/connect+proto', id='connect-streaming'),
+        pytest.param(b'application/grpc-web+proto', id='grpc-web'),
+    ],
+)
+@pytest.mark.parametrize(
+    'grpc_enabled',
+    [pytest.param(False, id='grpc-disabled'), pytest.param(True, id='grpc-enabled')],
+)
+async def test_h2_connect_and_grpc_web_keep_the_global_body_cap(
+    content_type: bytes,
+    grpc_enabled: bool,
+) -> None:
+    async def app(scope, receive, send):
+        raise AssertionError('oversized request should be rejected before the app')
+
+    config = Config(port=0, grpc=grpc_enabled, max_request_body_size=4)
+    async with running_server(app, config) as server:
+        status, body = await h2_request(
+            port=server_port(server),
+            method='POST',
+            body=b'hello',
+            extra_headers=[
+                (b'content-type', content_type),
+                (b'content-length', b'5'),
+            ],
+        )
+
+    assert status == 413
+    assert body == b''
 
 
 async def test_h2_request_policy_allows_content_length_and_streaming_uploads() -> None:

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 from asgi_lifespan import LifespanManager
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
-from h2corn import Config, serve
+from h2corn import Config, RequestPolicy, serve
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
@@ -141,8 +141,17 @@ if __name__ == '__main__':
         create_app,
         Config(
             port=8000,
+            grpc=True,
             lifespan='on',
             max_request_body_size=64 * 1024 * 1024,
+            request_policies=(
+                RequestPolicy(
+                    path='/h2corn.interop.v1.NotebookService/UploadNote',
+                    max_request_body_size=1024 * 1024 * 1024,
+                    timeout_request_body_idle=300.0,
+                    h2_timeout_response_stall=60.0,
+                ),
+            ),
         ),
         factory=True,
     )

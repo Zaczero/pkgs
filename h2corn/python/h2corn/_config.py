@@ -471,25 +471,28 @@ class RequestPolicy:
             matches `/service/` and its descendants, not `/service` itself.
         max_request_body_size: Maximum request-body bytes as an exact integer
             from `0` through `18_446_744_073_709_551_615`. Use `0` to disable
-            the cumulative size limit. gRPC and Connect streaming requests are
-            exempt by default; a matching request policy can set an explicit
-            limit.
+            the cumulative size limit. Native gRPC requests are rejected with
+            HTTP 415 when `Config.grpc` is disabled and exempt when enabled,
+            unless a matching request policy sets a limit. Connect and
+            gRPC-Web requests use this limit normally.
         timeout_request_body_idle: Maximum seconds without request-body data.
-            Use `0` to disable the idle timer. gRPC and Connect streaming
-            requests are exempt by default; a matching request policy can set
-            an explicit timeout.
+            Use `0` to disable the idle timer. Native gRPC requests are rejected
+            with HTTP 415 when `Config.grpc` is disabled and exempt when
+            enabled, unless a matching request policy sets a timeout. Connect
+            and gRPC-Web requests use this timer normally.
         h2_timeout_response_stall: Maximum seconds response bytes may remain
             blocked by HTTP/2 peer flow control. Use `0` to disable the timer.
 
-    A matching rule takes precedence over the protocol-aware defaults and
-    replaces all three global values; it does not inherit individual values
-    from `Config`. Without a matching rule, gRPC and Connect streaming requests
-    have no request-body size limit or idle timeout, while their HTTP/2
-    response-stall timeout still follows `Config`. The streaming defaults apply
-    to case-insensitive `application/grpc`,
-    `application/grpc+<subtype>`, and `application/connect+<subtype>` media
-    types; parameters are ignored. They do not apply to gRPC-Web or unary
-    Connect media types.
+    A matching rule takes precedence over the native gRPC streaming defaults
+    and replaces all three global values; it does not inherit individual values
+    from `Config`. Native gRPC admission is controlled by `Config.grpc`; when
+    disabled, native gRPC requests receive HTTP 415 even if a path rule matches.
+    When enabled, unmatched native gRPC requests have no request-body size
+    limit or idle timeout, while the HTTP/2 response-stall timeout still
+    follows `Config`. Native gRPC is recognized from case-insensitive
+    `application/grpc` and `application/grpc+<valid non-empty subtype>` media
+    types; parameters are ignored. Connect and gRPC-Web media types remain
+    ordinary HTTP.
 
     Construction accepts exact integers or floats for timeout seconds and
     normalizes them to floats. Booleans, non-finite numbers, and negative
@@ -810,6 +813,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
         'Protocol behavior and per-connection bounds.',
         (
             'http1',
+            'grpc',
             'access_log',
             'log_format',
             'max_concurrent_streams',
@@ -1111,6 +1115,26 @@ class Config:
         converter=_exact_bool('http1'),
         cli_action='bool',
     )
+    grpc: bool = _option(
+        default=False,
+        doc=(
+            'Whether to admit native gRPC requests identified by the '
+            'case-insensitive `application/grpc` and '
+            '`application/grpc+<valid non-empty subtype>` Content-Type media '
+            'types. Parameters are ignored. When disabled, native gRPC requests receive HTTP 415 '
+            'before ASGI dispatch, even if a request policy matches. When '
+            'enabled, unmatched native gRPC requests have no request-body size '
+            'cap or idle timeout; a matching request policy can set explicit '
+            'limits. HTTP/2 response-stall and write timeouts remain active. '
+            'Connect and gRPC-Web media types remain ordinary HTTP. '
+            'This controls protocol admission, not network authentication; use '
+            'a dedicated RPC listener and network policy when gRPC should be '
+            'isolated.'
+        ),
+        env_parse=_parse_bool,
+        converter=_exact_bool('grpc'),
+        cli_action='bool',
+    )
     access_log: bool = _option(
         default=True,
         doc='Whether to log requests to stderr.',
@@ -1216,9 +1240,10 @@ class Config:
         default=1_073_741_824,
         doc=(
             'Maximum request body size in bytes as an exact integer from 0 '
-            'through 18_446_744_073_709_551_615. Use 0 for no limit. gRPC and '
-            'Connect streaming requests are exempt by default; a matching '
-            'request policy can set an explicit limit.'
+            'through 18_446_744_073_709_551_615. Use 0 for no limit. Native '
+            'gRPC requests receive HTTP 415 when `grpc=False` and are exempt '
+            'by default when `grpc=True`; Connect and gRPC-Web requests use '
+            'this limit.'
         ),
         env_parse=int,
         converter=_bounded_int('max_request_body_size', minimum=0, maximum=_U64_MAX),
@@ -1229,10 +1254,12 @@ class Config:
         doc=(
             'Ordered path-specific body and HTTP/2 response-stall policies. '
             'Each rule supplies all three values; the first exact path or '
-            'terminal `/*` subtree match takes precedence over protocol-aware '
-            'defaults and replaces the global values. Without a matching rule, '
-            'gRPC and Connect streaming requests have no request-body size '
-            'limit or idle timeout; other requests use the global values. '
+            'terminal `/*` subtree match replaces the global values. Native '
+            'gRPC admission is controlled by `grpc`; when disabled, gRPC '
+            'requests receive HTTP 415 even if a path rule matches. When '
+            'enabled, unmatched native gRPC requests have no request-body size '
+            'limit or idle timeout. Connect and gRPC-Web requests use the '
+            'global values unless a path rule matches. '
             'The global HTTP/2 response-stall timeout still applies to RPC '
             'responses. Paths are raw ASCII '
             'URI paths without query or fragment text and match case-sensitively '
@@ -1303,8 +1330,9 @@ class Config:
         default=60.0,
         doc=(
             'Idle timeout in seconds while reading an HTTP request body. Use 0 '
-            'to disable. gRPC and Connect streaming requests are exempt by '
-            'default; a matching request policy can set an explicit timeout.'
+            'to disable. Native gRPC requests receive HTTP 415 when '
+            '`grpc=False` and are exempt by default when `grpc=True`; Connect and '
+            'gRPC-Web requests use this timeout.'
         ),
         env_parse=float,
         converter=_non_negative_float('timeout_request_body_idle'),

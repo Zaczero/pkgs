@@ -662,9 +662,13 @@ fn parsed_request_from_head(
                 | UpgradeRequest::WebSocketUnsupportedVersion
         )
     ) {
-        request_policies.default_policy()
+        Ok(request_policies.default_policy())
     } else {
         request_policies.resolve(&request)
+    };
+    let policy = match policy {
+        Ok(policy) => policy,
+        Err(status) => return Ok(HeadParseOutcome::Reject(status)),
     };
 
     Ok(HeadParseOutcome::Parsed(ParsedHead {

@@ -1827,7 +1827,99 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
     assert slow_disconnects == [None]
 
 
-async def test_grpc_stream_default_ignores_request_body_idle_timeout() -> None:
+async def test_disabled_grpc_rejects_before_policy_and_keeps_h2_sibling_usable() -> (
+    None
+):
+    seen: list[str] = []
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            message = await receive()
+            await send({'type': f'{message["type"]}.complete'})
+            return
+        seen.append(scope['path'])
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        grpc=False,
+        max_request_body_size=4,
+        request_policies=(
+            RequestPolicy(
+                path='/rpc/*',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        reader, writer, conn, authority = await open_h2_connection(
+            port=server_port(server)
+        )
+        grpc_stream = conn.get_next_available_stream_id()
+        sibling_stream = grpc_stream + 2
+        conn.send_headers(
+            grpc_stream,
+            [
+                (b':method', b'POST'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/rpc/upload'),
+                (b'content-type', b'application/grpc'),
+                (b'content-length', b'5'),
+            ],
+            end_stream=False,
+        )
+        conn.send_data(grpc_stream, b'hello', end_stream=True)
+        conn.send_headers(
+            sibling_stream,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', b'/healthy'),
+            ],
+            end_stream=True,
+        )
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        statuses: dict[int, int] = {}
+        completed: set[int] = set()
+        resets: set[int] = set()
+        try:
+            while grpc_stream not in completed or sibling_stream not in completed:
+                data = await asyncio.wait_for(reader.read(65535), timeout=5)
+                assert data
+                for event in conn.receive_data(data):
+                    if isinstance(event, h2.events.ResponseReceived):
+                        statuses[event.stream_id] = int(dict(event.headers)[b':status'])
+                    elif isinstance(event, h2.events.StreamEnded):
+                        completed.add(event.stream_id)
+                    elif isinstance(event, h2.events.StreamReset):
+                        resets.add(event.stream_id)
+                    elif isinstance(event, h2.events.DataReceived):
+                        conn.acknowledge_received_data(
+                            event.flow_controlled_length,
+                            event.stream_id,
+                        )
+                pending = conn.data_to_send()
+                if pending:
+                    writer.write(pending)
+                    await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    assert statuses[grpc_stream] == 415
+    assert statuses[sibling_stream] == 204
+    assert not resets
+    assert seen == ['/healthy']
+
+
+async def test_enabled_grpc_stream_ignores_request_body_idle_timeout() -> None:
     received: list[bytes] = []
 
     async def app(scope, receive, send):
@@ -1848,7 +1940,7 @@ async def test_grpc_stream_default_ignores_request_body_idle_timeout() -> None:
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
 
-    config = Config(port=0, timeout_request_body_idle=0.05)
+    config = Config(port=0, grpc=True, timeout_request_body_idle=0.05)
     async with running_server(app, config) as server:
         reader, writer, conn, authority = await open_h2_connection(
             port=server_port(server)
@@ -1882,40 +1974,47 @@ async def test_grpc_stream_default_ignores_request_body_idle_timeout() -> None:
         conn.send_data(ordinary_stream, b'a', end_stream=False)
         writer.write(conn.data_to_send())
         await writer.drain()
-        await asyncio.sleep(0.15)
-
-        conn.send_data(grpc_stream, b'b', end_stream=True)
-        writer.write(conn.data_to_send())
-        await writer.drain()
 
         resets: dict[int, int] = {}
         completed: set[int] = set()
         statuses: dict[int, int] = {}
+
+        async def receive_events() -> None:
+            data = await asyncio.wait_for(reader.read(65535), timeout=5)
+            assert data
+            for event in conn.receive_data(data):
+                if isinstance(event, h2.events.StreamReset):
+                    resets[event.stream_id] = int(event.error_code)
+                elif isinstance(event, h2.events.ResponseReceived):
+                    statuses[event.stream_id] = int(dict(event.headers)[b':status'])
+                elif isinstance(event, h2.events.StreamEnded):
+                    completed.add(event.stream_id)
+                elif isinstance(event, h2.events.DataReceived):
+                    conn.acknowledge_received_data(
+                        event.flow_controlled_length,
+                        event.stream_id,
+                    )
+            pending = conn.data_to_send()
+            if pending:
+                writer.write(pending)
+                await writer.drain()
+
         try:
-            while ordinary_stream not in resets or grpc_stream not in completed:
-                data = await asyncio.wait_for(reader.read(65535), timeout=5)
-                assert data
-                for event in conn.receive_data(data):
-                    if isinstance(event, h2.events.StreamReset):
-                        resets[event.stream_id] = int(event.error_code)
-                    elif isinstance(event, h2.events.ResponseReceived):
-                        statuses[event.stream_id] = int(dict(event.headers)[b':status'])
-                    elif isinstance(event, h2.events.StreamEnded):
-                        completed.add(event.stream_id)
-                    elif isinstance(event, h2.events.DataReceived):
-                        conn.acknowledge_received_data(
-                            event.flow_controlled_length,
-                            event.stream_id,
-                        )
-                pending = conn.data_to_send()
-                if pending:
-                    writer.write(pending)
-                    await writer.drain()
+            while ordinary_stream not in resets:
+                await receive_events()
+            assert resets[ordinary_stream] == int(h2.errors.ErrorCodes.CANCEL)
+            assert grpc_stream not in resets
+
+            conn.send_data(grpc_stream, b'b', end_stream=True)
+            writer.write(conn.data_to_send())
+            await writer.drain()
+
+            while grpc_stream not in completed and grpc_stream not in resets:
+                await receive_events()
         finally:
             writer.close()
             await writer.wait_closed()
 
-    assert resets[ordinary_stream] == int(h2.errors.ErrorCodes.CANCEL)
     assert grpc_stream not in resets
     assert statuses[grpc_stream] == 204
     assert received == [b'ab']
@@ -1943,6 +2042,7 @@ async def test_request_policy_owns_initial_and_refreshed_body_idle_deadlines() -
 
     config = Config(
         port=0,
+        grpc=True,
         timeout_request_body_idle=0.12,
         request_policies=(
             RequestPolicy(

@@ -136,6 +136,7 @@ _FLOAT_FIELDS: tuple[str, ...] = (
 _BOOL_FIELDS: tuple[str, ...] = (
     'reuse_port',
     'http1',
+    'grpc',
     'access_log',
     'websocket_per_message_deflate',
     'proxy_headers',
@@ -351,6 +352,7 @@ max_requests = 11
 max_requests_jitter = 3
 timeout_worker_healthcheck = 4.5
 http1 = false
+grpc = true
 lifespan = "on"
 pid = "server.pid"
 certfile = "server.crt"
@@ -396,6 +398,7 @@ h2_timeout_response_stall = 4.25
     assert config.max_requests_jitter == 3
     assert config.timeout_worker_healthcheck == 4.5
     assert config.http1 is False
+    assert config.grpc is True
     assert config.pid == Path('server.pid')
     assert config.certfile == Path('server.crt')
     assert config.keyfile == Path('server.key')
@@ -554,6 +557,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_MAX_REQUESTS_JITTER', '2')
     monkeypatch.setenv('H2CORN_TIMEOUT_WORKER_HEALTHCHECK', '3.5')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
+    monkeypatch.setenv('H2CORN_GRPC', 'true')
     monkeypatch.setenv('H2CORN_PID', 'server.pid')
     monkeypatch.setenv('H2CORN_CERTFILE', 'server.crt')
     monkeypatch.setenv('H2CORN_KEYFILE', 'server.key')
@@ -602,6 +606,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.max_requests_jitter == 2
     assert config.timeout_worker_healthcheck == 3.5
     assert config.http1 is False
+    assert config.grpc is True
     assert config.pid == Path('server.pid')
     assert config.certfile == Path('server.crt')
     assert config.keyfile == Path('server.key')
@@ -643,6 +648,18 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.server_header == 'full'
     assert config.date_header is False
     assert config.response_headers == ('x-demo: one', 'x-extra: two')
+
+
+def test_grpc_admission_is_opt_in_across_configuration_sources() -> None:
+    assert Config().grpc is False
+    assert Config.from_mapping({'grpc': True}).grpc is True
+    assert Config.from_env({'H2CORN_GRPC': 'true'}).grpc is True
+
+    _cli, _import, enabled = parse_cli(['--grpc', 'example:app'], {})
+    _cli, _import, disabled = parse_cli(['--no-grpc', 'example:app'], {})
+
+    assert enabled.grpc is True
+    assert disabled.grpc is False
 
 
 def test_config_from_env_applies_explicit_empty_values(
@@ -884,6 +901,7 @@ def test_config_option_schema_has_unique_external_names() -> None:
 def test_config_defaults_follow_config_option_schema() -> None:
     config = Config()
 
+    assert config.grpc is False
     for option in config_options():
         assert getattr(config, option.name) == option.default
 

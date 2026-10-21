@@ -42,7 +42,7 @@ use crate::h2_frame::{
 use crate::hpack::DecoderError;
 use crate::http::body::RequestBodyProgress;
 use crate::http::policy::ResolvedRequestPolicy;
-use crate::http::types::{RequestHead, ResponseHeaders};
+use crate::http::types::{HttpStatusCode, RequestHead, ResponseHeaders};
 use crate::proxy_protocol::read_h2_preface;
 use crate::runtime::{ConnectionContext, ShutdownState, StreamInput};
 use crate::sendfile::WriteTarget;
@@ -588,8 +588,40 @@ where
     Ok(())
 }
 
+fn reject_request_head<W>(
+    ctx: &mut RequestStartContext<'_, W>,
+    stream_id: StreamId,
+    end_stream: bool,
+    content_length: Option<u64>,
+    status: HttpStatusCode,
+) -> Result<(), H2CornError>
+where
+    W: WriteTarget,
+{
+    ctx.spawn.streams.insert(
+        stream_id,
+        InboundStream::new(
+            None,
+            true,
+            end_stream,
+            content_length,
+            None,
+            ResolvedRequestPolicy::default(),
+            ctx.spawn
+                .connection
+                .config
+                .http2
+                .initial_stream_window_size
+                .get(),
+        ),
+    );
+    ctx.writer
+        .send_headers(stream_id, status, ResponseHeaders::new(), true)?;
+    Ok(())
+}
+
 fn start_request_stream_from_block<W>(
-    ctx: RequestStartContext<'_, W>,
+    mut ctx: RequestStartContext<'_, W>,
     stream_id: StreamId,
     end_stream: bool,
     decode_result: Result<RequestHead, RequestHeadError>,
@@ -600,26 +632,7 @@ where
     let request = match resolve_request_head(end_stream, decode_result) {
         Ok(request) => request,
         Err(RequestHeadError::Reject { status }) => {
-            ctx.spawn.streams.insert(
-                stream_id,
-                InboundStream::new(
-                    None,
-                    true,
-                    end_stream,
-                    None,
-                    None,
-                    ResolvedRequestPolicy::default(),
-                    ctx.spawn
-                        .connection
-                        .config
-                        .http2
-                        .initial_stream_window_size
-                        .get(),
-                ),
-            );
-            ctx.writer
-                .send_headers(stream_id, status, ResponseHeaders::new(), true)?;
-            return Ok(());
+            return reject_request_head(&mut ctx, stream_id, end_stream, None, status);
         },
         Err(RequestHeadError::Connection { error_code, error }) => {
             apply_peer_failure(
@@ -640,12 +653,24 @@ where
         },
     };
 
-    let policy = ctx
+    let policy = match ctx
         .spawn
         .connection
         .config
         .request_policies
-        .resolve(&request);
+        .resolve(&request)
+    {
+        Ok(policy) => policy,
+        Err(status) => {
+            return reject_request_head(
+                &mut ctx,
+                stream_id,
+                end_stream,
+                request.content_length(),
+                status,
+            );
+        },
+    };
     ctx.writer
         .register_stream(stream_id, policy.h2_timeout_response_stall);
     if let Some(rejected) = spawn_request_stream(

@@ -1705,46 +1705,102 @@ async def test_http1_request_policy_owns_body_idle_timeout() -> None:
     assert ordinary_eof == b''
 
 
-async def test_http1_connect_stream_defaults_exempt_body_limits() -> None:
-    async def app(scope, receive, send):
-        if scope['type'] == 'lifespan':
-            message = await receive()
-            await send({'type': f'{message["type"]}.complete'})
-            return
-        body = await read_http_request_body(receive)
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': body})
+async def test_http1_connect_stream_uses_the_global_body_cap() -> None:
+    async def app(_scope, _receive, _send):
+        raise AssertionError('oversized request should be rejected before the app')
 
     config = Config(
         port=0,
+        grpc=True,
         max_request_body_size=4,
         timeout_request_body_idle=0.05,
     )
+    request = (
+        b'POST /connect HTTP/1.1\r\n'
+        b'Host: localhost\r\n'
+        b'Content-Type: application/connect+proto\r\n'
+        b'Content-Length: 6\r\n'
+        b'Connection: close\r\n\r\n'
+        b'abcdef'
+    )
     async with running_server(app, config) as server:
-        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
-        try:
-            writer.write(
-                b'POST /connect HTTP/1.1\r\n'
-                b'Host: localhost\r\n'
-                b'Content-Type: application/connect+proto\r\n'
-                b'Content-Length: 6\r\n'
-                b'Connection: close\r\n\r\n'
-                b'abc'
-            )
-            await writer.drain()
-            await asyncio.sleep(0.15)
-            writer.write(b'def')
-            await writer.drain()
-            status, _headers, body, _trailers = await asyncio.wait_for(
-                read_http1_response(reader),
-                timeout=5,
-            )
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        status, headers, body, _trailers = await http1_request(
+            port=server_port(server),
+            request=request,
+        )
 
-    assert status == 200
-    assert body == b'abcdef'
+    assert status == 413
+    assert headers[b'connection'] == b'close'
+    assert body == b''
+
+
+async def test_http1_native_grpc_is_rejected_even_with_an_unlimited_path_policy() -> (
+    None
+):
+    async def app(_scope, _receive, _send):
+        raise AssertionError('disabled native gRPC should be rejected before the app')
+
+    config = Config(
+        port=0,
+        request_policies=(
+            RequestPolicy(
+                path='/rpc',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        status, headers, body, _trailers = await http1_request(
+            port=server_port(server),
+            request=(
+                b'POST /rpc HTTP/1.1\r\n'
+                b'Host: localhost\r\n'
+                b'Content-Type: application/grpc\r\n'
+                b'Content-Length: 0\r\n'
+                b'Connection: close\r\n\r\n'
+            ),
+        )
+
+    assert status == 415
+    assert headers[b'connection'] == b'close'
+    assert body == b''
+
+
+async def test_h2c_native_grpc_upgrade_is_rejected_before_switching_protocols() -> None:
+    async def app(_scope, _receive, _send):
+        raise AssertionError('disabled native gRPC should be rejected before the app')
+
+    config = Config(
+        port=0,
+        grpc=False,
+        request_policies=(
+            RequestPolicy(
+                path='/rpc',
+                max_request_body_size=0,
+                timeout_request_body_idle=0,
+                h2_timeout_response_stall=0,
+            ),
+        ),
+    )
+    async with running_server(app, config) as server:
+        status, headers, body, _trailers = await http1_request(
+            port=server_port(server),
+            request=(
+                b'POST /rpc HTTP/1.1\r\n'
+                b'Host: localhost\r\n'
+                b'Connection: Upgrade, HTTP2-Settings\r\n'
+                b'Upgrade: h2c\r\n'
+                b'HTTP2-Settings: AAMAAABk\r\n'
+                b'Content-Type: application/grpc\r\n'
+                b'Content-Length: 0\r\n\r\n'
+            ),
+        )
+
+    assert status == 415
+    assert b'upgrade' not in headers
+    assert body == b''
 
 
 async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_reparsed() -> (

@@ -19,6 +19,7 @@ pub(crate) mod status_code {
     pub(crate) const NOT_FOUND: HttpStatusCode = HttpStatusCode::constant(404);
     pub(crate) const PAYLOAD_TOO_LARGE: HttpStatusCode = HttpStatusCode::constant(413);
     pub(crate) const URI_TOO_LONG: HttpStatusCode = HttpStatusCode::constant(414);
+    pub(crate) const UNSUPPORTED_MEDIA_TYPE: HttpStatusCode = HttpStatusCode::constant(415);
     pub(crate) const UPGRADE_REQUIRED: HttpStatusCode = HttpStatusCode::constant(426);
     pub(crate) const REQUEST_HEADER_FIELDS_TOO_LARGE: HttpStatusCode =
         HttpStatusCode::constant(431);
@@ -43,6 +44,7 @@ macro_rules! common_status_codes {
             (NOT_FOUND, b"HTTP/1.1 404 Not Found\r\n", 0x8D),
             (PAYLOAD_TOO_LARGE, b"HTTP/1.1 413 Payload Too Large\r\n", 0),
             (URI_TOO_LONG, b"HTTP/1.1 414 URI Too Long\r\n", 0),
+            (UNSUPPORTED_MEDIA_TYPE, b"HTTP/1.1 415 Unsupported Media Type\r\n", 0),
             (UPGRADE_REQUIRED, b"HTTP/1.1 426 Upgrade Required\r\n", 0),
             (REQUEST_HEADER_FIELDS_TOO_LARGE, b"HTTP/1.1 431 Request Header Fields Too Large\r\n", 0),
             (INTERNAL_SERVER_ERROR, b"HTTP/1.1 500 Internal Server Error\r\n", 0x8E),
@@ -51,7 +53,6 @@ macro_rules! common_status_codes {
         }
     };
 }
-pub(crate) use common_status_codes;
 
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
@@ -1115,8 +1116,8 @@ impl RequestHead {
         self.header_meta.accepts_trailers()
     }
 
-    pub(crate) const fn is_rpc_stream(&self) -> bool {
-        self.header_meta.is_rpc_stream()
+    pub(crate) const fn is_grpc(&self) -> bool {
+        self.header_meta.is_grpc()
     }
 
     pub(crate) const fn content_length(&self) -> Option<u64> {
