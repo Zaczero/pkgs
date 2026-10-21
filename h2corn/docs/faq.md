@@ -94,7 +94,17 @@ each — it differs from Uvicorn, which reports several malformed values as
 
 ## Does `h2corn` support gRPC?
 
-No. h2corn has no gRPC dispatcher.
+h2corn has no gRPC dispatcher of its own; it serves the ASGI application you
+give it. Native gRPC requests, those with an `application/grpc` or
+`application/grpc+<subtype>` `Content-Type`, receive HTTP 415 Unsupported Media
+Type before reaching the application unless you enable
+[`grpc`](configuration.md#option-grpc) (`--grpc`, `H2CORN_GRPC=1`). Once
+enabled, these streams have no request-body size limit or body idle timeout
+unless a [request policy](configuration.md#option-request_policies) matches
+their path; HTTP/2 flow-control and write timeouts still apply. The setting
+controls protocol admission, not who may connect, so serve gRPC from a
+dedicated listener when only trusted clients should reach it. Connect and
+gRPC-Web requests are ordinary HTTP requests and need no setting.
 
 ## Where do I report bugs or request features?
 
