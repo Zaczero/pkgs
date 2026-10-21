@@ -60,23 +60,11 @@ impl RequestPolicies {
         &self,
         head: &RequestHead,
     ) -> Result<ResolvedRequestPolicy, HttpStatusCode> {
-        if self.rules.is_empty() {
-            if !head.is_grpc() {
-                return Ok(self.default);
-            }
-            if head.protocol_is_websocket() {
-                return Ok(self.default);
-            }
-            return if self.grpc_enabled {
-                Ok(self.grpc_stream_default())
-            } else {
-                Err(status_code::UNSUPPORTED_MEDIA_TYPE)
-            };
-        }
-        if head.protocol_is_websocket() {
+        let grpc = head.is_grpc();
+        if (!grpc && self.rules.is_empty()) || head.protocol_is_websocket() {
             return Ok(self.default);
         }
-        if head.is_grpc() && !self.grpc_enabled {
+        if grpc && !self.grpc_enabled {
             return Err(status_code::UNSUPPORTED_MEDIA_TYPE);
         }
         if let Some(path_and_query) = head.path_and_query() {
@@ -93,10 +81,11 @@ impl RequestPolicies {
                 return Ok(policy);
             }
         }
-        if head.is_grpc() {
-            return Ok(self.grpc_stream_default());
-        }
-        Ok(self.default)
+        Ok(if grpc {
+            self.grpc_stream_default()
+        } else {
+            self.default
+        })
     }
 
     const fn grpc_stream_default(&self) -> ResolvedRequestPolicy {
