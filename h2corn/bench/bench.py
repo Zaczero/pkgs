@@ -1740,4 +1740,10 @@ def main() -> int:
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    # Run the importable module rather than this `__main__` copy: sibling
+    # modules import `bench.bench`, and a second copy would define a distinct
+    # `TrialError`, so a competitor's failed cell would escape their handlers
+    # and abort the whole run instead of being recorded.
+    from bench.bench import main as package_main
+
+    raise SystemExit(package_main())
