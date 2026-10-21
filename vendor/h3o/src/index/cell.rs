@@ -1017,33 +1017,35 @@ impl CellIndex {
 
     /// Returns directed boundary edges and their canonical endpoint vertices.
     ///
-    /// Edges are ordered counterclockwise, starting at cell vertex zero.
+    /// Retained edges are ordered counterclockwise, starting at cell vertex zero.
+    /// Endpoint identities are resolved only for edges accepted by `keep`.
     #[doc(hidden)]
     // gometry: batch topological endpoints without neighboring vertex searches.
-    pub fn boundary_edges(self) -> impl Iterator<Item = (DirectedEdgeIndex, [VertexIndex; 2])> {
+    pub fn boundary_edges(
+        self,
+        mut keep: impl FnMut(DirectedEdgeIndex) -> bool,
+    ) -> impl Iterator<Item = (DirectedEdgeIndex, [VertexIndex; 2])> {
         let count = self.vertex_count();
         let rotations = self.vertex_rotations();
-        let first = self
-            .vertex_with_origin_rotation(Vertex::new_unchecked(0), Some(rotations))
-            .expect("cell vertex");
-        let mut vertices = [first; NUM_HEX_VERTS as usize];
-        for vertex in 1..count {
-            vertices[usize::from(vertex)] = self
-                .vertex_with_origin_rotation(Vertex::new_unchecked(vertex), Some(rotations))
-                .expect("cell vertex");
-        }
+        let mut vertices = [None; NUM_HEX_VERTS as usize];
         let is_pentagon = self.is_pentagon();
         let template = bits::set_mode(self.0.get(), IndexMode::DirectedEdge);
-        (0..count).map(move |start| {
+        (0..count).filter_map(move |start| {
             let vertex = Vertex::new_unchecked(start);
             let direction = vertex.to_direction(is_pentagon, rotations);
             let edge = Edge::from(direction);
             let index = DirectedEdgeIndex::new_unchecked(bits::set_edge(template, edge));
+            if !keep(index) {
+                return None;
+            }
             let end = (start + 1) % count;
-            (index, [
-                vertices[usize::from(start)],
-                vertices[usize::from(end)],
-            ])
+            let endpoints = [start, end].map(|vertex| {
+                *vertices[usize::from(vertex)].get_or_insert_with(|| {
+                    self.vertex_with_origin_rotation(Vertex::new_unchecked(vertex), Some(rotations))
+                        .expect("cell vertex")
+                })
+            });
+            Some((index, endpoints))
         })
     }
 

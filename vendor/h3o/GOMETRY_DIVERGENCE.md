@@ -20,7 +20,7 @@ them when updating h3o, or port the consuming certificate at the same time.
 | `src/coord/vec3d.rs` | shared `ONE_THIRD` use | Prevents a second substrate-scale literal from drifting from the raw projector. |
 | `src/coord/vec3d.rs`, `src/coord/faceijk.rs`, `src/coord/vec2d.rs` | unit-norm diagnostics | Allows accumulated transcendental, product, dot-product, and square-root rounding without changing coordinates or geometric decisions. All indexing consumers and unit-sphere tests use the same diagnostic allowance. |
 | `src/index/cell.rs` | `boundary_with_seeds`, target center | Native boundary and target-frame center carriers, neither represented by public rounded boundary/LatLng APIs. |
-| `src/index/cell.rs`, `src/index/vertex.rs` | `boundary_edges`, shared vertex-to-direction rotation | Emits directed edges with canonical endpoint IDs in boundary order, reusing one origin rotation across vertex lookup and edge ordering instead of searching neighboring vertex sets. |
+| `src/index/cell.rs`, `src/index/vertex.rs` | `boundary_edges`, shared vertex-to-direction rotation | Resolves requested directed edges and canonical endpoint IDs in boundary order, reusing one origin rotation across vertex lookup and edge ordering instead of searching neighboring vertex sets. |
 | `src/index/cell_tests.rs` | projected-boundary/profile/raw-carrier tests | Pins public ABI preservation and every raw-carrier ordering/identity invariant. |
 | `src/lib.rs` | hidden carrier re-exports | Makes the private carrier usable by gometry without widening ordinary h3o public APIs. |
 | `src/resolution.rs` | `ExtendedResolution::new_unchecked`, `From` | Preserves the native adjusted-resolution carrier without lossy conversion. |
