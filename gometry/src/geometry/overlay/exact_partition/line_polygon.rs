@@ -87,7 +87,7 @@ impl ExactSourceInventory {
         let partition = self.partition_with_budget(budget)?;
         let (spans, points) =
             self.select_line_polygon_cells(&partition, polygon, line_operand, operation)?;
-        let (topology, edges) = partition.local_topology()?;
+        let (topology, edges) = partition.selected_local_topology(&spans)?;
         let protected = self.ordinate_protected_nodes(&partition, axes)?;
         let plan = BoundaryPlan::from_non_areal_selection(
             &partition,

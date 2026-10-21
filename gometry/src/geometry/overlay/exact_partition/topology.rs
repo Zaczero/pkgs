@@ -69,18 +69,38 @@ impl ExactPartition<'_> {
         }
     }
 
+    pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
+        self.local_topology_for_spans(self.spans.len(), |edge| edge)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected span ordinals index the supplied selection from this partition"
+    )]
+    pub(super) fn selected_local_topology(
+        &self,
+        spans: &[u32],
+    ) -> Result<(IndexedTopology, Vec<u32>)> {
+        self.local_topology_for_spans(spans.len(), |edge| spans[edge] as usize)
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "NodeIds and edge IDs come from this partition; checked CSR degree prefixes bound every topology row and cursor"
     )]
-    pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
+    fn local_topology_for_spans(
+        &self,
+        span_count: usize,
+        span_at: impl Fn(usize) -> usize,
+    ) -> Result<(IndexedTopology, Vec<u32>)> {
         let vertices = self.node_count();
-        let slots = IndexedTopology::admit_counts(vertices, self.spans.len())?;
+        let slots = IndexedTopology::admit_counts(vertices, span_count)?;
         let mut topology = IndexedTopology::default();
         let vertex_capacity = vertices.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         topology.starts.reserve(vertex_capacity);
         topology.starts.resize(vertex_capacity, 0);
-        for span in &self.spans {
+        for edge in 0..span_count {
+            let span = self.spans[span_at(edge)];
             let start = span.start.0.wrapping_add(1) as usize;
             topology.starts[start] = topology.starts[start]
                 .checked_add(1)
@@ -100,7 +120,8 @@ impl ExactPartition<'_> {
         let mut cursor = Vec::with_capacity(vertices);
         cursor.extend(topology.starts.iter().take(vertices).copied());
         let mut edge_of_slot = vec![0; slots];
-        for (edge, span) in self.spans.iter().enumerate() {
+        for edge in 0..span_count {
+            let span = self.spans[span_at(edge)];
             for node in [span.start, span.end] {
                 let node = node.0 as usize;
                 edge_of_slot[cursor[node] as usize] = edge as u32;
@@ -113,14 +134,21 @@ impl ExactPartition<'_> {
             // angular origin.
             let row = &mut edge_of_slot[range];
             if let [left, right] = row {
-                if self.compare_departures(NodeId(node as u32), *left as usize, *right as usize)
-                    == Ordering::Greater
+                if self.compare_departures(
+                    NodeId(node as u32),
+                    span_at(*left as usize),
+                    span_at(*right as usize),
+                ) == Ordering::Greater
                 {
                     std::mem::swap(left, right);
                 }
             } else {
                 row.sort_unstable_by(|&left, &right| {
-                    self.compare_departures(NodeId(node as u32), left as usize, right as usize)
+                    self.compare_departures(
+                        NodeId(node as u32),
+                        span_at(left as usize),
+                        span_at(right as usize),
+                    )
                 });
             }
         }
@@ -128,7 +156,7 @@ impl ExactPartition<'_> {
         for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
             let range = start as usize..end as usize;
             for &edge in &edge_of_slot[range] {
-                let span = self.spans[edge as usize];
+                let span = self.spans[span_at(edge as usize)];
                 topology.targets.push(if span.start.0 == node as u32 {
                     span.end.0
                 } else {
@@ -147,8 +175,13 @@ impl ExactPartition<'_> {
         let mut scratch = IndexedTopologyScratch::default();
         scratch.component_stack.reserve(vertices);
         scratch.successor.reserve(slots);
-        scratch.first_slot.reserve(self.spans.len());
+        scratch.first_slot.reserve(span_count);
         topology.finish(&edge_of_slot, &mut scratch);
+        // Twin construction uses dense edge ordinals; consumers use the
+        // original partition span IDs, including gaps in a selection.
+        for edge in &mut edge_of_slot {
+            *edge = span_at(*edge as usize) as u32;
+        }
         Ok((topology, edge_of_slot))
     }
 
