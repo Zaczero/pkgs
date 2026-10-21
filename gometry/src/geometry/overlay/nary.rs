@@ -182,6 +182,15 @@ fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
                 ExactPartitionBudget::Charge,
             );
         }
+        if let Some(shape) = exact_cartesian_line_polygon_overlay(
+            left,
+            right,
+            op,
+            strictness,
+            ExactPartitionBudget::Charge,
+        )? {
+            return Ok(shape);
+        }
     }
     overlay_all_with_bounds_certificates_and_metric(geometries, &context, op, strictness, true)
 }
@@ -543,6 +552,84 @@ fn exact_cartesian_binary_puntal_overlay(
         partition_budget,
         &SourceArcContext::cartesian(),
     )
+}
+
+fn exact_cartesian_line_polygon_overlay(
+    left: &Shape,
+    right: &Shape,
+    operation: OverlayOp,
+    strictness: Strictness,
+    partition_budget: ExactPartitionBudget,
+) -> Result<Option<Shape>> {
+    let lineal = |shape: &Shape| {
+        matches!(
+            shape,
+            Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _)
+        )
+    };
+    let polygonal = |shape: &Shape| {
+        matches!(
+            shape,
+            Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
+        )
+    };
+    let admitted = match operation {
+        OverlayOp::Intersection => {
+            (lineal(left) && polygonal(right)) || (polygonal(left) && lineal(right))
+        },
+        OverlayOp::Difference => lineal(left) && polygonal(right),
+        OverlayOp::Union | OverlayOp::SymmetricDifference => false,
+    };
+    if !admitted {
+        return Ok(None);
+    }
+    let mut inputs = [left, right];
+    sort_overlay_inputs!(inputs, operation);
+    let [left, right] = inputs;
+    let (line_operand, line, polygon) = if lineal(left) {
+        (0, left, right)
+    } else {
+        (1, right, left)
+    };
+    if line.is_empty() || (operation == OverlayOp::Intersection && polygon.is_empty()) {
+        return Ok(Some(empty_nary_overlay_shape(&inputs, operation)));
+    }
+    if line
+        .bounds()
+        .zip(polygon.bounds())
+        .is_some_and(|(line, polygon)| !line.intersects(polygon))
+    {
+        return Ok(if operation == OverlayOp::Intersection {
+            Some(empty_nary_overlay_shape(&inputs, operation))
+        } else {
+            None
+        });
+    }
+    let inventory = ExactSourceInventory::from_shapes(&inputs)?;
+    let mut budget = match partition_budget {
+        ExactPartitionBudget::Charge => Some(crate::geometry::ExpansionBudget::new(
+            operation.name(),
+            "exact partition",
+        )),
+        ExactPartitionBudget::Ignore => None,
+    };
+    let shape = inventory.overlay_line_polygon(
+        polygon,
+        line_operand,
+        operation,
+        overlay_declared_axes(&inputs, operation),
+        strictness.is_strict(),
+        budget.as_mut(),
+    )?;
+    Ok(Some(if shape.is_empty() {
+        empty_nary_overlay_shape(&inputs, operation)
+    } else {
+        shape.normalize()?
+    }))
 }
 
 // Point support is a set within each operand. XOR counts those operand sets,
@@ -1114,6 +1201,15 @@ pub(in crate::geometry) fn binary_cartesian_difference_without_partition_budget(
             true,
             ExactPartitionBudget::Ignore,
         );
+    }
+    if let Some(shape) = exact_cartesian_line_polygon_overlay(
+        left,
+        right,
+        operation,
+        strictness,
+        ExactPartitionBudget::Ignore,
+    )? {
+        return Ok(shape);
     }
     exact_cartesian_overlay(
         inputs,

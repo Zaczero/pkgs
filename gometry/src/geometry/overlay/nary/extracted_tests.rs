@@ -430,6 +430,14 @@ fn line_polygon_overlays_match_full_partition_wkb() {
             square,
             test_line(&[(-1.0, 1.0), (1.0, -1.0)]),
         ),
+        (
+            "nonrectangular tangent vertex",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(-1.0, 1.0), (1.0, -1.0)]),
+        ),
     ];
     for (name, polygon, line) in cases {
         for (left, right) in [(&line, &polygon), (&polygon, &line)] {

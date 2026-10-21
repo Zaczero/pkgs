@@ -59,6 +59,7 @@ mod embedding;
 mod emission;
 mod incidence;
 mod ingress;
+mod line_polygon;
 mod linework;
 mod location;
 mod metric_support;

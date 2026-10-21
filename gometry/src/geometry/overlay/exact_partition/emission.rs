@@ -163,6 +163,108 @@ impl CoverageFaceState {
 impl BoundaryPlan {
     #[expect(
         clippy::indexing_slicing,
+        reason = "point source IDs and kept-node flags belong to the admitted partition"
+    )]
+    fn protected_nodes(
+        partition: &ExactPartition<'_>,
+        extra: Option<&[bool]>,
+    ) -> Result<Vec<bool>> {
+        if extra.is_some_and(|extra| extra.len() != partition.node_count()) {
+            return Err(GeometryErrorKind::Invalid(
+                "exact overlay protection does not match node count".into(),
+            )
+            .into());
+        }
+        let mut protected = Vec::with_capacity(partition.node_count());
+        protected.resize(partition.node_count(), false);
+        match &partition.kept_nodes {
+            KeptNodes::Selected => {},
+            KeptNodes::All => protected.fill(true),
+            KeptNodes::OffRings(on_ring) => {
+                for (protect, &on_ring) in protected.iter_mut().zip(on_ring) {
+                    *protect = !on_ring;
+                }
+            },
+        }
+        if let Some(extra) = extra {
+            for (protected, &extra) in protected.iter_mut().zip(extra) {
+                *protected |= extra;
+            }
+        }
+        for &node in &partition.point_nodes {
+            protected[node.0 as usize] = true;
+        }
+        for &(node, _) in &partition.point_sources {
+            protected[node.0 as usize] = true;
+        }
+        Ok(protected)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected span and node IDs come from the paired partition and local topology"
+    )]
+    pub(super) fn from_non_areal_selection(
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        spans: &[u32],
+        points: &[NodeId],
+        extra_protected: Option<&[bool]>,
+    ) -> Result<Self> {
+        let protected = Self::protected_nodes(partition, extra_protected)?;
+        let mut retained = vec![false; partition.spans.len()];
+        for &span in spans {
+            retained[span as usize] = true;
+        }
+        let mut source_darts = Vec::with_capacity(spans.len());
+        let lines = Self::line_chords(
+            partition,
+            topology,
+            edges,
+            spans.iter().copied(),
+            &mut source_darts,
+            |left, right| {
+                let node = topology.owners[right as usize] as usize;
+                !protected[node]
+                    && Self::can_join_selected_darts(
+                        partition, topology, edges, &retained, node, left, right,
+                    )
+            },
+            |_slot| [0, 0],
+        );
+        Ok(Self {
+            source_darts,
+            walks: Vec::new(),
+            lines,
+            points: points.iter().map(|&node| (node, 0)).collect(),
+            face_quotient: Vec::new(),
+        })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "dart, span, and node IDs address the same partition's admitted local topology"
+    )]
+    fn can_join_selected_darts(
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        retained: &[bool],
+        node: usize,
+        left: u32,
+        right: u32,
+    ) -> bool {
+        let row = topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
+        // A two-slot row has only the incoming twin and retained departure.
+        if row.len() != 2 && row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
+            return false;
+        }
+        source_darts_are_collinear(partition, edges, left, right)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
         reason = "node and dart IDs come from the checked partition and local topology"
     )]
     pub(super) fn from_non_areal_partition(
@@ -1338,14 +1440,6 @@ impl GlobalFaces {
         extra_protected: Option<&[bool]>,
         preserved_spans: Option<&[bool]>,
     ) -> Result<BoundaryPlan> {
-        if let Some(extra_protected) = extra_protected
-            && extra_protected.len() != partition.node_count()
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "exact overlay protection does not match node count".into(),
-            )
-            .into());
-        }
         if let Some(preserved_spans) = preserved_spans
             && preserved_spans.len() != partition.spans.len()
         {
@@ -1367,22 +1461,7 @@ impl GlobalFaces {
             }
         }
         let face_quotient = self.quotient(topology, edges, &retained);
-        let mut protected = Vec::with_capacity(partition.node_count());
-        protected.resize(partition.node_count(), false);
-        match &partition.kept_nodes {
-            KeptNodes::Selected => {},
-            KeptNodes::All => protected.fill(true),
-            KeptNodes::OffRings(on_ring) => {
-                for (protect, &on_ring) in protected.iter_mut().zip(on_ring) {
-                    *protect = !on_ring;
-                }
-            },
-        }
-        if let Some(extra_protected) = extra_protected {
-            for (protected, &extra) in protected.iter_mut().zip(extra_protected) {
-                *protected |= extra;
-            }
-        }
+        let mut protected = BoundaryPlan::protected_nodes(partition, extra_protected)?;
         if let Some(preserved_spans) = preserved_spans {
             for walk in &walks {
                 let Some((&first, remaining)) = walk.split_first() else {
@@ -1399,26 +1478,15 @@ impl GlobalFaces {
                 }
             }
         }
-        for &node in &partition.point_nodes {
-            protected[node.0 as usize] = true;
-        }
-        for &(node, _) in &partition.point_sources {
-            protected[node.0 as usize] = true;
-        }
         let sides = |slot: u32| {
             [slot, topology.twins[slot as usize]].map(|dart| {
                 face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
             })
         };
         let can_join_after_side_match = |node: usize, left: u32, right: u32| -> bool {
-            let row =
-                topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
-            // A two-slot row contains only the incoming twin and its distinct
-            // retained departure; there is no omitted branch in this row.
-            if row.len() != 2 && row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
-                return false;
-            }
-            source_darts_are_collinear(partition, edges, left, right)
+            BoundaryPlan::can_join_selected_darts(
+                partition, topology, edges, &retained, node, left, right,
+            )
         };
         let can_join = |left: u32, right: u32| -> bool {
             let node = topology.owners[right as usize] as usize;

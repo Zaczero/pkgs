@@ -520,7 +520,7 @@ impl ExactSourceInventory {
         )
     }
 
-    fn emit_overlay_plan<M: ChartMetric>(
+    pub(super) fn emit_overlay_plan<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,

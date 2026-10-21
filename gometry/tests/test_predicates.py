@@ -31,14 +31,21 @@ def test_outlying_hole_boundary_is_not_polygon_support() -> None:
 
 @pytest.mark.parametrize('reverse', [False, True], ids=['line-first', 'polygon-first'])
 @pytest.mark.parametrize('array', [False, True], ids=['scalar', 'nullable-array'])
+@pytest.mark.parametrize('ordinates', [False, True], ids=['XY', 'XYZM'])
 def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
-    reverse: bool, array: bool
+    reverse: bool, array: bool, ordinates: bool
 ) -> None:
-    source = gm.MultiLineString([
+    lines = [
         [(0, 0), (1.1999999999999993, 0.39999999999999974)],
         [(0.5, -1), (0.5, 0.16666666666666666)],
-    ])
-    polygon = gm.Polygon([(-1, -2), (1, -2), (1, 2), (-2, 3), (-1, -2)])
+    ]
+    shell = [(-1, -2), (1, -2), (1, 2), (-2, 3), (-1, -2)]
+    if ordinates:
+        source = gm.MultiLineString([[(x, y, x, y) for x, y in line] for line in lines])
+        polygon = gm.Polygon([(x, y, x, y) for x, y in shell])
+    else:
+        source = gm.MultiLineString(lines)
+        polygon = gm.Polygon(shell)
     tip = Fraction(0.16666666666666666)
     source_slope = Fraction(0.39999999999999974) / Fraction(1.1999999999999993)
     assert tip < source_slope / 2
@@ -59,12 +66,17 @@ def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
         )
     assert result is not None
     sloping, vertical = [list(part.coords) for part in result.parts]
-    np.testing.assert_array_equal(sloping[0], [0, 0])
-    np.testing.assert_array_equal(vertical, [[0.5, -1], [0.5, float(tip)]])
-    cut_x, cut_y = sloping[-1]
+    np.testing.assert_array_equal(sloping[0][:2], [0, 0])
+    np.testing.assert_array_equal(
+        [point[:2] for point in vertical], [[0.5, -1], [0.5, float(tip)]]
+    )
+    cut_x, cut_y, *payload = sloping[-1]
     assert cut_x == 1
     # At x=0.5 the published chord must remain above the other line's endpoint.
     assert Fraction(cut_y) / 2 > tip
+    if ordinates:
+        assert result.coordinate_axes == 'XYZM'
+        np.testing.assert_array_equal(payload, [1, float(2 * tip)])
 
 
 def test_polygon_planar_measurements_and_predicates() -> None:

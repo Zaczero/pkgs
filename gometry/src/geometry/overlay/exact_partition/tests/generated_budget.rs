@@ -103,3 +103,44 @@ fn intermediate_partition_can_run_after_the_output_budget_is_exhausted() {
     assert_eq!(partition.node_count(), 5);
     assert_eq!(partition.spans.len(), 4);
 }
+
+#[test]
+fn line_polygon_selection_preserves_charged_and_unbudgeted_partition_modes() {
+    use crate::geometry::OverlayOp;
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+    let line = crate::io::parse_wkt("LINESTRING (-1 1,3 1)").unwrap();
+    let polygon = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,1 3,0 2,0 0))").unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&line, &polygon]).unwrap();
+    let mut budget = ExpansionBudget::new("intersection", "exact partition");
+    budget.add(GENERATED_ITEM_LIMIT - 1).unwrap();
+    let error = inventory
+        .overlay_line_polygon(
+            &polygon,
+            0,
+            OverlayOp::Intersection,
+            CoordinateAxes::XY,
+            false,
+            Some(&mut budget),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge { .. })
+    ));
+    let output = inventory
+        .overlay_line_polygon(
+            &polygon,
+            0,
+            OverlayOp::Intersection,
+            CoordinateAxes::XY,
+            false,
+            None,
+        )
+        .unwrap();
+    let Shape::LineString(line) = output else {
+        panic!("the closed intersection is one line");
+    };
+    assert_eq!(line.xs(), &[0.0, 2.0]);
+    assert_eq!(line.ys(), &[1.0, 1.0]);
+}
