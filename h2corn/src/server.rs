@@ -26,7 +26,7 @@ mod tests {
 
 use std::collections::HashSet;
 use std::future::{pending, poll_fn};
-use std::io;
+use std::io::{self, IoSlice};
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::num::NonZeroU16;
 #[cfg(unix)]
@@ -142,6 +142,18 @@ impl AsyncWrite for PrefixedIo {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

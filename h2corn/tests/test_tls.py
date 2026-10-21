@@ -196,7 +196,10 @@ async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
     async def app(scope, receive, send):
         assert scope['type'] == 'http'
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': scope['scheme'].encode()})
+        await send({
+            'type': 'http.response.body',
+            'body': scope['scheme'].encode() * 16_384,
+        })
 
     config = Config(
         port=0,
@@ -238,7 +241,7 @@ async def test_tls_http2_alpn_round_trip(tmp_path: Path) -> None:
             await writer.wait_closed()
 
     assert status == 200
-    assert body == b'https'
+    assert body == b'https' * 16_384
 
 
 @pytest.mark.parametrize('encrypted', [False, True], ids=['h2c', 'tls'])

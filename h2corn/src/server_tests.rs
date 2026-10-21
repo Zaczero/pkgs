@@ -1,14 +1,26 @@
-use std::io;
+use std::future::poll_fn;
+use std::io::{self, IoSlice};
 use std::iter::repeat_with;
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixListener;
+use std::pin::Pin;
 use std::process::Command;
+use std::task::Poll;
+use std::time::Duration;
 
+use bytes::BytesMut;
 use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::io::{FdFlags, fcntl_getfd};
+use rustix::net::sockopt::{set_socket_recv_buffer_size, set_socket_send_buffer_size};
 use rustix::pipe::pipe;
+use tokio::io::{AsyncReadExt as _, AsyncWrite as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 
-use super::{ListenerFd, OwnFdsError, adopt_all, adopt_listeners, format_failure, own_serve_fds};
+use super::{
+    ListenerFd, OwnFdsError, PrefixedIo, adopt_all, adopt_listeners, format_failure, own_serve_fds,
+};
+use crate::async_util::write_all_vectored;
 use crate::config::BindTarget;
 use crate::error::H2CornError;
 
@@ -256,4 +268,94 @@ fn normal_connection_join_reports_panics_and_keeps_cancellation_silent() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.matches("connection task panicked:").count(), 1);
     assert!(stderr.contains("injected connection task panic"));
+}
+
+#[tokio::test]
+async fn prefixed_io_forwards_vectored_tcp_write_progress_and_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("loopback listener binds");
+    let writer_stream = TcpStream::connect(listener.local_addr().expect("listener has an address"))
+        .await
+        .expect("loopback connection opens");
+    let (mut peer, _) = listener
+        .accept()
+        .await
+        .expect("loopback connection is accepted");
+    set_socket_recv_buffer_size(&peer, 4_096).expect("peer accepts a small receive buffer");
+    set_socket_send_buffer_size(&writer_stream, 4_096).expect("socket accepts a small send buffer");
+    let mut writer = PrefixedIo::new(writer_stream, BytesMut::new());
+    assert!(writer.is_write_vectored());
+
+    let first = vec![b'a'];
+    let second = vec![b'b'; 128 * 1024];
+    let total = first.len() + second.len();
+    let mut slices = [IoSlice::new(&first), IoSlice::new(&second)];
+    let mut remaining_slices = slices.as_mut_slice();
+    let written = writer
+        .write_vectored(remaining_slices)
+        .await
+        .expect("first vectored write succeeds");
+    assert!(written > 0);
+    assert!(
+        written < total,
+        "the small socket buffer must limit this write"
+    );
+    assert!(
+        written > first.len(),
+        "one vectored write must cross into the second slice"
+    );
+    let mut total_written = written;
+    IoSlice::advance_slices(&mut remaining_slices, written);
+
+    while total_written < total {
+        match poll_fn(|cx| {
+            Poll::Ready(Pin::new(&mut writer).poll_write_vectored(cx, remaining_slices))
+        })
+        .await
+        {
+            Poll::Pending => break,
+            Poll::Ready(Ok(written)) => {
+                assert_ne!(written, 0, "a nonempty vector must make progress");
+                total_written += written;
+                IoSlice::advance_slices(&mut remaining_slices, written);
+            },
+            Poll::Ready(Err(error)) => panic!("vectored write failed: {error}"),
+        }
+    }
+    assert!(
+        total_written < total,
+        "the peer must stop TCP write progress"
+    );
+
+    let (resume_reader, wait_for_resume) = oneshot::channel();
+    let reader = tokio::spawn(async move {
+        wait_for_resume
+            .await
+            .expect("writer reaches its pending state");
+        let mut received = vec![0; total];
+        tokio::time::timeout(Duration::from_secs(5), peer.read_exact(&mut received))
+            .await
+            .expect("vectored output resumes")
+            .expect("peer receives the complete vector");
+        received
+    });
+    resume_reader.send(()).expect("reader is waiting");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        write_all_vectored(&mut writer, remaining_slices),
+    )
+    .await
+    .expect("writer resumes after peer reads")
+    .expect("remaining vector is written");
+    writer.shutdown().await.expect("write half shuts down");
+
+    let error = writer
+        .write_vectored(&[IoSlice::new(b"after shutdown")])
+        .await
+        .expect_err("writes after shutdown return the transport error");
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+
+    let received = reader.await.expect("reader task completes");
+    assert_eq!(received, [first, second].concat());
 }
