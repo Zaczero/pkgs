@@ -51,6 +51,14 @@ close, with no chunked transfer coding, no keep-alive by default, and no
 `100-continue`. HTTP/1.0 clients in front of `h2corn` require termination at
 the proxy.
 
+## Which HTTP/1.1 requests require a `Host` field?
+
+Every HTTP/1.1 request must include exactly one `Host` field, including
+absolute-form requests and `CONNECT`. An absolute-form target whose authority
+does not match `Host` receives `400 Bad Request`. A valid `CONNECT` request
+with `Host` receives `501 Not Implemented` because h2corn does not provide
+HTTP/1.1 tunnels.
+
 ## Does this work on Windows?
 
 Yes, but the full Unix-style worker supervisor does not. On Windows,

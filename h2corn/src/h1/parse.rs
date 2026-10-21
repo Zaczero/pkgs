@@ -548,7 +548,7 @@ fn parse_headers_or_reject(
 fn parsed_request_from_head(
     head: &Bytes,
     line: RequestLineParts<'_>,
-    mut header_state: HeaderParseState,
+    header_state: HeaderParseState,
     scheme: &'static str,
     request_policies: &RequestPolicies,
 ) -> Result<HeadParseOutcome<ParsedHead>, H2CornError> {
@@ -556,21 +556,17 @@ fn parsed_request_from_head(
     // Every way a target can fail to parse is the client's, and the framing is
     // intact by the time we get here, so each one is answerable with a status
     // rather than a dropped connection.
+    let Some(host_header_index) = header_state.host_header_index else {
+        return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
+    };
     let Ok(request_target) = parse_request_target(
         &line.method,
         line.target,
-        &mut header_state.headers,
-        header_state.host_header_index,
+        &header_state.headers,
+        host_header_index,
     ) else {
         return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
     };
-    if !matches!(
-        request_target,
-        ParsedRequestTarget::Absolute(_) | ParsedRequestTarget::Authority(_)
-    ) && header_state.host_header_index.is_none()
-    {
-        return Ok(HeadParseOutcome::Reject(status_code::BAD_REQUEST));
-    }
     let target = match request_target {
         // The authority is the whole target: `CONNECT` asks for a tunnel to it,
         // which the shared planner answers with 501 for both protocols.
@@ -1111,8 +1107,8 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
 fn parse_request_target<'a>(
     method: &Method,
     target: &'a [u8],
-    headers: &mut H1RequestHeaders,
-    host_header_index: Option<usize>,
+    headers: &H1RequestHeaders,
+    host_header_index: usize,
 ) -> Result<ParsedRequestTarget<'a>, H2CornError> {
     // `CONNECT` names a tunnel endpoint, never a resource: the other three
     // forms carry no authority to tunnel to, and admitting one would hand the
@@ -1161,8 +1157,7 @@ fn parse_request_target<'a>(
     {
         return Http1Error::InvalidAbsoluteFormTarget.err();
     }
-    if let Some(host_header_index) = host_header_index
-        && let Some(authority) = uri.authority()
+    if let Some(authority) = uri.authority()
         && !headers
             .get(host_header_index)
             .expect("recorded host index must exist")
@@ -1170,12 +1165,6 @@ fn parse_request_target<'a>(
             .eq_ignore_ascii_case(authority.as_str().as_bytes())
     {
         return Http1Error::ConflictingAbsoluteFormAuthority.err();
-    }
-    if host_header_index.is_none()
-        && let Some(authority) = uri.authority()
-        && !headers.push_synthetic(KnownRequestHeaderName::Host, authority.as_str().as_bytes())
-    {
-        return Http1Error::InvalidAbsoluteFormAuthority.err();
     }
     Ok(ParsedRequestTarget::Absolute(uri))
 }

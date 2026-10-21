@@ -361,8 +361,6 @@ pub(crate) enum Http1Error {
     InvalidAbsoluteFormTarget,
     #[error("HTTP/1.1 request target form is not allowed for this method")]
     InvalidRequestTargetForm,
-    #[error("invalid absolute-form authority")]
-    InvalidAbsoluteFormAuthority,
     #[error("invalid chunked request chunk size")]
     InvalidChunkSize,
     #[error("invalid HTTP2-Settings payload length")]
@@ -399,7 +397,6 @@ impl Http1Error {
             | Self::RequestTargetNotUtf8
             | Self::InvalidAbsoluteFormTarget
             | Self::InvalidRequestTargetForm
-            | Self::InvalidAbsoluteFormAuthority
             | Self::InvalidChunkSize
             | Self::InvalidHttp2SettingsPayloadLength
             | Self::InvalidHttp2SettingsBase64UrlPayload => FailureDomain::PeerProtocol,
@@ -1158,7 +1155,7 @@ mod tests {
             Http1Error::ChunkClosed, Http1Error::ChunkMissingCrlf, Http1Error::TrailerFieldTooLarge,
             Http1Error::TooManyTrailerFields, Http1Error::InvalidRequestLine, Http1Error::InvalidRequestMethod,
             Http1Error::RequestTargetNotUtf8, Http1Error::InvalidAbsoluteFormTarget,
-            Http1Error::InvalidRequestTargetForm, Http1Error::InvalidAbsoluteFormAuthority,
+            Http1Error::InvalidRequestTargetForm,
             Http1Error::InvalidChunkSize, Http1Error::InvalidHttp2SettingsPayloadLength,
             Http1Error::InvalidHttp2SettingsBase64UrlPayload,
         );

@@ -51,15 +51,14 @@ macro_rules! common_status_codes {
         }
     };
 }
+pub(crate) use common_status_codes;
 
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
 use std::str::Utf8Error;
 use std::{fmt, str};
 
-use bitflags::bitflags;
 use bytes::Bytes;
-pub(crate) use common_status_codes;
 use http::Method;
 use http::method::InvalidMethod;
 use pyo3::pybacked::PyBackedBytes;
@@ -740,17 +739,7 @@ struct H1RequestHeader {
     value_start: u32,
     value_end: u32,
     known_name: Option<KnownRequestHeaderName>,
-    sources: H1FieldSources,
-}
-
-bitflags! {
-    /// Which halves of a field were rewritten into the auxiliary buffer rather
-    /// than pointing into the original head.
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    pub(crate) struct H1FieldSources: u8 {
-        const NAME_AUXILIARY = 1 << 0;
-        const VALUE_AUXILIARY = 1 << 1;
-    }
+    name_auxiliary: bool,
 }
 
 impl Default for RequestHeaders {
@@ -851,35 +840,9 @@ impl H1RequestHeaders {
             value_start,
             value_end,
             known_name,
-            sources: if name_auxiliary {
-                H1FieldSources::NAME_AUXILIARY
-            } else {
-                H1FieldSources::empty()
-            },
+            name_auxiliary,
         });
         Ok(known_name)
-    }
-
-    pub(crate) fn push_synthetic(&mut self, name: KnownRequestHeaderName, value: &[u8]) -> bool {
-        if !header_value_is_valid(value) {
-            return false;
-        }
-        let Ok(value_start) = u32::try_from(self.auxiliary.len()) else {
-            return false;
-        };
-        self.auxiliary.extend_from_slice(value);
-        let Ok(value_end) = u32::try_from(self.auxiliary.len()) else {
-            return false;
-        };
-        self.fields.push(H1RequestHeader {
-            name_start: 0,
-            name_end: 0,
-            value_start,
-            value_end,
-            known_name: Some(name),
-            sources: H1FieldSources::VALUE_AUXILIARY,
-        });
-        true
     }
 
     pub(crate) fn get(&self, index: usize) -> Option<RequestHeaderRef<'_>> {
@@ -889,7 +852,7 @@ impl H1RequestHeaders {
     fn view(&self, field: H1RequestHeader) -> RequestHeaderRef<'_> {
         let name = field.known_name.map_or_else(
             || {
-                let source = if field.sources.contains(H1FieldSources::NAME_AUXILIARY) {
+                let source = if field.name_auxiliary {
                     self.auxiliary.as_slice()
                 } else {
                     self.head.as_ref()
@@ -903,14 +866,10 @@ impl H1RequestHeaders {
             },
             RequestHeaderNameRef::Known,
         );
-        let value_source = if field.sources.contains(H1FieldSources::VALUE_AUXILIARY) {
-            self.auxiliary.as_slice()
-        } else {
-            self.head.as_ref()
-        };
         RequestHeaderRef {
             name,
-            value: value_source
+            value: self
+                .head
                 .get(field.value_start as usize..field.value_end as usize)
                 .unwrap_or_default(),
         }
@@ -1475,22 +1434,6 @@ mod tests {
         malformed
             .push(&malformed_head[..5], &malformed_head[7..])
             .unwrap_err();
-    }
-
-    #[test]
-    fn h1_synthetic_header_uses_auxiliary_arena_without_changing_order() {
-        let head = Bytes::from_static(b"x: one");
-        let mut headers = H1RequestHeaders::new(head.clone());
-        headers.push(&head[..1], &head[3..]).unwrap();
-        assert!(headers.push_synthetic(KnownRequestHeaderName::Host, b"example.com"));
-        let headers = RequestHeaders::from_h1(headers);
-
-        assert_eq!(headers.get(0).unwrap().value(), b"one");
-        assert_eq!(headers.get(1).unwrap().value(), b"example.com");
-        assert_eq!(
-            headers.get(1).unwrap().name(),
-            RequestHeaderNameRef::Known(KnownRequestHeaderName::Host)
-        );
     }
 
     #[rstest::rstest]

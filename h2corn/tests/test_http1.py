@@ -66,7 +66,10 @@ async def test_http1_absolute_form_preserves_cleartext_scheme() -> None:
         status, headers, body, trailers = await asyncio.wait_for(
             http1_request(
                 port=server_port(server),
-                request=b'GET https://example.com/absolute?x=1 HTTP/1.1\r\n\r\n',
+                request=(
+                    b'GET https://example.com/absolute?x=1 HTTP/1.1\r\n'
+                    b'Host: example.com\r\n\r\n'
+                ),
             ),
             timeout=5,
         )
@@ -173,13 +176,19 @@ async def test_http1_response_defaults_apply_to_normal_app_responses() -> None:
         ),
         (b'OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n', 200, ('OPTIONS', '*')),
         (
-            b'GET http://example.com/absolute HTTP/1.1\r\n\r\n',
+            b'GET http://example.com/absolute HTTP/1.1\r\nHost: example.com\r\n\r\n',
             200,
             ('GET', '/absolute'),
         ),
+        (b'GET http://example.com/absolute HTTP/1.1\r\n\r\n', 400, None),
         # A tunnel is not something an ASGI application can be handed.  It
         # must still be a syntactically complete host:port authority.
-        (b'CONNECT example.com:443 HTTP/1.1\r\n\r\n', 501, None),
+        (
+            b'CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n',
+            501,
+            None,
+        ),
+        (b'CONNECT example.com:443 HTTP/1.1\r\n\r\n', 400, None),
         (b'CONNECT example.com HTTP/1.1\r\n\r\n', 400, None),
         # Form/method mismatches, relative targets, fragments, missing Host,
         # and conflicting authorities are all rejected before dispatch.
