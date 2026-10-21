@@ -23,8 +23,12 @@ from bench._core import (
     ResponseError,
     Scenario,
     deadline_bound,
+    ensure_large_upload_payload,
+    ensure_static_file_payload,
+    terminate_process_tree,
     write_json,
 )
+from bench.evidence import run_identity
 from bench.sampling import (
     BASE_PRODUCTION_BLOCKS,
     CALIBRATION_WINDOWS_SECONDS,
@@ -173,13 +177,13 @@ def _prepare_http_profiles(
     servers: Sequence[str],
     wheel: Path | None,
 ) -> list[ProfileRun]:
-    http.ensure_static_file_payload()
+    ensure_static_file_payload()
     if any(
         scenario.type == 'h2_upload'
         for cases in scenarios.values()
         for scenario in cases
     ):
-        http.ensure_large_upload_payload()
+        ensure_large_upload_payload()
     required_tools = {'oha'}
     if any(scenario.type == 'ws' for cases in scenarios.values() for scenario in cases):
         required_tools.add('k6')
@@ -187,7 +191,7 @@ def _prepare_http_profiles(
         if shutil.which(tool) is None:
             raise BenchmarkError(f'{tool} is required but not installed')
 
-    identity = http.run_identity(
+    identity = run_identity(
         Path(http.__file__).resolve().parents[2],
         wheel,
     )
@@ -842,7 +846,7 @@ def _run_rtt50_phase(
             timeout=max(0.001, work_deadline - time.monotonic())
         )
     except BaseException as error:
-        terminated = http.terminate_process_tree(
+        terminated = terminate_process_tree(
             process,
             timeout=CLEANUP_RESERVE_SECONDS,
         )
