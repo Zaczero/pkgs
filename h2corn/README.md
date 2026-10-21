@@ -21,6 +21,7 @@
 <p align="center">
   <a href="https://h2corn.monicz.dev/">Documentation</a> ·
   <a href="https://h2corn.monicz.dev/quickstart/">Quickstart</a> ·
+  <a href="https://h2corn.monicz.dev/grpc/">gRPC and Connect</a> ·
   <a href="https://h2corn.monicz.dev/configuration/">Configuration</a> ·
   <a href="https://h2corn.monicz.dev/benchmarks/">Benchmarks</a>
 </p>
@@ -77,7 +78,9 @@ WebSocket upgrades; HTTP/2 WebSockets require RFC 8441 support along the route.
 
 h2corn serves ASGI applications on Python 3.11+, including free-threaded
 CPython. Linux and macOS support the multi-worker supervisor; Windows runs a
-single worker. It is not a gRPC server.
+single worker. It can host Connect, native gRPC, and gRPC-Web through ASGI
+applications; your RPC framework owns service routing and RPC semantics. See
+the [gRPC and Connect guide](https://h2corn.monicz.dev/grpc/).
 
 Moving an existing deployment? See the
 [migration guide](https://h2corn.monicz.dev/migrating/) for commands and changed defaults.

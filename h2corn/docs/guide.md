@@ -30,5 +30,7 @@ description: Deploy an ASGI application, manage workers and shutdown, use WebSoc
   transport requirements.
 - [ASGI support](asgi.md) — file sending, lifespan state, extensions, and
   errors from `send()`.
+- [gRPC and Connect](grpc.md) — host generated RPC applications and configure
+  native gRPC admission.
 - [Python API](api/index.md) — `Config`, `Server`, `serve`, and typed ASGI
   messages.

@@ -348,6 +348,18 @@ def check_examples() -> None:
         raise AssertionError(
             f'embedded example did not prove its request: {result.stdout!r}'
         )
+    grpc_result = subprocess.run(
+        [sys.executable, '-m', 'examples.grpc.roundtrip'],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if 'native gRPC response: Welcome' not in grpc_result.stdout:
+        raise AssertionError(
+            f'native gRPC example did not prove its request: {grpc_result.stdout!r}'
+        )
 
 
 def check_proxy_syntax() -> bool:

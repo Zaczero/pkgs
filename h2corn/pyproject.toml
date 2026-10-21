@@ -60,6 +60,8 @@ uvloop = [
 [dependency-groups]
 dev = [
   { include-group = "freethreaded" },
+  "asgi-lifespan>=2.1.0",
+  "connectrpc>=0.12.1",
   "markdownify>=1",
   "matplotlib>=3.10.8",
   "mkdocs-gen-files>=0.5",
@@ -95,6 +97,7 @@ freethreaded = [
 grpc-interop = [
   "asgi-lifespan>=2.1.0",
   "buf-bin>=1.72.0",
+  "connectrpc>=0.12.1",
   "grpcio>=1.83.1",
   "grpclib>=0.4.9",
   "protoc-gen-connectrpc>=0.12.1",

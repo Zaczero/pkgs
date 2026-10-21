@@ -167,6 +167,7 @@ nav:
     - Migrating: migrating.md
   - Guide:
     - Guide overview: guide.md
+    - gRPC and Connect: grpc.md
     - Behind a reverse proxy: deployment/proxy.md
     - Direct TLS: deployment/tls.md
     - Operations: deployment/operations.md

@@ -47,10 +47,11 @@ on standard asyncio, with pure-Python HTTP/1.1 parsers for Uvicorn and Gunicorn.
 
     ---
 
-    HTTP framing, TLS, and stream multiplexing run in Rust. ASGI request
-    handling remains in Python.
+    HTTP framing, TLS, and stream multiplexing run in Rust. Connect, native
+    gRPC, and gRPC-Web applications use the same ASGI boundary.
 
-    [:octicons-arrow-right-24: ASGI support](asgi.md)
+    [:octicons-arrow-right-24: ASGI support](asgi.md) ·
+    [gRPC and Connect](grpc.md)
 
 -   :material-shield-lock:{ .lg .middle } **HTTP/2 end to end**
 

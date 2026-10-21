@@ -7,6 +7,8 @@ description: The ASGI surface h2corn presents to an application — advertised e
 `h2corn` implements [ASGI 3](https://asgi.readthedocs.io/en/latest/specs/main.html).
 Server-specific behavior is its advertised extensions, file-send paths, and
 the exceptions raised by invalid `await send(...)` messages.
+Connect-generated applications can serve native gRPC, Connect, and gRPC-Web
+through this same boundary; see [gRPC and Connect](grpc.md).
 
 ## Extensions
 
