@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     _AsyncClientT = TypeVar('_AsyncClientT', bound=AsyncClient)
 
-__version__ = '1.3.0'
+__version__ = '2.0.0'
 
 _NAT64_WELL_KNOWN_PREFIX = IPv6Network('64:ff9b::/96')
 

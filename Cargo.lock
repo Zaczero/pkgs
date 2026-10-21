@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "blurhash_rs"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "arrayvec",
  "pyo3",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "lrucache_rs"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "hashbrown",
  "parking_lot",
@@ -1032,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "osm_shortlink"
-version = "1.4.1"
+version = "2.0.0"
 dependencies = [
  "pyo3",
  "thiserror",
@@ -1098,7 +1098,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "polyline_rs"
-version = "1.5.0"
+version = "2.0.0"
 dependencies = [
  "pyo3",
  "thiserror",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "totp_rs"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "hmac",
  "pyo3",
@@ -1893,7 +1893,7 @@ checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zid"
-version = "1.5.0"
+version = "2.0.0"
 dependencies = [
  "pyo3",
  "rstest",
