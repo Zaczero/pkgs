@@ -65,6 +65,7 @@ fn exterior_outline(
 ) -> Result<Option<Vec<CoordSeq>>, CellArrayError> {
     let mut coordinates = CanonicalCoordinates::new(0);
     let mut outline = Vec::with_capacity(cells.as_slice().len().saturating_mul(2));
+    let mut points = Vec::with_capacity(4);
     for &cell in cells.as_slice() {
         let exterior: Vec<_> = cell
             .edges()
@@ -74,7 +75,7 @@ fn exterior_outline(
             continue;
         }
         for (index, vertices) in cell.boundary_edges(|index| exterior.contains(&index)) {
-            let mut points = Vec::with_capacity(4);
+            points.clear();
             DissolveEdge { index, vertices }.append(&mut points, &mut coordinates)?;
             let segment = CoordSeq::try_from_xy(&points)?;
             if coordseq_crosses_lon_seam(&segment) {
