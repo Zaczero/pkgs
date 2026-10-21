@@ -6,24 +6,19 @@ hide:
 
 # Benchmarks
 
-**h2corn delivered 11–29× higher throughput** in the one-worker HTTP/1.1 GET
+**h2corn delivered 10–31× higher throughput** in the one-worker HTTP/1.1 GET
 comparison, using standard asyncio and pure-Python parsers for Uvicorn and Gunicorn.
 
 These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
 same Starlette application, over loopback and a 50 ms round-trip network profile.
 Results cover throughput, latency, and memory.
 
-**Connect on h2corn delivered 1.1–2.8× the throughput of grpc.aio** in seven
-of eight gRPC workloads; client-streaming upload was a statistical tie.
+**Connect on h2corn delivered 1.2–2.8× the throughput of grpc.aio** in seven
+of eight gRPC workloads; grpc.aio was about 1% faster at client-streaming upload.
 These results compare Connect hosted by h2corn and Hypercorn, grpc.aio, and a
 selected grpclib subset, using common Python handlers and protobuf codecs over
 direct loopback HTTP/2. They measure these complete stacks, not the host
 server in isolation.
-
-The figures and raw records currently shown are the previous published
-collection. The adaptive sampling procedure below describes the current
-benchmark runner; those measurements will be replaced only after a complete
-combined run passes its publication checks.
 
 --8<-- "bench/results/_generated/benchmark-results.md"
 
@@ -99,6 +94,9 @@ retain the commands, observations, and identities behind the figures.
 - GET over Unix domain sockets.
 - A 128 KiB Starlette `FileResponse`, using the ASGI
   [`http.response.pathsend`](asgi.md#sending-a-file) extension where supported.
+  Gunicorn 26.2.0 stops answering file responses on a reused HTTP/1.1
+  connection: its first connection serves two and each later connection one.
+  Its static-file cells are therefore reported as failed.
 - Streaming downloads that yield eight 16 KiB chunks.
 - POSTs that upload 1 KiB, then receive three response chunks with 20 ms of
   application delay.
@@ -124,12 +122,6 @@ response, message count, and final gRPC status; invalid or unfinished work is
 retained as a failure rather than credited as throughput.
 
 The Go client uses a common `GOMAXPROCS=16` for every stack and row.
-Download sensitivity controls found that a budget of two constrained the
-generator. Increasing eight to sixteen gave paired median throughput ratios
-of 1.010 for h2corn and 1.043 for grpc.aio; these three-index controls are
-diagnostic, not publication uncertainty. The published collection uses only
-the sixteen-processor budget. This removes the observed low-budget
-constraint without establishing unconstrained server capacity.
 
 Bars show median rates; dots and whiskers show individual production blocks
 and their observed range. These intervals describe this host and workload,
@@ -170,4 +162,4 @@ that these error paths conform.
 
 The [gRPC records, plots, and evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/grpc)
 retain artifact identities, trial commands, verified counts, process
-measurements, qualification outcomes, and client-budget controls.
+measurements, and qualification outcomes.

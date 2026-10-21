@@ -1,0 +1,76 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 4.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "HTTP/2 Portable streaming download (4 Workers, 50 ms RTT)",
+  "servers": {
+    "h2corn": {
+      "elapsed_seconds": 11.072829751065001,
+      "selected_duration_seconds": 4.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 278,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5207358110928908,
+          "rate": 553.7490058611822
+        },
+        {
+          "completed": 676,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0207617399282753,
+          "rate": 673.8879744381929
+        },
+        {
+          "completed": 1503,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0185844850493595,
+          "rate": 750.5867412214072
+        },
+        {
+          "completed": 2988,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.0202684151008725,
+          "rate": 746.2623083277178
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 6.3725685509853065,
+      "selected_duration_seconds": 2.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 279,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5207993369549513,
+          "rate": 554.0371198555472
+        },
+        {
+          "completed": 746,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0190339779946953,
+          "rate": 743.7772551429817
+        },
+        {
+          "completed": 1436,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0191286019980907,
+          "rate": 717.1630656822074
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "hypercorn"
+  ],
+  "unsupported_servers": {
+    "gunicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode.",
+    "uvicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode."
+  }
+}

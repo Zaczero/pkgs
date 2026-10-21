@@ -1,0 +1,58 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 1.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "HTTP/2 GET (1 Worker)",
+  "servers": {
+    "h2corn": {
+      "elapsed_seconds": 1.778246638015844,
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 52799,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5286835270235315,
+          "rate": 104904.2057546296
+        },
+        {
+          "completed": 111928,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0476608730386943,
+          "rate": 111599.84534196544
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 1.780506266048178,
+      "selected_duration_seconds": 1.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 1311,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5171448660548776,
+          "rate": 2600.642370170944
+        },
+        {
+          "completed": 2821,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.018206967972219,
+          "rate": 2806.6655925988907
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "hypercorn"
+  ],
+  "unsupported_servers": {
+    "gunicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode.",
+    "uvicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode."
+  }
+}

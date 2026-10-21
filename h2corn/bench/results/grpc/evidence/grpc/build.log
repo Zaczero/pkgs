@@ -1,0 +1,92 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.15 at /tmp/opencode/h2corn-release799/venv/bin/python
+🔗 Found pyo3 bindings
+📡 Using build options bindings from pyproject.toml
+build-offload: compute is fetching 3270 build runtime store paths
+build-offload: transferring inputs to compute (10s elapsed); "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu": 0.2 MiB transferred; "/home/user/Source/pkgs.worktrees/release799-h2corn": 1.4 MiB transferred; "/tmp/opencode/h2corn-release799/venv": 1.9 MiB transferred
+build-offload: transferring inputs to compute (40s elapsed); "/home/user/Source/pkgs.worktrees/release799-h2corn": 239.2 MiB transferred; "build runtime": 108.6 MiB transferred
+build-offload: transferring inputs to compute (1m10s elapsed); "build runtime": 583.7 MiB transferred
+build-offload: transferring inputs to compute (1m40s elapsed); "build runtime": 643.2 MiB transferred
+build-offload: transferring inputs to compute (2m10s elapsed); "build runtime": 946.1 MiB transferred
+build-offload: transferring inputs to compute (2m40s elapsed); "build runtime": 1315.9 MiB transferred
+build-offload: remote inputs ready after 2m45s
+   Compiling libc v0.2.191
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling target-lexicon v0.13.5
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling zeroize v1.9.1
+   Compiling aws-lc-rs v1.18.2
+   Compiling parking_lot_core v0.9.12 (https://github.com/Amanieu/parking_lot?rev=94d1070a4eceb15002a6fc236556f6a2db50cc5a#94d1070a)
+   Compiling pyo3-macros-backend v0.30.1 (/home/user/Source/pkgs.worktrees/release799-h2corn/vendor/pyo3/pyo3-macros-backend)
+   Compiling cfg-if v1.0.5
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.16.3
+   Compiling base64ct v1.8.3
+   Compiling bytes v1.12.1
+   Compiling untrusted v0.9.0
+   Compiling heck v0.5.0
+   Compiling flagset v0.4.7
+   Compiling const-oid v0.10.2
+   Compiling rustls v0.23.46
+build-offload: waiting for compute: next in queue; CPU busy
+   Compiling lock_api v0.4.14
+   Compiling rustls-pki-types v1.15.1
+   Compiling pem-rfc7468 v1.0.0
+   Compiling once_cell v1.21.4
+   Compiling rustversion v1.0.23
+   Compiling pin-project-lite v0.2.17
+   Compiling zerocopy v0.8.63
+   Compiling subtle v2.6.1
+   Compiling rustix v1.1.5
+   Compiling thiserror v2.0.21
+   Compiling utf8parse v0.2.2
+   Compiling zlib-rs v0.6.8
+   Compiling colorchoice v1.0.5
+   Compiling bitflags v2.13.2
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling debug_unsafe v0.1.4
+   Compiling itoa v1.0.18
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling anstyle-parse v1.0.0
+   Compiling memchr v2.8.3
+   Compiling owo-colors v4.4.0
+   Compiling flate2 v1.1.10
+   Compiling http v1.5.0
+   Compiling anstream v1.0.0
+   Compiling pyo3-build-config v0.30.1 (/home/user/Source/pkgs.worktrees/release799-h2corn/vendor/pyo3/pyo3-build-config)
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling jobserver v0.1.35
+   Compiling pyo3-ffi v0.30.1 (/home/user/Source/pkgs.worktrees/release799-h2corn/vendor/pyo3/pyo3-ffi)
+   Compiling pyo3 v0.30.1 (/home/user/Source/pkgs.worktrees/release799-h2corn/vendor/pyo3/pyo3)
+   Compiling h2corn v2.0.0 (/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn)
+   Compiling syn v3.0.9
+   Compiling syn v2.0.119
+   Compiling cc v1.8.0
+   Compiling parking_lot v0.12.5
+   Compiling cmake v0.1.58
+   Compiling libmimalloc-sys v0.1.49
+   Compiling atoi_simd v0.18.1
+   Compiling der_derive v0.8.0
+   Compiling zerocopy-derive v0.8.63
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.21
+   Compiling aws-lc-sys v0.46.0
+   Compiling pyo3-macros v0.30.1 (/home/user/Source/pkgs.worktrees/release799-h2corn/vendor/pyo3/pyo3-macros)
+   Compiling der v0.8.2
+   Compiling tokio v1.53.3
+   Compiling spki v0.8.1
+   Compiling x509-cert v0.3.0
+   Compiling mimalloc v0.1.52
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 28s
+📦 Built wheel for CPython 3.15 to /tmp/opencode/h2corn-release799/wheels-corrected/h2corn-2.0.0-cp315-cp315-manylinux_2_38_x86_64.whl

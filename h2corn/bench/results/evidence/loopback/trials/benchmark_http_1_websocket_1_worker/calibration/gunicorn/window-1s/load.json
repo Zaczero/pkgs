@@ -1,0 +1,88 @@
+{
+  "metrics": {
+    "bench_echo_success": {
+      "fails": 0,
+      "passes": 4854,
+      "value": 1
+    },
+    "checks": {
+      "fails": 0,
+      "passes": 9708,
+      "value": 1
+    },
+    "data_received": {
+      "count": 760690,
+      "rate": 750638.0304844832
+    },
+    "data_sent": {
+      "count": 1095616,
+      "rate": 1081138.2250421164
+    },
+    "iteration_duration": {
+      "med": 17.025184000000003,
+      "p(90)": 19.65248399999999,
+      "p(95)": 22.59054,
+      "p(99)": 138.4029908
+    },
+    "iterations": {
+      "count": 4854,
+      "rate": 4789.857892139612
+    },
+    "vus": {
+      "max": 100,
+      "min": 100,
+      "value": 100
+    },
+    "vus_max": {
+      "max": 100,
+      "min": 100,
+      "value": 100
+    },
+    "ws_connecting": {
+      "med": 11.326539499999999,
+      "p(90)": 13.93877,
+      "p(95)": 15.865710999999994,
+      "p(99)": 132.21190047000002
+    },
+    "ws_msgs_received": {
+      "count": 4854,
+      "rate": 4789.857892139612
+    },
+    "ws_msgs_sent": {
+      "count": 4854,
+      "rate": 4789.857892139612
+    },
+    "ws_session_duration": {
+      "med": 16.9734235,
+      "p(90)": 19.4846417,
+      "p(95)": 22.5423635,
+      "p(99)": 138.3102391
+    },
+    "ws_sessions": {
+      "count": 4854,
+      "rate": 4789.857892139612
+    }
+  },
+  "root_group": {
+    "checks": {
+      "first message exactly echoed nonce": {
+        "fails": 0,
+        "id": "ee0d5a85ec9f65361f03fdc8859e12ac",
+        "name": "first message exactly echoed nonce",
+        "passes": 4854,
+        "path": "::first message exactly echoed nonce"
+      },
+      "status is 101": {
+        "fails": 0,
+        "id": "b26b36ccbc717178372f638aae5b6111",
+        "name": "status is 101",
+        "passes": 4854,
+        "path": "::status is 101"
+      }
+    },
+    "groups": {},
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "name": "",
+    "path": ""
+  }
+}

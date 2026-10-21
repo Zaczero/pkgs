@@ -1,57 +1,55 @@
 {
   "aggregate": {
     "h2corn": {
-      "completed": 2327635.5,
+      "completed": 217730.0,
+      "elapsed_seconds": 1.5768054375075735,
       "latency_percentiles": {
-        "p50": 0.000415316,
-        "p75": 0.000509483,
-        "p90": 0.0006070245,
-        "p95": 0.0006723359999999999,
-        "p99": 0.000809278,
-        "p99.9": 0.001313875
+        "p50": 0.00044052399999999997,
+        "p75": 0.000532844,
+        "p90": 0.0006286045,
+        "p95": 0.000694795,
+        "p99": 0.0008211865,
+        "p99.9": 0.0011544135000000001
       },
-      "peak_memory_bytes": 112471040,
-      "rps": 232627.94671010255,
+      "peak_memory_bytes": 108988416,
+      "rps": 216980.10681863985,
       "rps_range": [
-        219941.29320608167,
-        237834.372719086
+        210121.89393448996,
+        218113.17931624173
       ],
       "rps_samples": [
-        227418.27611214737,
-        231220.63495212686,
-        222793.4965945534,
-        234035.25846807827,
-        237834.372719086,
-        219941.29320608167,
-        235464.9590757101,
-        237408.96795279748
+        217950.32798951797,
+        216783.40630358452,
+        210121.89393448996,
+        218113.17931624173,
+        212789.1104674378,
+        217176.8073336952
       ]
     },
     "hypercorn": {
-      "completed": 104780.5,
+      "completed": 10217.5,
+      "elapsed_seconds": 1.5199621745268814,
       "latency_percentiles": {
-        "p50": 0.009538097499999999,
-        "p75": 0.013983942,
-        "p90": 0.015996648500000002,
-        "p95": 0.0166163035,
-        "p99": 0.0193398605,
-        "p99.9": 0.0250426735
+        "p50": 0.009250188,
+        "p75": 0.014058306,
+        "p90": 0.0170659045,
+        "p95": 0.017580448499999998,
+        "p99": 0.020901879499999998,
+        "p99.9": 0.024248441000000003
       },
-      "peak_memory_bytes": 141756416,
-      "rps": 10475.519485290124,
+      "peak_memory_bytes": 130339840,
+      "rps": 10178.69270670899,
       "rps_range": [
-        9863.596470275537,
-        10937.608532339233
+        9841.756365361194,
+        10298.63472268739
       ],
       "rps_samples": [
-        10270.996417044593,
-        10558.66850108797,
-        9863.596470275537,
-        10549.631060206772,
-        10659.244293552254,
-        10255.290777354952,
-        10401.407910373477,
-        10937.608532339233
+        10134.501934166406,
+        10298.63472268739,
+        10192.796009168247,
+        10232.953505586747,
+        10164.58940424973,
+        9841.756365361194
       ]
     }
   },
@@ -103,284 +101,363 @@
         "h2corn",
         "hypercorn"
       ]
-    },
-    {
-      "block": 7,
-      "not_repeated_after_failure": [],
-      "order": [
-        "hypercorn",
-        "h2corn"
-      ]
-    },
-    {
-      "block": 8,
-      "not_repeated_after_failure": [],
-      "order": [
-        "h2corn",
-        "hypercorn"
-      ]
     }
   ],
-  "duration": "10s",
+  "calibration": {
+    "h2corn": {
+      "elapsed_seconds": 1.855797522002831,
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 110199,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5576152519788593,
+          "rate": 218972.87112533578
+        },
+        {
+          "completed": 215027,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.085031257942319,
+          "rate": 214196.1259447919
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 1.7952377429464832,
+      "selected_duration_seconds": 1.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 5247,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5203111739829183,
+          "rate": 10421.738065255275
+        },
+        {
+          "completed": 9756,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0223815239733085,
+          "rate": 9718.238433730598
+        }
+      ]
+    }
+  },
+  "calibration_limited": false,
+  "duration": "1s",
   "evidence": "../evidence/loopback/trials/benchmark_http_2_get_4_workers",
   "failures": {},
   "identity": "../evidence/loopback/identity.json",
   "load_plan": {
-    "duration": "10s",
+    "duration": "1s",
     "mode": "time-window",
-    "warmup_duration": "2s"
+    "warmup_duration": "0.25s"
   },
   "measured_rtt_ms": null,
   "network_profile": "loopback",
   "package_versions": {
-    "gunicorn": "25.1.0",
+    "gunicorn": "26.2.0",
     "h11": "0.16.0",
     "h2": "4.4.1",
-    "h2corn": "1.5.1",
+    "h2corn": "2.0.0",
     "hypercorn": "0.18.0",
     "starlette": "1.9.0",
-    "uvicorn": "0.52.4",
+    "uvicorn": "0.54.0",
     "websockets": "17.3"
   },
   "paired_contrasts": {
     "hypercorn": {
+      "achieved_coverage": 0.96875,
+      "block_ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
       "block_ratios": [
-        22.14179295542831,
-        21.89865463891605,
-        22.58745045642867,
-        22.18421261676721,
-        22.312498538282995,
-        21.446616968847078,
-        22.637796835260872,
-        21.70574739906354
+        21.505775952811543,
+        21.04972281675563,
+        20.614745330475454,
+        21.314782598900837,
+        20.934353765285636,
+        22.066874983622377
       ],
-      "h2corn_over_competitor": 22.16300278609776,
-      "interval_95": [
-        21.70574739906354,
-        22.58745045642867
+      "decision": "slower",
+      "h2corn_over_competitor": 21.182252707828233,
+      "interval": [
+        20.614745330475454,
+        22.066874983622377
       ],
-      "method": "percentile bootstrap of paired-block median rate ratios"
+      "lower_order": 1,
+      "method": "distribution-free order-statistic interval for the common median; independent paired blocks",
+      "sample_size": 6,
+      "upper_order": 6
     }
   },
-  "planned_trials": 8,
+  "planned_trials": 6,
+  "production_started_elapsed_seconds": 633.5669125770219,
   "requested_servers": [
     "h2corn",
     "uvicorn",
     "hypercorn",
     "gunicorn"
   ],
+  "sample_blocks": {
+    "h2corn": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hypercorn": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
   "samples": {
     "h2corn": [
       {
-        "completed": 2275306,
+        "completed": 218580,
+        "elapsed_seconds": 1.5824520860332996,
         "latency_percentiles": {
-          "p50": 0.000424436,
-          "p75": 0.000513058,
-          "p90": 0.000614959,
-          "p95": 0.000670901,
-          "p99": 0.000813643,
-          "p99.9": 0.00133215
+          "p50": 0.000432513,
+          "p75": 0.000546934,
+          "p90": 0.000664775,
+          "p95": 0.000739896,
+          "p99": 0.000857697,
+          "p99.9": 0.001098448
         },
-        "peak_memory_bytes": 112428032,
-        "rps": 227418.27611214737
+        "peak_memory_bytes": 108866560,
+        "rps": 217950.32798951797
       },
       {
-        "completed": 2313545,
+        "completed": 217604,
+        "elapsed_seconds": 1.5766088910168037,
         "latency_percentiles": {
-          "p50": 0.000418156,
-          "p75": 0.000513278,
-          "p90": 0.00062328,
-          "p95": 0.00068552,
-          "p99": 0.000804913,
-          "p99.9": 0.001258019
+          "p50": 0.000442494,
+          "p75": 0.000519684,
+          "p90": 0.000598785,
+          "p95": 0.000636195,
+          "p99": 0.000718426,
+          "p99.9": 0.001011388
         },
-        "peak_memory_bytes": 112198656,
-        "rps": 231220.63495212686
+        "peak_memory_bytes": 108653568,
+        "rps": 216783.40630358452
       },
       {
-        "completed": 2229238,
+        "completed": 210791,
+        "elapsed_seconds": 1.5770019839983433,
         "latency_percentiles": {
-          "p50": 0.000428047,
-          "p75": 0.000529619,
-          "p90": 0.0006334,
-          "p95": 0.000716071,
-          "p99": 0.000882574,
-          "p99.9": 0.001409502
+          "p50": 0.000451024,
+          "p75": 0.000545495,
+          "p90": 0.000655945,
+          "p95": 0.000702545,
+          "p99": 0.000805186,
+          "p99.9": 0.001193519
         },
-        "peak_memory_bytes": 112119808,
-        "rps": 222793.4965945534
+        "peak_memory_bytes": 108552192,
+        "rps": 210121.89393448996
       },
       {
-        "completed": 2341726,
+        "completed": 218848,
+        "elapsed_seconds": 1.5853345500072464,
         "latency_percentiles": {
-          "p50": 0.000410996,
-          "p75": 0.000505908,
-          "p90": 0.00059909,
-          "p95": 0.000673771,
-          "p99": 0.000821033,
-          "p99.9": 0.00128219
+          "p50": 0.000436894,
+          "p75": 0.000528634,
+          "p90": 0.000629615,
+          "p95": 0.000702525,
+          "p99": 0.000847776,
+          "p99.9": 0.001755503
         },
-        "peak_memory_bytes": 110019584,
-        "rps": 234035.25846807827
+        "peak_memory_bytes": 108988416,
+        "rps": 218113.17931624173
       },
       {
-        "completed": 2379468,
+        "completed": 213391,
+        "elapsed_seconds": 1.5762485879240558,
         "latency_percentiles": {
-          "p50": 0.000407347,
-          "p75": 0.000495508,
-          "p90": 0.0005909,
-          "p95": 0.00066089,
-          "p99": 0.000795972,
-          "p99.9": 0.001219969
+          "p50": 0.000443483,
+          "p75": 0.000535914,
+          "p90": 0.000612894,
+          "p95": 0.000665765,
+          "p99": 0.000828627,
+          "p99.9": 0.001974795
         },
-        "peak_memory_bytes": 112273408,
-        "rps": 237834.372719086
+        "peak_memory_bytes": 108956672,
+        "rps": 212789.1104674378
       },
       {
-        "completed": 2200659,
+        "completed": 217856,
+        "elapsed_seconds": 1.5686242070514709,
         "latency_percentiles": {
-          "p50": 0.000438017,
-          "p75": 0.000528518,
-          "p90": 0.000622,
-          "p95": 0.000681241,
-          "p99": 0.000853173,
-          "p99.9": 0.001380982
+          "p50": 0.000438554,
+          "p75": 0.000529774,
+          "p90": 0.000627594,
+          "p95": 0.000687065,
+          "p99": 0.000813746,
+          "p99.9": 0.001115308
         },
-        "peak_memory_bytes": 112471040,
-        "rps": 219941.29320608167
-      },
-      {
-        "completed": 2355727,
-        "latency_percentiles": {
-          "p50": 0.000412476,
-          "p75": 0.000494987,
-          "p90": 0.000595869,
-          "p95": 0.00064372,
-          "p99": 0.000796452,
-          "p99.9": 0.001344681
-        },
-        "peak_memory_bytes": 112095232,
-        "rps": 235464.9590757101
-      },
-      {
-        "completed": 2375625,
-        "latency_percentiles": {
-          "p50": 0.000409176,
-          "p75": 0.000490967,
-          "p90": 0.000592599,
-          "p95": 0.0006446,
-          "p99": 0.000790062,
-          "p99.9": 0.0012956
-        },
-        "peak_memory_bytes": 112251904,
-        "rps": 237408.96795279748
+        "peak_memory_bytes": 108845056,
+        "rps": 217176.8073336952
       }
     ],
     "hypercorn": [
       {
-        "completed": 102739,
+        "completed": 10168,
+        "elapsed_seconds": 1.519748972961679,
         "latency_percentiles": {
-          "p50": 0.011262735,
-          "p75": 0.014086399,
-          "p90": 0.015529011,
-          "p95": 0.016378045,
-          "p99": 0.018782882,
-          "p99.9": 0.024580403
+          "p50": 0.00890132,
+          "p75": 0.01144345,
+          "p90": 0.018129073,
+          "p95": 0.019933707,
+          "p99": 0.022643958,
+          "p99.9": 0.029415811
         },
-        "peak_memory_bytes": 141679616,
-        "rps": 10270.996417044593
+        "peak_memory_bytes": 130339840,
+        "rps": 10134.501934166406
       },
       {
-        "completed": 105624,
+        "completed": 10329,
+        "elapsed_seconds": 1.5177709070267156,
         "latency_percentiles": {
-          "p50": 0.01097553,
-          "p75": 0.013915846,
-          "p90": 0.014415074,
-          "p95": 0.014874591,
-          "p99": 0.017109006,
-          "p99.9": 0.023107179
+          "p50": 0.008629008,
+          "p75": 0.015075369,
+          "p90": 0.016002736,
+          "p95": 0.016411679,
+          "p99": 0.019159801,
+          "p99.9": 0.023527615
         },
-        "peak_memory_bytes": 141756416,
-        "rps": 10558.66850108797
+        "peak_memory_bytes": 129453056,
+        "rps": 10298.63472268739
       },
       {
-        "completed": 98661,
+        "completed": 10230,
+        "elapsed_seconds": 1.5201753760920838,
         "latency_percentiles": {
-          "p50": 0.008311939,
-          "p75": 0.011280586,
-          "p90": 0.022415568,
-          "p95": 0.023434134,
-          "p99": 0.025484756,
-          "p99.9": 0.035216797
+          "p50": 0.011155808,
+          "p75": 0.014320163,
+          "p90": 0.014763647,
+          "p95": 0.015049009,
+          "p99": 0.018094502,
+          "p99.9": 0.02154952
         },
-        "peak_memory_bytes": 140331008,
-        "rps": 9863.596470275537
+        "peak_memory_bytes": 129342464,
+        "rps": 10192.796009168247
       },
       {
-        "completed": 105518,
+        "completed": 10264,
+        "elapsed_seconds": 1.5246401109034196,
         "latency_percentiles": {
-          "p50": 0.011676961,
-          "p75": 0.015983198,
-          "p90": 0.016464286,
-          "p95": 0.016854562,
-          "p99": 0.019896839,
-          "p99.9": 0.024749844
+          "p50": 0.011038967,
+          "p75": 0.013796449,
+          "p90": 0.014150732,
+          "p95": 0.014597745,
+          "p99": 0.015737134,
+          "p99.9": 0.021996684
         },
-        "peak_memory_bytes": 141094912,
-        "rps": 10549.631060206772
+        "peak_memory_bytes": 129277952,
+        "rps": 10232.953505586747
       },
       {
-        "completed": 106628,
+        "completed": 10205,
+        "elapsed_seconds": 1.520562008023262,
         "latency_percentiles": {
-          "p50": 0.007405745,
-          "p75": 0.019005565,
-          "p90": 0.019847679,
-          "p95": 0.020481408,
-          "p99": 0.022313366,
-          "p99.9": 0.0296562
+          "p50": 0.007255067,
+          "p75": 0.008135595,
+          "p90": 0.018689908,
+          "p95": 0.019112351,
+          "p99": 0.022658579,
+          "p99.9": 0.031097606
         },
-        "peak_memory_bytes": 141067264,
-        "rps": 10659.244293552254
+        "peak_memory_bytes": 129583104,
+        "rps": 10164.58940424973
       },
       {
-        "completed": 102584,
+        "completed": 9877,
+        "elapsed_seconds": 1.5173743820050731,
         "latency_percentiles": {
-          "p50": 0.009810912,
-          "p75": 0.011933555,
-          "p90": 0.012747958,
-          "p95": 0.013308756,
-          "p99": 0.015127934,
-          "p99.9": 0.019399071
+          "p50": 0.009599056,
+          "p75": 0.016585652,
+          "p90": 0.018131053,
+          "p95": 0.018749218,
+          "p99": 0.023301695,
+          "p99.9": 0.024969267
         },
-        "peak_memory_bytes": 140722176,
-        "rps": 10255.290777354952
-      },
-      {
-        "completed": 104043,
-        "latency_percentiles": {
-          "p50": 0.009265283,
-          "p75": 0.014052038,
-          "p90": 0.014873521,
-          "p95": 0.015410509,
-          "p99": 0.020068422,
-          "p99.9": 0.033228696
-        },
-        "peak_memory_bytes": 140258304,
-        "rps": 10401.407910373477
-      },
-      {
-        "completed": 109409,
-        "latency_percentiles": {
-          "p50": 0.007594298,
-          "p75": 0.010443992,
-          "p90": 0.016574177,
-          "p95": 0.016937873,
-          "p99": 0.018366925,
-          "p99.9": 0.025335503
-        },
-        "peak_memory_bytes": 141635584,
-        "rps": 10937.608532339233
+        "peak_memory_bytes": 129252352,
+        "rps": 9841.756365361194
       }
+    ]
+  },
+  "sampling": {
+    "calibration_limited": false,
+    "calibration_servers": {
+      "h2corn": {
+        "elapsed_seconds": 1.855797522002831,
+        "selected_duration_seconds": 1.0,
+        "server": "h2corn",
+        "status": "stable",
+        "windows": [
+          {
+            "completed": 110199,
+            "duration_seconds": 0.5,
+            "elapsed_seconds": 0.5576152519788593,
+            "rate": 218972.87112533578
+          },
+          {
+            "completed": 215027,
+            "duration_seconds": 1.0,
+            "elapsed_seconds": 1.085031257942319,
+            "rate": 214196.1259447919
+          }
+        ]
+      },
+      "hypercorn": {
+        "elapsed_seconds": 1.7952377429464832,
+        "selected_duration_seconds": 1.0,
+        "server": "hypercorn",
+        "status": "stable",
+        "windows": [
+          {
+            "completed": 5247,
+            "duration_seconds": 0.5,
+            "elapsed_seconds": 0.5203111739829183,
+            "rate": 10421.738065255275
+          },
+          {
+            "completed": 9756,
+            "duration_seconds": 1.0,
+            "elapsed_seconds": 1.0223815239733085,
+            "rate": 9718.238433730598
+          }
+        ]
+      }
+    },
+    "calibration_status": "calibrated",
+    "duration_seconds": 1.0,
+    "family": "http",
+    "fixed_count": false,
+    "production_blocks": 6,
+    "production_cell_cost_seconds": {
+      "h2corn": 1.605797522002831,
+      "hypercorn": 1.5452377429464832
+    },
+    "profile": "loopback",
+    "scenario": "HTTP/2 GET (4 Workers)",
+    "scenario_cost_seconds": 3.1510352649493143,
+    "slug": "benchmark_http_2_get_4_workers",
+    "supported_servers": [
+      "h2corn",
+      "hypercorn"
     ]
   },
   "scenario": "HTTP/2 GET (4 Workers)",
@@ -529,21 +606,17 @@
       "status": "unsupported"
     }
   },
-  "source_build": {
-    "revision": "eacf137d8a62785edb6b2513d91bbf7eccb5bcfd",
-    "wheel_sha256": "73447b433c3eae6c9b1885dfe1c357777ec220040898fd095e5022e3a290c7e0"
-  },
   "status": "completed",
   "stopped": "max-trials",
   "system_summary": "Python 3.15.0 | Linux 7.2.9 | x86_64\nCPU: AMD Ryzen 9 5950X 16-Core Processor",
   "target_rtt_ms": null,
-  "trials": 8,
+  "trials": 6,
   "type": "h2",
   "unsupported": {
     "gunicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode.",
     "uvicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode."
   },
-  "warmup_duration": "2s",
+  "warmup_duration": "0.25s",
   "workers": 4,
   "workload": "13-byte text response; 100 client connections with 1 stream per connection"
 }

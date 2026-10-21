@@ -1,0 +1,15 @@
+{
+  "ca": "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/tls/cert.pem",
+  "case": "TLS-Duplex",
+  "concurrency": 8,
+  "descriptor": "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 1.0,
+  "endpoint": "127.0.0.1:34801",
+  "messages": 64,
+  "mode": "",
+  "requests": 0,
+  "shape": "duplex",
+  "size": 256,
+  "verify_identity": false
+}

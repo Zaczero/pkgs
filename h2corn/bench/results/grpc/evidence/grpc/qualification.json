@@ -3,7 +3,7 @@
   "cells": [
     {
       "case": "U0",
-      "server": "h2corn",
+      "server": "grpcio",
       "status": "passed"
     },
     {
@@ -13,12 +13,12 @@
     },
     {
       "case": "U0",
-      "server": "grpcio",
+      "server": "h2corn",
       "status": "passed"
     },
     {
       "case": "U32",
-      "server": "h2corn",
+      "server": "grpcio",
       "status": "passed"
     },
     {
@@ -28,7 +28,7 @@
     },
     {
       "case": "U32",
-      "server": "grpcio",
+      "server": "h2corn",
       "status": "passed"
     },
     {
@@ -38,17 +38,12 @@
     },
     {
       "case": "U64K",
-      "server": "h2corn",
-      "status": "passed"
-    },
-    {
-      "case": "U64K",
       "server": "hypercorn",
       "status": "passed"
     },
     {
       "case": "U64K",
-      "server": "grpcio",
+      "server": "h2corn",
       "status": "passed"
     },
     {
@@ -57,8 +52,13 @@
       "status": "passed"
     },
     {
+      "case": "U64K",
+      "server": "grpcio",
+      "status": "passed"
+    },
+    {
       "case": "Upload",
-      "server": "h2corn",
+      "server": "grpcio",
       "status": "passed"
     },
     {
@@ -68,11 +68,6 @@
     },
     {
       "case": "Upload",
-      "server": "grpcio",
-      "status": "passed"
-    },
-    {
-      "case": "Download",
       "server": "h2corn",
       "status": "passed"
     },
@@ -83,12 +78,17 @@
     },
     {
       "case": "Download",
+      "server": "h2corn",
+      "status": "passed"
+    },
+    {
+      "case": "Download",
       "server": "grpcio",
       "status": "passed"
     },
     {
       "case": "Duplex",
-      "server": "h2corn",
+      "server": "grpcio",
       "status": "passed"
     },
     {
@@ -98,7 +98,7 @@
     },
     {
       "case": "Duplex",
-      "server": "grpcio",
+      "server": "h2corn",
       "status": "passed"
     },
     {
@@ -108,7 +108,7 @@
     },
     {
       "case": "TLS-U32",
-      "server": "h2corn",
+      "server": "grpcio",
       "status": "passed"
     },
     {
@@ -118,17 +118,17 @@
     },
     {
       "case": "TLS-U32",
-      "server": "grpcio",
-      "status": "passed"
-    },
-    {
-      "case": "TLS-Duplex",
       "server": "h2corn",
       "status": "passed"
     },
     {
       "case": "TLS-Duplex",
       "server": "hypercorn",
+      "status": "passed"
+    },
+    {
+      "case": "TLS-Duplex",
+      "server": "h2corn",
       "status": "passed"
     },
     {

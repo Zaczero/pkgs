@@ -1,8 +1,0 @@
-{
-  "status": "retained diagnostic, not accepted final server-comparison evidence",
-  "reason": "Post-collection Download control shows materially higher verified throughput with GOMAXPROCS8 vs2; original work counts/rate arithmetic remain valid but generator headroom was inadequate for the intended comparison.",
-  "original_collection": "/tmp/opencode/grpc-final-779/confirmatory-87a2ba4dd",
-  "retired_publication": "/tmp/opencode/grpc-final-779/publication-driver2-superseded",
-  "headroom_evidence": "/tmp/opencode/grpc-final-779/download-headroom/analysis.json",
-  "no_samples_to_be_pooled_with_recollection": true
-}

@@ -1,6 +1,6 @@
 {
   "command": [
-    "/tmp/opencode/h2corn-benchmark-server-315/bin/gunicorn",
+    "/tmp/opencode/h2corn-release799/venv/bin/gunicorn",
     "bench.bench_app:app",
     "-k",
     "asgi",
@@ -14,632 +14,665 @@
     "--keep-alive",
     "120",
     "-b",
-    "fd://8",
+    "fd://4",
     "-w",
     "4"
   ],
   "correctness_after": "passed",
   "correctness_before": "passed",
-  "elapsed_seconds": 22.65405567700509,
+  "elapsed_seconds": 7.123164069955237,
   "load_plan": {
-    "duration": "10s",
+    "duration": "4s",
     "mode": "time-window",
-    "warmup_duration": "2s"
+    "warmup_duration": "1s"
   },
   "metrics": {
-    "completed": 129395,
+    "completed": 47602,
+    "elapsed_seconds": 7.123163509997539,
     "latency_percentiles": {
-      "p50": 0.005289439,
-      "p90": 0.009254423000000001,
-      "p95": 0.012350664999999999,
-      "p99": 0.02857316659999999
+      "p50": 0.005309941,
+      "p90": 0.0091102359,
+      "p95": 0.010771184999999997,
+      "p99": 0.016219474409999997
     },
-    "peak_memory_bytes": 932915200,
-    "rps": 12932.131541729073
+    "peak_memory_bytes": 1220599808,
+    "rps": 11890.706487142761
   },
   "phase": "completed",
-  "port": 40301,
+  "port": 53195,
   "server": "gunicorn",
   "socket_path": "None",
-  "started_at": "2026-10-20T09:21:15.572730+00:00",
+  "started_at": "2026-10-21T17:59:12.189295+00:00",
   "status": "completed",
-  "supervisor_pid": 3417837,
+  "supervisor_pid": 1231833,
   "tcp_nodelay": true,
   "workers": {
-    "3417838": {
+    "1231839": {
       "event_loop": "asyncio.unix_events",
-      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
       "gil_enabled": true,
       "modules": {
         "gunicorn": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/__init__.py",
-          "sha256": "843a5f6a1419c5d67cba71ab7bd426b0e6c64f17eb41ad03ca1369072ba367dd"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/__init__.py",
+          "sha256": "c928c75f912cd7f9f0ea2c04568ae698b5a9faa0c7b70ca748f1d35fa920349e"
         },
         "gunicorn.app": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/__init__.py",
           "sha256": "f26f6521b851b2c9db1ae05e41403ebcd48d6cc78d8eef50fcf5279cd7ea3985"
         },
         "gunicorn.app.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/base.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/base.py",
           "sha256": "295d9a20ee7425395a9072fcdaaf73bb72e1089ac399499a562c12cb5e0693a5"
         },
         "gunicorn.app.wsgiapp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
           "sha256": "81506051cff7b922b44335d84355dbbad69c1068dfe380a0c40698920c1fb9c6"
         },
         "gunicorn.arbiter": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/arbiter.py",
-          "sha256": "8af4f2e2672c1a89818a13cf0544a122ae0ed3ae9c616de2b72dc68e1af9791d"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/arbiter.py",
+          "sha256": "90b1c2f27ab25dc8e28d24216ced7d527bbd2ac12572ba51d9cf663e43781dab"
         },
         "gunicorn.asgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
-          "sha256": "0204021dd36b5861a71c6b23c7abd7736506d21ca833c75e1b117bef0bda47dc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
+          "sha256": "86891dd3709cfaa5035bd341d93b617d7ae4f8cdf5c687c00cf2e84e9aa86ed1"
         },
         "gunicorn.asgi.lifespan": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
           "sha256": "0d61d36f9d7be181af07060525888e201c099a954c28939125a35a6e3b6e52fc"
         },
-        "gunicorn.asgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/message.py",
-          "sha256": "50e8e9ee2396922d001b16453c4af8b5cd9ab030e4b89b00391e6b1eb81c23df"
+        "gunicorn.asgi.parser": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/parser.py",
+          "sha256": "02ee3c2861be08c2ff703a45c3423dcd30b49c193ce96437c5eacdcd26f2395f"
         },
         "gunicorn.asgi.protocol": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
-          "sha256": "33627df40d92b0cbe1b205045fca6761259d2199339bc97bebc3fff2780f867b"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
+          "sha256": "16c1cf840cbfe6a17e11d5daa8fb1c6c183e327c5d750ebe0f13cf648f9707d3"
         },
         "gunicorn.asgi.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
-          "sha256": "8bc5c1ba8146562fac36830d8d3ce5dfcf6ce266b3ecc170c29249dd294fdea5"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
+          "sha256": "3d4093e9d80f5448114ca9b5e0bc69fde3a008526df0854d9b20a08cab95e79f"
         },
         "gunicorn.asgi.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
           "sha256": "4aba34cff7c25d9ec4b82e14708dabbca190ff4104b0b3698c84585ce4ff5d0e"
         },
         "gunicorn.config": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/config.py",
-          "sha256": "6a7bafad03234008fd4e1078a6fecee75b6825b17b52bd67fc6bbc151b6d36bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/config.py",
+          "sha256": "d666729982adc80a628962e8aded1bab929d9db3d14ee00c6299948b95b6965d"
         },
         "gunicorn.debug": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/debug.py",
-          "sha256": "73c710bff837776d8913a03886fec53663219b8c2aea207f13eb68a2ba6a25cc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/debug.py",
+          "sha256": "df163daf53e2a08b58b51b1991ca55bcd7e9db5a3f19019306a19be683730092"
         },
         "gunicorn.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/errors.py",
           "sha256": "88b4c9402e12552468ca02061875ef129d1df14773a5eaa6311a94705d09235e"
         },
         "gunicorn.glogging": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/glogging.py",
-          "sha256": "f0c7c63cd6c0e5c6a4bc693242dafd62672f67e31e03054a5852f1f0f78486c7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/glogging.py",
+          "sha256": "9de54c8a6d03ea18392e45c07531e3147f9b6128feabf478e6e88e27c8e2fe34"
         },
         "gunicorn.http": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/__init__.py",
           "sha256": "760bf484d5c2e214f001f5e6a091cee705958207068b012db5e14c9e5092ee4f"
         },
         "gunicorn.http.body": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/body.py",
-          "sha256": "b10829fe12548f1f032ba2d8ce494c4e5fb129c5fc79fb1bade08ace8c021a6a"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/body.py",
+          "sha256": "3df41618db0ed103f323b4cbbe2e5c841f33914850be7ff9600358f81deb1a04"
         },
         "gunicorn.http.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/errors.py",
-          "sha256": "2ea53e56df6dbb65b4b85b28b22a714fd8594c5c45ab9270ac6425111ddc4b36"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/errors.py",
+          "sha256": "d402552ba9e8c6c4b18526e745d965fb730677f95615f920b786fa60dabeb23e"
         },
         "gunicorn.http.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/message.py",
-          "sha256": "bbb96bf82348025617e83dc8016d7b75a5cf3fb8897cc5098980dd54c9704f98"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/message.py",
+          "sha256": "ba098a4ff756b18701b555751cfc9baf1e194da4024f3ba8ab1f5a8a65f2e86e"
         },
         "gunicorn.http.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/parser.py",
-          "sha256": "8041a5942ba5af3ec3bdfddf137796c3d1ffa98b879f54bb7bb174793ddb98c3"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/parser.py",
+          "sha256": "bd399c5b84d9609e50c329737321718d178beb59e2aca5672baf3f1a24e2d9e6"
         },
         "gunicorn.http.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/unreader.py",
-          "sha256": "1773e5338c9e62c10db0dc8897ce645e6c9c8d51d218dd564f898a9eaf227517"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/unreader.py",
+          "sha256": "94efcf07a32a3e1c5e6f0b35a675bd293c2cea832fb5f496b1b15a8fe595d8be"
         },
         "gunicorn.http.wsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
-          "sha256": "6837b3fa9c8802eb569091342ffe0306d0bdb49142d8f5926fe983d8f6fe60bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
+          "sha256": "a936e51579be6d2aa38bc0a5007c8f931d1888f94da0faef117c43d45c92ff89"
+        },
+        "gunicorn.http2": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/__init__.py",
+          "sha256": "e1cc6b59f55e8d938d39ac3f8f74cd9f9119a671b21c6fccacb5827b523c5fb7"
+        },
+        "gunicorn.http2.negotiation": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/negotiation.py",
+          "sha256": "2382131ed47d5e5b5b8c4bd59944f9373bcaa2c7baf2c2a906320feb5bb3f8a6"
         },
         "gunicorn.pidfile": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/pidfile.py",
-          "sha256": "1e7b62bde1bc7899b007cfc3de8e5c05746e18a9c2d1cbd6c60f743168758547"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/pidfile.py",
+          "sha256": "48c131272ebcb3d665ca7b1b0b3a80dfcbd18ec2d090883debbb7a2922cf5d34"
         },
         "gunicorn.reloader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/reloader.py",
-          "sha256": "0f1dc7268a71067e356843928dd1ca9be7f0f67ff0eeb5f7cfe1fc60d32ddd61"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/reloader.py",
+          "sha256": "23ef7934375b5b6f1162cabefe28b769bc3806bed204e45b7fd910a177ad2896"
         },
         "gunicorn.sock": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/sock.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/sock.py",
           "sha256": "41550ce9d07cd58c75006bf5e939f50c1c46d8ad651bd1d76e2f02c5916f63ac"
         },
         "gunicorn.systemd": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/systemd.py",
-          "sha256": "0e659b72a791c87740232ef4502120d89f77bfa3e9112a771054cd9b40e38328"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/systemd.py",
+          "sha256": "4bb8b9b6c65bcaae0d8e5a5a543f9a127c65ea5264ee52bec16437e3c2631b8e"
         },
         "gunicorn.util": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/util.py",
-          "sha256": "269e22c3989df811e572b4ff89f9d70d2f681fcd08322ad92e9478d7d6bd7412"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/util.py",
+          "sha256": "65e8d4801536a61b7e10691632c3f787bdb328b930998ade1115b84aa5496970"
         },
         "gunicorn.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
           "sha256": "1315b0dad460c6254f895ee21f0d4f9e055e83184d1c624316ce86bdd242afbe"
         },
         "gunicorn.uwsgi.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
           "sha256": "eaefeac3364b050003529993f91b939ea8d9d753f1067a4dcc6026ce09d0acae"
         },
         "gunicorn.uwsgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
-          "sha256": "3b0bfaa0d733e389b1c6c01e21de6082aa49e9a907b4d7aeb996b6696bf830c6"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
+          "sha256": "70a5ca1292763f370df4d3cf8bd67b4219600701456026e6034646cdc8c39dbb"
         },
         "gunicorn.uwsgi.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
           "sha256": "550effa2680f5a8e5889f2db0cb959022e21597523561c587445817f49ce0759"
         },
         "gunicorn.workers": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
-          "sha256": "f4c8b098799c7be0ec99e1e7bb2d5b48afe86f1e63bfe0bcf9b9b81061d09fd2"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
+          "sha256": "c962762b4630489fb86cf14a682a406beec9b89d242ac45d459e607d592ea969"
         },
         "gunicorn.workers.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/base.py",
-          "sha256": "6e260269b04decf28b7c66debf1b88629f2d88901699be66cde9751ac8e153e7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/base.py",
+          "sha256": "5d1473bdd5d060d08b526b649d1d755268be788475da465f1f6446fae7a3d608"
         },
         "gunicorn.workers.gasgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
           "sha256": "a935f385255e54503be59455230cd22c2faa65f2c4111b8c3946245f9c3e4480"
         },
         "gunicorn.workers.workertmp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
           "sha256": "6ecc06a2c0880dbff005f746685a87a298316e627aae05576255612435992887"
         }
       },
-      "pid": 3417838,
+      "pid": 1231839,
       "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
     },
-    "3417841": {
+    "1231840": {
       "event_loop": "asyncio.unix_events",
-      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
       "gil_enabled": true,
       "modules": {
         "gunicorn": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/__init__.py",
-          "sha256": "843a5f6a1419c5d67cba71ab7bd426b0e6c64f17eb41ad03ca1369072ba367dd"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/__init__.py",
+          "sha256": "c928c75f912cd7f9f0ea2c04568ae698b5a9faa0c7b70ca748f1d35fa920349e"
         },
         "gunicorn.app": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/__init__.py",
           "sha256": "f26f6521b851b2c9db1ae05e41403ebcd48d6cc78d8eef50fcf5279cd7ea3985"
         },
         "gunicorn.app.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/base.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/base.py",
           "sha256": "295d9a20ee7425395a9072fcdaaf73bb72e1089ac399499a562c12cb5e0693a5"
         },
         "gunicorn.app.wsgiapp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
           "sha256": "81506051cff7b922b44335d84355dbbad69c1068dfe380a0c40698920c1fb9c6"
         },
         "gunicorn.arbiter": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/arbiter.py",
-          "sha256": "8af4f2e2672c1a89818a13cf0544a122ae0ed3ae9c616de2b72dc68e1af9791d"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/arbiter.py",
+          "sha256": "90b1c2f27ab25dc8e28d24216ced7d527bbd2ac12572ba51d9cf663e43781dab"
         },
         "gunicorn.asgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
-          "sha256": "0204021dd36b5861a71c6b23c7abd7736506d21ca833c75e1b117bef0bda47dc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
+          "sha256": "86891dd3709cfaa5035bd341d93b617d7ae4f8cdf5c687c00cf2e84e9aa86ed1"
         },
         "gunicorn.asgi.lifespan": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
           "sha256": "0d61d36f9d7be181af07060525888e201c099a954c28939125a35a6e3b6e52fc"
         },
-        "gunicorn.asgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/message.py",
-          "sha256": "50e8e9ee2396922d001b16453c4af8b5cd9ab030e4b89b00391e6b1eb81c23df"
+        "gunicorn.asgi.parser": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/parser.py",
+          "sha256": "02ee3c2861be08c2ff703a45c3423dcd30b49c193ce96437c5eacdcd26f2395f"
         },
         "gunicorn.asgi.protocol": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
-          "sha256": "33627df40d92b0cbe1b205045fca6761259d2199339bc97bebc3fff2780f867b"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
+          "sha256": "16c1cf840cbfe6a17e11d5daa8fb1c6c183e327c5d750ebe0f13cf648f9707d3"
         },
         "gunicorn.asgi.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
-          "sha256": "8bc5c1ba8146562fac36830d8d3ce5dfcf6ce266b3ecc170c29249dd294fdea5"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
+          "sha256": "3d4093e9d80f5448114ca9b5e0bc69fde3a008526df0854d9b20a08cab95e79f"
         },
         "gunicorn.asgi.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
           "sha256": "4aba34cff7c25d9ec4b82e14708dabbca190ff4104b0b3698c84585ce4ff5d0e"
         },
         "gunicorn.config": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/config.py",
-          "sha256": "6a7bafad03234008fd4e1078a6fecee75b6825b17b52bd67fc6bbc151b6d36bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/config.py",
+          "sha256": "d666729982adc80a628962e8aded1bab929d9db3d14ee00c6299948b95b6965d"
         },
         "gunicorn.debug": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/debug.py",
-          "sha256": "73c710bff837776d8913a03886fec53663219b8c2aea207f13eb68a2ba6a25cc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/debug.py",
+          "sha256": "df163daf53e2a08b58b51b1991ca55bcd7e9db5a3f19019306a19be683730092"
         },
         "gunicorn.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/errors.py",
           "sha256": "88b4c9402e12552468ca02061875ef129d1df14773a5eaa6311a94705d09235e"
         },
         "gunicorn.glogging": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/glogging.py",
-          "sha256": "f0c7c63cd6c0e5c6a4bc693242dafd62672f67e31e03054a5852f1f0f78486c7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/glogging.py",
+          "sha256": "9de54c8a6d03ea18392e45c07531e3147f9b6128feabf478e6e88e27c8e2fe34"
         },
         "gunicorn.http": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/__init__.py",
           "sha256": "760bf484d5c2e214f001f5e6a091cee705958207068b012db5e14c9e5092ee4f"
         },
         "gunicorn.http.body": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/body.py",
-          "sha256": "b10829fe12548f1f032ba2d8ce494c4e5fb129c5fc79fb1bade08ace8c021a6a"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/body.py",
+          "sha256": "3df41618db0ed103f323b4cbbe2e5c841f33914850be7ff9600358f81deb1a04"
         },
         "gunicorn.http.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/errors.py",
-          "sha256": "2ea53e56df6dbb65b4b85b28b22a714fd8594c5c45ab9270ac6425111ddc4b36"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/errors.py",
+          "sha256": "d402552ba9e8c6c4b18526e745d965fb730677f95615f920b786fa60dabeb23e"
         },
         "gunicorn.http.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/message.py",
-          "sha256": "bbb96bf82348025617e83dc8016d7b75a5cf3fb8897cc5098980dd54c9704f98"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/message.py",
+          "sha256": "ba098a4ff756b18701b555751cfc9baf1e194da4024f3ba8ab1f5a8a65f2e86e"
         },
         "gunicorn.http.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/parser.py",
-          "sha256": "8041a5942ba5af3ec3bdfddf137796c3d1ffa98b879f54bb7bb174793ddb98c3"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/parser.py",
+          "sha256": "bd399c5b84d9609e50c329737321718d178beb59e2aca5672baf3f1a24e2d9e6"
         },
         "gunicorn.http.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/unreader.py",
-          "sha256": "1773e5338c9e62c10db0dc8897ce645e6c9c8d51d218dd564f898a9eaf227517"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/unreader.py",
+          "sha256": "94efcf07a32a3e1c5e6f0b35a675bd293c2cea832fb5f496b1b15a8fe595d8be"
         },
         "gunicorn.http.wsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
-          "sha256": "6837b3fa9c8802eb569091342ffe0306d0bdb49142d8f5926fe983d8f6fe60bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
+          "sha256": "a936e51579be6d2aa38bc0a5007c8f931d1888f94da0faef117c43d45c92ff89"
+        },
+        "gunicorn.http2": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/__init__.py",
+          "sha256": "e1cc6b59f55e8d938d39ac3f8f74cd9f9119a671b21c6fccacb5827b523c5fb7"
+        },
+        "gunicorn.http2.negotiation": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/negotiation.py",
+          "sha256": "2382131ed47d5e5b5b8c4bd59944f9373bcaa2c7baf2c2a906320feb5bb3f8a6"
         },
         "gunicorn.pidfile": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/pidfile.py",
-          "sha256": "1e7b62bde1bc7899b007cfc3de8e5c05746e18a9c2d1cbd6c60f743168758547"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/pidfile.py",
+          "sha256": "48c131272ebcb3d665ca7b1b0b3a80dfcbd18ec2d090883debbb7a2922cf5d34"
         },
         "gunicorn.reloader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/reloader.py",
-          "sha256": "0f1dc7268a71067e356843928dd1ca9be7f0f67ff0eeb5f7cfe1fc60d32ddd61"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/reloader.py",
+          "sha256": "23ef7934375b5b6f1162cabefe28b769bc3806bed204e45b7fd910a177ad2896"
         },
         "gunicorn.sock": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/sock.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/sock.py",
           "sha256": "41550ce9d07cd58c75006bf5e939f50c1c46d8ad651bd1d76e2f02c5916f63ac"
         },
         "gunicorn.systemd": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/systemd.py",
-          "sha256": "0e659b72a791c87740232ef4502120d89f77bfa3e9112a771054cd9b40e38328"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/systemd.py",
+          "sha256": "4bb8b9b6c65bcaae0d8e5a5a543f9a127c65ea5264ee52bec16437e3c2631b8e"
         },
         "gunicorn.util": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/util.py",
-          "sha256": "269e22c3989df811e572b4ff89f9d70d2f681fcd08322ad92e9478d7d6bd7412"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/util.py",
+          "sha256": "65e8d4801536a61b7e10691632c3f787bdb328b930998ade1115b84aa5496970"
         },
         "gunicorn.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
           "sha256": "1315b0dad460c6254f895ee21f0d4f9e055e83184d1c624316ce86bdd242afbe"
         },
         "gunicorn.uwsgi.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
           "sha256": "eaefeac3364b050003529993f91b939ea8d9d753f1067a4dcc6026ce09d0acae"
         },
         "gunicorn.uwsgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
-          "sha256": "3b0bfaa0d733e389b1c6c01e21de6082aa49e9a907b4d7aeb996b6696bf830c6"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
+          "sha256": "70a5ca1292763f370df4d3cf8bd67b4219600701456026e6034646cdc8c39dbb"
         },
         "gunicorn.uwsgi.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
           "sha256": "550effa2680f5a8e5889f2db0cb959022e21597523561c587445817f49ce0759"
         },
         "gunicorn.workers": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
-          "sha256": "f4c8b098799c7be0ec99e1e7bb2d5b48afe86f1e63bfe0bcf9b9b81061d09fd2"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
+          "sha256": "c962762b4630489fb86cf14a682a406beec9b89d242ac45d459e607d592ea969"
         },
         "gunicorn.workers.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/base.py",
-          "sha256": "6e260269b04decf28b7c66debf1b88629f2d88901699be66cde9751ac8e153e7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/base.py",
+          "sha256": "5d1473bdd5d060d08b526b649d1d755268be788475da465f1f6446fae7a3d608"
         },
         "gunicorn.workers.gasgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
           "sha256": "a935f385255e54503be59455230cd22c2faa65f2c4111b8c3946245f9c3e4480"
         },
         "gunicorn.workers.workertmp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
           "sha256": "6ecc06a2c0880dbff005f746685a87a298316e627aae05576255612435992887"
         }
       },
-      "pid": 3417841,
+      "pid": 1231840,
       "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
     },
-    "3417852": {
+    "1231841": {
       "event_loop": "asyncio.unix_events",
-      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
       "gil_enabled": true,
       "modules": {
         "gunicorn": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/__init__.py",
-          "sha256": "843a5f6a1419c5d67cba71ab7bd426b0e6c64f17eb41ad03ca1369072ba367dd"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/__init__.py",
+          "sha256": "c928c75f912cd7f9f0ea2c04568ae698b5a9faa0c7b70ca748f1d35fa920349e"
         },
         "gunicorn.app": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/__init__.py",
           "sha256": "f26f6521b851b2c9db1ae05e41403ebcd48d6cc78d8eef50fcf5279cd7ea3985"
         },
         "gunicorn.app.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/base.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/base.py",
           "sha256": "295d9a20ee7425395a9072fcdaaf73bb72e1089ac399499a562c12cb5e0693a5"
         },
         "gunicorn.app.wsgiapp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
           "sha256": "81506051cff7b922b44335d84355dbbad69c1068dfe380a0c40698920c1fb9c6"
         },
         "gunicorn.arbiter": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/arbiter.py",
-          "sha256": "8af4f2e2672c1a89818a13cf0544a122ae0ed3ae9c616de2b72dc68e1af9791d"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/arbiter.py",
+          "sha256": "90b1c2f27ab25dc8e28d24216ced7d527bbd2ac12572ba51d9cf663e43781dab"
         },
         "gunicorn.asgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
-          "sha256": "0204021dd36b5861a71c6b23c7abd7736506d21ca833c75e1b117bef0bda47dc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
+          "sha256": "86891dd3709cfaa5035bd341d93b617d7ae4f8cdf5c687c00cf2e84e9aa86ed1"
         },
         "gunicorn.asgi.lifespan": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
           "sha256": "0d61d36f9d7be181af07060525888e201c099a954c28939125a35a6e3b6e52fc"
         },
-        "gunicorn.asgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/message.py",
-          "sha256": "50e8e9ee2396922d001b16453c4af8b5cd9ab030e4b89b00391e6b1eb81c23df"
+        "gunicorn.asgi.parser": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/parser.py",
+          "sha256": "02ee3c2861be08c2ff703a45c3423dcd30b49c193ce96437c5eacdcd26f2395f"
         },
         "gunicorn.asgi.protocol": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
-          "sha256": "33627df40d92b0cbe1b205045fca6761259d2199339bc97bebc3fff2780f867b"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
+          "sha256": "16c1cf840cbfe6a17e11d5daa8fb1c6c183e327c5d750ebe0f13cf648f9707d3"
         },
         "gunicorn.asgi.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
-          "sha256": "8bc5c1ba8146562fac36830d8d3ce5dfcf6ce266b3ecc170c29249dd294fdea5"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
+          "sha256": "3d4093e9d80f5448114ca9b5e0bc69fde3a008526df0854d9b20a08cab95e79f"
         },
         "gunicorn.asgi.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
           "sha256": "4aba34cff7c25d9ec4b82e14708dabbca190ff4104b0b3698c84585ce4ff5d0e"
         },
         "gunicorn.config": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/config.py",
-          "sha256": "6a7bafad03234008fd4e1078a6fecee75b6825b17b52bd67fc6bbc151b6d36bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/config.py",
+          "sha256": "d666729982adc80a628962e8aded1bab929d9db3d14ee00c6299948b95b6965d"
         },
         "gunicorn.debug": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/debug.py",
-          "sha256": "73c710bff837776d8913a03886fec53663219b8c2aea207f13eb68a2ba6a25cc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/debug.py",
+          "sha256": "df163daf53e2a08b58b51b1991ca55bcd7e9db5a3f19019306a19be683730092"
         },
         "gunicorn.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/errors.py",
           "sha256": "88b4c9402e12552468ca02061875ef129d1df14773a5eaa6311a94705d09235e"
         },
         "gunicorn.glogging": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/glogging.py",
-          "sha256": "f0c7c63cd6c0e5c6a4bc693242dafd62672f67e31e03054a5852f1f0f78486c7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/glogging.py",
+          "sha256": "9de54c8a6d03ea18392e45c07531e3147f9b6128feabf478e6e88e27c8e2fe34"
         },
         "gunicorn.http": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/__init__.py",
           "sha256": "760bf484d5c2e214f001f5e6a091cee705958207068b012db5e14c9e5092ee4f"
         },
         "gunicorn.http.body": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/body.py",
-          "sha256": "b10829fe12548f1f032ba2d8ce494c4e5fb129c5fc79fb1bade08ace8c021a6a"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/body.py",
+          "sha256": "3df41618db0ed103f323b4cbbe2e5c841f33914850be7ff9600358f81deb1a04"
         },
         "gunicorn.http.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/errors.py",
-          "sha256": "2ea53e56df6dbb65b4b85b28b22a714fd8594c5c45ab9270ac6425111ddc4b36"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/errors.py",
+          "sha256": "d402552ba9e8c6c4b18526e745d965fb730677f95615f920b786fa60dabeb23e"
         },
         "gunicorn.http.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/message.py",
-          "sha256": "bbb96bf82348025617e83dc8016d7b75a5cf3fb8897cc5098980dd54c9704f98"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/message.py",
+          "sha256": "ba098a4ff756b18701b555751cfc9baf1e194da4024f3ba8ab1f5a8a65f2e86e"
         },
         "gunicorn.http.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/parser.py",
-          "sha256": "8041a5942ba5af3ec3bdfddf137796c3d1ffa98b879f54bb7bb174793ddb98c3"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/parser.py",
+          "sha256": "bd399c5b84d9609e50c329737321718d178beb59e2aca5672baf3f1a24e2d9e6"
         },
         "gunicorn.http.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/unreader.py",
-          "sha256": "1773e5338c9e62c10db0dc8897ce645e6c9c8d51d218dd564f898a9eaf227517"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/unreader.py",
+          "sha256": "94efcf07a32a3e1c5e6f0b35a675bd293c2cea832fb5f496b1b15a8fe595d8be"
         },
         "gunicorn.http.wsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
-          "sha256": "6837b3fa9c8802eb569091342ffe0306d0bdb49142d8f5926fe983d8f6fe60bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
+          "sha256": "a936e51579be6d2aa38bc0a5007c8f931d1888f94da0faef117c43d45c92ff89"
+        },
+        "gunicorn.http2": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/__init__.py",
+          "sha256": "e1cc6b59f55e8d938d39ac3f8f74cd9f9119a671b21c6fccacb5827b523c5fb7"
+        },
+        "gunicorn.http2.negotiation": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/negotiation.py",
+          "sha256": "2382131ed47d5e5b5b8c4bd59944f9373bcaa2c7baf2c2a906320feb5bb3f8a6"
         },
         "gunicorn.pidfile": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/pidfile.py",
-          "sha256": "1e7b62bde1bc7899b007cfc3de8e5c05746e18a9c2d1cbd6c60f743168758547"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/pidfile.py",
+          "sha256": "48c131272ebcb3d665ca7b1b0b3a80dfcbd18ec2d090883debbb7a2922cf5d34"
         },
         "gunicorn.reloader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/reloader.py",
-          "sha256": "0f1dc7268a71067e356843928dd1ca9be7f0f67ff0eeb5f7cfe1fc60d32ddd61"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/reloader.py",
+          "sha256": "23ef7934375b5b6f1162cabefe28b769bc3806bed204e45b7fd910a177ad2896"
         },
         "gunicorn.sock": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/sock.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/sock.py",
           "sha256": "41550ce9d07cd58c75006bf5e939f50c1c46d8ad651bd1d76e2f02c5916f63ac"
         },
         "gunicorn.systemd": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/systemd.py",
-          "sha256": "0e659b72a791c87740232ef4502120d89f77bfa3e9112a771054cd9b40e38328"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/systemd.py",
+          "sha256": "4bb8b9b6c65bcaae0d8e5a5a543f9a127c65ea5264ee52bec16437e3c2631b8e"
         },
         "gunicorn.util": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/util.py",
-          "sha256": "269e22c3989df811e572b4ff89f9d70d2f681fcd08322ad92e9478d7d6bd7412"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/util.py",
+          "sha256": "65e8d4801536a61b7e10691632c3f787bdb328b930998ade1115b84aa5496970"
         },
         "gunicorn.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
           "sha256": "1315b0dad460c6254f895ee21f0d4f9e055e83184d1c624316ce86bdd242afbe"
         },
         "gunicorn.uwsgi.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
           "sha256": "eaefeac3364b050003529993f91b939ea8d9d753f1067a4dcc6026ce09d0acae"
         },
         "gunicorn.uwsgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
-          "sha256": "3b0bfaa0d733e389b1c6c01e21de6082aa49e9a907b4d7aeb996b6696bf830c6"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
+          "sha256": "70a5ca1292763f370df4d3cf8bd67b4219600701456026e6034646cdc8c39dbb"
         },
         "gunicorn.uwsgi.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
           "sha256": "550effa2680f5a8e5889f2db0cb959022e21597523561c587445817f49ce0759"
         },
         "gunicorn.workers": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
-          "sha256": "f4c8b098799c7be0ec99e1e7bb2d5b48afe86f1e63bfe0bcf9b9b81061d09fd2"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
+          "sha256": "c962762b4630489fb86cf14a682a406beec9b89d242ac45d459e607d592ea969"
         },
         "gunicorn.workers.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/base.py",
-          "sha256": "6e260269b04decf28b7c66debf1b88629f2d88901699be66cde9751ac8e153e7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/base.py",
+          "sha256": "5d1473bdd5d060d08b526b649d1d755268be788475da465f1f6446fae7a3d608"
         },
         "gunicorn.workers.gasgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
           "sha256": "a935f385255e54503be59455230cd22c2faa65f2c4111b8c3946245f9c3e4480"
         },
         "gunicorn.workers.workertmp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
           "sha256": "6ecc06a2c0880dbff005f746685a87a298316e627aae05576255612435992887"
         }
       },
-      "pid": 3417852,
+      "pid": 1231841,
       "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
     },
-    "3417856": {
+    "1231847": {
       "event_loop": "asyncio.unix_events",
-      "executable": "/tmp/opencode/h2corn-benchmark-server-315/bin/python",
+      "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
       "gil_enabled": true,
       "modules": {
         "gunicorn": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/__init__.py",
-          "sha256": "843a5f6a1419c5d67cba71ab7bd426b0e6c64f17eb41ad03ca1369072ba367dd"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/__init__.py",
+          "sha256": "c928c75f912cd7f9f0ea2c04568ae698b5a9faa0c7b70ca748f1d35fa920349e"
         },
         "gunicorn.app": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/__init__.py",
           "sha256": "f26f6521b851b2c9db1ae05e41403ebcd48d6cc78d8eef50fcf5279cd7ea3985"
         },
         "gunicorn.app.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/base.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/base.py",
           "sha256": "295d9a20ee7425395a9072fcdaaf73bb72e1089ac399499a562c12cb5e0693a5"
         },
         "gunicorn.app.wsgiapp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/app/wsgiapp.py",
           "sha256": "81506051cff7b922b44335d84355dbbad69c1068dfe380a0c40698920c1fb9c6"
         },
         "gunicorn.arbiter": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/arbiter.py",
-          "sha256": "8af4f2e2672c1a89818a13cf0544a122ae0ed3ae9c616de2b72dc68e1af9791d"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/arbiter.py",
+          "sha256": "90b1c2f27ab25dc8e28d24216ced7d527bbd2ac12572ba51d9cf663e43781dab"
         },
         "gunicorn.asgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
-          "sha256": "0204021dd36b5861a71c6b23c7abd7736506d21ca833c75e1b117bef0bda47dc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/__init__.py",
+          "sha256": "86891dd3709cfaa5035bd341d93b617d7ae4f8cdf5c687c00cf2e84e9aa86ed1"
         },
         "gunicorn.asgi.lifespan": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/lifespan.py",
           "sha256": "0d61d36f9d7be181af07060525888e201c099a954c28939125a35a6e3b6e52fc"
         },
-        "gunicorn.asgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/message.py",
-          "sha256": "50e8e9ee2396922d001b16453c4af8b5cd9ab030e4b89b00391e6b1eb81c23df"
+        "gunicorn.asgi.parser": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/parser.py",
+          "sha256": "02ee3c2861be08c2ff703a45c3423dcd30b49c193ce96437c5eacdcd26f2395f"
         },
         "gunicorn.asgi.protocol": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
-          "sha256": "33627df40d92b0cbe1b205045fca6761259d2199339bc97bebc3fff2780f867b"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/protocol.py",
+          "sha256": "16c1cf840cbfe6a17e11d5daa8fb1c6c183e327c5d750ebe0f13cf648f9707d3"
         },
         "gunicorn.asgi.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
-          "sha256": "8bc5c1ba8146562fac36830d8d3ce5dfcf6ce266b3ecc170c29249dd294fdea5"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/unreader.py",
+          "sha256": "3d4093e9d80f5448114ca9b5e0bc69fde3a008526df0854d9b20a08cab95e79f"
         },
         "gunicorn.asgi.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/asgi/uwsgi.py",
           "sha256": "4aba34cff7c25d9ec4b82e14708dabbca190ff4104b0b3698c84585ce4ff5d0e"
         },
         "gunicorn.config": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/config.py",
-          "sha256": "6a7bafad03234008fd4e1078a6fecee75b6825b17b52bd67fc6bbc151b6d36bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/config.py",
+          "sha256": "d666729982adc80a628962e8aded1bab929d9db3d14ee00c6299948b95b6965d"
         },
         "gunicorn.debug": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/debug.py",
-          "sha256": "73c710bff837776d8913a03886fec53663219b8c2aea207f13eb68a2ba6a25cc"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/debug.py",
+          "sha256": "df163daf53e2a08b58b51b1991ca55bcd7e9db5a3f19019306a19be683730092"
         },
         "gunicorn.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/errors.py",
           "sha256": "88b4c9402e12552468ca02061875ef129d1df14773a5eaa6311a94705d09235e"
         },
         "gunicorn.glogging": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/glogging.py",
-          "sha256": "f0c7c63cd6c0e5c6a4bc693242dafd62672f67e31e03054a5852f1f0f78486c7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/glogging.py",
+          "sha256": "9de54c8a6d03ea18392e45c07531e3147f9b6128feabf478e6e88e27c8e2fe34"
         },
         "gunicorn.http": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/__init__.py",
           "sha256": "760bf484d5c2e214f001f5e6a091cee705958207068b012db5e14c9e5092ee4f"
         },
         "gunicorn.http.body": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/body.py",
-          "sha256": "b10829fe12548f1f032ba2d8ce494c4e5fb129c5fc79fb1bade08ace8c021a6a"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/body.py",
+          "sha256": "3df41618db0ed103f323b4cbbe2e5c841f33914850be7ff9600358f81deb1a04"
         },
         "gunicorn.http.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/errors.py",
-          "sha256": "2ea53e56df6dbb65b4b85b28b22a714fd8594c5c45ab9270ac6425111ddc4b36"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/errors.py",
+          "sha256": "d402552ba9e8c6c4b18526e745d965fb730677f95615f920b786fa60dabeb23e"
         },
         "gunicorn.http.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/message.py",
-          "sha256": "bbb96bf82348025617e83dc8016d7b75a5cf3fb8897cc5098980dd54c9704f98"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/message.py",
+          "sha256": "ba098a4ff756b18701b555751cfc9baf1e194da4024f3ba8ab1f5a8a65f2e86e"
         },
         "gunicorn.http.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/parser.py",
-          "sha256": "8041a5942ba5af3ec3bdfddf137796c3d1ffa98b879f54bb7bb174793ddb98c3"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/parser.py",
+          "sha256": "bd399c5b84d9609e50c329737321718d178beb59e2aca5672baf3f1a24e2d9e6"
         },
         "gunicorn.http.unreader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/unreader.py",
-          "sha256": "1773e5338c9e62c10db0dc8897ce645e6c9c8d51d218dd564f898a9eaf227517"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/unreader.py",
+          "sha256": "94efcf07a32a3e1c5e6f0b35a675bd293c2cea832fb5f496b1b15a8fe595d8be"
         },
         "gunicorn.http.wsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
-          "sha256": "6837b3fa9c8802eb569091342ffe0306d0bdb49142d8f5926fe983d8f6fe60bf"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http/wsgi.py",
+          "sha256": "a936e51579be6d2aa38bc0a5007c8f931d1888f94da0faef117c43d45c92ff89"
+        },
+        "gunicorn.http2": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/__init__.py",
+          "sha256": "e1cc6b59f55e8d938d39ac3f8f74cd9f9119a671b21c6fccacb5827b523c5fb7"
+        },
+        "gunicorn.http2.negotiation": {
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/http2/negotiation.py",
+          "sha256": "2382131ed47d5e5b5b8c4bd59944f9373bcaa2c7baf2c2a906320feb5bb3f8a6"
         },
         "gunicorn.pidfile": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/pidfile.py",
-          "sha256": "1e7b62bde1bc7899b007cfc3de8e5c05746e18a9c2d1cbd6c60f743168758547"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/pidfile.py",
+          "sha256": "48c131272ebcb3d665ca7b1b0b3a80dfcbd18ec2d090883debbb7a2922cf5d34"
         },
         "gunicorn.reloader": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/reloader.py",
-          "sha256": "0f1dc7268a71067e356843928dd1ca9be7f0f67ff0eeb5f7cfe1fc60d32ddd61"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/reloader.py",
+          "sha256": "23ef7934375b5b6f1162cabefe28b769bc3806bed204e45b7fd910a177ad2896"
         },
         "gunicorn.sock": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/sock.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/sock.py",
           "sha256": "41550ce9d07cd58c75006bf5e939f50c1c46d8ad651bd1d76e2f02c5916f63ac"
         },
         "gunicorn.systemd": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/systemd.py",
-          "sha256": "0e659b72a791c87740232ef4502120d89f77bfa3e9112a771054cd9b40e38328"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/systemd.py",
+          "sha256": "4bb8b9b6c65bcaae0d8e5a5a543f9a127c65ea5264ee52bec16437e3c2631b8e"
         },
         "gunicorn.util": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/util.py",
-          "sha256": "269e22c3989df811e572b4ff89f9d70d2f681fcd08322ad92e9478d7d6bd7412"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/util.py",
+          "sha256": "65e8d4801536a61b7e10691632c3f787bdb328b930998ade1115b84aa5496970"
         },
         "gunicorn.uwsgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/__init__.py",
           "sha256": "1315b0dad460c6254f895ee21f0d4f9e055e83184d1c624316ce86bdd242afbe"
         },
         "gunicorn.uwsgi.errors": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/errors.py",
           "sha256": "eaefeac3364b050003529993f91b939ea8d9d753f1067a4dcc6026ce09d0acae"
         },
         "gunicorn.uwsgi.message": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
-          "sha256": "3b0bfaa0d733e389b1c6c01e21de6082aa49e9a907b4d7aeb996b6696bf830c6"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/message.py",
+          "sha256": "70a5ca1292763f370df4d3cf8bd67b4219600701456026e6034646cdc8c39dbb"
         },
         "gunicorn.uwsgi.parser": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/uwsgi/parser.py",
           "sha256": "550effa2680f5a8e5889f2db0cb959022e21597523561c587445817f49ce0759"
         },
         "gunicorn.workers": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
-          "sha256": "f4c8b098799c7be0ec99e1e7bb2d5b48afe86f1e63bfe0bcf9b9b81061d09fd2"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/__init__.py",
+          "sha256": "c962762b4630489fb86cf14a682a406beec9b89d242ac45d459e607d592ea969"
         },
         "gunicorn.workers.base": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/base.py",
-          "sha256": "6e260269b04decf28b7c66debf1b88629f2d88901699be66cde9751ac8e153e7"
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/base.py",
+          "sha256": "5d1473bdd5d060d08b526b649d1d755268be788475da465f1f6446fae7a3d608"
         },
         "gunicorn.workers.gasgi": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/gasgi.py",
           "sha256": "a935f385255e54503be59455230cd22c2faa65f2c4111b8c3946245f9c3e4480"
         },
         "gunicorn.workers.workertmp": {
-          "path": "/tmp/opencode/h2corn-benchmark-server-315/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
+          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/gunicorn/workers/workertmp.py",
           "sha256": "6ecc06a2c0880dbff005f746685a87a298316e627aae05576255612435992887"
         }
       },
-      "pid": 3417856,
+      "pid": 1231847,
       "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
     }
   }

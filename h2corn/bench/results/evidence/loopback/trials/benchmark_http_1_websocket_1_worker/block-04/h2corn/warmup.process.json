@@ -3,20 +3,20 @@
     "k6",
     "run",
     "--duration",
-    "2s",
+    "1s",
     "--vus",
     "100",
     "--summary-export",
-    "/tmp/h2c-k6-ojoyfj92/summary.json",
+    "/tmp/h2c-k6-sq0hz9ux/summary.json",
     "--summary-trend-stats",
     "med,p(90),p(95),p(99)",
     "-e",
-    "WS_URL=ws://127.0.0.1:34331/ws",
+    "WS_URL=ws://127.0.0.1:50541/ws",
     "bench/k6/ws.js"
   ],
-  "elapsed_seconds": 2.0559574549552053,
+  "elapsed_seconds": 1.0449741469928995,
   "returncode": 0,
   "stderr": "",
-  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 32s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 2s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 22637 complete and 0 interrupted iterations\ndefault   [  50% ] 100 VUs  1.0s/2s\n\nrunning (02.0s), 100/100 VUs, 45873 complete and 0 interrupted iterations\ndefault   [ 100% ] 100 VUs  2.0s/2s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 92162   45985.365936/s\n    checks_succeeded...: 100.00% 92162 out of 92162\n    checks_failed......: 0.00%   0 out of 92162\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 46081 out of 46081\n\n    EXECUTION\n    iteration_duration....: med=4.21ms p(90)=5.17ms p(95)=5.52ms p(99)=7.09ms\n    iterations............: 46081   22992.682968/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 9.0 MB  4.5 MB/s\n    data_sent.............: 10 MB   5.2 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=2.31ms p(90)=2.99ms p(95)=3.23ms p(99)=3.87ms\n    ws_msgs_received......: 46081   22992.682968/s\n    ws_msgs_sent..........: 46081   22992.682968/s\n    ws_session_duration...: med=4.15ms p(90)=5.09ms p(95)=5.44ms p(99)=6.96ms\n    ws_sessions...........: 46081   22992.682968/s\n\n\n\n\nrunning (02.0s), 000/100 VUs, 46081 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  2s\n",
-  "timeout_seconds": 32.0
+  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 31s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 1s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 18395 complete and 0 interrupted iterations\ndefault   [  99% ] 100 VUs  1.0s/1s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 37278   37135.354007/s\n    checks_succeeded...: 100.00% 37278 out of 37278\n    checks_failed......: 0.00%   0 out of 37278\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 18639 out of 18639\n\n    EXECUTION\n    iteration_duration....: med=4.37ms p(90)=5.5ms  p(95)=7.64ms p(99)=36.74ms\n    iterations............: 18639   18567.677004/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 3.6 MB  3.6 MB/s\n    data_sent.............: 4.2 MB  4.2 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=2.38ms p(90)=3.23ms p(95)=4.56ms p(99)=17.67ms\n    ws_msgs_received......: 18639   18567.677004/s\n    ws_msgs_sent..........: 18639   18567.677004/s\n    ws_session_duration...: med=4.31ms p(90)=5.42ms p(95)=7.52ms p(99)=36.52ms\n    ws_sessions...........: 18639   18567.677004/s\n\n\n\n\nrunning (01.0s), 000/100 VUs, 18639 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  1s\n",
+  "timeout_seconds": 31.0
 }

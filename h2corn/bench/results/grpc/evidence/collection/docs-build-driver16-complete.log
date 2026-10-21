@@ -1,9 +1,0 @@
-INFO    -  Cleaning site directory
-INFO    -  Building documentation to directory: /tmp/opencode/grpc-final-779/site-driver16
-INFO    -  mkdocstrings_handlers: Formatting signatures requires either Black or Ruff to be installed.
-bun install v1.4.3 (c6da4a4d3)
-
-Checked 27 installs across 47 packages (no changes) [43.00ms]
-$ tsc --noEmit
-$ bun run tools/docs/browser/build.ts "{\"site\": \"/tmp/opencode/grpc-final-779/site-driver16\", \"siteURL\": \"https://h2corn.monicz.dev/\", \"fonts\": true, \"stylesheets\": {\"stylesheets/extra.css\": \"/home/user/Source/pkgs/h2corn/docs/stylesheets/extra.css\"}}"
-INFO    -  Documentation built in 4.46 seconds

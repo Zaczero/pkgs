@@ -4,90 +4,34 @@
   "samples": [
     {
       "elapsed_seconds": 0.0,
-      "pss_bytes": 39917568,
+      "pss_bytes": 38113280,
       "unique_pids": [
-        3720521
+        1259200
       ]
     },
     {
-      "elapsed_seconds": 1.0012926260242239,
-      "pss_bytes": 39950336,
+      "elapsed_seconds": 1.0010180759709328,
+      "pss_bytes": 38236160,
       "unique_pids": [
-        3720521
+        1259200
       ]
     },
     {
-      "elapsed_seconds": 2.002576998085715,
-      "pss_bytes": 39950336,
+      "elapsed_seconds": 2.002161414013244,
+      "pss_bytes": 38465536,
       "unique_pids": [
-        3720521
+        1259200
       ]
     },
     {
-      "elapsed_seconds": 3.0038218470290303,
-      "pss_bytes": 40056832,
+      "elapsed_seconds": 2.037613986991346,
+      "pss_bytes": 38465536,
       "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 4.005152622004971,
-      "pss_bytes": 40123392,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 5.006415672018193,
-      "pss_bytes": 40270848,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 6.007964299991727,
-      "pss_bytes": 40397824,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 7.009133332991041,
-      "pss_bytes": 40437760,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 8.010365002090111,
-      "pss_bytes": 40499200,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 9.011655157082714,
-      "pss_bytes": 40695808,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 10.012969678035006,
-      "pss_bytes": 40798208,
-      "unique_pids": [
-        3720521
-      ]
-    },
-    {
-      "elapsed_seconds": 10.035591683001257,
-      "pss_bytes": 40798208,
-      "unique_pids": [
-        3720521
+        1259200
       ]
     }
   ],
   "unique_pids": [
-    3720521
+    1259200
   ]
 }

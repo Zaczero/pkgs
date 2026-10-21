@@ -1,0 +1,180 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 1.0,
+  "fixed_count": false,
+  "not_selected_servers": {
+    "grpclib": "Representative no-compression subset"
+  },
+  "scenario": "gRPC TLS-U32 TLS",
+  "servers": {
+    "grpcio": {
+      "elapsed_seconds": 1.79268311499618,
+      "processes_after": {
+        "1183776": {
+          "start_ticks": 79977277,
+          "system_ticks": 82,
+          "threads": [
+            1183776,
+            1183777,
+            1183778,
+            1183779,
+            1183780,
+            1183781,
+            1183782,
+            1183783,
+            1183784,
+            1183785,
+            1183786,
+            1183787,
+            1183788,
+            1183789,
+            1183790,
+            1183791,
+            1183792,
+            1183793,
+            1183794,
+            1183795
+          ],
+          "user_ticks": 189
+        }
+      },
+      "processes_before": {
+        "1183776": {
+          "start_ticks": 79977277,
+          "system_ticks": 4,
+          "threads": [
+            1183776,
+            1183777,
+            1183778,
+            1183779,
+            1183780,
+            1183781,
+            1183782,
+            1183783,
+            1183784,
+            1183785,
+            1183786,
+            1183787,
+            1183788,
+            1183789,
+            1183790,
+            1183791,
+            1183792,
+            1183793,
+            1183794,
+            1183795
+          ],
+          "user_ticks": 11
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "grpcio",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 3236,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5242071149405092,
+          "rate": 6345.213733612763
+        },
+        {
+          "completed": 6083,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.024364606011659,
+          "rate": 6019.272547015697
+        }
+      ]
+    },
+    "h2corn": {
+      "elapsed_seconds": 1.9848052139859647,
+      "processes_after": {
+        "1183949": {
+          "start_ticks": 79977638,
+          "system_ticks": 79,
+          "threads": [
+            1183949,
+            1183950,
+            1183951
+          ],
+          "user_ticks": 225
+        }
+      },
+      "processes_before": {
+        "1183949": {
+          "start_ticks": 79977638,
+          "system_ticks": 9,
+          "threads": [
+            1183949,
+            1183950,
+            1183951
+          ],
+          "user_ticks": 20
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 8994,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.514177810982801,
+          "rate": 17906.910988926542
+        },
+        {
+          "completed": 16342,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.015629333909601,
+          "rate": 16289.694735008185
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 1.8188213790999725,
+      "processes_after": {
+        "1183866": {
+          "start_ticks": 79977456,
+          "system_ticks": 17,
+          "threads": [
+            1183866
+          ],
+          "user_ticks": 147
+        }
+      },
+      "processes_before": {
+        "1183866": {
+          "start_ticks": 79977456,
+          "system_ticks": 3,
+          "threads": [
+            1183866
+          ],
+          "user_ticks": 15
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 1609,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5196682319510728,
+          "rate": 3172.0121738475823
+        },
+        {
+          "completed": 3029,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0273196880007163,
+          "rate": 2981.2915745059368
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "hypercorn",
+    "grpcio"
+  ],
+  "unsupported_servers": {}
+}

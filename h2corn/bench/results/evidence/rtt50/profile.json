@@ -1,19 +1,42 @@
 {
+  "benchmark_family": "http",
   "description": "50 ms RTT, 1gbit netem",
-  "failed_cells": {},
-  "measured_rtt_ms": 50.05816253833473,
-  "netem": {
-    "description": "50 ms RTT, 1gbit netem",
-    "measured_rtt_ms": 50.05816253833473,
-    "name": "rtt50",
-    "one_way_delay_ms": 25.0,
-    "qdisc": "qdisc netem 800b: root refcnt 2 limit 1000 delay 25ms rate 1Gbit seed 14355854943903509965",
-    "rate": "1gbit",
-    "status": "ready",
-    "target_rtt_ms": 50.0
-  },
+  "measured_rtt_ms": 50.45826401328668,
+  "netem_phases": [
+    {
+      "description": "50 ms RTT, 1gbit netem",
+      "measured_rtt_ms": 50.10141292586923,
+      "name": "rtt50",
+      "netem_setup_elapsed_seconds": 0.5617900510551408,
+      "one_way_delay_ms": 25.0,
+      "phase": "calibration",
+      "process_startup_overhead_seconds": 0.5502606219379231,
+      "qdisc": "qdisc netem 8018: root refcnt 2 limit 1000 delay 25ms rate 1Gbit seed 6745321316464645963",
+      "rate": "1gbit",
+      "status": "ready",
+      "target_rtt_ms": 50.0,
+      "worker_phase_elapsed_seconds": 101.43272835004609,
+      "worker_process_elapsed_seconds": 101.98298897198401
+    },
+    {
+      "description": "50 ms RTT, 1gbit netem",
+      "measured_rtt_ms": 50.45826401328668,
+      "name": "rtt50",
+      "netem_setup_elapsed_seconds": 0.5637870639329776,
+      "one_way_delay_ms": 25.0,
+      "phase": "production",
+      "process_startup_overhead_seconds": 0.5334376238752156,
+      "qdisc": "qdisc netem 8019: root refcnt 2 limit 1000 delay 25ms rate 1Gbit seed 13884847708104543791",
+      "rate": "1gbit",
+      "status": "ready",
+      "target_rtt_ms": 50.0,
+      "worker_phase_elapsed_seconds": 553.2428275790298,
+      "worker_process_elapsed_seconds": 553.776265202905
+    }
+  ],
   "profile": "rtt50",
   "reason": null,
   "status": "completed",
+  "suite_plan": "suite-plan.json",
   "target_rtt_ms": 50.0
 }

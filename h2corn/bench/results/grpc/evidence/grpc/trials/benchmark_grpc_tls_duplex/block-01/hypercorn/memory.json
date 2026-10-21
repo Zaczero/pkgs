@@ -4,90 +4,34 @@
   "samples": [
     {
       "elapsed_seconds": 0.0,
-      "pss_bytes": 39956480,
+      "pss_bytes": 38095872,
       "unique_pids": [
-        3712944
+        1258245
       ]
     },
     {
-      "elapsed_seconds": 1.001157965976745,
-      "pss_bytes": 39972864,
+      "elapsed_seconds": 1.0010970929870382,
+      "pss_bytes": 38255616,
       "unique_pids": [
-        3712944
+        1258245
       ]
     },
     {
-      "elapsed_seconds": 2.0027275329921395,
-      "pss_bytes": 39972864,
+      "elapsed_seconds": 2.00252828001976,
+      "pss_bytes": 38636544,
       "unique_pids": [
-        3712944
+        1258245
       ]
     },
     {
-      "elapsed_seconds": 3.003898411989212,
-      "pss_bytes": 40095744,
+      "elapsed_seconds": 2.02836592704989,
+      "pss_bytes": 38636544,
       "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 4.00508967100177,
-      "pss_bytes": 40214528,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 5.006294452003203,
-      "pss_bytes": 40353792,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 6.007482695044018,
-      "pss_bytes": 40435712,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 7.008877797983587,
-      "pss_bytes": 40480768,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 8.010206012055278,
-      "pss_bytes": 40652800,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 9.011498747044243,
-      "pss_bytes": 40734720,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 10.012702203006484,
-      "pss_bytes": 40800256,
-      "unique_pids": [
-        3712944
-      ]
-    },
-    {
-      "elapsed_seconds": 10.027940500993282,
-      "pss_bytes": 40800256,
-      "unique_pids": [
-        3712944
+        1258245
       ]
     }
   ],
   "unique_pids": [
-    3712944
+    1258245
   ]
 }

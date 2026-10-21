@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/grpc-client",
+    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/evidence/benchmark_grpc_u32/calibration/hypercorn/window-0.5s/load.plan.json"
+  ],
+  "elapsed_seconds": 0.5219368279213086,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":1728,\"started\":1728,\"verified_ok\":1728,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":1728,\"verified_payload_bytes\":55296,\"serialized_request_bytes\":58752,\"serialized_response_bytes\":58752,\"statuses\":{\"OK\":1728},\"errors\":[],\"elapsed_seconds\":0.514845023,\"window_seconds\":0.5,\"drain_seconds\":0.014845023000000013,\"latency_percentiles\":{\"p50\":0.018558834648737556,\"p90\":0.020500499374843578,\"p95\":0.020912559412277962,\"p99\":0.02112168500640076},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1660\":2,\"1671\":4,\"1672\":2,\"1673\":1,\"1674\":1,\"1675\":11,\"1676\":7,\"1677\":63,\"1678\":146,\"1679\":252,\"1680\":237,\"1681\":186,\"1682\":40,\"1683\":60,\"1684\":109,\"1685\":74,\"1686\":154,\"1687\":54,\"1688\":28,\"1689\":44,\"1690\":49,\"1691\":48,\"1692\":57,\"1693\":42,\"1694\":53,\"1696\":1,\"1697\":1,\"1721\":1,\"1722\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.157449,\"cpu_system_seconds\":0.103003,\"max_rss_kib\":16228,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 1182261, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 30.5
+}

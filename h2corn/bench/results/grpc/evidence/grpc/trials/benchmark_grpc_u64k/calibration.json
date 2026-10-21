@@ -1,0 +1,219 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 1.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "gRPC U64K",
+  "servers": {
+    "grpcio": {
+      "elapsed_seconds": 1.777149879024364,
+      "processes_after": {
+        "1182766": {
+          "start_ticks": 79975252,
+          "system_ticks": 105,
+          "threads": [
+            1182766,
+            1182767,
+            1182768,
+            1182769,
+            1182770,
+            1182771,
+            1182772,
+            1182773,
+            1182774,
+            1182775,
+            1182776,
+            1182777,
+            1182778,
+            1182779,
+            1182780,
+            1182781,
+            1182782,
+            1182783,
+            1182784,
+            1182785
+          ],
+          "user_ticks": 181
+        }
+      },
+      "processes_before": {
+        "1182766": {
+          "start_ticks": 79975252,
+          "system_ticks": 4,
+          "threads": [
+            1182766,
+            1182767,
+            1182768,
+            1182769,
+            1182770,
+            1182771,
+            1182772,
+            1182773,
+            1182774,
+            1182775,
+            1182776,
+            1182777,
+            1182778,
+            1182779,
+            1182780,
+            1182781,
+            1182782,
+            1182783,
+            1182784,
+            1182785
+          ],
+          "user_ticks": 11
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "grpcio",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 2065,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5190991490380839,
+          "rate": 4104.142531269397
+        },
+        {
+          "completed": 4449,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0198642780305818,
+          "rate": 4434.195374535224
+        }
+      ]
+    },
+    "grpclib": {
+      "elapsed_seconds": 1.7483931520255283,
+      "processes_after": {
+        "1182671": {
+          "start_ticks": 79975077,
+          "system_ticks": 28,
+          "threads": [
+            1182671
+          ],
+          "user_ticks": 120
+        }
+      },
+      "processes_before": {
+        "1182671": {
+          "start_ticks": 79975077,
+          "system_ticks": 2,
+          "threads": [
+            1182671
+          ],
+          "user_ticks": 9
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "grpclib",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 1035,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5185342909535393,
+          "rate": 2054.773736207691
+        },
+        {
+          "completed": 2261,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0213291939580813,
+          "rate": 2245.9699042675143
+        }
+      ]
+    },
+    "h2corn": {
+      "elapsed_seconds": 1.954517699079588,
+      "processes_after": {
+        "1182584": {
+          "start_ticks": 79974881,
+          "system_ticks": 98,
+          "threads": [
+            1182584,
+            1182585,
+            1182586
+          ],
+          "user_ticks": 212
+        }
+      },
+      "processes_before": {
+        "1182584": {
+          "start_ticks": 79974881,
+          "system_ticks": 9,
+          "threads": [
+            1182584,
+            1182585,
+            1182586
+          ],
+          "user_ticks": 17
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 3346,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5161254189442843,
+          "rate": 6674.4265951938905
+        },
+        {
+          "completed": 6733,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0168324920814484,
+          "rate": 6722.3576742293435
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 1.8080699309939519,
+      "processes_after": {
+        "1182506": {
+          "start_ticks": 79974700,
+          "system_ticks": 23,
+          "threads": [
+            1182506
+          ],
+          "user_ticks": 136
+        }
+      },
+      "processes_before": {
+        "1182506": {
+          "start_ticks": 79974700,
+          "system_ticks": 4,
+          "threads": [
+            1182506
+          ],
+          "user_ticks": 15
+        }
+      },
+      "selected_duration_seconds": 1.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 647,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.52241515298374,
+          "rate": 1274.8357360361458
+        },
+        {
+          "completed": 1297,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0233121400233358,
+          "rate": 1286.1120646360062
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "hypercorn",
+    "grpcio",
+    "grpclib"
+  ],
+  "unsupported_servers": {}
+}

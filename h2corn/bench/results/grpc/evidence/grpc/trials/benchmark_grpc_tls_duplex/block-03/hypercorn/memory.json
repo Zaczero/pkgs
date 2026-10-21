@@ -4,90 +4,34 @@
   "samples": [
     {
       "elapsed_seconds": 0.0,
-      "pss_bytes": 39912448,
+      "pss_bytes": 38121472,
       "unique_pids": [
-        3718115
+        1258851
       ]
     },
     {
-      "elapsed_seconds": 1.00116451701615,
-      "pss_bytes": 39936000,
+      "elapsed_seconds": 1.0011104559525847,
+      "pss_bytes": 38248448,
       "unique_pids": [
-        3718115
+        1258851
       ]
     },
     {
-      "elapsed_seconds": 2.0024143010377884,
-      "pss_bytes": 40074240,
+      "elapsed_seconds": 2.0022392119280994,
+      "pss_bytes": 38572032,
       "unique_pids": [
-        3718115
+        1258851
       ]
     },
     {
-      "elapsed_seconds": 3.0038720540469512,
-      "pss_bytes": 40164352,
+      "elapsed_seconds": 2.0344170819735155,
+      "pss_bytes": 38572032,
       "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 4.0052839940181,
-      "pss_bytes": 40250368,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 5.006571862031706,
-      "pss_bytes": 40392704,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 6.0077291880734265,
-      "pss_bytes": 40470528,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 7.00891837105155,
-      "pss_bytes": 40498176,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 8.010534413042478,
-      "pss_bytes": 40686592,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 9.011786992079578,
-      "pss_bytes": 40719360,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 10.013033588067628,
-      "pss_bytes": 40776704,
-      "unique_pids": [
-        3718115
-      ]
-    },
-    {
-      "elapsed_seconds": 10.033443770022132,
-      "pss_bytes": 40780800,
-      "unique_pids": [
-        3718115
+        1258851
       ]
     }
   ],
   "unique_pids": [
-    3718115
+    1258851
   ]
 }

@@ -1,0 +1,26 @@
+{
+  "errors": [],
+  "sample_interval_seconds": 1.0,
+  "samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "pss_bytes": 49146880,
+      "unique_pids": [
+        1174090,
+        1174092
+      ]
+    },
+    {
+      "elapsed_seconds": 0.5150957510340959,
+      "pss_bytes": 88042496,
+      "unique_pids": [
+        1174090,
+        1174092
+      ]
+    }
+  ],
+  "unique_pids": [
+    1174090,
+    1174092
+  ]
+}

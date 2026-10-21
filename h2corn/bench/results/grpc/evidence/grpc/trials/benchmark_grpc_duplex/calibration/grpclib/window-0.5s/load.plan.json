@@ -1,0 +1,15 @@
+{
+  "ca": "",
+  "case": "Duplex",
+  "concurrency": 8,
+  "descriptor": "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/notebook.pb",
+  "drain_seconds": 15,
+  "duration_seconds": 0.5,
+  "endpoint": "127.0.0.1:51649",
+  "messages": 64,
+  "mode": "",
+  "requests": 0,
+  "shape": "duplex",
+  "size": 256,
+  "verify_identity": false
+}

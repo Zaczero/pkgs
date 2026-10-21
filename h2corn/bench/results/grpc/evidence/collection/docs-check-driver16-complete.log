@@ -1,8 +1,0 @@
-{"level":"info","ts":1792537728.7708206,"msg":"using config from file","file":"/home/user/Source/pkgs/h2corn/examples/Caddyfile"}
-{"level":"info","ts":1792537728.7734926,"msg":"adapted config to JSON","adapter":"caddyfile"}
-{"level":"info","ts":1792537728.7741842,"logger":"http.auto_https","msg":"server is listening only on the HTTPS port but has no TLS connection policies; adding one to enable TLS","server_name":"srv0","https_port":443}
-{"level":"info","ts":1792537728.7742136,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x2e5a6c478800"}
-{"level":"info","ts":1792537728.7742739,"logger":"http.auto_https","msg":"enabling automatic HTTP->HTTPS redirects","server_name":"srv0"}
-{"level":"info","ts":1792537728.7746696,"logger":"http","msg":"servers shutting down with eternal grace period"}
-{"level":"info","ts":1792537728.774755,"logger":"tls.cache.maintenance","msg":"stopped background certificate maintenance","cache":"0x2e5a6c478800"}
-h2corn docs: rendered links, Config/API, benchmark alternatives, and examples passed; Caddy syntax validation passed

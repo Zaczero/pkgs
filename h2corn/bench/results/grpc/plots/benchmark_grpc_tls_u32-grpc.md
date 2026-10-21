@@ -1,6 +1,6 @@
-| Server | Median RPC/s | Blocks | Median completed RPCs/trial | p50 latency (ms) | p99 latency (ms) | PSS (MB) | Throughput vs Connect / h2corn |
+| Server | Median RPC/s | Blocks | Median completed RPCs/trial | p50 latency (ms) | p99 latency (ms) | PSS (MB) | Throughput vs h2corn |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Connect / h2corn | 17,305 | 12 | 173,105 | 3.576 | 8.089 | 69.2 | - |
-| Connect / Hypercorn | 2,988 | 12 | 29,924 | 20.913 | 30.675 | 44.8 | slower |
-| grpc.aio | 6,085 | 12 | 60,916.5 | 10.473 | 13.701 | 60.0 | slower |
+| Connect / h2corn | 17,414 | 6 | 17,464 | 3.474 | 10.526 | 68.3 | - |
+| Connect / Hypercorn | 3,165 | 6 | 3,200 | 19.701 | 27.772 | 39.4 | slower |
+| grpc.aio | 6,283 | 6 | 6,351.5 | 10.165 | 13.431 | 57.0 | slower |
 | grpclib | not selected | - | - | - | - | - | - |

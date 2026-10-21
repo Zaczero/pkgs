@@ -1,0 +1,103 @@
+{
+  "calibration_limited": true,
+  "duration_seconds": 4.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "HTTP/1 WebSocket (1 Worker)",
+  "servers": {
+    "gunicorn": {
+      "elapsed_seconds": 8.350899502984248,
+      "selected_duration_seconds": 4.0,
+      "server": "gunicorn",
+      "status": "calibration-limited",
+      "windows": [
+        {
+          "completed": 4854,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.051789646036923,
+          "rate": 4789.857892139612
+        },
+        {
+          "completed": 7100,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.056421323097311,
+          "rate": 3522.028558124502
+        },
+        {
+          "completed": 11800,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.209422305924818,
+          "rate": 2831.6392946866167
+        }
+      ]
+    },
+    "h2corn": {
+      "elapsed_seconds": 3.310159482061863,
+      "selected_duration_seconds": 2.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 24649,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.053058660007082,
+          "rate": 24565.584805447605
+        },
+        {
+          "completed": 49217,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.046726271044463,
+          "rate": 24566.089765912555
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 3.3559172940440476,
+      "selected_duration_seconds": 2.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 2358,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0723883470054716,
+          "rate": 2270.2349485307554
+        },
+        {
+          "completed": 4358,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0615343609824777,
+          "rate": 2150.9860173456054
+        }
+      ]
+    },
+    "uvicorn": {
+      "elapsed_seconds": 3.4800458520185202,
+      "selected_duration_seconds": 2.0,
+      "server": "uvicorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 2258,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0722712180577219,
+          "rate": 2179.49671859057
+        },
+        {
+          "completed": 4107,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.086262015043758,
+          "rate": 2012.307666645314
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "uvicorn",
+    "hypercorn",
+    "gunicorn"
+  ],
+  "unsupported_servers": {}
+}

@@ -1,6 +1,0 @@
-{
-  "application_artifact_kind": "development",
-  "benchmark_family": "grpc",
-  "profile": "grpc",
-  "status": "qualified"
-}

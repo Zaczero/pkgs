@@ -1,113 +1,91 @@
 {
   "details": {
     "DNSDialup": {
-      "average": 0.019783570501000016,
-      "fastest": 0.000485938,
-      "slowest": 0.071366444
+      "average": null,
+      "fastest": null,
+      "slowest": null
     },
     "DNSLookup": {
-      "average": 2.1846689999999985e-06,
-      "fastest": 8.7e-07,
-      "slowest": 4.1981e-05
+      "average": null,
+      "fastest": null,
+      "slowest": null
     },
     "firstByte": {
-      "average": 0.15968779959562207,
-      "fastest": 0.069189372,
-      "slowest": 0.236200086
+      "average": null,
+      "fastest": null,
+      "slowest": null
     }
   },
   "errorDistribution": {
     "aborted due to deadline": 1000
   },
   "firstByteHistogram": {
-    "0.069189372": 1,
-    "0.0858904434": 365,
-    "0.1025915148": 523,
-    "0.1192925862": 42,
-    "0.13599365759999998": 286,
-    "0.152694729": 626,
-    "0.1693958004": 789,
-    "0.1860968718": 1535,
-    "0.2027979432": 1155,
-    "0.2194990146": 386,
-    "0.236200086": 49
+    "NaN": 0
   },
   "firstBytePercentiles": {
-    "p10": 0.088829308,
-    "p25": 0.138428514,
-    "p50": 0.17198146,
-    "p75": 0.187355931,
-    "p90": 0.200721962,
-    "p95": 0.205562545,
-    "p99": 0.215916511,
-    "p99.9": 0.235697799,
-    "p99.99": 0.236200086
+    "p10": null,
+    "p25": null,
+    "p50": null,
+    "p75": null,
+    "p90": null,
+    "p95": null,
+    "p99": null,
+    "p99.9": null,
+    "p99.99": null
   },
   "latencyPercentiles": {
-    "p10": 0.295072243,
-    "p25": 0.304320052,
-    "p50": 0.313106875,
-    "p75": 0.337493971,
-    "p90": 0.361738937,
-    "p95": 0.381096128,
-    "p99": 0.392223856,
-    "p99.9": 0.460341962,
-    "p99.99": 0.460708487
+    "p10": null,
+    "p25": null,
+    "p50": null,
+    "p75": null,
+    "p90": null,
+    "p95": null,
+    "p99": null,
+    "p99.9": null,
+    "p99.99": null
   },
   "metrics": {
     "latency_ms": {
-      "max": 460.708,
-      "mean": 322.198,
-      "min": 266.216,
-      "p50": 313.107,
-      "p95": 381.096,
-      "p99": 392.224
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
     },
-    "requests_per_sec": 3368.7857021734985,
-    "success_rate": 1.0
+    "requests_per_sec": 3900.579304286825,
+    "success_rate": null
   },
   "responseTimeHistogram": {
-    "0.266215629": 1,
-    "0.2856649148": 195,
-    "0.3051142006": 1462,
-    "0.3245634864": 2122,
-    "0.34401277220000004": 1016,
-    "0.363462058": 457,
-    "0.3829113438": 382,
-    "0.4023606296": 73,
-    "0.4218099154": 0,
-    "0.4412592012": 0,
-    "0.460708487": 49
+    "NaN": 0
   },
   "rps": {
-    "max": 17020.475632185404,
-    "mean": 9747.263323710367,
-    "min": 3.2555834248689446,
+    "max": null,
+    "mean": null,
+    "min": null,
     "percentiles": {
-      "p10": 13.218475531987117,
-      "p25": 47.57333870214312,
-      "p50": 12811.480419683141,
-      "p75": 14948.281454268985,
-      "p90": 15842.456198366022,
-      "p95": 16268.686393955417,
-      "p99": 17020.475632185404,
-      "p99.9": 17020.475632185404,
-      "p99.99": 17020.475632185404
+      "p10": null,
+      "p25": null,
+      "p50": null,
+      "p75": null,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p99.9": null,
+      "p99.99": null
     },
-    "stddev": 6585.821026000395
+    "stddev": null
   },
-  "statusCodeDistribution": {
-    "200": 5757
-  },
+  "statusCodeDistribution": {},
   "summary": {
-    "average": 0.32219847699079573,
-    "fastest": 0.266215629,
-    "requestsPerSec": 3368.7857021734985,
-    "sizePerRequest": 36,
-    "sizePerSec": 103328.04119385258,
-    "slowest": 0.460708487,
-    "successRate": 1.0,
-    "total": 2.00576724,
-    "totalData": 207252
+    "average": null,
+    "fastest": null,
+    "requestsPerSec": 3900.579304286825,
+    "sizePerRequest": null,
+    "sizePerSec": 0.0,
+    "slowest": null,
+    "successRate": null,
+    "total": 0.256372175,
+    "totalData": 0
   }
 }

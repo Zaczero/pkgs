@@ -1,0 +1,70 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 4.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "HTTP/2 Streaming POST (4 Workers)",
+  "servers": {
+    "h2corn": {
+      "elapsed_seconds": 1.8523013630183414,
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 19211,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5342401349917054,
+          "rate": 37717.219358188195
+        },
+        {
+          "completed": 41027,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.036680991994217,
+          "rate": 40659.09705479978
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 7.915287313982844,
+      "selected_duration_seconds": 4.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 2097,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5298016220331192,
+          "rate": 4129.6181056983305
+        },
+        {
+          "completed": 5293,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0306381839327514,
+          "rate": 5250.305888098129
+        },
+        {
+          "completed": 8316,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0289921410148963,
+          "rate": 4141.895743978642
+        },
+        {
+          "completed": 17251,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.03453061892651,
+          "rate": 4301.263126268355
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "hypercorn"
+  ],
+  "unsupported_servers": {
+    "gunicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode.",
+    "uvicorn": "The selected release has no prior-knowledge cleartext HTTP/2 mode."
+  }
+}

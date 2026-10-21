@@ -1,0 +1,27 @@
+{
+  "command": [
+    "oha",
+    "-z",
+    "4s",
+    "-c",
+    "1000",
+    "-p",
+    "1",
+    "--output-format",
+    "json",
+    "--http-version",
+    "2",
+    "-m",
+    "POST",
+    "-d",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "-T",
+    "application/octet-stream",
+    "http://127.0.0.1:58671/streaming-post"
+  ],
+  "elapsed_seconds": 4.0184994409792125,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\n  \"summary\": {\n    \"successRate\": 1.0,\n    \"total\": 4.007917287,\n    \"slowest\": 1.461368784,\n    \"fastest\": 0.610865138,\n    \"average\": 0.8747902268697513,\n    \"requestsPerSec\": 1247.5307352818631,\n    \"totalData\": 144000,\n    \"sizePerRequest\": 36,\n    \"sizePerSec\": 35928.88517611766\n  },\n  \"metrics\": {\n    \"success_rate\": 1.0,\n    \"requests_per_sec\": 1247.5307352818631,\n    \"latency_ms\": {\n      \"min\": 610.865,\n      \"mean\": 874.79,\n      \"p50\": 795.738,\n      \"p95\": 1361.285,\n      \"p99\": 1459.542,\n      \"max\": 1461.369\n    }\n  },\n  \"responseTimeHistogram\": {\n    \"0.610865138\": 1,\n    \"0.6959155026\": 956,\n    \"0.7809658671999999\": 961,\n    \"0.8660162318\": 888,\n    \"0.9510665964\": 194,\n    \"1.036116961\": 0,\n    \"1.1211673256\": 0,\n    \"1.2062176902\": 0,\n    \"1.2912680548000002\": 384,\n    \"1.3763184194\": 561,\n    \"1.4613687840000003\": 55\n  },\n  \"latencyPercentiles\": {\n    \"p10\": 0.616009974,\n    \"p25\": 0.707001375,\n    \"p50\": 0.79573757,\n    \"p75\": 1.23951228,\n    \"p90\": 1.352165341,\n    \"p95\": 1.361285076,\n    \"p99\": 1.459541986,\n    \"p99.9\": 1.461263284,\n    \"p99.99\": 1.461368784\n  },\n  \"firstByteHistogram\": {\n    \"0.330018017\": 1,\n    \"0.4170010032\": 187,\n    \"0.5039839894\": 1598,\n    \"0.5909669756\": 452,\n    \"0.6779499618\": 499,\n    \"0.764932948\": 263,\n    \"0.8519159342\": 0,\n    \"0.9388989204\": 0,\n    \"1.0258819066\": 0,\n    \"1.1128648928\": 0,\n    \"1.199847879\": 1000\n  },\n  \"firstBytePercentiles\": {\n    \"p10\": 0.449940601,\n    \"p25\": 0.477477146,\n    \"p50\": 0.532829617,\n    \"p75\": 1.150993272,\n    \"p90\": 1.179912458,\n    \"p95\": 1.186783203,\n    \"p99\": 1.197560897,\n    \"p99.9\": 1.199640918,\n    \"p99.99\": 1.199847879\n  },\n  \"rps\": {\n    \"mean\": 12176.543659735431,\n    \"stddev\": 9622.517424240703,\n    \"max\": 21392.372263433554,\n    \"min\": 0.7549031026344645,\n    \"percentiles\": {\n      \"p10\": 7.530870506726825,\n      \"p25\": 14.281797808703761,\n      \"p50\": 19216.41850797205,\n      \"p75\": 20083.413109112364,\n      \"p90\": 20415.102127474358,\n      \"p95\": 21014.727072143156,\n      \"p99\": 21392.372263433554,\n      \"p99.9\": 21392.372263433554,\n      \"p99.99\": 21392.372263433554\n    }\n  },\n  \"details\": {\n    \"DNSDialup\": {\n      \"average\": 0.021956947081,\n      \"fastest\": 0.001382937,\n      \"slowest\": 0.08122664\n    },\n    \"DNSLookup\": {\n      \"average\": 2.0878480000000023e-6,\n      \"fastest\": 9.6e-7,\n      \"slowest\": 0.00003331\n    },\n    \"firstByte\": {\n      \"average\": 0.6886108279069995,\n      \"fastest\": 0.330018017,\n      \"slowest\": 1.199847879\n    }\n  },\n  \"statusCodeDistribution\": {\n    \"200\": 4000\n  },\n  \"errorDistribution\": {\n    \"aborted due to deadline\": 1000\n  }\n}",
+  "timeout_seconds": 34.0
+}

@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/grpc-client",
+    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/evidence/benchmark_grpc_upload/calibration/hypercorn/window-0.5s/load.plan.json"
+  ],
+  "elapsed_seconds": 0.539508656016551,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":119,\"started\":119,\"verified_ok\":119,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":119,\"verified_payload_bytes\":124780544,\"serialized_request_bytes\":124826240,\"serialized_response_bytes\":2856,\"statuses\":{\"OK\":119},\"errors\":[],\"elapsed_seconds\":0.524380608,\"window_seconds\":0.5,\"drain_seconds\":0.02438060799999997,\"latency_percentiles\":{\"p50\":0.03508476924541436,\"p90\":0.037991777642810844,\"p95\":0.03875541237343126,\"p99\":0.04073232790024613},\"message_latency_percentiles\":{},\"first_message_percentiles\":{\"p50\":0.03473739529248944,\"p90\":0.03761562142852556,\"p95\":0.03875541237343126,\"p99\":0.04073232790024613},\"rpc_latency_histogram\":{\"1712\":1,\"1727\":1,\"1734\":1,\"1735\":3,\"1736\":1,\"1737\":3,\"1738\":4,\"1739\":4,\"1740\":6,\"1741\":6,\"1742\":12,\"1743\":14,\"1744\":3,\"1745\":8,\"1746\":7,\"1747\":8,\"1748\":3,\"1749\":5,\"1750\":6,\"1751\":5,\"1752\":6,\"1753\":2,\"1754\":3,\"1755\":2,\"1756\":1,\"1757\":2,\"1760\":1,\"1762\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{\"1712\":1,\"1727\":1,\"1734\":1,\"1735\":3,\"1736\":1,\"1737\":3,\"1738\":4,\"1739\":4,\"1740\":6,\"1741\":6,\"1742\":13,\"1743\":13,\"1744\":4,\"1745\":7,\"1746\":7,\"1747\":8,\"1748\":3,\"1749\":5,\"1750\":6,\"1751\":5,\"1752\":8,\"1753\":2,\"1754\":1,\"1755\":2,\"1756\":2,\"1757\":1,\"1760\":1,\"1762\":1},\"cpu_user_seconds\":0.208023,\"cpu_system_seconds\":0.184899,\"max_rss_kib\":81248,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 1182981, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 30.5
+}

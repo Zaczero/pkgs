@@ -1,0 +1,89 @@
+{
+  "calibration_limited": false,
+  "duration_seconds": 2.0,
+  "fixed_count": false,
+  "not_selected_servers": {},
+  "scenario": "HTTP/1 Static file (4 Workers)",
+  "servers": {
+    "gunicorn": {
+      "error": "gunicorn correctness-before failed: h1_file correctness probe transport failed: HTTP/1 persistent request 2 failed: timed out",
+      "phase": "correctness-before",
+      "server": "gunicorn",
+      "status": "failed"
+    },
+    "h2corn": {
+      "elapsed_seconds": 1.7869863819796592,
+      "selected_duration_seconds": 1.0,
+      "server": "h2corn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 16909,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5239271600730717,
+          "rate": 33652.89599808434
+        },
+        {
+          "completed": 36891,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0301927360706031,
+          "rate": 36804.7123456329
+        }
+      ]
+    },
+    "hypercorn": {
+      "elapsed_seconds": 3.819042431889102,
+      "selected_duration_seconds": 2.0,
+      "server": "hypercorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 1932,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5206197999650612,
+          "rate": 3848.4966008382853
+        },
+        {
+          "completed": 4323,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0220558519940823,
+          "rate": 4314.845881919575
+        },
+        {
+          "completed": 8432,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0249734550016,
+          "rate": 4211.00685336671
+        }
+      ]
+    },
+    "uvicorn": {
+      "elapsed_seconds": 2.088459559949115,
+      "selected_duration_seconds": 1.0,
+      "server": "uvicorn",
+      "status": "stable",
+      "windows": [
+        {
+          "completed": 2474,
+          "duration_seconds": 0.5,
+          "elapsed_seconds": 0.5213015869958326,
+          "rate": 4914.571722041001
+        },
+        {
+          "completed": 5037,
+          "duration_seconds": 1.0,
+          "elapsed_seconds": 1.0230251419125125,
+          "rate": 5020.725964459853
+        }
+      ]
+    }
+  },
+  "status": "calibrated",
+  "supported_servers": [
+    "h2corn",
+    "uvicorn",
+    "hypercorn",
+    "gunicorn"
+  ],
+  "unsupported_servers": {}
+}
