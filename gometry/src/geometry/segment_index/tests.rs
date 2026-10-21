@@ -518,7 +518,8 @@ mod run_collapse_dispatch {
                 .collect::<Vec<_>>()
         };
         let (left, right) = (transform(&left), transform(&right));
-        for pool in [pool_of(&left, &right), pool_of(&right, &left)] {
+        for mut pool in [pool_of(&left, &right), pool_of(&right, &left)] {
+            pool.extend(pool_of(&[(20.0, 20.0), (21.0, 21.0), (22.0, 22.0)], &[]));
             assert!(ordered_candidates(&pool).is_empty());
         }
     }
@@ -559,10 +560,14 @@ mod run_collapse_dispatch {
                     .collect::<Vec<_>>()
             };
             let (left, right) = (transform(&left), transform(&right));
-            let mut pairs = ordered_candidates(&pool_of(&left, &right));
+            let mut pool = pool_of(&left, &right);
+            pool.extend(pool_of(&[(20.0, 20.0), (21.0, 21.0), (22.0, 22.0)], &[]));
+            let mut pairs = ordered_candidates(&pool);
             pairs.sort_unstable();
             assert_eq!(pairs, expected);
-            let mut pairs = ordered_candidates(&pool_of(&right, &left));
+            let mut pool = pool_of(&right, &left);
+            pool.extend(pool_of(&[(20.0, 20.0), (21.0, 21.0), (22.0, 22.0)], &[]));
+            let mut pairs = ordered_candidates(&pool);
             pairs.sort_unstable();
             let mut reversed =
                 expected.map(|(short, long)| (long.wrapping_sub(2), short.wrapping_add(4)));
@@ -576,7 +581,7 @@ mod run_collapse_dispatch {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let left = [(0.0, 0.0), (4.0, 0.0), (8.0, 0.0)];
         let right = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0), (8.0, 0.0)];
-        for (pool, expected) in [
+        for (mut pool, expected) in [
             (pool_of(&left, &right), [
                 (0, 2),
                 (0, 3),
@@ -594,6 +599,7 @@ mod run_collapse_dispatch {
                 (3, 5),
             ]),
         ] {
+            pool.extend(pool_of(&[(20.0, 20.0), (21.0, 21.0), (22.0, 22.0)], &[]));
             assert_eq!(ordered_candidates(&pool), expected);
             let mut prefix = Vec::new();
             let flow = for_each_candidate_pair(&pool, single_chain, |left, right| {

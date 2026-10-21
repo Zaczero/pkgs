@@ -15,12 +15,9 @@ fn u32_ordinal(value: usize) -> Result<u32> {
 /// index build (sort + tree nodes) costs more than it saves.
 pub(crate) const SEGMENT_INDEX_MIN_PAIRS: usize = 4096;
 
-/// The sweep's build is just an envelope `Vec` and one sort — far cheaper
-/// than an R-tree — so its brute crossover sits much lower (measured: the
-/// sweep wins from ~6-8 segments; below that the allocation dominates).
-/// Brute-force when item count is strictly below this threshold (equivalent
-/// to the historical `count * count < 32` pair-count floor).
-const SWEEP_MIN_ITEMS: usize = 6;
+/// Tiny pools cost less to test directly than to stage monotone runs and
+/// sweep their envelopes.
+const SWEEP_MIN_ITEMS: usize = 8;
 const CROSS_LEFT_SIDE: u8 = 1;
 const CROSS_RIGHT_SIDE: u8 = 2;
 
@@ -547,6 +544,9 @@ pub(in crate::geometry) fn for_each_candidate_pair_with_work<B, W: Work>(
     work: &mut W,
     mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
+    if pool.len() < SWEEP_MIN_ITEMS {
+        return brute_candidate_pairs_with_work(pool.len(), work, &mut visit);
+    }
     // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
     // this run buffer was their only allocation.
     thread_local! {
@@ -586,24 +586,25 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs_with_work<
 ) -> Result<ControlFlow<B>> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
-        let mut remaining = pool;
-        let mut left = 0_usize;
-        while let Some((_segment, right_segments)) = remaining.split_first() {
-            let mut right = left.wrapping_add(1);
-            for _ in right_segments {
-                work.charge_into_error(1)?;
-                match visit(left, right, work)? {
-                    ControlFlow::Continue(()) => {},
-                    ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
-                }
-                right = right.wrapping_add(1);
-            }
-            left = left.wrapping_add(1);
-            remaining = right_segments;
-        }
-        return Ok(ControlFlow::Continue(()));
+        return brute_candidate_pairs_with_work(count, work, visit);
     }
     try_candidate_pairs_over_runs::<OBLIQUE, _, _>(pool, runs, work, visit)
+}
+
+fn brute_candidate_pairs_with_work<B, W: Work>(
+    count: usize,
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
+    for left in 0..count {
+        for right in left.wrapping_add(1)..count {
+            work.charge_into_error(1)?;
+            if let ControlFlow::Break(value) = visit(left, right, work)? {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
