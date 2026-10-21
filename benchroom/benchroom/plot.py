@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,17 +57,27 @@ def theme(*, dark: bool = False) -> AbstractContextManager[None]:
 
 
 def save(figure: Figure, path: str | Path) -> None:
-    """Save a figure with stable SVG identifiers and no generation timestamp."""
+    """Save a figure, preserving unchanged SVG files and their timestamps."""
     path = Path(path)
-    metadata = {'Date': None} if path.suffix.lower() == '.svg' else None
+    svg = path.suffix.lower() == '.svg'
+    output = BytesIO() if svg else path
     with rc_context({'svg.hashsalt': 'benchroom'}):
         figure.savefig(
-            path, dpi=180, facecolor=figure.get_facecolor(), metadata=metadata
+            output,
+            format='svg' if svg else None,
+            dpi=180,
+            facecolor=figure.get_facecolor(),
+            metadata={'Date': None} if svg else None,
         )
-    if path.suffix.lower() == '.svg':
-        path.write_text(
-            '\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n'
-        )
+    if isinstance(output, BytesIO):
+        content = (
+            '\n'.join(
+                line.rstrip() for line in output.getvalue().decode('utf-8').splitlines()
+            )
+            + '\n'
+        ).encode('utf-8')
+        if not path.exists() or path.read_bytes() != content:
+            path.write_bytes(content)
 
 
 def _figure(title: str, xlabel: str, ylabel: str, dark: bool) -> Figure:
