@@ -44,8 +44,9 @@ onto your chosen background first.
 
 ## Benchmarks
 
-**About 130–380× faster encoding and 20–30× faster decoding** than
-`blurhash-python` on square Pillow images.
+**About 130–380× faster encoding and 20–33× faster decoding** than
+`blurhash-python` for 32–128 pixel square RGB Pillow images using 4 by 3
+components.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/encode-dark.svg">
@@ -67,19 +68,19 @@ onto your chosen background first.
   <img src="benchmarks/decode-workloads.svg" alt="Median time to decode landscape and portrait output sizes and 1 by 1 or 9 by 9 component cases.">
 </picture>
 
-| Workload, median time per image | blurhash-rs 1.1.0 | blurhash 1.1.5 | blurhash-python 1.2.2 |
+| Workload, median time per image | blurhash-rs 2.0.0 | blurhash 1.1.5 | blurhash-python 1.2.2 |
 | --- | ---: | ---: | ---: |
-| Encode 32 × 32 square RGB, 4 × 3 | 4.12 µs | 5.07 ms | 524 µs |
-| Encode 64 × 64 square RGB, 4 × 3 | 7.73 µs | 20.0 ms | 2.12 ms |
-| Encode 128 × 128 square RGB, 4 × 3 | 22.1 µs | 78.6 ms | 8.37 ms |
-| Decode 32 × 32 square RGB, 4 × 3 | 10.5 µs | 5.38 ms | 216 µs |
-| Decode 64 × 64 square RGB, 4 × 3 | 31.8 µs | 21.6 ms | 841 µs |
-| Decode 128 × 128 square RGB, 4 × 3 | 115 µs | 84.0 ms | 3.33 ms |
+| Encode 32 × 32 square RGB, 4 × 3 | 4.38 µs | 5.26 ms | 561 µs |
+| Encode 64 × 64 square RGB, 4 × 3 | 7.79 µs | 21.3 ms | 2.18 ms |
+| Encode 128 × 128 square RGB, 4 × 3 | 22.5 µs | 85.6 ms | 8.46 ms |
+| Decode 32 × 32 square RGB, 4 × 3 | 11 µs | 5.48 ms | 221 µs |
+| Decode 64 × 64 square RGB, 4 × 3 | 38.9 µs | 25.5 ms | 862 µs |
+| Decode 128 × 128 square RGB, 4 × 3 | 119 µs | 91.3 ms | 3.88 ms |
 
 All three encoders produced identical hashes; decoded RGB channels differed by
 at most one 8-bit level. Measurements used CPython 3.15.0, Pillow 13.0.0, NumPy 2.5.4,
-and a Ryzen 9 5950X running Linux 7.2.9. Table values are medians of twelve
-worker-process means; chart whiskers show 95% bootstrap intervals.
+and a shared Ryzen 9 5950X workstation running Linux 7.2.9. Table values are
+medians of twelve worker-process means; chart whiskers show 95% bootstrap intervals.
 
 [Full workload medians](benchmarks/results.md) ·
 Raw PyPerf results: [blurhash-rs](benchmarks/blurhash-rs.json),

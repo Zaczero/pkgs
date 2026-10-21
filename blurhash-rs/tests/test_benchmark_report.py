@@ -16,7 +16,7 @@ def _write_results(
     pillow_version: str = '13.0.0',
 ) -> None:
     version = {
-        'blurhash-rs': '1.1.0',
+        'blurhash-rs': '2.0.0',
         'blurhash': '1.1.5',
         'blurhash-python': '1.2.2',
     }[implementation]
@@ -32,7 +32,7 @@ def _write_results(
         'implementation_name': implementation,
         'implementation_version': version,
         'native_extension_sha256': 'extension-sha',
-        'native_package_version': '1.1.0',
+        'native_package_version': '2.0.0',
         'numpy_version': '2.5.4',
         'pillow_version': pillow_version,
         'platform': 'Linux-test',
@@ -85,7 +85,7 @@ def test_report_keeps_every_case_in_tables_and_charts(tmp_path: Path) -> None:
 
     markdown = (tmp_path / 'report/results.md').read_text()
     assert (
-        '| Workload | blurhash-rs 1.1.0 | blurhash 1.1.5 | blurhash-python 1.2.2 |'
+        '| Workload | blurhash-rs 2.0.0 | blurhash 1.1.5 | blurhash-python 1.2.2 |'
         in markdown
     )
     assert 'Median time per image' in markdown
