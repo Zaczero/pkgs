@@ -14,8 +14,10 @@ from bench.sampling import (
     calibration_duration,
     calibration_production_cost,
     calibration_status,
+    calibration_windows,
     common_duration,
     median_order_interval,
+    production_warmup_seconds,
 )
 
 
@@ -41,6 +43,19 @@ def test_calibration_extends_after_disagreement_and_records_exhaustion():
         'calibration-limited',
         4.0,
     )
+
+
+def test_calibration_windows_respect_the_load_driver_minimum():
+    assert calibration_windows(0.0) == (0.5, 1.0, 2.0, 4.0)
+    assert calibration_windows(1.0) == (1.0, 2.0, 4.0)
+    assert production_warmup_seconds(0.0) == 0.25
+    assert production_warmup_seconds(1.0) == 1.0
+
+
+def test_window_without_completions_extends_calibration():
+    windows = [point(0.5, 0.0), point(1.0, 900)]
+
+    assert calibration_duration(windows, fixed_count=False) == 2.0
 
 
 def test_common_duration_gives_each_competitor_equal_exposure():

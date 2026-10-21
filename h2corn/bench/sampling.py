@@ -23,6 +23,18 @@ class BudgetError(ValueError):
     """The minimum complete production plan cannot fit its hard budget."""
 
 
+def calibration_windows(minimum_seconds: float) -> tuple[float, ...]:
+    """Calibration windows the scenario's load driver can run."""
+    return tuple(
+        window for window in CALIBRATION_WINDOWS_SECONDS if window >= minimum_seconds
+    )
+
+
+def production_warmup_seconds(minimum_seconds: float) -> float:
+    """Production warmup the scenario's load driver can run."""
+    return max(PRODUCTION_WARMUP_SECONDS, minimum_seconds)
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationPoint:
     duration_seconds: float | None

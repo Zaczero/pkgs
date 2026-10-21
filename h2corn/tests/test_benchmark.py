@@ -13,9 +13,12 @@ from bench._core import (
     BenchmarkError,
     DeadlineError,
     MeasuredMetrics,
+    NoCompletionsError,
+    ResponseError,
     Scenario,
     ServerRun,
     _oha_metrics,
+    _validate_oha,
     allocated_listener,
     check_response,
     request_response,
@@ -340,6 +343,23 @@ def test_benchmark_rate_counts_completed_responses_not_deadline_attempts():
     })
     assert metrics['completed'] == 30
     assert metrics['rps'] == 15
+
+
+def test_window_cut_before_any_completion_is_not_a_wrong_response():
+    with pytest.raises(NoCompletionsError):
+        _validate_oha(
+            {
+                'statusCodeDistribution': {},
+                'errorDistribution': {'aborted due to deadline': 1000},
+            },
+            max_deadline_aborts=2000,
+        )
+    with pytest.raises(ResponseError) as caught:
+        _validate_oha(
+            {'statusCodeDistribution': {'200': 5, '503': 1}, 'errorDistribution': {}},
+            max_deadline_aborts=2000,
+        )
+    assert not isinstance(caught.value, NoCompletionsError)
 
 
 def test_benchmark_worker_receipt_rejects_a_different_native_image():

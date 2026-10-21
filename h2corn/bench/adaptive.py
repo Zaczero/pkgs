@@ -30,17 +30,17 @@ from bench._core import (
 )
 from bench.evidence import run_identity
 from bench.sampling import (
-    CALIBRATION_WINDOWS_SECONDS,
     CLEANUP_RESERVE_SECONDS,
     HARD_TOTAL_SECONDS,
     PRODUCTION_BLOCKS,
-    PRODUCTION_WARMUP_SECONDS,
     REPORT_RESERVE_SECONDS,
     TARGET_TOTAL_SECONDS,
     BudgetError,
     allocate_production_blocks,
     calibration_production_cost,
+    calibration_windows,
     common_duration,
+    production_warmup_seconds,
 )
 
 
@@ -70,6 +70,14 @@ def _fixed_count(scenario: Any) -> bool:
     return (
         isinstance(scenario, Scenario)
         and scenario.contract.request_body_path is not None
+    )
+
+
+def _minimum_window(scenario: Any) -> float:
+    return (
+        scenario.contract.minimum_duration_seconds
+        if isinstance(scenario, Scenario)
+        else 0.0
     )
 
 
@@ -285,17 +293,18 @@ def _calibrate_profile(
         )
         for name in order:
             evidence = profile.directory / 'evidence' / slug / 'calibration' / name
+            windows = calibration_windows(_minimum_window(scenario))
             try:
                 with deadline_bound(deadline):
                     result = http.measure_cell(
                         name,
                         scenario,
-                        _window_text(CALIBRATION_WINDOWS_SECONDS[0]),
+                        _window_text(windows[0]),
                         '0s',
                         hypercorn_config=profile.hypercorn_config,
                         evidence_directory=evidence,
                         identity=profile.identity,
-                        calibration_windows=CALIBRATION_WINDOWS_SECONDS,
+                        calibration_windows=windows,
                     )
                 if 'status' not in result or 'windows' not in result:
                     raise BenchmarkError(
@@ -439,7 +448,9 @@ def _suite_cost_plan(
                 name: calibration_production_cost(
                     cell,
                     duration_seconds=None if fixed_count else duration,
-                    warmup_seconds=0.0 if fixed_count else PRODUCTION_WARMUP_SECONDS,
+                    warmup_seconds=0.0
+                    if fixed_count
+                    else production_warmup_seconds(_minimum_window(scenario)),
                 )
                 for name, cell in calibration['servers'].items()
                 if cell.get('status') != 'failed'
@@ -527,7 +538,11 @@ def _production_profile(
         duration_seconds = scenario_plan['duration_seconds']
         fixed_count = scenario_plan['fixed_count']
         duration = '1s' if duration_seconds is None else f'{duration_seconds:g}s'
-        warmup = '0s' if fixed_count else f'{PRODUCTION_WARMUP_SECONDS:g}s'
+        warmup = (
+            '0s'
+            if fixed_count
+            else f'{production_warmup_seconds(_minimum_window(scenario)):g}s'
+        )
         failures = _initial_failures(calibration)
         record = http.run_scenario(
             scenario,

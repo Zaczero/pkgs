@@ -34,7 +34,8 @@ scenario is marked calibration-limited and its comparisons are inconclusive.
 Calibration runs after the correctness probe without a separate load warmup.
 Calibration-trial elapsed time minus the requested calibration-window
 durations estimates per-cell setup and checks. Time-window production blocks
-use a 0.25-second warmup; the fixed-count upload has none. The production
+use a 0.25-second warmup, one second for k6-driven WebSocket scenarios; the
+fixed-count upload has none. A warmup may complete no request. The production
 forecast adds the selected duration and applicable warmup.
 
 The harness freezes six fresh-process paired production blocks for every

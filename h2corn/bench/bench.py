@@ -11,6 +11,7 @@ fresh-process paired production blocks. One monotonic deadline bounds the run.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
 import json
 import math
@@ -44,6 +45,7 @@ from bench._core import (
     DeadlineError,
     MeasuredMetrics,
     Metrics,
+    NoCompletionsError,
     ResponseError,
     Scenario,
     _run,
@@ -744,12 +746,15 @@ def measure_cell(
                 # and new connections, so a separate full-size warmup carries no state over.
                 if calibration_windows is None and not fixed_count:
                     trial['phase'] = 'warmup'
-                    run_load(
-                        live,
-                        duration=warmup,
-                        concurrency=concurrency,
-                        evidence_path=evidence_directory / 'warmup.json',
-                    )
+                    # Warmup measures nothing; a slow server may finish no request
+                    # in it, and the calibrated measured window covers that latency.
+                    with contextlib.suppress(NoCompletionsError):
+                        run_load(
+                            live,
+                            duration=warmup,
+                            concurrency=concurrency,
+                            evidence_path=evidence_directory / 'warmup.json',
+                        )
                 if calibration_windows is not None:
                     calibration_pids = sorted(server.process_pids())
                     points: list[CalibrationPoint] = []
@@ -775,11 +780,22 @@ def measure_cell(
                                 requests=plan.get('requests') if fixed_count else None,
                             )
 
-                        metrics, _ = measure_peak_memory(
-                            server,
-                            load_window,
-                            evidence_path=window_directory / 'memory.json',
-                        )
+                        try:
+                            metrics, _ = measure_peak_memory(
+                                server,
+                                load_window,
+                                evidence_path=window_directory / 'memory.json',
+                            )
+                        except NoCompletionsError:
+                            # A window shorter than one request's latency proves
+                            # nothing about the server; only the longest may fail.
+                            if window is None or window == windows[-1]:
+                                raise
+                            metrics = {
+                                'rps': 0.0,
+                                'completed': 0,
+                                'latency_percentiles': {},
+                            }
                         points.append(
                             CalibrationPoint(
                                 duration_seconds=window,

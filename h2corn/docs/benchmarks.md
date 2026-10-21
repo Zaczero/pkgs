@@ -46,13 +46,17 @@ server, using successive 0.5, 1, 2, and 4 second windows. Calibration stops
 when adjacent rates agree within 10%; every server in that scenario then uses
 the longest selected duration. A scenario that remains unstable at four
 seconds is marked calibration-limited, and its comparisons are inconclusive.
+WebSocket scenarios start at one second, the shortest run k6 accepts. A window
+that ends before any request completes moves calibration to the next window;
+a server fails calibration only if the four-second window completes nothing.
 The 8 MiB upload retains its fixed complete-request batch.
 
 Calibration runs after the correctness probe without a separate load warmup.
 Subtracting requested calibration-window durations from calibration-trial
 elapsed time estimates each server's setup and correctness-check cost. The
-runner adds the common selected duration and a 0.25-second production warmup to
-forecast one time-window cell; the fixed-count upload has no warmup. It then
+runner adds the common selected duration and a 0.25-second production warmup
+(one second for WebSocket) to forecast one time-window cell; the fixed-count
+upload has no warmup. It then
 freezes exactly six fresh-start paired production blocks per scenario. Server
 order is rotated, CPU placement is unpinned, and production never stops early.
 

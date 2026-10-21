@@ -97,6 +97,13 @@ class ResponseError(BenchmarkError):
     """A serving process failed the workload's response contract."""
 
 
+class NoCompletionsError(ResponseError):
+    """A load window ended before any request completed.
+
+    Calibration retries with a longer window; anywhere else it is a failed cell.
+    """
+
+
 @contextmanager
 def deadline_bound(deadline: float) -> Generator[None, None, None]:
     """Bound work by a monotonic deadline while preserving an outer alarm."""
@@ -201,6 +208,11 @@ class ResponseContract:
         if self.unix_socket:
             return f'http://localhost{self.path}'
         return f'http://{HOST}:{port}{self.path}'
+
+    @property
+    def minimum_duration_seconds(self) -> float:
+        """Shortest load window the driver accepts; k6 rejects anything under 1 s."""
+        return 1.0 if self.driver == 'k6' else 0.0
 
 
 RESPONSE_CONTRACTS: dict[BenchmarkType, ResponseContract] = {
@@ -990,6 +1002,8 @@ def _validate_oha(raw: dict[str, Any], max_deadline_aborts: int) -> None:
         raise ResponseError(f'oha reported excessive deadline aborts: {errors!r}')
     statuses: dict[str, int] = raw.get('statusCodeDistribution', {})
     ok = statuses.get('200', 0)
+    if not statuses:
+        raise NoCompletionsError(f'oha completed no requests: {errors!r}')
     if not ok or ok != sum(statuses.values()):
         raise ResponseError(f'oha saw non-200 responses: {statuses!r}')
 
