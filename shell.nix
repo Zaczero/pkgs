@@ -50,14 +50,13 @@ let
     # properdocs.yml and docs tooling in the default dev dependency group.
     # site_url selects the fleet's Cloudflare static publication.
     (makeScript "docs-serve" ''
-      set -x
       export MATURIN_IMPORT_HOOK_ENABLED=0
       unset SOURCE_DATE_EPOCH
       if [ ! -f properdocs.yml ]; then
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --verbose
+      uv sync
       if [ -f tools/check.py ]; then
         uv run --no-sync python tools/check.py --prepare
       fi
@@ -65,14 +64,13 @@ let
     '')
 
     (makeScript "docs-build" ''
-      set -x
       export MATURIN_IMPORT_HOOK_ENABLED=0
       unset SOURCE_DATE_EPOCH
       if [ ! -f properdocs.yml ]; then
         echo "no properdocs.yml in $(pwd)" >&2
         exit 1
       fi
-      uv sync --verbose
+      uv sync
       if [ -f tools/check.py ]; then
         uv run --no-sync python tools/check.py --prepare
       fi
