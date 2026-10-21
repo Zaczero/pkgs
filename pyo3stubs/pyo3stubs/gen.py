@@ -138,27 +138,20 @@ def _without_docstring(node: cst.FunctionDef) -> cst.FunctionDef:
     return node.with_changes(body=cst.IndentedBlock(body=stmts))
 
 
-#: Statements that hold defs the transformer will still visit. A stub gates
-#: members behind `if sys.version_info >= ...:` and `if TYPE_CHECKING:`; a def
-#: the count misses is a def the transformer strips the docstring from.
-_NESTING = (ast.If, ast.Try)
-
-
-def _counted_defs(
+def _scope_defs(
     body: list[ast.stmt],
-) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Every def in a suite, through the blocks a stub nests them in.
-
-    `async def` is a distinct node to `ast` but the same node to libcst, so
-    omitting it meant the transformer treated one as an uncounted extra and
-    deleted its docstring.
-    """
+) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+    """Definitions in one Python scope, including conditional branches."""
     for stmt in body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             yield stmt
-        elif isinstance(stmt, _NESTING):
-            yield from _counted_defs(stmt.body)
-            yield from _counted_defs(stmt.orelse)
+        elif isinstance(stmt, (ast.If, ast.Try, ast.TryStar)):
+            yield from _scope_defs(stmt.body)
+            yield from _scope_defs(stmt.orelse)
+            if isinstance(stmt, (ast.Try, ast.TryStar)):
+                for handler in stmt.handlers:
+                    yield from _scope_defs(handler.body)
+                yield from _scope_defs(stmt.finalbody)
 
 
 def _def_totals(module: ast.Module) -> Counter[tuple[str, str]]:
@@ -170,14 +163,13 @@ def _def_totals(module: ast.Module) -> Counter[tuple[str, str]]:
     totals: Counter[tuple[str, str]] = Counter()
 
     def count(scope: str, body: list[ast.stmt]) -> None:
-        for node in _counted_defs(body):
-            if 'setter' not in decorator_names(node):
+        for node in _scope_defs(body):
+            if isinstance(node, ast.ClassDef):
+                count(node.name, node.body)
+            elif 'setter' not in decorator_names(node):
                 totals[scope, node.name] += 1
 
     count('', module.body)
-    for node in module.body:
-        if isinstance(node, ast.ClassDef):
-            count(node.name, node.body)
     return totals
 
 
@@ -243,6 +235,18 @@ class DocInjector(cst.CSTTransformer):
         self._attribute_docs = attribute_docs or {}
         self._seen: Counter[tuple[str, str]] = Counter()
         self._stack: list[str] = []
+        self._indent_depth = 0
+
+    def visit_IndentedBlock(self, node: cst.IndentedBlock) -> None:  # ruff: ignore[invalid-function-name]
+        del node
+        self._indent_depth += 1
+
+    def leave_IndentedBlock(  # ruff: ignore[invalid-function-name]
+        self, original_node: cst.IndentedBlock, updated_node: cst.IndentedBlock
+    ) -> cst.IndentedBlock:
+        del original_node
+        self._indent_depth -= 1
+        return updated_node
 
     def visit_ClassDef(self, node: cst.ClassDef) -> None:  # ruff: ignore[invalid-function-name]
         self._stack.append(node.name.value)
@@ -262,12 +266,12 @@ class DocInjector(cst.CSTTransformer):
                 body=_inject_attribute_docs(
                     updated_node.body,
                     attribute_docs,
-                    '    ' * (len(self._stack) + 1),
+                    '    ' * (self._indent_depth + 1),
                 )
             )
         doc = runtime_doc_for_stub(name, obj)
         if doc:
-            return _apply(updated_node, doc, '    ' * (len(self._stack) + 1))
+            return _apply(updated_node, doc, '    ' * (self._indent_depth + 1))
         return updated_node
 
     def leave_FunctionDef(  # ruff: ignore[invalid-function-name]
@@ -287,8 +291,8 @@ class DocInjector(cst.CSTTransformer):
         key = (scope, name)
         self._seen[key] += 1
         carrier = self._seen[key] == self._totals[key]
+        indent = '    ' * (self._indent_depth + 1)
         if self._stack:
-            indent = '    ' * (len(self._stack) + 1)
             cls = getattr(self._runtime, scope, None)
             if cls is None:
                 return updated_node  # stub-only typing helper (protocols)
@@ -299,7 +303,6 @@ class DocInjector(cst.CSTTransformer):
                 return updated_node
             obj = passive_class_member(cls, name)
         else:
-            indent = '    '
             constructor = None
             obj = getattr(self._runtime, name, None)
         if obj is None and constructor is None:
@@ -332,6 +335,13 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
         runtime,
         _def_totals(module),
         constructor_doc_sources(cfg).by_class,
-        _descriptor_docs(ctx.stub_classes, runtime),
+        _descriptor_docs(
+            {
+                node.name: node
+                for node in _scope_defs(module.body)
+                if isinstance(node, ast.ClassDef)
+            },
+            runtime,
+        ),
     )
     return cst.parse_module(source).visit(injector).code

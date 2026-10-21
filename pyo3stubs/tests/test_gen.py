@@ -9,6 +9,8 @@ escaper and the def counter directly, which is where the defects were.
 from __future__ import annotations
 
 import ast
+import importlib
+import inspect
 import types
 from array import array
 from typing import Self
@@ -281,6 +283,53 @@ def test_a_def_the_counter_misses_loses_its_docstring(stub_body, label):
     module = types.ModuleType('m')
     module.C = C  # type: ignore[attr-defined]
     assert 'Prose.' in _inject(stub, module), label
+
+
+@pytest.mark.parametrize(
+    ('before', 'after'),
+    [
+        pytest.param('if sys.platform == "linux":\n', '', id='platform'),
+        pytest.param('try:\n', 'except ImportError:\n    pass\n', id='try'),
+        pytest.param('try:\n    pass\nexcept ImportError:\n', '', id='except'),
+        pytest.param('try:\n    pass\nexcept* ImportError:\n', '', id='except-star'),
+        pytest.param('try:\n    pass\nfinally:\n', '', id='finally'),
+    ],
+)
+def test_guarded_class_and_function_keep_their_indented_prose(tmp_path, before, after):
+    from pyo3stubs.gen import render_stub_with_docs
+
+    stub = (
+        'import sys\n' + before + '    class Sealed:\n'
+        '        maybe: int | None\n'
+        '        def method(self, value: int, flag: bool = True) -> int: ...\n'
+        '    def documented(a: int, b: str = "x") -> str: ...\n' + after
+    )
+    cfg = make_config(tmp_path, stub_text=stub)
+    runtime = importlib.import_module(cfg.module)
+    rendered = render_stub_with_docs(cfg)
+    nodes = tuple(ast.walk(ast.parse(rendered)))
+    cls = next(node for node in nodes if isinstance(node, ast.ClassDef))
+    function = next(
+        node
+        for node in nodes
+        if isinstance(node, ast.FunctionDef) and node.name == 'documented'
+    )
+    method = next(node for node in cls.body if isinstance(node, ast.FunctionDef))
+    assert ast.get_docstring(method) == inspect.getdoc(runtime.Sealed.method)
+    attribute_doc = next(
+        node.value.value
+        for node in cls.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        and 'Optional payload' in node.value.value
+    )
+    assert inspect.cleandoc(attribute_doc) == inspect.getdoc(runtime.Sealed.maybe)
+    assert ast.get_docstring(function) == inspect.getdoc(runtime.documented)
+    assert '\n            Parameters\n' in rendered
+    assert '\n        Parameters\n' in rendered
+    assert '\n            """\n' in rendered
+    assert render_stub_with_docs(make_config(tmp_path, stub_text=rendered)) == rendered
 
 
 def test_cpython_boilerplate_never_reaches_the_stub():
