@@ -32,8 +32,9 @@ def test_outlying_hole_boundary_is_not_polygon_support() -> None:
 @pytest.mark.parametrize('reverse', [False, True], ids=['line-first', 'polygon-first'])
 @pytest.mark.parametrize('array', [False, True], ids=['scalar', 'nullable-array'])
 @pytest.mark.parametrize('ordinates', [False, True], ids=['XY', 'XYZM'])
+@pytest.mark.parametrize('connected', [False, True], ids=['multipart', 'single-chain'])
 def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
-    reverse: bool, array: bool, ordinates: bool
+    reverse: bool, array: bool, ordinates: bool, connected: bool
 ) -> None:
     lines = [
         [(0, 0), (1.1999999999999993, 0.39999999999999974)],
@@ -41,11 +42,15 @@ def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
     ]
     shell = [(-1, -2), (1, -2), (1, 2), (-2, 3), (-1, -2)]
     if ordinates:
-        source = gm.MultiLineString([[(x, y, x, y) for x, y in line] for line in lines])
+        lines = [[(x, y, x, y) for x, y in line] for line in lines]
         polygon = gm.Polygon([(x, y, x, y) for x, y in shell])
     else:
-        source = gm.MultiLineString(lines)
         polygon = gm.Polygon(shell)
+    source = (
+        gm.LineString([*lines[0], lines[1][-1]])
+        if connected
+        else gm.MultiLineString(lines)
+    )
     tip = Fraction(0.16666666666666666)
     source_slope = Fraction(0.39999999999999974) / Fraction(1.1999999999999993)
     assert tip < source_slope / 2
@@ -65,11 +70,16 @@ def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
             else gm.intersection(source, polygon)
         )
     assert result is not None
-    sloping, vertical = [list(part.coords) for part in result.parts]
+    sloping, other = [list(part.coords) for part in result.parts]
     np.testing.assert_array_equal(sloping[0][:2], [0, 0])
-    np.testing.assert_array_equal(
-        [point[:2] for point in vertical], [[0.5, -1], [0.5, float(tip)]]
-    )
+    if connected:
+        np.testing.assert_array_equal(
+            [point[:2] for point in other], [[0.5, float(tip)], [1, float(2 * tip)]]
+        )
+    else:
+        np.testing.assert_array_equal(
+            [point[:2] for point in other], [[0.5, -1], [0.5, float(tip)]]
+        )
     cut_x, cut_y, *payload = sloping[-1]
     assert cut_x == 1
     # At x=0.5 the published chord must remain above the other line's endpoint.
@@ -77,6 +87,33 @@ def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
     if ordinates:
         assert result.coordinate_axes == 'XYZM'
         np.testing.assert_array_equal(payload, [1, float(2 * tip)])
+
+
+@pytest.mark.parametrize(
+    ('points', 'inside'),
+    [
+        ([(0.5, 3), (1, 4), (2, 3)], True),
+        ([(5, 5), (6, 7), (7, 5)], False),
+        ([(1.25, 1.25), (1.5, 1.75), (1.75, 1.5)], False),
+        ([(3, 2), (4, 1.5), (3, 1)], True),
+    ],
+    ids=['interior-bend', 'exterior-within-bounds', 'within-hole', 'descending-y'],
+)
+def test_contact_free_line_polygon_overlay_preserves_source_support(
+    points: list[tuple[float, float]], inside: bool
+) -> None:
+    line = gm.LineString(points)
+    polygon = gm.Polygon(
+        [(0, 0), (8, 0), (0, 8)],
+        holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
+    )
+    intersection = gm.intersection(line, polygon)
+    difference = gm.difference(line, polygon)
+    retained, empty = (
+        (intersection, difference) if inside else (difference, intersection)
+    )
+    np.testing.assert_array_equal(list(retained.coords), list(line.normalize().coords))
+    assert empty.is_empty
 
 
 def test_polygon_planar_measurements_and_predicates() -> None:

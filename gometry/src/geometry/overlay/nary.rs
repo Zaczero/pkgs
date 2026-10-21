@@ -561,14 +561,6 @@ fn exact_cartesian_line_polygon_overlay(
     strictness: Strictness,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Option<Shape>> {
-    let lineal = |shape: &Shape| {
-        matches!(
-            shape,
-            Shape::LineString(_)
-                | Shape::MultiLineString(_)
-                | Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _)
-        )
-    };
     let polygonal = |shape: &Shape| {
         matches!(
             shape,
@@ -577,34 +569,40 @@ fn exact_cartesian_line_polygon_overlay(
                 | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
         )
     };
-    let admitted = match operation {
-        OverlayOp::Intersection => {
-            (lineal(left) && polygonal(right)) || (polygonal(left) && lineal(right))
+    let (line_shape, line, polygon) = match (operation, left, right) {
+        (
+            OverlayOp::Intersection | OverlayOp::Difference,
+            line_shape @ Shape::LineString(line),
+            polygon,
+        ) if line.len() <= 3 && polygonal(polygon) => (line_shape, line, polygon),
+        (OverlayOp::Intersection, polygon, line_shape @ Shape::LineString(line))
+            if line.len() <= 3 && polygonal(polygon) =>
+        {
+            (line_shape, line, polygon)
         },
-        OverlayOp::Difference => lineal(left) && polygonal(right),
-        OverlayOp::Union | OverlayOp::SymmetricDifference => false,
+        _ => return Ok(None),
     };
-    if !admitted {
-        return Ok(None);
-    }
     let mut inputs = [left, right];
     sort_overlay_inputs!(inputs, operation);
-    let [left, right] = inputs;
-    let (line_operand, line, polygon) = if lineal(left) {
-        (0, left, right)
-    } else {
-        (1, right, left)
-    };
-    if line.is_empty() || (operation == OverlayOp::Intersection && polygon.is_empty()) {
+    let [first, _] = inputs;
+    let line_operand = u32::from(!matches!(first, Shape::LineString(_)));
+    if operation == OverlayOp::Intersection && polygon.is_empty() {
         return Ok(Some(empty_nary_overlay_shape(&inputs, operation)));
     }
-    if line
+    if line_shape
         .bounds()
         .zip(polygon.bounds())
         .is_some_and(|(line, polygon)| !line.intersects(polygon))
     {
         return Ok((operation == OverlayOp::Intersection)
             .then(|| empty_nary_overlay_shape(&inputs, operation)));
+    }
+    if let Some(shape) = ExactSourceInventory::contact_free_xy_line(line, polygon, operation) {
+        return Ok(Some(if shape.is_empty() {
+            empty_nary_overlay_shape(&inputs, operation)
+        } else {
+            shape.normalize()?
+        }));
     }
     let inventory = ExactSourceInventory::from_shapes(&inputs)?;
     let mut budget = match partition_budget {

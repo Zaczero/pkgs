@@ -381,6 +381,16 @@ fn line_polygon_overlays_match_full_partition_wkb() {
             test_line(&[(-3.0, 5.0), (-2.0, 6.0)]),
         ),
         (
+            "line entirely within a hole",
+            holed.clone(),
+            test_line(&[(3.25, 3.25), (4.0, 4.25), (4.75, 4.0)]),
+        ),
+        (
+            "short line crossing a hole",
+            holed.clone(),
+            test_line(&[(2.0, 4.0), (6.0, 4.0)]),
+        ),
+        (
             "line through a hole",
             holed,
             test_line(&[(-1.0, 4.0), (2.0, 4.0), (4.0, 4.0), (9.0, 4.0)]),
@@ -429,6 +439,30 @@ fn line_polygon_overlays_match_full_partition_wkb() {
             "tangent vertex",
             square,
             test_line(&[(-1.0, 1.0), (1.0, -1.0)]),
+        ),
+        (
+            "nonrectangular interior bend",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(0.5, 0.5), (1.0, 1.5), (2.0, 0.5)]),
+        ),
+        (
+            "nonrectangular exterior within bounds",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(2.5, 2.5), (3.0, 3.5), (3.5, 2.5)]),
+        ),
+        (
+            "nonrectangular repeated source vertex",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(0.5, 0.5), (0.5, 0.5), (1.0, 1.0)]),
         ),
         (
             "nonrectangular tangent vertex",

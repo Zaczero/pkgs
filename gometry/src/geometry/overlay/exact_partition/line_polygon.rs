@@ -3,9 +3,14 @@ use super::{
     Loc, NodeId, Result, Shape, SourceArcContext, XY, homogeneous_midpoint,
 };
 use crate::geometry::graph::RayAxis as Axis;
-use crate::geometry::segments::contact::point_on_segment;
-use crate::geometry::source_support::ExactProbe;
-use crate::geometry::{OverlayOp, PreparedPlan, PreparedPointQueries, same_topological_coordinate};
+use crate::geometry::segments::contact::{
+    Contact, line_segments, point_on_segment, segment_contact_exact,
+};
+use crate::geometry::source_support::{ExactProbe, cartesian_point_location};
+use crate::geometry::{
+    GeometryKind, LineSeq, OverlayOp, PreparedPlan, PreparedPointQueries,
+    same_topological_coordinate,
+};
 
 #[derive(Clone, Copy, Default)]
 struct LinePolygonNode {
@@ -15,6 +20,57 @@ struct LinePolygonNode {
 }
 
 impl ExactSourceInventory {
+    pub(in crate::geometry) fn contact_free_xy_line(
+        line: &LineSeq,
+        polygon: &Shape,
+        operation: OverlayOp,
+    ) -> Option<Shape> {
+        if line.axes() != CoordinateAxes::XY || polygon.axes() != CoordinateAxes::XY {
+            return None;
+        }
+        let monotone = |column: &[f64]| {
+            column.array_windows().all(|[a, b]| a < b) || column.array_windows().all(|[a, b]| a > b)
+        };
+        if !monotone(line.xs()) && !monotone(line.ys()) {
+            return None;
+        }
+        let polygons = match polygon {
+            Shape::Polygon(polygon) => std::slice::from_ref(polygon),
+            Shape::MultiPolygon(polygons) => polygons.as_ref(),
+            Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => &[],
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => return None,
+        };
+        for polygon in polygons {
+            for ring in polygon.rings() {
+                for boundary in line_segments(ring) {
+                    if line_segments(line)
+                        .any(|source| segment_contact_exact(source, boundary) != Contact::Disjoint)
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+        // Strict monotonicity rules out self-contact. With no raw ring contact,
+        // source membership is constant on the connected, unchanged chain.
+        let location = cartesian_point_location(polygon, line.point_at(0));
+        let keep = match operation {
+            OverlayOp::Intersection => location != Loc::Exterior,
+            OverlayOp::Difference => location == Loc::Exterior,
+            OverlayOp::Union | OverlayOp::SymmetricDifference => return None,
+        };
+        Some(if keep {
+            Shape::LineString(line.clone())
+        } else {
+            Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY)
+        })
+    }
+
     pub(in crate::geometry) fn overlay_line_polygon(
         &self,
         polygon: &Shape,
