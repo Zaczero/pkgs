@@ -839,6 +839,40 @@ def test_h3_to_polygon_keeps_disjoint_cell_components() -> None:
     assert not gm.contains(outline, gm.Point(60.0, 0.0, crs=4326))
 
 
+@pytest.mark.parametrize('resolution', [0, 1], ids=['base-cells', 'face-crossings'])
+def test_h3_to_polygon_world_has_no_internal_cracks(resolution: int) -> None:
+    outline = gm.h3_base_cells().uncompact(resolution).to_polygon()
+
+    assert outline.is_valid
+    assert outline.coordinate_axes == 'XY'
+    assert outline.crs == gm.CRS('OGC:CRS84')
+    assert gm.equals(outline, gm.box(-180, -90, 180, 90, crs=4326))
+    crack = gm.Point(-170.73685688640091, -4.865828734023259, crs=4326)
+    assert gm.contains(outline, crack)
+    assert gm.covers(outline, crack)
+
+
+@pytest.mark.parametrize(
+    'omitted',
+    [
+        pytest.param(gm.H3Cell(0.0, 0.0, resolution=0), id='ordinary-hole'),
+        pytest.param(gm.H3Cell(180.0, 0.0, resolution=0), id='seam-hole'),
+        pytest.param(gm.H3Cell(0.0, 90.0, resolution=0), id='pole-hole'),
+    ],
+)
+def test_h3_to_polygon_preserves_world_complement(omitted: gm.H3Cell) -> None:
+    cells = gm.CellArray(
+        [cell for cell in gm.h3_base_cells() if cell != omitted], type=gm.H3Cell
+    )
+    outline = cells.to_polygon()
+
+    assert outline.is_valid
+    assert not gm.covers(outline, omitted.center)
+    np.testing.assert_array_equal(
+        gm.covers(outline, cells.center), np.ones(len(cells), dtype=bool)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Independent finite-universe H3 coverage oracle
 # ---------------------------------------------------------------------------

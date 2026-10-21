@@ -24,7 +24,7 @@ pub(super) use register::{parse_h3_resolution, register};
 use set_algebra::{
     _unpickle_h3_cell_v1, h3_base_cells, h3_difference, h3_intersection, h3_pentagons, h3_union,
 };
-use tile::{h3_cell_shape, h3_tile};
+use tile::h3_tile;
 pub(crate) use types::PyH3Cell;
 use types::{PyH3Edge, PyH3Vertex, TiledCell, h3_cell_array, h3_latlng};
 use vertex_edge::{_unpickle_h3_edge_v1, _unpickle_h3_vertex_v1, h3_edge_index, h3_vertex_index};
