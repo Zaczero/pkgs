@@ -106,21 +106,3 @@ and shuts the server down. Its output is:
 ```text
 native gRPC response: Welcome
 ```
-
-## Current Connect release limits
-
-!!! note "Connect application behavior"
-    The currently released Connect package still accepts some malformed gRPC
-    envelope flags ([#408](https://github.com/connectrpc/connect-py/pull/408))
-    and truncated messages
-    ([#359](https://github.com/connectrpc/connect-py/pull/359)). Its timeout
-    parser can truncate fractional-millisecond values and does not reject every
-    malformed or repeated timeout header
-    ([#409](https://github.com/connectrpc/connect-py/pull/409)). Deadline
-    enforcement around request admission and successful finalization is
-    incomplete ([#383](https://github.com/connectrpc/connect-py/pull/383),
-    [#410](https://github.com/connectrpc/connect-py/pull/410)); stream iterator
-    closure and cancellation unwinding also have edge cases
-    ([#347](https://github.com/connectrpc/connect-py/pull/347),
-    [#411](https://github.com/connectrpc/connect-py/pull/411)). These are
-    behaviors of the Connect ASGI application.
