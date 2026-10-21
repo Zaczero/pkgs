@@ -45,6 +45,10 @@ interval with a 3% equivalence margin:
 | Similar | The entire interval is within the margin. |
 | Inconclusive | The interval crosses a decision boundary. |
 
+For this run, the selected timing CPU was not isolated and used the powersave
+governor; host diagnostics also recorded CPU contention. The raw measurements
+retain these conditions and the six-block spread.
+
 --8<-- "benches/results/current/summary.md:environment"
 
 --8<-- "benches/results/current/summary.md:evidence"

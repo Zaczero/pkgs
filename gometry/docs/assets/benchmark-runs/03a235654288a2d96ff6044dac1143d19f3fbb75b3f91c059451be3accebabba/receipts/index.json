@@ -1,0 +1,10 @@
+{
+  "receipts": [
+    {
+      "bundle_path": "receipts/ab85f0f94d607c0ea1e42efd9f8dc78d674542d7eb8487543e64cbb9a4f3437a.json",
+      "path": "/tmp/opencode/task801-gometry-bench.TyEta5/wheel-clean/gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+      "sha256": "ab85f0f94d607c0ea1e42efd9f8dc78d674542d7eb8487543e64cbb9a4f3437a"
+    }
+  ],
+  "schema_version": 1
+}
