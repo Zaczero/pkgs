@@ -110,19 +110,7 @@ def render_accessible_results(record: dict[str, Any]) -> str:
         comparison = '-'
         if name in contrasts:
             contrast = contrasts[name]
-            comparison = contrast.get('decision')
-            if comparison is None:
-                if interval := contrast.get('interval_95'):
-                    low, high = interval
-                    comparison = (
-                        'slower'
-                        if low > 1
-                        else 'faster'
-                        if high < 1
-                        else 'inconclusive'
-                    )
-                else:
-                    comparison = 'inconclusive'
+            comparison = contrast['decision']
             if contrast.get('decision_reason'):
                 comparison += f' ({contrast["decision_reason"]})'
         percentiles = result['latency_percentiles']

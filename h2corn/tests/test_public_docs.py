@@ -316,22 +316,6 @@ def test_benchmark_table_reports_rates_latency_memory_and_comparison() -> None:
     assert '| uvicorn | 40.00 | 6 | 2.000 | 10.000 | 2.5 | slower |' in markdown
 
 
-def test_benchmark_table_keeps_legacy_paired_interval_classification() -> None:
-    record = _benchmark_record()
-    record['planned_trials'] = 8
-    record['aggregate']['h2corn']['rps_samples'] = [100.0] * 8
-    record['aggregate']['uvicorn']['rps_samples'] = [40.0] * 8
-    record['paired_contrasts']['uvicorn'] = {
-        'h2corn_over_competitor': 2.5,
-        'interval_95': [1.2, 2.8],
-        'method': 'percentile bootstrap of paired-block median rate ratios',
-    }
-
-    markdown = render_accessible_results(record)
-
-    assert '| uvicorn | 40.00 | 8 | 2.000 | 10.000 | 2.5 | slower |' in markdown
-
-
 def test_websocket_benchmark_table_names_sessions_and_durations() -> None:
     markdown = render_accessible_results(_benchmark_record('ws'))
 

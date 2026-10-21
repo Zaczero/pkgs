@@ -1330,16 +1330,10 @@ def _plot_results(
         if fixed_count
         else record.get('warmup_duration', '0.25s')
     )
-    if record.get('sampling') is not None:
-        sampling = (
-            f'\nSampling: {window} · {warmup} warmup · '
-            f'{record.get("planned_trials", 0)} production blocks · calibration excluded'
-        )
-    else:
-        sampling = (
-            f'\nSampling: {window} · {warmup} warmup · '
-            f'{record.get("planned_trials", 0)} fixed blocks'
-        )
+    sampling = (
+        f'\nSampling: {window} · {warmup} warmup · '
+        f'{record["planned_trials"]} production blocks · calibration excluded'
+    )
     calibration_note = (
         ' · calibration-limited; comparisons inconclusive'
         if record.get('calibration_limited')
