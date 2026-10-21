@@ -72,9 +72,11 @@ adaptive sampling policy. Diagnostic runs cannot replace published results.
 - Every inherited TCP listener has `TCP_NODELAY` enabled. Hypercorn's
   per-connection request cap is raised beyond the trial workload; effective
   settings and unmatched overrides are retained in the evidence.
-- Maximum sampled PSS sums unique supervisor and worker PIDs. Sampling occurs
-  before, during, and after measured load at one-second intervals. Missing
-  accounting is an error, never zero; short peaks may fall between samples.
+- Reported maximum sampled PSS sums unique supervisor and worker PIDs for
+  production blocks. The same one-second sampler surrounds calibration windows
+  so its observer cost enters the forecast; calibration PSS is not aggregated
+  into results. Missing accounting is an error, never zero; short peaks may
+  fall between samples.
 - HTTP/2 trials retain the effective peer SETTINGS after a PING round trip.
   Listeners, sockets, and load-generator files are private to each trial.
 - The 8 MiB HTTP/2 upload completes sixteen requests on eight connections.

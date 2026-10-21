@@ -78,8 +78,10 @@ connections, so no warmup uploads are needed. Throughput counts successful
 completions over actual elapsed time.
 
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
-across unique supervisor and worker processes. PSS shares mapped-page cost
-between processes. Sampling includes initial and final readings plus
+across unique supervisor and worker processes in production blocks. PSS shares
+mapped-page cost between processes. Calibration uses the same sampler around
+each window so its observer cost enters the forecast; calibration PSS is not
+aggregated into results. Sampling includes initial and final readings plus
 one-second readings during measured load; short peaks can fall between samples.
 
 The [raw scenario records](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw)
