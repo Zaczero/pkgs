@@ -47,8 +47,8 @@ impl Vertex {
         Self(value)
     }
 
-    pub(crate) fn to_direction(self, origin: CellIndex) -> Direction {
-        let is_pentagon = origin.is_pentagon();
+    // gometry: reuse one cell rotation for paired boundary-edge metadata.
+    pub(crate) fn to_direction(self, is_pentagon: bool, rotations: u8) -> Direction {
         let vertex_count = if is_pentagon {
             NUM_PENT_VERTS
         } else {
@@ -57,9 +57,6 @@ impl Vertex {
 
         // Invalid vertex are filtered out by the caller.
         assert!(self.0 < vertex_count);
-
-        // Determine the vertex rotations for this cell.
-        let rotations = origin.vertex_rotations();
 
         // Find the appropriate direction, rotating CW if necessary
         if is_pentagon {

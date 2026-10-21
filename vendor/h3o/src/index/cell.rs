@@ -898,6 +898,15 @@ impl CellIndex {
     /// ```
     #[must_use]
     pub fn vertex(self, vertex: Vertex) -> Option<VertexIndex> {
+        self.vertex_with_origin_rotation(vertex, None)
+    }
+
+    // gometry: share one origin rotation across a cell's canonical vertex lookups.
+    fn vertex_with_origin_rotation(
+        self,
+        vertex: Vertex,
+        rotation: Option<u8>,
+    ) -> Option<VertexIndex> {
         let vertex_count = self.vertex_count();
         let resolution = self.resolution();
 
@@ -920,8 +929,9 @@ impl CellIndex {
         if resolution == Resolution::Zero
             || bits::get_direction(self.into(), resolution) != u8::from(Direction::Center)
         {
+            let rotation = rotation.unwrap_or_else(|| self.vertex_rotations());
             // Get the left neighbor of the vertex, with its rotations.
-            let left = vertex.to_direction(self);
+            let left = vertex.to_direction(self.is_pentagon(), rotation);
             let (left_cell, left_rotation) =
                 grid::neighbor_rotations(self, left, 0).expect("left neighbor");
             // Set to owner if lowest index.
@@ -938,7 +948,7 @@ impl CellIndex {
                 // CCW.
                 let right_vertex =
                     Vertex::new_unchecked((u8::from(vertex) + vertex_count - 1) % vertex_count);
-                let right = right_vertex.to_direction(self);
+                let right = right_vertex.to_direction(self.is_pentagon(), rotation);
                 let (right_cell, right_rotation) =
                     grid::neighbor_rotations(self, right, 0).expect("right neighbor");
 
@@ -1002,6 +1012,38 @@ impl CellIndex {
             let vertex = Vertex::new_unchecked(vertex);
             // We've already filtered out invalid vertex.
             self.vertex(vertex).expect("cell vertex")
+        })
+    }
+
+    /// Returns directed boundary edges and their canonical endpoint vertices.
+    ///
+    /// Edges are ordered counterclockwise, starting at cell vertex zero.
+    #[doc(hidden)]
+    // gometry: batch topological endpoints without neighboring vertex searches.
+    pub fn boundary_edges(self) -> impl Iterator<Item = (DirectedEdgeIndex, [VertexIndex; 2])> {
+        let count = self.vertex_count();
+        let rotations = self.vertex_rotations();
+        let first = self
+            .vertex_with_origin_rotation(Vertex::new_unchecked(0), Some(rotations))
+            .expect("cell vertex");
+        let mut vertices = [first; NUM_HEX_VERTS as usize];
+        for vertex in 1..count {
+            vertices[usize::from(vertex)] = self
+                .vertex_with_origin_rotation(Vertex::new_unchecked(vertex), Some(rotations))
+                .expect("cell vertex");
+        }
+        let is_pentagon = self.is_pentagon();
+        let template = bits::set_mode(self.0.get(), IndexMode::DirectedEdge);
+        (0..count).map(move |start| {
+            let vertex = Vertex::new_unchecked(start);
+            let direction = vertex.to_direction(is_pentagon, rotations);
+            let edge = Edge::from(direction);
+            let index = DirectedEdgeIndex::new_unchecked(bits::set_edge(template, edge));
+            let end = (start + 1) % count;
+            (index, [
+                vertices[usize::from(start)],
+                vertices[usize::from(end)],
+            ])
         })
     }
 

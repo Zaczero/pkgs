@@ -128,7 +128,7 @@ where
 
 /// Assemble one MultiPolygon (or single Polygon) from already-disjoint cell
 /// shapes — used when the dissolve pre-scan finds zero shared edges.
-fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> Result<Typed, CellArrayError> {
+pub(crate) fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> Result<Typed, CellArrayError> {
     if shapes.is_empty() {
         return Err(CellArrayError::Geometry(
             "a coverage needs at least one cell to dissolve into a polygon".to_owned(),

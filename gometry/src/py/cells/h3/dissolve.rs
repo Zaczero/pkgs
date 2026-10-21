@@ -1,8 +1,10 @@
+use ahash::{HashMap, HashMapExt as _};
+
 use crate::geographic::GeographicFrame;
 use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
 use crate::grid::cell_set;
-use crate::py::cells::coverage_ops::{GridDissolver, SortedCells, dissolve_grid_cells};
-use crate::py::cells::grid_outline::coordseq_crosses_lon_seam;
+use crate::py::cells::coverage_ops::{SortedCells, multipolygon_from_cell_shapes};
+use crate::py::cells::grid_outline::{coordseq_crosses_lon_seam, polygonize_outline};
 use crate::py::cells::h3::{CellIndex, DirectedEdgeIndex, LatLng, VertexIndex};
 use crate::py::cells::{CellArrayError, Point, Shape, Typed, coverage_to_polygon};
 
@@ -39,82 +41,80 @@ pub(crate) fn h3_dissolve(cells: Vec<CellIndex>) -> Result<Typed, CellArrayError
     if contains_pole {
         // A closed exterior can bound a hole rather than the occupied region.
         // The planar polygonizer cannot choose the occupied side of a pole.
-        let shapes = cells
-            .as_slice()
-            .iter()
-            .copied()
-            .map(H3Dissolver::fallback_shape)
-            .collect::<Result<Vec<_>, _>>()?;
-        return coverage_to_polygon(&shapes);
+        return coverage_to_polygon(&canonical_cell_shapes(cells.as_slice())?);
     }
-    dissolve_grid_cells::<H3Dissolver>(cells)
+    let any_adjacent = cells.as_slice().iter().any(|cell| {
+        cell.edges()
+            .any(|edge| cells.as_slice().binary_search(&edge.destination()).is_ok())
+    });
+    if !any_adjacent {
+        return multipolygon_from_cell_shapes(canonical_cell_shapes(cells.as_slice())?);
+    }
+    if let Some(outline) = exterior_outline(&cells)?
+        && let Some(output) = polygonize_outline(outline)?
+    {
+        return Ok(output);
+    }
+    coverage_to_polygon(&canonical_cell_shapes(cells.as_slice())?)
 }
 
-struct H3Dissolver;
-
-impl GridDissolver for H3Dissolver {
-    type Cell = CellIndex;
-
-    fn fast_path_cells(
-        cells: &SortedCells<Self::Cell>,
-    ) -> Result<Option<SortedCells<Self::Cell>>, CellArrayError> {
-        Ok(Some(cells.clone()))
-    }
-
-    fn adjacency_neighbors(cell: Self::Cell) -> impl Iterator<Item = Self::Cell> {
-        cell.edges().map(h3o::DirectedEdgeIndex::destination)
-    }
-
-    /// Exterior directed-edge segments as lon/lat polylines.
-    ///
-    /// These are **planar chord proxies** of H3's spherical edge geometry —
-    /// exact region algebra should use cell set ops, not dissolved polygons.
-    fn exterior_edge_segments(
-        cell: Self::Cell,
-        is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> Result<Vec<CoordSeq>, CellArrayError> {
-        let mut segments = Vec::with_capacity(6);
-        let mut vertices = None;
-        for edge in cell.edges() {
-            if is_member(edge.destination()) {
+fn exterior_outline(
+    cells: &SortedCells<CellIndex>,
+) -> Result<Option<Vec<CoordSeq>>, CellArrayError> {
+    let mut coordinates = HashMap::new();
+    let mut outline = Vec::with_capacity(cells.as_slice().len().saturating_mul(2));
+    for &cell in cells.as_slice() {
+        let exterior: Vec<_> = cell
+            .edges()
+            .filter(|edge| cells.as_slice().binary_search(&edge.destination()).is_err())
+            .collect();
+        if exterior.is_empty() {
+            continue;
+        }
+        for (index, vertices) in cell.boundary_edges() {
+            if !exterior.contains(&index) {
                 continue;
             }
-            let vertices = vertices.get_or_insert_with(|| cell.vertexes().collect::<Vec<_>>());
-            let (_, edge) = DissolveEdge::new(edge, vertices);
             let mut points = Vec::with_capacity(4);
-            edge.append(&mut points)?;
-            segments.push(CoordSeq::try_from_points(&points)?);
+            DissolveEdge { index, vertices }.append(&mut points, &mut coordinates)?;
+            let segment = CoordSeq::try_from_points(&points)?;
+            if coordseq_crosses_lon_seam(&segment) {
+                return Ok(None);
+            }
+            outline.push(segment);
         }
-        Ok(segments)
     }
+    Ok(Some(outline))
+}
 
-    fn crosses_seam(segment: &CoordSeq) -> bool {
-        coordseq_crosses_lon_seam(segment)
-    }
+fn canonical_cell_shapes(cells: &[CellIndex]) -> Result<Vec<Shape>, CellArrayError> {
+    let mut coordinates = HashMap::with_capacity(cells.len().saturating_mul(2));
+    cells
+        .iter()
+        .copied()
+        .map(|cell| canonical_cell_shape(cell, &mut coordinates))
+        .collect()
+}
 
-    fn fallback_shape(cell: Self::Cell) -> Result<Shape, CellArrayError> {
-        let vertices = cell.vertexes().collect::<Vec<_>>();
-        let mut edges = [None; 6];
-        for edge in cell.edges() {
-            let (start, edge) = DissolveEdge::new(edge, &vertices);
-            *edges.get_mut(start).expect("cell vertex indexes its edge") = Some(edge);
-        }
-        let mut points = Vec::with_capacity(11);
-        for edge in edges.into_iter().flatten() {
-            edge.append(&mut points)?;
-            points
-                .pop()
-                .expect("the following edge owns the shared vertex");
-        }
-        points.push(*points.first().expect("a cell has boundary vertices"));
-        let boundary = Shape::Polygon(Polygon::new(Ring::closed(points)?, Vec::new()));
-        let boundary = crate::geometry::publish_stored_computed_shape(
-            &boundary,
-            GeographicFrame::crs84(),
-            "H3 dissolve boundary",
-        )?;
-        Ok(boundary.split_antimeridian()?)
+fn canonical_cell_shape(
+    cell: CellIndex,
+    coordinates: &mut HashMap<VertexIndex, Point>,
+) -> Result<Shape, CellArrayError> {
+    let mut points = Vec::with_capacity(11);
+    for (index, vertices) in cell.boundary_edges() {
+        DissolveEdge { index, vertices }.append(&mut points, coordinates)?;
+        points
+            .pop()
+            .expect("the following edge owns the shared vertex");
     }
+    points.push(*points.first().expect("a cell has boundary vertices"));
+    let boundary = Shape::Polygon(Polygon::new(Ring::closed(points)?, Vec::new()));
+    let boundary = crate::geometry::publish_stored_computed_shape(
+        &boundary,
+        GeographicFrame::crs84(),
+        "H3 dissolve boundary",
+    )?;
+    Ok(boundary.split_antimeridian()?)
 }
 
 #[derive(Clone, Copy)]
@@ -124,65 +124,55 @@ struct DissolveEdge {
 }
 
 impl DissolveEdge {
-    fn new(index: DirectedEdgeIndex, vertices: &[VertexIndex]) -> (usize, Self) {
-        let mut shared = index
-            .destination()
-            .vertexes()
-            .filter(|vertex| vertices.contains(vertex));
-        let first = shared.next().expect("neighboring cells share two vertices");
-        let second = shared.next().expect("neighboring cells share two vertices");
-        let first_index = vertices
-            .iter()
-            .position(|&vertex| vertex == first)
-            .expect("shared vertex belongs to the origin");
-        let second_index = vertices
-            .iter()
-            .position(|&vertex| vertex == second)
-            .expect("shared vertex belongs to the origin");
-        let (start, vertices) = if first_index.checked_add(1) == Some(second_index)
-            || (second_index == 0 && first_index.checked_add(1) == Some(vertices.len()))
-        {
-            (first_index, [first, second])
-        } else {
-            (second_index, [second, first])
-        };
-        (start, Self { index, vertices })
-    }
-
-    fn append(self, output: &mut Vec<Point>) -> crate::error::Result<()> {
-        let (origin, destination) = self.index.cells();
-        let reverse = origin > destination;
-        let (index, vertices) = if reverse {
-            (destination.edge(origin).expect("an edge has a reverse"), [
-                self.vertices[1],
-                self.vertices[0],
-            ])
-        } else {
-            (self.index, self.vertices)
-        };
-        let [start, end] = vertices.map(|vertex| {
-            let coordinate = LatLng::from(vertex);
-            Point::new_raw_xy(coordinate.lng(), coordinate.lat())
+    fn append(
+        self,
+        output: &mut Vec<Point>,
+        coordinates: &mut HashMap<VertexIndex, Point>,
+    ) -> crate::error::Result<()> {
+        let [start, end] = self.vertices.map(|vertex| {
+            *coordinates.entry(vertex).or_insert_with(|| {
+                let coordinate = LatLng::from(vertex);
+                Point::new_raw_xy(coordinate.lng(), coordinate.lat())
+            })
         });
         // A shared corner uses its vertex owner; a face-crossing insertion uses
         // the lower cell's directed edge. Independent cell projections can
         // otherwise leave real gaps between neighboring polygons.
-        let boundary = index.boundary();
-        debug_assert!((2..=3).contains(&boundary.len()));
-        let middle = if boundary.len() == 3 {
-            let coordinate = boundary.get(1).expect("distortion vertex");
-            Point::new_raw_xy(coordinate.lng(), coordinate.lat())
+        let (middle, count) = if self.index.origin().resolution().is_class3() {
+            let (origin, destination) = self.index.cells();
+            let index = if origin > destination {
+                destination.edge(origin).expect("an edge has a reverse")
+            } else {
+                self.index
+            };
+            let boundary = index.boundary();
+            debug_assert!((2..=3).contains(&boundary.len()));
+            let middle = if boundary.len() == 3 {
+                let coordinate = boundary.get(1).expect("distortion vertex");
+                Point::new_raw_xy(coordinate.lng(), coordinate.lat())
+            } else {
+                end
+            };
+            (middle, boundary.len())
         } else {
-            end
+            (end, 2)
         };
         let points = [start, middle, end];
         let points = points
-            .get(..boundary.len())
+            .get(..count)
             .expect("a directed edge has at most one distortion vertex");
         if points
             .array_windows::<2>()
             .any(|[a, b]| (a.x - b.x).abs() > 180.0)
         {
+            let (origin, destination) = self.index.cells();
+            let reverse = origin > destination;
+            let canonical = if reverse {
+                [end, if count == 3 { middle } else { start }, start]
+            } else {
+                [start, middle, end]
+            };
+            let points = canonical.get(..count).expect("edge coordinate count");
             // Use the same cut direction for both cells. Splitting opposite
             // per-cell spellings can round the cut latitude differently.
             let edge = Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points)?)?);
@@ -220,8 +210,6 @@ impl DissolveEdge {
             } else {
                 output.extend(cut);
             }
-        } else if reverse {
-            output.extend(points.iter().rev().copied());
         } else {
             output.extend_from_slice(points);
         }

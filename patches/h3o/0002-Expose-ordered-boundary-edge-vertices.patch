@@ -1,0 +1,96 @@
+diff --git a/GOMETRY_DIVERGENCE.md b/GOMETRY_DIVERGENCE.md
+index b71ca85aa..ce866679a 100644
+--- a/GOMETRY_DIVERGENCE.md
++++ b/GOMETRY_DIVERGENCE.md
+@@ -22,2 +22,3 @@ them when updating h3o, or port the consuming certificate at the same time.
+ | `src/index/cell.rs` | `boundary_with_seeds`, target center | Native boundary and target-frame center carriers, neither represented by public rounded boundary/LatLng APIs. |
++| `src/index/cell.rs`, `src/index/vertex.rs` | `boundary_edges`, shared vertex-to-direction rotation | Emits directed edges with canonical endpoint IDs in boundary order, reusing one origin rotation across vertex lookup and edge ordering instead of searching neighboring vertex sets. |
+ | `src/index/cell_tests.rs` | projected-boundary/profile/raw-carrier tests | Pins public ABI preservation and every raw-carrier ordering/identity invariant. |
+@@ -30,5 +31,5 @@ them when updating h3o, or port the consuming certificate at the same time.
+ Every source divergence above has a nearby `gometry:` marker.  Update this
+-table and its marker together when the carrier changes.  Current audit: 27
++table and its marker together when the carrier changes.  Current audit: 30
+ markers — 6 in `boundary.rs`, 6 in `coord/faceijk.rs`, 3 in `coord/mod.rs`, 2
+-in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 2 in `index/cell.rs`, 1 each in `index/cell_tests.rs`,
++in `coord/vec3d.rs`, 1 in `coord/vec2d.rs`, 4 in `index/cell.rs`, 1 in `index/vertex.rs`, 1 each in `index/cell_tests.rs`,
+ `lib.rs`, and `grid/iterator_tests.rs`, 2 in `grid/iterator.rs`, and 2 in
+diff --git a/src/index/cell.rs b/src/index/cell.rs
+index c1633fbae..c44704fff 100644
+--- a/src/index/cell.rs
++++ b/src/index/cell.rs
+@@ -900,2 +900,11 @@ impl CellIndex {
+     pub fn vertex(self, vertex: Vertex) -> Option<VertexIndex> {
++        self.vertex_with_origin_rotation(vertex, None)
++    }
++
++    // gometry: share one origin rotation across a cell's canonical vertex lookups.
++    fn vertex_with_origin_rotation(
++        self,
++        vertex: Vertex,
++        rotation: Option<u8>,
++    ) -> Option<VertexIndex> {
+         let vertex_count = self.vertex_count();
+@@ -922,4 +931,5 @@ impl CellIndex {
+         {
++            let rotation = rotation.unwrap_or_else(|| self.vertex_rotations());
+             // Get the left neighbor of the vertex, with its rotations.
+-            let left = vertex.to_direction(self);
++            let left = vertex.to_direction(self.is_pentagon(), rotation);
+             let (left_cell, left_rotation) =
+@@ -940,3 +950,3 @@ impl CellIndex {
+                     Vertex::new_unchecked((u8::from(vertex) + vertex_count - 1) % vertex_count);
+-                let right = right_vertex.to_direction(self);
++                let right = right_vertex.to_direction(self.is_pentagon(), rotation);
+                 let (right_cell, right_rotation) =
+@@ -1007,2 +1017,34 @@ impl CellIndex {
+
++    /// Returns directed boundary edges and their canonical endpoint vertices.
++    ///
++    /// Edges are ordered counterclockwise, starting at cell vertex zero.
++    #[doc(hidden)]
++    // gometry: batch topological endpoints without neighboring vertex searches.
++    pub fn boundary_edges(self) -> impl Iterator<Item = (DirectedEdgeIndex, [VertexIndex; 2])> {
++        let count = self.vertex_count();
++        let rotations = self.vertex_rotations();
++        let first = self
++            .vertex_with_origin_rotation(Vertex::new_unchecked(0), Some(rotations))
++            .expect("cell vertex");
++        let mut vertices = [first; NUM_HEX_VERTS as usize];
++        for vertex in 1..count {
++            vertices[usize::from(vertex)] = self
++                .vertex_with_origin_rotation(Vertex::new_unchecked(vertex), Some(rotations))
++                .expect("cell vertex");
++        }
++        let is_pentagon = self.is_pentagon();
++        let template = bits::set_mode(self.0.get(), IndexMode::DirectedEdge);
++        (0..count).map(move |start| {
++            let vertex = Vertex::new_unchecked(start);
++            let direction = vertex.to_direction(is_pentagon, rotations);
++            let edge = Edge::from(direction);
++            let index = DirectedEdgeIndex::new_unchecked(bits::set_edge(template, edge));
++            let end = (start + 1) % count;
++            (index, [
++                vertices[usize::from(start)],
++                vertices[usize::from(end)],
++            ])
++        })
++    }
++
+     /// Produce cells within grid distance `k` of the cell.
+diff --git a/src/index/vertex.rs b/src/index/vertex.rs
+index cc88e88fa..b8e6dd2b4 100644
+--- a/src/index/vertex.rs
++++ b/src/index/vertex.rs
+@@ -49,4 +49,4 @@ impl Vertex {
+
+-    pub(crate) fn to_direction(self, origin: CellIndex) -> Direction {
+-        let is_pentagon = origin.is_pentagon();
++    // gometry: reuse one cell rotation for paired boundary-edge metadata.
++    pub(crate) fn to_direction(self, is_pentagon: bool, rotations: u8) -> Direction {
+         let vertex_count = if is_pentagon {
+@@ -60,5 +60,2 @@ impl Vertex {
+
+-        // Determine the vertex rotations for this cell.
+-        let rotations = origin.vertex_rotations();
+-
+         // Find the appropriate direction, rotating CW if necessary
