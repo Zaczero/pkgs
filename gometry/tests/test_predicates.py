@@ -4,6 +4,7 @@ hole/concavity cases, and strict array broadcasting.
 
 import math
 from collections.abc import Iterable
+from fractions import Fraction
 from typing import cast
 
 import gometry as gm
@@ -26,6 +27,44 @@ def test_outlying_hole_boundary_is_not_polygon_support() -> None:
     np.testing.assert_array_equal(
         gm.SpatialIndex([polygon]).query(point, predicate='intersects'), []
     )
+
+
+@pytest.mark.parametrize('reverse', [False, True], ids=['line-first', 'polygon-first'])
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'nullable-array'])
+def test_line_polygon_intersection_preserves_disjoint_components_after_rounding(
+    reverse: bool, array: bool
+) -> None:
+    source = gm.MultiLineString([
+        [(0, 0), (1.1999999999999993, 0.39999999999999974)],
+        [(0.5, -1), (0.5, 0.16666666666666666)],
+    ])
+    polygon = gm.Polygon([(-1, -2), (1, -2), (1, 2), (-2, 3), (-1, -2)])
+    tip = Fraction(0.16666666666666666)
+    source_slope = Fraction(0.39999999999999974) / Fraction(1.1999999999999993)
+    assert tip < source_slope / 2
+    if array:
+        rows = gm.GeometryArray([None, source])
+        results = (
+            gm.intersection(polygon, rows)
+            if reverse
+            else gm.intersection(rows, polygon)
+        )
+        assert results[0] is None
+        result = results[1]
+    else:
+        result = (
+            gm.intersection(polygon, source)
+            if reverse
+            else gm.intersection(source, polygon)
+        )
+    assert result is not None
+    sloping, vertical = [list(part.coords) for part in result.parts]
+    np.testing.assert_array_equal(sloping[0], [0, 0])
+    np.testing.assert_array_equal(vertical, [[0.5, -1], [0.5, float(tip)]])
+    cut_x, cut_y = sloping[-1]
+    assert cut_x == 1
+    # At x=0.5 the published chord must remain above the other line's endpoint.
+    assert Fraction(cut_y) / 2 > tip
 
 
 def test_polygon_planar_measurements_and_predicates() -> None:

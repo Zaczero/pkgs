@@ -311,6 +311,37 @@ fn point_union_preserves_a_max_depth_collection_without_exceeding_the_limit() {
 }
 
 #[test]
+fn line_polygon_rounding_keeps_disjoint_line_components_separate() {
+    let line = crate::io::parse_wkt(
+        "MULTILINESTRING ((0 0,1.1999999999999993 0.39999999999999974), \
+         (0.5 -1,0.5 0.16666666666666666))",
+    )
+    .unwrap();
+    let polygon = crate::io::parse_wkt("POLYGON ((-1 -2,1 -2,1 2,-2 3,-1 -2))").unwrap();
+    for inputs in [[&line, &polygon], [&polygon, &line]] {
+        let result = overlay_all(
+            &inputs,
+            TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        let Shape::MultiLineString(lines) = result else {
+            panic!("intersection must retain the two line components");
+        };
+        assert_eq!(lines.len(), 2);
+        let sloping = lines.first().unwrap().as_coords();
+        let vertical = lines.last().unwrap().as_coords();
+        assert_eq!(sloping.xs(), &[0.0, 1.0]);
+        assert_eq!(vertical.xs(), &[0.5, 0.5]);
+        assert_eq!(vertical.ys(), &[-1.0, 0.166_666_666_666_666_66]);
+        // Halving these normal binary64 values is exact, so equality would be
+        // the other line's endpoint lying on the published sloping chord.
+        assert!(*sloping.ys().last().unwrap() * 0.5 > *vertical.ys().last().unwrap());
+    }
+}
+
+#[test]
 fn line_polygon_overlays_match_full_partition_wkb() {
     let square = test_square(0.0, 0.0, 4.0, 4.0);
     let holed = Shape::Polygon(Polygon::new(
