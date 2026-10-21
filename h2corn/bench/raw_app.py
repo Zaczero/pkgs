@@ -147,9 +147,31 @@ async def app(scope: Scope, receive: Receive, send: Send) -> None:
         return
 
     if path == '/streaming-post-fast':
-        body_len = str(await _read_body(receive)).encode()
+        body_len = await _read_body(receive)
+        content_length = next(
+            (
+                value
+                for name, value in scope['headers']
+                if name.lower() == b'content-length'
+            ),
+            None,
+        )
+        if content_length != str(body_len).encode():
+            await send({
+                'type': 'http.response.start',
+                'status': 400,
+                'headers': [(b'content-type', b'text/plain')],
+            })
+            await send({
+                'type': 'http.response.body',
+                'body': b'upload body length mismatch',
+            })
+            return
         await send(PLAIN_START)
-        await send({'type': 'http.response.body', 'body': body_len})
+        await send({
+            'type': 'http.response.body',
+            'body': str(body_len).encode(),
+        })
         return
 
     if path == '/__bench/worker-pid':

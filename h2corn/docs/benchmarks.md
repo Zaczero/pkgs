@@ -48,22 +48,21 @@ the longest selected duration. A scenario that remains unstable at four
 seconds is marked calibration-limited, and its comparisons are inconclusive.
 The 8 MiB upload retains its fixed complete-request batch.
 
-Two fresh-process pilot blocks estimate paired log-ratio scatter and cell
-cost. They are excluded from results. Before production, the runner freezes six
-paired blocks per scenario, adding three blocks when the pilot's paired
-log-ratio scatter exceeds `log(1.1)` and the forecast stays within the
-30-minute target. Production does not stop early based on observed results.
-Fresh server processes, rotated server order, and unpinned CPU placement are
-used for every block.
+Calibration runs after the correctness probe without a separate load warmup.
+Subtracting requested calibration-window durations from calibration-trial
+elapsed time estimates each server's setup and correctness-check cost. The
+runner adds the common selected duration and a 0.25-second production warmup to
+forecast one time-window cell; the fixed-count upload has no warmup. It then
+freezes exactly six fresh-start paired production blocks per scenario. Server
+order is rotated, CPU placement is unpinned, and production never stops early.
 
 Comparisons use paired production-block throughput ratios and
 distribution-free order-statistic intervals for the common median of
 independent paired-block ratios. Six blocks use the minimum and maximum ratios
-(96.875% coverage); nine use the second and eighth ratios (96.09375% coverage).
-Each comparison records its method and achieved coverage. An interval
-containing one is inconclusive. Rates are medians; dots show individual blocks
-and whiskers show their observed range. Latencies are medians of per-trial
-percentiles. Clients use closed-loop load.
+(96.875% coverage). Each comparison records its method and achieved coverage.
+An interval containing one is inconclusive. Rates are medians; dots show
+individual blocks and whiskers show their observed range. Latencies are
+medians of per-trial percentiles. Clients use closed-loop load.
 
 One monotonic deadline covers the combined HTTP and gRPC collection. Thirty
 minutes is the target and 45 minutes is the hard total. If the complete
@@ -71,7 +70,11 @@ six-block plan cannot fit the hard limit, the run retains diagnostic evidence,
 exits unsuccessfully, and does not publish.
 
 The 8 MiB network upload uses a fixed batch of sixteen completed requests on
-eight connections, after eight warmup requests. Throughput counts successful
+eight connections. Correctness probes use the endpoint's small request body.
+The handler checks each received body against its declared length, and the
+load generator requires every response to succeed and verifies the response
+byte total. The full batch runs in a separate client process on fresh
+connections, so no warmup uploads are needed. Throughput counts successful
 completions over actual elapsed time.
 
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
@@ -100,17 +103,17 @@ retain the commands, observations, and identities behind the figures.
 
 ## gRPC methodology {#grpc-measurement-method}
 
-The gRPC family uses the same adaptive calibration, excluded pilot, frozen
-production plan, and paired-median intervals described in the HTTP
-methodology. Its 27 supported cells use one serving process and one standard
+The gRPC family uses the same adaptive calibration, fixed six-block production
+plan, and paired-median intervals described in the HTTP methodology. Its 27
+supported cells use one serving process and one standard
 asyncio loop per server, with one HTTP/2 client connection per trial. Five
 grpclib cells are intentionally not selected. Compression is identity. TLS
 rows connect directly to each server; all measured TLS connections negotiated
 TLS 1.3 with TLS_AES_128_GCM_SHA256.
 
-Calibration reuses the verified serving process across windows. Pilot and
-production trials start fresh processes, open a new client connection, and
-complete a control RPC before measurement. Closed-loop load verifies every
+Calibration reuses the verified serving process across windows. Each
+production block starts a fresh process, opens a new client connection, and
+completes a control RPC before measurement. Closed-loop load verifies every
 response, message count, and final gRPC status; invalid or unfinished work is
 retained as a failure rather than credited as throughput.
 

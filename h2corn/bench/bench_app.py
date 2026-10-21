@@ -79,6 +79,8 @@ async def streaming_post_fast(request):
     body_len = 0
     async for chunk in request.stream():
         body_len += len(chunk)
+    if request.headers.get('content-length') != str(body_len):
+        return Response(b'upload body length mismatch', status_code=400)
     return Response(str(body_len).encode(), media_type='text/plain')
 
 

@@ -31,27 +31,25 @@ The harness measures successive 0.5, 1, 2, and 4 second windows, stopping when
 adjacent rates agree within 10%. Every server in a scenario then receives the
 longest selected duration. If rates have not stabilized by four seconds, that
 scenario is marked calibration-limited and its comparisons are inconclusive.
-The 8 MiB upload keeps its fixed complete-request batch; calibration and
-production both execute the full request workload.
+Calibration runs after the correctness probe without a separate load warmup.
+Calibration-trial elapsed time minus the requested calibration-window
+durations estimates per-cell setup and checks. Time-window production blocks
+use a 0.25-second warmup; the fixed-count upload has none. The production
+forecast adds the selected duration and applicable warmup.
 
-Two fresh-process pilot blocks estimate paired log-ratio scatter and per-cell
-cost. Pilots are excluded from the published estimates. The harness freezes
-the production allocation before collecting production data: six paired blocks
-per scenario, with three additional blocks for noisy scenarios only when the
-forecast remains within the 30-minute target. It never stops production early
-because an interval looks favorable.
+The harness freezes six fresh-process paired production blocks for every
+scenario before collecting production data.
 
 Comparisons use paired production-block rate ratios and distribution-free
-order-statistic intervals for a common median. Six blocks use the minimum and
-maximum ratios (96.875% coverage); nine use the second and eighth ratios
-(96.09375% coverage). Each comparison records its sample size, interval
-method, and achieved coverage.
+order-statistic intervals for the common median of independent paired-block
+ratios. Six blocks use the minimum and maximum ratios (96.875% coverage). Each
+comparison records its sample size, interval method, and achieved coverage.
 
-One monotonic deadline covers preparation, calibration, pilots, production,
-reporting, and cleanup. Thirty minutes is the target and 45 minutes is the hard
-total. If the forecast cannot fit the complete six-block matrix within the
-hard limit, the run retains its diagnostic evidence, exits nonzero, and does
-not publish.
+One monotonic deadline covers preparation, qualification, calibration,
+production, reporting, and cleanup. Thirty minutes is the target and 45 minutes
+is the hard total. If the forecast cannot fit the complete six-block matrix
+within the hard limit, the run retains its diagnostic evidence, exits nonzero,
+and does not publish.
 
 For a smaller diagnostic collection, select a family and workload explicitly:
 
@@ -79,8 +77,12 @@ adaptive sampling policy. Diagnostic runs cannot replace published results.
   accounting is an error, never zero; short peaks may fall between samples.
 - HTTP/2 trials retain the effective peer SETTINGS after a PING round trip.
   Listeners, sockets, and load-generator files are private to each trial.
-- The 8 MiB HTTP/2 upload completes sixteen requests on eight connections after
-  eight warmup requests; its duration is determined by the fixed work.
+- The 8 MiB HTTP/2 upload completes sixteen requests on eight connections.
+  The handler checks each received body against its declared length, and the
+  load generator requires all responses to succeed and verifies their byte
+  total. Small-body correctness probes run before and after measurement. The
+  upload batch uses a separate client process with fresh connections, so it
+  needs no full-size warmup uploads.
 
 The default run includes loopback and a 50 ms round-trip network profile. The
 RTT profile is applied inside a throwaway network namespace; the host network

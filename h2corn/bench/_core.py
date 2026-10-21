@@ -4,9 +4,8 @@ Nothing is pinned to a CPU. Server and load generator run the way a deployment
 runs them, and the noise of a shared development host is handled where it
 belongs — in the statistics: trials are rotation-balanced and rate-ratio
 intervals compare paired production blocks. Each time-window scenario uses the
-same-process calibration result shared by its servers; pilot blocks allocate a
-fixed production count before measurement begins. One monotonic deadline bounds
-the combined benchmark run.
+same-process calibration result shared by its servers to forecast six fixed
+production blocks. One monotonic deadline bounds the combined benchmark run.
 """
 
 from __future__ import annotations
@@ -243,9 +242,8 @@ RESPONSE_CONTRACTS: dict[BenchmarkType, ResponseContract] = {
         request_body=b'x' * 1024,
         response_body=b'stream-started\n1024\nstream-finished\n',
     ),
-    # ``request_body`` is the compact exact-body probe. The load generator
-    # reads the 8 MiB body from disk so it does not put an enormous argv or a
-    # persistent 8 MiB Python object into the server-memory measurement.
+    # The correctness probe uses the compact body; only measured load sends
+    # the 8 MiB file through a separate client process.
     'h2_upload': ResponseContract(
         '/streaming-post-fast',
         protocol='2',
@@ -1086,6 +1084,8 @@ def run_oha(
     completed = sum(raw['statusCodeDistribution'].values())
     if requests is not None and completed != requests:
         raise ResponseError(f'oha completed {completed}/{requests} required requests')
+    # The upload endpoint rejects each request whose received byte count differs
+    # from Content-Length; also reconcile the completed response bodies as a batch.
     if raw.get('summary', {}).get('totalData') != completed * len(expected):
         raise ResponseError(
             'oha response-byte total differs from completed response bodies'
@@ -1609,13 +1609,6 @@ def _probe_websocket(contract: ResponseContract, port: int = PORT) -> None:
 def check_response(scenario: Scenario) -> None:
     """Prove the server answers this scenario exactly, or refuse to measure it."""
     contract = scenario.contract
-    if contract.request_body_path is not None:
-        payload = contract.request_body_path.read_bytes()
-        contract = replace(
-            contract,
-            request_body=payload,
-            response_body=str(len(payload)).encode(),
-        )
     try:
         if contract.protocol == 'websocket':
             _probe_websocket(contract, scenario.port)

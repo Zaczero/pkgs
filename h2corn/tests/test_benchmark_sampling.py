@@ -1,6 +1,5 @@
 """Adaptive benchmark calibration, planning, and median uncertainty."""
 
-import math
 import sys
 from pathlib import Path
 
@@ -13,10 +12,10 @@ from bench.sampling import (
     ScenarioSamples,
     allocate_production_blocks,
     calibration_duration,
+    calibration_production_cost,
     calibration_status,
     common_duration,
     median_order_interval,
-    paired_log_ratio_scatter,
 )
 
 
@@ -61,8 +60,28 @@ def test_common_duration_gives_each_competitor_equal_exposure():
     assert limited
 
 
+def test_production_cost_replaces_calibration_windows_with_selected_duration():
+    calibration = {
+        'elapsed_seconds': 5.5,
+        'windows': [
+            {'duration_seconds': 0.5, 'elapsed_seconds': 0.6},
+            {'duration_seconds': 1.0, 'elapsed_seconds': 1.1},
+        ],
+    }
+
+    assert calibration_production_cost(
+        calibration,
+        duration_seconds=2.0,
+        warmup_seconds=0.25,
+    ) == pytest.approx(6.25)
+
+
 def test_fixed_count_calibration_uses_the_complete_workload():
     points = [CalibrationPoint(None, 240.0, 6.5, 16)]
+    cell = {
+        'elapsed_seconds': 7.0,
+        'windows': [{'duration_seconds': None, 'elapsed_seconds': 6.5}],
+    }
 
     assert calibration_duration(points, fixed_count=True) is None
     assert calibration_status(points, fixed_count=True) == ('fixed-count-cost', None)
@@ -70,86 +89,45 @@ def test_fixed_count_calibration_uses_the_complete_workload():
         {'h2corn': {'status': 'fixed-count-cost'}},
         fixed_count=True,
     ) == (None, False)
-
-
-def test_pilot_scatter_uses_only_common_paired_blocks():
-    assert paired_log_ratio_scatter({
-        'h2corn': [100.0, 200.0, 300.0],
-        'hypercorn': [50.0, 100.0],
-    }) == pytest.approx(0.0)
-    assert paired_log_ratio_scatter({
-        'h2corn': [100.0, 200.0],
-        'hypercorn': [50.0, 140.0],
-    }) == pytest.approx(abs(math.log(2) - math.log(10 / 7)) / math.sqrt(2))
-
-
-def test_noisy_scenarios_get_nine_blocks_only_when_the_target_fits():
-    fit = allocate_production_blocks(
-        scenario_costs={'steady': 10.0, 'noisy': 10.0},
-        pilot_scatter={'steady': 0.01, 'noisy': 0.20},
-        elapsed_seconds=900.0,
-        target_seconds=1_150.0,
-        hard_seconds=2_700.0,
-        report_reserve_seconds=30.0,
-        cleanup_reserve_seconds=30.0,
-    )
-    no_fit = allocate_production_blocks(
-        scenario_costs={'steady': 10.0, 'noisy': 10.0},
-        pilot_scatter={'steady': 0.01, 'noisy': 0.20},
-        elapsed_seconds=1_000.0,
-        target_seconds=1_100.0,
-        hard_seconds=2_700.0,
-        report_reserve_seconds=30.0,
-        cleanup_reserve_seconds=30.0,
+    assert (
+        calibration_production_cost(
+            cell,
+            duration_seconds=None,
+            warmup_seconds=0.0,
+        )
+        == 7.0
     )
 
-    assert fit['blocks'] == {'steady': 6, 'noisy': 9}
-    assert fit['target_met']
-    assert no_fit['blocks'] == {'steady': 6, 'noisy': 6}
-    assert not no_fit['target_met']
 
-
-def test_production_blocks_do_not_depend_on_a_pilot_winner():
-    quiet_scatter = paired_log_ratio_scatter({
-        'h2corn': [200.0, 400.0],
-        'hypercorn': [100.0, 200.0],
-    })
-    winning_scatter = paired_log_ratio_scatter({
-        'h2corn': [20_000.0, 40_000.0],
-        'hypercorn': [100.0, 200.0],
-    })
+def test_production_plan_assigns_six_blocks_to_every_scenario():
     plan = allocate_production_blocks(
-        scenario_costs={'quiet': 10.0, 'winning': 10.0},
-        pilot_scatter={
-            'quiet': quiet_scatter,
-            'winning': winning_scatter,
-        },
-        elapsed_seconds=0,
+        scenario_costs={'h1': 10.0, 'grpc': 20.0},
+        elapsed_seconds=100.0,
         target_seconds=1_000.0,
         hard_seconds=2_700.0,
         report_reserve_seconds=30.0,
         cleanup_reserve_seconds=30.0,
     )
 
-    assert plan['blocks'] == {'quiet': 6, 'winning': 6}
+    assert plan['blocks'] == {'h1': 6, 'grpc': 6}
+    assert plan['production_estimate_seconds'] == 180.0
+    assert plan['target_met']
 
 
-def test_six_and_nine_paired_blocks_get_exact_conservative_median_intervals():
+def test_six_paired_blocks_get_the_fixed_conservative_median_interval():
     six = median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-    nine = median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
 
     assert six['interval'] == [1.0, 6.0]
     assert six['achieved_coverage'] == 62 / 64
     assert (six['lower_order'], six['upper_order']) == (1, 6)
-    assert nine['interval'] == [2.0, 8.0]
-    assert nine['achieved_coverage'] == 492 / 512
-    assert (nine['lower_order'], nine['upper_order']) == (2, 8)
     assert 'independent paired blocks' in six['method']
 
 
-def test_median_interval_rejects_too_few_or_nonfinite_blocks():
-    with pytest.raises(ValueError, match='at least six'):
+def test_median_interval_rejects_non_six_or_nonfinite_pairs():
+    with pytest.raises(ValueError, match='exactly 6'):
         median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0])
+    with pytest.raises(ValueError, match='exactly 6'):
+        median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
     with pytest.raises(ValueError, match='finite'):
         median_order_interval([1.0, float('nan'), 3.0, 4.0, 5.0, 6.0])
 
@@ -158,7 +136,6 @@ def test_six_block_minimum_must_fit_the_hard_budget():
     with pytest.raises(ValueError, match='minimum six-block'):
         allocate_production_blocks(
             scenario_costs={'http': 100.0, 'grpc': 100.0},
-            pilot_scatter={'http': 0.5, 'grpc': 0.5},
             elapsed_seconds=2_000.0,
             target_seconds=1_800.0,
             hard_seconds=2_700.0,

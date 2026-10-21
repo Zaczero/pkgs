@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -12,15 +11,12 @@ if TYPE_CHECKING:
 
 CALIBRATION_WINDOWS_SECONDS = (0.5, 1.0, 2.0, 4.0)
 CALIBRATION_RELATIVE_TOLERANCE = 0.10
-PILOT_BLOCKS = 2
-BASE_PRODUCTION_BLOCKS = 6
-NOISY_PRODUCTION_BLOCKS = 9
-NOISY_LOG_RATIO_SCATTER = math.log1p(CALIBRATION_RELATIVE_TOLERANCE)
+PRODUCTION_BLOCKS = 6
+PRODUCTION_WARMUP_SECONDS = 0.25
 TARGET_TOTAL_SECONDS = 30 * 60
 HARD_TOTAL_SECONDS = 45 * 60
 REPORT_RESERVE_SECONDS = 90.0
 CLEANUP_RESERVE_SECONDS = 60.0
-MEDIAN_INTERVAL_COVERAGE = 0.95
 
 
 class BudgetError(ValueError):
@@ -166,51 +162,47 @@ def common_duration(
     )
 
 
-def paired_log_ratio_scatter(
-    samples: Mapping[str, Sequence[float]],
-    reference: str = 'h2corn',
-    sample_blocks: Mapping[str, Sequence[int]] | None = None,
-) -> float | None:
-    """Return the largest sample SD of paired log-rate ratios across competitors."""
-    if reference not in samples:
-        return None
-    blocks = sample_blocks or {
-        name: list(range(len(values))) for name, values in samples.items()
-    }
-    baseline = dict(zip(blocks[reference], samples[reference], strict=True))
-    scatters = []
-    for name, rates in samples.items():
-        if name == reference:
-            continue
-        competitor = dict(zip(blocks[name], rates, strict=True))
-        common = sorted(baseline.keys() & competitor.keys())
-        if len(common) < 2:
-            continue
-        ratios = []
-        for block in common:
-            control = baseline[block]
-            candidate = competitor[block]
-            if (
-                not math.isfinite(control)
-                or not math.isfinite(candidate)
-                or control <= 0
-                or candidate <= 0
-            ):
-                continue
-            ratios.append(math.log(control / candidate))
-        if len(ratios) >= 2:
-            scatters.append(statistics.stdev(ratios))
-    return max(scatters, default=None)
-
-
-def is_noisy(scatter: float | None) -> bool:
-    return scatter is not None and scatter > NOISY_LOG_RATIO_SCATTER
+def calibration_production_cost(
+    calibration: Mapping[str, Any],
+    *,
+    duration_seconds: float | None,
+    warmup_seconds: float,
+) -> float:
+    """Estimate one production cell by replacing its calibration load windows."""
+    calibration_seconds = float(calibration['elapsed_seconds'])
+    windows = calibration['windows']
+    fixed_count = duration_seconds is None
+    if fixed_count:
+        if len(windows) != 1 or windows[0]['duration_seconds'] is not None:
+            raise ValueError('fixed-count production needs one full-work calibration')
+        window_times = [float(windows[0]['elapsed_seconds'])]
+        production_load_seconds = window_times[0]
+    else:
+        assert duration_seconds is not None
+        if duration_seconds <= 0 or not math.isfinite(duration_seconds):
+            raise ValueError('production duration must be finite and positive')
+        if any(window['duration_seconds'] is None for window in windows):
+            raise ValueError('time-window production needs time-window calibration')
+        # Subtract requested load time, retaining per-window launch and teardown cost.
+        window_times = [float(window['duration_seconds']) for window in windows]
+        production_load_seconds = duration_seconds
+    window_seconds = sum(window_times)
+    if not math.isfinite(calibration_seconds) or calibration_seconds <= 0:
+        raise ValueError('calibration elapsed time must be finite and positive')
+    if not math.isfinite(window_seconds) or window_seconds <= 0:
+        raise ValueError('calibration windows must have positive elapsed time')
+    if calibration_seconds < window_seconds:
+        raise ValueError('calibration elapsed time is shorter than its load windows')
+    if warmup_seconds < 0 or not math.isfinite(warmup_seconds):
+        raise ValueError('production warmup must be finite and nonnegative')
+    return (
+        calibration_seconds - window_seconds + production_load_seconds + warmup_seconds
+    )
 
 
 def allocate_production_blocks(
     *,
     scenario_costs: Mapping[str, float],
-    pilot_scatter: Mapping[str, float | None],
     elapsed_seconds: float,
     target_seconds: float = TARGET_TOTAL_SECONDS,
     hard_seconds: float = HARD_TOTAL_SECONDS,
@@ -218,51 +210,31 @@ def allocate_production_blocks(
     report_reserve_seconds: float = REPORT_RESERVE_SECONDS,
     cleanup_reserve_seconds: float = CLEANUP_RESERVE_SECONDS,
 ) -> dict[str, Any]:
-    """Freeze a full six-block plan, spending target headroom on noisy cases."""
+    """Freeze six production blocks per scenario within the hard total."""
     if not scenario_costs:
         raise ValueError('production planning requires at least one scenario')
     if elapsed_seconds < 0 or any(
         not math.isfinite(cost) or cost <= 0 for cost in scenario_costs.values()
     ):
         raise ValueError('production planning needs finite positive observed costs')
-    blocks = dict.fromkeys(scenario_costs, BASE_PRODUCTION_BLOCKS)
-    base_cost = sum(scenario_costs[name] * count for name, count in blocks.items())
+    blocks = dict.fromkeys(scenario_costs, PRODUCTION_BLOCKS)
+    production_cost = sum(
+        scenario_costs[name] * count for name, count in blocks.items()
+    )
     fixed_reserve = (
         setup_reserve_seconds + report_reserve_seconds + cleanup_reserve_seconds
     )
-    base_forecast = elapsed_seconds + base_cost + fixed_reserve
-    if base_forecast > hard_seconds:
+    forecast = elapsed_seconds + production_cost + fixed_reserve
+    if forecast > hard_seconds:
         raise BudgetError(
             'minimum six-block matrix forecast exceeds the hard total budget '
-            f'({base_forecast:.1f}s > {hard_seconds:.1f}s)'
+            f'({forecast:.1f}s > {hard_seconds:.1f}s)'
         )
 
-    extras = [
-        (
-            (pilot_scatter.get(name) or 0.0) / (scenario_costs[name] * 3),
-            name,
-        )
-        for name in scenario_costs
-        if is_noisy(pilot_scatter.get(name))
-    ]
-    extra_cost = 0.0
-    for _, scenario in sorted(extras, key=lambda item: (-item[0], item[1])):
-        added = scenario_costs[scenario] * (
-            NOISY_PRODUCTION_BLOCKS - BASE_PRODUCTION_BLOCKS
-        )
-        if (
-            elapsed_seconds + base_cost + extra_cost + added + fixed_reserve
-            > target_seconds
-        ):
-            continue
-        blocks[scenario] = NOISY_PRODUCTION_BLOCKS
-        extra_cost += added
-
-    forecast = elapsed_seconds + base_cost + extra_cost + fixed_reserve
     return {
         'blocks': blocks,
         'elapsed_before_production_seconds': elapsed_seconds,
-        'production_estimate_seconds': base_cost + extra_cost,
+        'production_estimate_seconds': production_cost,
         'setup_reserve_seconds': setup_reserve_seconds,
         'report_reserve_seconds': report_reserve_seconds,
         'cleanup_reserve_seconds': cleanup_reserve_seconds,
@@ -270,48 +242,26 @@ def allocate_production_blocks(
         'target_seconds': target_seconds,
         'hard_seconds': hard_seconds,
         'target_met': forecast <= target_seconds,
-        'minimum_six_block_forecast_seconds': base_forecast,
-        'noisy_scenarios': [
-            name for _, name in sorted(extras, key=lambda item: (-item[0], item[1]))
-        ],
     }
 
 
 def median_order_interval(values: Sequence[float]) -> dict[str, Any]:
-    """Distribution-free common-median interval with at least 95% coverage."""
+    """Six-pair min/max interval for the common median."""
+    if len(values) != PRODUCTION_BLOCKS:
+        raise ValueError(f'median interval requires exactly {PRODUCTION_BLOCKS} pairs')
     if any(not math.isfinite(value) for value in values):
         raise ValueError('median interval values must be finite')
     ordered = sorted(values)
-    count = len(ordered)
-    selected = None
-    for rank in range(1, (count + 1) // 2 + 1):
-        coverage = (
-            sum(
-                math.comb(count, successes)
-                for successes in range(rank, count - rank + 1)
-            )
-            / 2**count
-        )
-        if coverage >= MEDIAN_INTERVAL_COVERAGE:
-            selected = rank, coverage
-        else:
-            break
-    if selected is None:
-        raise ValueError(
-            'at least six independent paired blocks are required for a '
-            'distribution-free 95% median interval'
-        )
-    rank, coverage = selected
     return {
-        'interval': [ordered[rank - 1], ordered[count - rank]],
-        'achieved_coverage': coverage,
+        'interval': [ordered[0], ordered[-1]],
+        'achieved_coverage': 62 / 64,
         'method': (
             'distribution-free order-statistic interval for the common median; '
             'independent paired blocks'
         ),
-        'sample_size': count,
-        'lower_order': rank,
-        'upper_order': count - rank + 1,
+        'sample_size': PRODUCTION_BLOCKS,
+        'lower_order': 1,
+        'upper_order': PRODUCTION_BLOCKS,
     }
 
 

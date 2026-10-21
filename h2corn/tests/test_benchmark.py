@@ -23,6 +23,7 @@ from bench._core import (
 )
 from bench.bench import (
     benchmark_scenarios,
+    load_plan,
     paired_contrasts,
     server_command,
     unsupported_reason,
@@ -240,6 +241,95 @@ def test_benchmark_multiplexing_is_one_connection_with_ten_streams():
     )
     assert scenario.concurrency == 1
     assert scenario.http2_parallelism == 10
+
+
+def test_benchmark_fixed_upload_uses_one_measured_batch_without_warmup():
+    plan = load_plan(
+        Scenario('Fixed 8 MiB upload', 4, 'h2_upload', concurrency=8),
+        '1s',
+        '0s',
+    )
+
+    assert plan == {
+        'mode': 'fixed-count',
+        'requests': 16,
+        'timeout_seconds': 120,
+    }
+
+
+@pytest.mark.parametrize(
+    ('body', 'declared_length', 'status', 'response_body'),
+    [
+        (b'x' * 1024, 1024, 200, b'1024'),
+        (b'x' * 512, 1024, 400, b'upload body length mismatch'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_benchmark_upload_endpoint_checks_each_body_length(
+    body, declared_length, status, response_body
+):
+    from starlette.requests import Request
+
+    from bench.bench_app import streaming_post_fast
+
+    async def receive():
+        return {
+            'type': 'http.request',
+            'body': body,
+            'more_body': False,
+        }
+
+    request = Request(
+        {
+            'type': 'http',
+            'headers': [(b'content-length', str(declared_length).encode())],
+        },
+        receive,
+    )
+    response = await streaming_post_fast(request)
+
+    assert response.status_code == status
+    assert response.body == response_body
+
+
+@pytest.mark.asyncio
+async def test_raw_benchmark_upload_endpoint_rejects_a_truncated_body():
+    from h2corn import HTTPRequest, Scope, SendMessage
+
+    from bench.raw_app import app
+
+    messages: list[HTTPRequest] = [
+        {'type': 'http.request', 'body': b'xxxx', 'more_body': False},
+    ]
+    sent: list[SendMessage] = []
+
+    async def receive() -> HTTPRequest:
+        return messages.pop()
+
+    async def send(message: SendMessage) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        'type': 'http',
+        'asgi': {'version': '3.0', 'spec_version': '2.5'},
+        'http_version': '2',
+        'method': 'POST',
+        'scheme': 'http',
+        'path': '/streaming-post-fast',
+        'raw_path': b'/streaming-post-fast',
+        'query_string': b'',
+        'headers': [(b'content-length', b'8')],
+        'server': ('127.0.0.1', 8000),
+        'extensions': {'http.response.pathsend': {}},
+    }
+    await app(scope, receive, send)
+
+    start = sent[0]
+    assert start['type'] == 'http.response.start'
+    assert start['status'] == 400
+    body = sent[1]
+    assert body['type'] == 'http.response.body'
+    assert body.get('body') == b'upload body length mismatch'
 
 
 def test_benchmark_rate_counts_completed_responses_not_deadline_attempts():

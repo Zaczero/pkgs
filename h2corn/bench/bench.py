@@ -1,9 +1,8 @@
 """Cross-server benchmark suite: runs every scenario against every server and plots it.
 
 Servers and load generators run unpinned, exactly as a deployment runs them.
-Same-process calibration selects an equal exposure per scenario; an excluded
-fresh-process pilot allocates six or nine rotation-balanced production blocks.
-One monotonic deadline bounds the combined run.
+Same-process calibration selects equal scenario exposure and forecasts six
+fresh-process paired production blocks. One monotonic deadline bounds the run.
 
     uv run python bench/bench.py            # stage a run under bench/results/runs/
     uv run python bench/bench.py --publish  # also replace the checked-in plots
@@ -44,6 +43,7 @@ from bench._core import (
     BenchmarkError,
     DeadlineError,
     MeasuredMetrics,
+    Metrics,
     ResponseError,
     Scenario,
     _run,
@@ -69,11 +69,9 @@ from bench.report import (
     render_accessible_results,
 )
 from bench.sampling import (
-    BASE_PRODUCTION_BLOCKS,
     CLEANUP_RESERVE_SECONDS,
     HARD_TOTAL_SECONDS,
-    NOISY_PRODUCTION_BLOCKS,
-    PILOT_BLOCKS,
+    PRODUCTION_BLOCKS,
     REPORT_RESERVE_SECONDS,
     CalibrationPoint,
     ScenarioSamples,
@@ -653,7 +651,6 @@ def load_plan(scenario: Scenario, duration: str, warmup: str) -> dict[str, Any]:
         return {
             'mode': 'fixed-count',
             'requests': 2 * concurrency,
-            'warmup_requests': concurrency,
             'timeout_seconds': 120,
         }
     return {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
@@ -698,6 +695,7 @@ def measure_cell(
         'load_plan': plan,
     }
     try:
+        fixed_count = plan['mode'] == 'fixed-count'
         with allocated_listener(scenario) as (live, listener):
             command = server_command(
                 name,
@@ -742,16 +740,17 @@ def measure_cell(
                 trial['phase'] = 'correctness-before'
                 check_response(live)
                 trial['correctness_before'] = 'passed'
-                trial['phase'] = 'warmup'
-                warmup_metrics = run_load(
-                    live,
-                    duration=warmup,
-                    concurrency=concurrency,
-                    evidence_path=evidence_directory / 'warmup.json',
-                    requests=plan.get('warmup_requests'),
-                )
+                # The fixed upload's measured batch uses a fresh client process
+                # and new connections, so a separate full-size warmup carries no state over.
+                if calibration_windows is None and not fixed_count:
+                    trial['phase'] = 'warmup'
+                    run_load(
+                        live,
+                        duration=warmup,
+                        concurrency=concurrency,
+                        evidence_path=evidence_directory / 'warmup.json',
+                    )
                 if calibration_windows is not None:
-                    fixed_count = plan['mode'] == 'fixed-count'
                     calibration_pids = sorted(server.process_pids())
                     points: list[CalibrationPoint] = []
                     windows = (None,) if fixed_count else calibration_windows
@@ -760,12 +759,26 @@ def measure_cell(
                         window_directory = evidence_directory / f'window-{label}'
                         window_started = time.monotonic()
                         trial['phase'] = f'calibration-{label}'
-                        metrics = run_load(
-                            live,
-                            duration='1s' if window is None else f'{window:g}s',
-                            concurrency=concurrency,
-                            evidence_path=window_directory / 'load.json',
-                            requests=plan.get('requests') if fixed_count else None,
+                        # Use the production PSS observer so its cost is in the forecast.
+
+                        def load_window(
+                            selected_window: float | None = window,
+                            directory: Path = window_directory,
+                        ) -> Metrics:
+                            return run_load(
+                                live,
+                                duration='1s'
+                                if selected_window is None
+                                else f'{selected_window:g}s',
+                                concurrency=concurrency,
+                                evidence_path=directory / 'load.json',
+                                requests=plan.get('requests') if fixed_count else None,
+                            )
+
+                        metrics, _ = measure_peak_memory(
+                            server,
+                            load_window,
+                            evidence_path=window_directory / 'memory.json',
                         )
                         points.append(
                             CalibrationPoint(
@@ -796,7 +809,6 @@ def measure_cell(
                         'status': status,
                         'selected_duration_seconds': selected_duration,
                         'windows': calibration_record(points),
-                        'warmup': warmup_metrics,
                     }
                     trial['calibration'] = measured
                 else:
@@ -868,7 +880,7 @@ def paired_contrasts(
             'block_ids': common_blocks,
             'sample_size': len(ratios),
         }
-        if len(ratios) >= BASE_PRODUCTION_BLOCKS:
+        if len(ratios) == PRODUCTION_BLOCKS:
             contrast.update(median_order_interval(ratios))
         else:
             contrast.update(
@@ -952,9 +964,16 @@ def run_scenario(
     )
     if not supported:
         raise BenchmarkError(f'no selected server supports {scenario.name}')
+    fixed_count = (
+        isinstance(scenario, Scenario)
+        and scenario.contract.request_body_path is not None
+    )
+    warmup_description = (
+        'none; fresh client process and connections' if fixed_count else warmup
+    )
     print(
         f'phase={phase} profile={profile} scenario={scenario.name} '
-        f'duration={duration} warmup={warmup} blocks={max_trials}',
+        f'duration={duration} warmup={warmup_description} blocks={max_trials}',
         file=sys.stderr,
         flush=True,
     )
@@ -1291,14 +1310,14 @@ def _plot_results(
         else f'{record.get("duration", "adaptive")} load'
     )
     warmup = (
-        'fixed warmup request batch'
+        'none; fresh client process and connections'
         if fixed_count
         else record.get('warmup_duration', '0.25s')
     )
     if record.get('sampling') is not None:
         sampling = (
             f'\nSampling: {window} · {warmup} warmup · '
-            f'{record.get("planned_trials", 0)} production blocks · pilot excluded'
+            f'{record.get("planned_trials", 0)} production blocks · calibration excluded'
         )
     else:
         sampling = (
@@ -1460,20 +1479,13 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                 continue
             expected_blocks = scenario_plan['production_blocks']
             if (
-                expected_blocks not in {BASE_PRODUCTION_BLOCKS, NOISY_PRODUCTION_BLOCKS}
+                expected_blocks != PRODUCTION_BLOCKS
                 or record.get('planned_trials') != expected_blocks
                 or record.get('sampling', {}).get('production_blocks')
                 != expected_blocks
             ):
                 incomplete.append(
                     f'{record["scenario"]}: production blocks differ from the frozen plan'
-                )
-            if (
-                record.get('pilot_excluded') is not True
-                or record.get('sampling', {}).get('pilot_blocks') != PILOT_BLOCKS
-            ):
-                incomplete.append(
-                    f'{record["scenario"]}: pilot data is not separated from production'
                 )
             if record.get('status') == 'skipped':
                 incomplete.append(record['scenario'])
@@ -1518,75 +1530,6 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                 ):
                     incomplete.append(
                         f'{record["scenario"]}: missing {name} calibration evidence'
-                    )
-            pilot_path = run_directory / 'evidence' / record_path.stem / 'pilot.json'
-            if not pilot_path.is_file():
-                incomplete.append(
-                    f'{record["scenario"]}: missing excluded pilot evidence'
-                )
-            else:
-                pilot = json.loads(pilot_path.read_text())
-                pilot_record = pilot.get('record', {})
-                if (
-                    pilot_record.get('phase') != 'pilot'
-                    or pilot_record.get('planned_trials') != PILOT_BLOCKS
-                    or pilot_record.get('pilot_excluded') is not True
-                ):
-                    incomplete.append(
-                        f'{record["scenario"]}: pilot is not clearly excluded'
-                    )
-                for name, result in pilot_record.get('aggregate', {}).items():
-                    if len(result.get('rps_samples', ())) != PILOT_BLOCKS:
-                        incomplete.append(
-                            f'{record["scenario"]}: incomplete {name} pilot samples'
-                        )
-                    for block in range(1, PILOT_BLOCKS + 1):
-                        trial_path = (
-                            run_directory
-                            / 'evidence'
-                            / record_path.stem
-                            / 'pilot'
-                            / f'block-{block:02d}'
-                            / name
-                            / 'trial.json'
-                        )
-                        if (
-                            not trial_path.is_file()
-                            or json.loads(trial_path.read_text()).get('status')
-                            != 'completed'
-                        ):
-                            incomplete.append(
-                                f'{record["scenario"]}: missing {name} pilot block {block}'
-                            )
-                for name, failure in pilot_record.get('failures', {}).items():
-                    if failure['evidence'].startswith('calibration/'):
-                        continue
-                    trial_path = (
-                        run_directory
-                        / 'evidence'
-                        / record_path.stem
-                        / 'pilot'
-                        / failure['evidence']
-                        / 'trial.json'
-                    )
-                    if (
-                        name in pilot_record.get('aggregate', {})
-                        or not trial_path.is_file()
-                        or json.loads(trial_path.read_text()).get('status') != 'failed'
-                    ):
-                        incomplete.append(
-                            f'{record["scenario"]}: missing failed pilot evidence for {name}'
-                        )
-                if any(
-                    contrast.get('sample_size', 0) < BASE_PRODUCTION_BLOCKS
-                    and (
-                        contrast.get('interval') is not None
-                        or contrast.get('h2corn_over_competitor') is not None
-                    )
-                    for contrast in pilot_record.get('paired_contrasts', {}).values()
-                ):
-                    incomplete.append(
-                        f'{record["scenario"]}: pilot was used as an interval'
                     )
             for name, result in record.get('aggregate', {}).items():
                 block_ids = record.get('sample_blocks', {}).get(name, [])

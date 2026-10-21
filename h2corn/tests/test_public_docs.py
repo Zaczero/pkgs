@@ -239,12 +239,11 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
         calibration_limited=False,
         duration='1s',
         warmup_duration='0.25s',
-        pilot_excluded=True,
         sample_blocks={
             'h2corn': [1, 2, 3, 4, 5, 6],
             'uvicorn': [1, 2, 3, 4, 5, 6],
         },
-        sampling={'pilot_blocks': 2, 'production_blocks': 6},
+        sampling={'production_blocks': 6},
         failures={},
     )
     if unsupported_server:
@@ -289,35 +288,12 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
             ],
         })
     )
-    pilot = {
-        'record': {
-            'phase': 'pilot',
-            'planned_trials': 2,
-            'pilot_excluded': True,
-            'aggregate': {
-                'h2corn': {'rps_samples': [99.0, 101.0]},
-                'uvicorn': {'rps_samples': [39.0, 41.0]},
-            },
-        },
-    }
-    (tmp_path / 'evidence/comparison/pilot.json').parent.mkdir(parents=True)
-    (tmp_path / 'evidence/comparison/pilot.json').write_text(json.dumps(pilot))
     for name in ('h2corn', 'uvicorn'):
         calibration_trial = (
             tmp_path / 'evidence/comparison/calibration' / name / 'trial.json'
         )
         calibration_trial.parent.mkdir(parents=True)
         calibration_trial.write_text(json.dumps({'status': 'completed'}))
-        for block in (1, 2):
-            pilot_trial = (
-                tmp_path
-                / 'evidence/comparison/pilot'
-                / f'block-{block:02d}'
-                / name
-                / 'trial.json'
-            )
-            pilot_trial.parent.mkdir(parents=True)
-            pilot_trial.write_text(json.dumps({'status': 'completed'}))
     for block in range(1, 7):
         for name in record['aggregate']:
             path = tmp_path / 'evidence/comparison' / f'block-{block:02d}' / name

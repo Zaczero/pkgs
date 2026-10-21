@@ -435,37 +435,55 @@ def calibrate_rpc_server(
     *,
     plan: dict[str, Any],
     probe: dict[str, Any],
-    warmup: str,
     windows: Sequence[float],
     identity: dict[str, Any],
     server: Any,
     evidence_directory: Path,
 ) -> dict[str, Any]:
     """Measure adaptive windows through one verified serving process."""
-    from bench._core import duration_seconds
+    from bench._core import measure_peak_memory
 
-    load(
-        {**plan, 'duration_seconds': duration_seconds(warmup)},
-        identity,
-        evidence_directory / 'warmup.json',
-    )
     before = process_snapshot(server.process_pids())
     points: list[CalibrationPoint] = []
     for window in windows:
         window_directory = evidence_directory / f'window-{window:g}s'
-        raw = load(
-            {**plan, 'duration_seconds': window},
-            identity,
-            window_directory / 'load.json',
+        window_started = time.monotonic()
+        raw_results: dict[str, dict[str, Any]] = {}
+
+        def action(
+            selected_window: float = window,
+            directory: Path = window_directory,
+            results: dict[str, dict[str, Any]] = raw_results,
+        ) -> Metrics:
+            raw = load(
+                {**plan, 'duration_seconds': selected_window},
+                identity,
+                directory / 'load.json',
+            )
+            results['window'] = raw
+            useful = (
+                raw['verified_ok']
+                if scenario.unit == 'RPC/s'
+                else raw['verified_messages']
+            )
+            return {
+                'rps': useful / raw['elapsed_seconds'],
+                'completed': raw['verified_ok'],
+                'latency_percentiles': raw['latency_percentiles'],
+            }
+
+        # Match production's PSS observer so the calibration forecast includes it.
+        metrics, _ = measure_peak_memory(
+            server,
+            action,
+            evidence_path=window_directory / 'memory.json',
         )
-        useful = (
-            raw['verified_ok'] if scenario.unit == 'RPC/s' else raw['verified_messages']
-        )
+        raw = raw_results['window']
         points.append(
             CalibrationPoint(
                 duration_seconds=window,
-                rate=useful / raw['elapsed_seconds'],
-                elapsed_seconds=raw['elapsed_seconds'],
+                rate=metrics['rps'],
+                elapsed_seconds=time.monotonic() - window_started,
                 completed=raw['verified_ok'],
             )
         )
@@ -619,7 +637,6 @@ def measure_cell(
                         scenario,
                         plan=plan,
                         probe=probe,
-                        warmup=warmup,
                         windows=calibration_windows,
                         identity=identity,
                         server=server,

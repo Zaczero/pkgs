@@ -30,17 +30,17 @@ from bench._core import (
 )
 from bench.evidence import run_identity
 from bench.sampling import (
-    BASE_PRODUCTION_BLOCKS,
     CALIBRATION_WINDOWS_SECONDS,
     CLEANUP_RESERVE_SECONDS,
     HARD_TOTAL_SECONDS,
-    PILOT_BLOCKS,
+    PRODUCTION_BLOCKS,
+    PRODUCTION_WARMUP_SECONDS,
     REPORT_RESERVE_SECONDS,
     TARGET_TOTAL_SECONDS,
     BudgetError,
     allocate_production_blocks,
+    calibration_production_cost,
     common_duration,
-    paired_log_ratio_scatter,
 )
 
 
@@ -57,7 +57,6 @@ class ProfileRun:
     system_summary: str
     package_versions: dict[str, str | None]
     calibrations: dict[str, dict[str, Any]] = field(default_factory=dict)
-    pilots: dict[str, dict[str, Any]] = field(default_factory=dict)
     scenario_plans: dict[str, dict[str, Any]] = field(default_factory=dict)
     netem_phases: list[dict[str, Any]] = field(default_factory=list)
     qualification: dict[str, Any] | None = None
@@ -107,7 +106,6 @@ def _profile_scenarios(profile: ProfileRun) -> list[dict[str, Any]]:
     output = []
     for scenario in profile.scenarios:
         calibration = profile.calibrations[_slug(scenario)]
-        pilot = profile.pilots.get(_slug(scenario), {})
         plan = profile.scenario_plans.get(_slug(scenario), {})
         output.append({
             'family': profile.family,
@@ -118,20 +116,12 @@ def _profile_scenarios(profile: ProfileRun) -> list[dict[str, Any]]:
             'unsupported_servers': calibration.get('unsupported_servers', {}),
             'not_selected_servers': calibration.get('not_selected_servers', {}),
             'calibration': calibration,
-            'pilot': {
-                'planned_blocks': PILOT_BLOCKS if pilot else 0,
-                'scatter_log_ratio_sd': pilot.get('scatter_log_ratio_sd'),
-                'cell_cost_seconds': pilot.get('cell_cost_seconds', {}),
-                'failures': pilot.get('failures', {}),
-            },
             **plan,
         })
     return output
 
 
-def _initial_failures(
-    calibration: dict[str, Any], pilot: dict[str, Any]
-) -> dict[str, dict[str, Any]]:
+def _initial_failures(calibration: dict[str, Any]) -> dict[str, dict[str, Any]]:
     failures = {}
     for name, cell in calibration.get('servers', {}).items():
         if cell.get('status') == 'failed':
@@ -142,30 +132,7 @@ def _initial_failures(
                 'evidence': f'calibration/{name}',
                 'status': 'response_validation_failed',
             }
-    for name, failure in pilot.get('failures', {}).items():
-        failures.setdefault(
-            name,
-            {
-                **failure,
-                'phase': 'pilot',
-                'evidence': f'pilot/{failure["evidence"]}',
-            },
-        )
     return failures
-
-
-def _calibration_failures(calibration: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
-            'phase': 'calibration',
-            'error': cell['error'],
-            'block': 0,
-            'evidence': f'calibration/{name}',
-            'status': 'response_validation_failed',
-        }
-        for name, cell in calibration.get('servers', {}).items()
-        if cell.get('status') == 'failed'
-    }
 
 
 def _prepare_http_profiles(
@@ -324,7 +291,7 @@ def _calibrate_profile(
                         name,
                         scenario,
                         _window_text(CALIBRATION_WINDOWS_SECONDS[0]),
-                        '0.25s',
+                        '0s',
                         hypercorn_config=profile.hypercorn_config,
                         evidence_directory=evidence,
                         identity=profile.identity,
@@ -446,84 +413,11 @@ def _calibrate_rpc_qualification(
     write_json(profile.directory / 'qualification.json', qualification)
 
 
-def _pilot_profile(
-    http: Any, profile: ProfileRun, *, deadline: float, started: float
-) -> None:
-    for scenario in profile.scenarios:
-        slug = _slug(scenario)
-        calibration = profile.calibrations[slug]
-        fixed_count = _fixed_count(scenario)
-        duration = (
-            '1s'
-            if calibration['duration_seconds'] is None
-            else _window_text(calibration['duration_seconds'])
-        )
-        calibration_cells = calibration['servers']
-        initial_failures = _calibration_failures(calibration)
-        pilot_dir = profile.directory / 'evidence' / slug / 'pilot'
-        record = http.run_scenario(
-            scenario,
-            profile.servers,
-            duration=duration,
-            warmup='0.25s',
-            max_trials=PILOT_BLOCKS,
-            deadline=deadline,
-            hypercorn_config=profile.hypercorn_config,
-            evidence_directory=pilot_dir,
-            identity=profile.identity,
-            phase='pilot',
-            profile=profile.name,
-            calibration=calibration_cells,
-            calibration_limited=calibration['calibration_limited'],
-            initial_failures=initial_failures,
-        )
-        rates = {
-            name: [sample['rps'] for sample in values]
-            for name, values in record['samples'].items()
-        }
-        scatter = paired_log_ratio_scatter(
-            rates,
-            sample_blocks=record.get('sample_blocks'),
-        )
-        cell_costs = {
-            name: max(sample['elapsed_seconds'] for sample in values)
-            for name, values in record['samples'].items()
-            if values and name not in record['failures']
-        }
-        record['duration'] = 'fixed-count' if fixed_count else duration
-        record['warmup_duration'] = (
-            'fixed warmup request batch' if fixed_count else '0.25s'
-        )
-        record['pilot_excluded'] = True
-        record['phase'] = 'pilot'
-        profile.pilots[slug] = {
-            'scenario': scenario.name,
-            'record': record,
-            'scatter_log_ratio_sd': scatter,
-            'cell_cost_seconds': cell_costs,
-            'failures': record['failures'],
-            'scenario_cost_seconds': sum(cell_costs.values()),
-        }
-        write_json(
-            profile.directory / 'evidence' / slug / 'pilot.json',
-            profile.pilots[slug],
-        )
-        print(
-            f'phase=pilot profile={profile.name} scenario={scenario.name} '
-            f'duration={record["duration"]} blocks={PILOT_BLOCKS} '
-            f'log-ratio-scatter={scatter} cost={profile.pilots[slug]["scenario_cost_seconds"]:.1f}s '
-            f'{_elapsed(started, deadline)}',
-            file=sys.stderr,
-            flush=True,
-        )
-    write_json(profile.directory / 'pilots.json', profile.pilots)
-
-
 def _suite_cost_plan(
     profiles: Sequence[ProfileRun], *, started: float
 ) -> dict[str, Any]:
     scenario_costs = {}
-    pilot_scatter = {}
+    scenario_cell_costs = {}
     setup_reserve = 0.0
     for profile in profiles:
         if profile.name == 'rtt50':
@@ -538,16 +432,26 @@ def _suite_cost_plan(
         for scenario in profile.scenarios:
             slug = _slug(scenario)
             key = f'{profile.family}/{profile.name}/{slug}'
-            pilot = profile.pilots[slug]
-            cost = pilot['scenario_cost_seconds']
+            calibration = profile.calibrations[slug]
+            fixed_count = calibration['fixed_count']
+            duration = calibration['duration_seconds']
+            cell_costs = {
+                name: calibration_production_cost(
+                    cell,
+                    duration_seconds=None if fixed_count else duration,
+                    warmup_seconds=0.0 if fixed_count else PRODUCTION_WARMUP_SECONDS,
+                )
+                for name, cell in calibration['servers'].items()
+                if cell.get('status') != 'failed'
+            }
+            cost = sum(cell_costs.values())
+            scenario_cell_costs[key] = cell_costs
             if cost > 0:
                 scenario_costs[key] = cost
-                pilot_scatter[key] = pilot['scatter_log_ratio_sd']
     if not scenario_costs:
-        raise BenchmarkError('calibration and pilots produced no measurable cells')
+        raise BenchmarkError('calibration produced no measurable cells')
     plan = allocate_production_blocks(
         scenario_costs=scenario_costs,
-        pilot_scatter=pilot_scatter,
         elapsed_seconds=time.monotonic() - started,
         setup_reserve_seconds=setup_reserve,
     )
@@ -555,8 +459,9 @@ def _suite_cost_plan(
         for scenario in profile.scenarios:
             slug = _slug(scenario)
             key = f'{profile.family}/{profile.name}/{slug}'
-            pilot = profile.pilots[slug]
             calibration = profile.calibrations[slug]
+            cell_costs = scenario_cell_costs[key]
+            scenario_cost = sum(cell_costs.values())
             profile.scenario_plans[slug] = {
                 'family': profile.family,
                 'profile': profile.name,
@@ -568,12 +473,9 @@ def _suite_cost_plan(
                 'calibration_limited': calibration['calibration_limited'],
                 'calibration_status': calibration['status'],
                 'calibration_servers': calibration['servers'],
-                'pilot_blocks': PILOT_BLOCKS,
-                'pilot_scatter_log_ratio_sd': pilot['scatter_log_ratio_sd'],
-                'pilot_cell_cost_seconds': pilot['cell_cost_seconds'],
-                'pilot_failures': pilot['failures'],
-                'production_blocks': plan['blocks'].get(key, BASE_PRODUCTION_BLOCKS),
-                'scenario_cost_seconds': pilot['scenario_cost_seconds'],
+                'production_cell_cost_seconds': cell_costs,
+                'production_blocks': plan['blocks'].get(key, PRODUCTION_BLOCKS),
+                'scenario_cost_seconds': scenario_cost,
             }
     return plan
 
@@ -621,13 +523,12 @@ def _production_profile(
     for scenario in profile.scenarios:
         slug = _slug(scenario)
         calibration = profile.calibrations[slug]
-        pilot = profile.pilots[slug]
         scenario_plan = profile.scenario_plans[slug]
         duration_seconds = scenario_plan['duration_seconds']
         fixed_count = scenario_plan['fixed_count']
         duration = '1s' if duration_seconds is None else f'{duration_seconds:g}s'
-        warmup = '0.25s'
-        failures = _initial_failures(calibration, pilot)
+        warmup = '0s' if fixed_count else f'{PRODUCTION_WARMUP_SECONDS:g}s'
+        failures = _initial_failures(calibration)
         record = http.run_scenario(
             scenario,
             profile.servers,
@@ -647,11 +548,10 @@ def _production_profile(
         record['sampling'] = scenario_plan
         record['duration'] = 'fixed-count' if fixed_count else duration
         record['warmup_duration'] = (
-            f'{scenario.concurrency or http.CONCURRENCY} complete requests'
+            'none; each client process uses fresh connections'
             if fixed_count
             else warmup
         )
-        record['pilot_excluded'] = True
         record['production_started_elapsed_seconds'] = time.monotonic() - started
         record['system_summary'] = profile.system_summary
         record['package_versions'] = profile.package_versions
@@ -704,7 +604,6 @@ def _write_profile_state(profile: ProfileRun) -> None:
         profile.directory / 'adaptive-state.json',
         {
             'calibrations': profile.calibrations,
-            'pilots': profile.pilots,
             'scenario_plans': profile.scenario_plans,
             'netem_phases': profile.netem_phases,
         },
@@ -717,7 +616,6 @@ def _read_profile_state(profile: ProfileRun) -> None:
         return
     state = json.loads(path.read_text())
     profile.calibrations = state.get('calibrations', {})
-    profile.pilots = state.get('pilots', {})
     profile.scenario_plans = state.get('scenario_plans', {})
     profile.netem_phases = state.get('netem_phases', [])
 
@@ -770,8 +668,6 @@ def execute_rtt50_phase(job_path: Path) -> None:
         )
         if job['phase'] == 'calibration':
             _calibrate_profile(http, profile, deadline=work_deadline, started=started)
-        elif job['phase'] == 'pilot':
-            _pilot_profile(http, profile, deadline=work_deadline, started=started)
         elif job['phase'] == 'production':
             _production_profile(
                 http,
@@ -1106,22 +1002,6 @@ def run_adaptive_suite(
                     return suite_directory
             elif args.qualify_only:
                 raise BenchmarkError('--qualify-only requires --family grpc')
-
-            for profile in profiles:
-                if profile.name == 'rtt50':
-                    _run_rtt50_phase(
-                        http,
-                        profile,
-                        'pilot',
-                        suite_plan_path=None,
-                        work_deadline=work_deadline,
-                        started=started,
-                    )
-                else:
-                    _pilot_profile(
-                        http, profile, deadline=work_deadline, started=started
-                    )
-                    _write_profile_state(profile)
 
             allocation = _suite_cost_plan(profiles, started=started)
             suite_plan = _freeze_suite_plan(
