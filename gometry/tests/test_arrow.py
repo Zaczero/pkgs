@@ -135,6 +135,71 @@ def test_arrow_conformance_matrix_preserves_validity_and_values(
     _assert_same_crs(restored.crs, expected.crs)
 
 
+@pytest.mark.parametrize('layout', list(_ARROW_LAYOUT_WKTS))
+@pytest.mark.parametrize('consumer', ['pyarrow', 'arro3'])
+def test_exported_window_outlives_geometry_and_preserves_frame(
+    layout: str, consumer: str
+) -> None:
+    payload = [gm.from_wkt(wkt) for wkt in _ARROW_LAYOUT_WKTS[layout]]
+    source = gm.GeometryArray(
+        [payload[0], None, payload[2], payload[1]], crs=4326, epoch=2020.5
+    )
+    window = source[1:4]
+    expected = window.to_wkt(drop_epoch=True)
+    if consumer == 'pyarrow':
+        published = pa.array(window)
+    else:
+        arro3 = pytest.importorskip('arro3.core')
+        published = arro3.Array.from_arrow(window)
+    del source, window, payload
+
+    restored = cast('gm.GeometryArray', gm.from_arrow(published))
+    assert restored.to_wkt(drop_epoch=True) == expected
+    _assert_same_crs(restored.crs, gm.CRS(4326))
+    assert restored.epoch == 2020.5
+
+
+def test_point_window_exports_share_all_coordinate_buffers() -> None:
+    points = gm.points([1.25, 9.0, 17.5], [-3.5, 4.5, 8.25], z=[2, 3, 4], m=[5, 6, 7])
+    parent = pa.array(points).storage
+    window = pa.array(points[1:]).storage
+
+    for axis in ['x', 'y', 'z', 'm']:
+        assert (
+            parent.field(axis).buffers()[1].address
+            == window.field(axis).buffers()[1].address
+        )
+        assert window.field(axis).offset == 1
+    del points, parent
+    assert window.to_pylist() == [
+        {'x': 9.0, 'y': 4.5, 'z': 3.0, 'm': 6.0},
+        {'x': 17.5, 'y': 8.25, 'z': 4.0, 'm': 7.0},
+    ]
+
+
+def test_line_window_exports_share_offsets_and_coordinate_buffers() -> None:
+    lines = gm.GeometryArray([
+        gm.LineString([(1, 2), (3, 4)]),
+        gm.LineString([(5, 6), (7, 8)]),
+        gm.LineString([(9, 10), (11, 12)]),
+    ])
+    parent = pa.array(lines).storage
+    window = pa.array(lines[1:]).storage
+
+    assert window.offset == 1
+    assert parent.buffers()[1].address == window.buffers()[1].address
+    for axis in ['x', 'y']:
+        assert (
+            parent.values.field(axis).buffers()[1].address
+            == window.values.field(axis).buffers()[1].address
+        )
+    del lines, parent
+    assert window.to_pylist() == [
+        [{'x': 5.0, 'y': 6.0}, {'x': 7.0, 'y': 8.0}],
+        [{'x': 9.0, 'y': 10.0}, {'x': 11.0, 'y': 12.0}],
+    ]
+
+
 def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
     values = gm.points([0, 1], [2, 3], z=[4, 5], m=[6, 7], crs=4326)
     xyz_values = gm.points([0], [1], z=[2], crs=4326)
