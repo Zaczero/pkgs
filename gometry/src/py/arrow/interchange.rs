@@ -149,14 +149,14 @@ pub(crate) fn admit_storage(
     };
     let mut ready = true;
     for shape in storage.iter_shapes() {
-        ready &= geographic_interchange_ready(&shape?, geographic);
+        ready &= geographic_interchange_ready(shape?.as_ref(), geographic);
     }
     if ready {
         return Ok(storage);
     }
     let mut shapes = Vec::with_capacity(storage.len());
     for shape in storage.iter_shapes() {
-        shapes.push(admit_literal_geographic_shape(&shape?, geographic)?);
+        shapes.push(admit_literal_geographic_shape(shape?.as_ref(), geographic)?);
     }
     PyGeometryArray::storage_from_shapes(shapes)
 }
