@@ -21,14 +21,18 @@ def test_circle_array_generic_alias_is_a_native_runtime_contract() -> None:
     assert nullable.__args__ == (gm.Circle | None,)
 
 
-@pytest.mark.parametrize('crs', [None, 4326])
+@pytest.mark.parametrize(
+    ('crs', 'unit'),
+    [(None, None), (None, 'planar'), (4326, None), (4326, 'planar'), (4326, 'meters')],
+)
 def test_single_site_bounding_circle_preserves_the_first_source_record(
     crs: int | None,
+    unit: str | None,
 ) -> None:
     source = gm.Point(370.125, -0.0, z=7.25, m=13.5, crs=crs)
     duplicate = gm.Point(370.125, -0.0, z=8.5, m=19.25, crs=crs)
     for shape in [source, gm.MultiPoint([source, duplicate])]:
-        circle = shape.minimum_bounding_circle()
+        circle = shape.minimum_bounding_circle(unit=unit)
         assert circle.radius == 0
         assert circle.center.to_wkb() == source.to_wkb()
         assert circle.to_polygon().to_wkb() == source.to_wkb()
