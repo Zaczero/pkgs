@@ -493,6 +493,7 @@ impl PyCircleArray {
     }
 }
 
+/// Iterator over circle-array rows, preserving missing values.
 #[pyclass(
     name = "CircleArrayIterator",
     module = "gometry",
