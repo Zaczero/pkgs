@@ -4,7 +4,7 @@ use crate::broadcast::metrics::{
     Shape, crs,
 };
 use crate::crs::frame::Frame;
-use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
+use crate::crs::local::{LocalInputPurpose, geodesic_by_identity};
 use crate::dispatch::MetricOp;
 use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographic};
 use crate::geometry::storage::packed_columns::PackedColumns;

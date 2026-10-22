@@ -503,7 +503,7 @@ pub(crate) struct PyCircleArrayIter {
 
 #[pymethods]
 impl PyCircleArrayIter {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+    const fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
