@@ -431,6 +431,51 @@ def test_plan_only_records_the_allowed_maximum_without_claiming_measurements(
     assert manifest['sampling_plan_artifact'] == 'sampling-plan.json'
 
 
+def test_builder_validation_imports_the_subject_package_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / 'package-root'
+    monkeypatch.setattr(sys, 'path', [*sys.path, str(package_root)])
+    monkeypatch.setattr(
+        _bench_driver.benchmark_runtime,
+        'load_subject',
+        lambda _path=None: {'path': str(tmp_path / 'receipt.json'), 'source': {}},
+    )
+    monkeypatch.setattr(
+        _bench_driver.benchmark_runtime,
+        'package_root_for_subject',
+        lambda _subject, _explicit=None: package_root,
+    )
+
+    class ValidatedError(Exception):
+        pass
+
+    def validate(_selected: object) -> None:
+        assert sys.path[0] == str(package_root)
+        assert sys.path.count(str(package_root)) == 1
+        raise ValidatedError
+
+    monkeypatch.setattr(_bench_driver, '_validate_oracle_builders', validate)
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        [
+            'bench.py',
+            '--profile',
+            'release',
+            '--plan-only',
+            '--gometry-package-root',
+            str(package_root),
+            '--output-dir',
+            str(tmp_path / 'planned'),
+        ],
+    )
+
+    with pytest.raises(ValidatedError):
+        _bench_driver.main()
+
+
 def test_domain_order_is_contiguous() -> None:
     seen: list[str] = []
     for op in RELEASE_OPERATIONS:

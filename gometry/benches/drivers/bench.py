@@ -1897,6 +1897,12 @@ def main() -> None:
         receipt_binding,
         args.gometry_package_root,
     )
+    # Builder validation imports the case modules, which import gometry: the
+    # controller must resolve the same package the measured children use.
+    sys.path[:] = [
+        str(package_root),
+        *(entry for entry in sys.path if entry != str(package_root)),
+    ]
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = GOMETRY_ROOT / output_dir
