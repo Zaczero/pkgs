@@ -5,6 +5,7 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::tessellation::exact::compare_ratios;
+#[cfg(test)]
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
@@ -16,7 +17,6 @@ mod incidence;
 mod inscribed;
 mod search;
 
-pub(super) use self::incidence::exact_difference;
 use self::incidence::{
     candidate_center_is_strictly_inside, framed_metric_segment_distance, has_interior,
     label_carrier_enclosure, representative_point,
@@ -26,13 +26,8 @@ pub(in crate::geometry::derived::polylabel) use self::incidence::{
     exact_boundary_radius, exact_boundary_squared, segment_enters_candidate,
     source_boundary_enters_candidate, source_hole_is_enclosed, source_vertex_outside_candidate,
 };
-#[cfg(test)]
-pub(crate) use self::inscribed::build_inscribed_circle;
-#[cfg(test)]
-pub(in crate::geometry::derived::polylabel) use self::inscribed::build_inscribed_circle_once;
-pub(crate) use self::inscribed::{build_inscribed_circle_budgeted, emit_zero_radius_point};
+pub(crate) use self::inscribed::build_inscribed_circle_budgeted;
 use self::search::polylabel_search;
-pub(super) use super::minimum_circle::next_realization_radius;
 
 pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<Point> {
     let Some(bounds) = shape.bounds() else {

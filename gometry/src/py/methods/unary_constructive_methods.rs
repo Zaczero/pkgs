@@ -478,7 +478,9 @@ Other geographic input uses one retained local-projection disk, an approximation
 rather than an ellipsoidal optimum. Source-chart edges may be refined before
 the projected support calculation. Geographic radii are in meters; centers and
 polygons are in the source CRS.
-The center retains the source coordinate epoch.
+The center retains the source coordinate epoch. A zero-radius center selected
+from an input site preserves the first source point's ordinates and spelling;
+computed centers and positive-radius polygon realizations are XY.
 
 Parameters
 ----------

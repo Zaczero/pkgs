@@ -9,6 +9,7 @@ use crate::geometry::{ExactRational, ExpansionBudget, Point, Shape};
 #[derive(Debug)]
 pub(crate) enum CircleSolution {
     Empty,
+    SourcePoint(Point),
     Zero(Point),
     Bounding(Box<CertifiedDisk>),
     Inscribed {
@@ -21,7 +22,7 @@ impl CircleSolution {
     fn exact_values(&self) -> Result<Option<(ExactRational, ExactRational, ExactRational)>> {
         Ok(match self {
             Self::Empty => None,
-            Self::Zero(center) => Some((
+            Self::Zero(center) | Self::SourcePoint(center) => Some((
                 ExactRational::from_f64(center.x),
                 ExactRational::from_f64(center.y),
                 ExactRational::zero(),
@@ -39,11 +40,17 @@ impl CircleSolution {
     }
 
     pub(crate) fn same_disk(&self, other: &Self) -> Result<bool> {
-        Ok(self.exact_values()? == other.exact_values()?)
+        match (self, other) {
+            (Self::Zero(left), Self::Zero(right))
+            | (Self::SourcePoint(left), Self::SourcePoint(right)) => Ok(left == right),
+            (Self::Zero(_) | Self::SourcePoint(_), _)
+            | (_, Self::Zero(_) | Self::SourcePoint(_)) => Ok(false),
+            _ => Ok(self.exact_values()? == other.exact_values()?),
+        }
     }
 
     pub(crate) fn bounding(shape: &Shape) -> Result<Self> {
-        let points = shape.try_unique_xy_points()?;
+        let points = shape.first_seen_xy_vertices()?;
         if points
             .iter()
             .any(|point| !point.x.is_finite() || !point.y.is_finite())
@@ -52,8 +59,10 @@ impl CircleSolution {
                 "minimum_bounding_circle",
             ));
         }
-        if points.is_empty() {
-            return Ok(Self::Empty);
+        match points.as_slice() {
+            [] => return Ok(Self::Empty),
+            [point] => return Ok(Self::SourcePoint(*point)),
+            [_, _, ..] => {},
         }
         Ok(Self::Bounding(Box::new(
             super::smallest_enclosing_circle(&points)?.certified_disk(&points)?,
@@ -85,7 +94,7 @@ impl CircleSolution {
     pub(crate) fn center(&self) -> Result<Shape> {
         Ok(match self {
             Self::Empty => Shape::empty_point(),
-            Self::Zero(point) => Shape::Point(*point),
+            Self::Zero(point) | Self::SourcePoint(point) => Shape::Point(*point),
             Self::Bounding(disk) => Shape::Point(disk.center()?),
             Self::Inscribed { center, .. } => Shape::Point(*center),
         })
@@ -94,7 +103,7 @@ impl CircleSolution {
     pub(crate) fn radius(&self, scale: f64) -> Result<f64> {
         match self {
             Self::Empty => Ok(f64::NAN),
-            Self::Zero(_) => Ok(0.0),
+            Self::Zero(_) | Self::SourcePoint(_) => Ok(0.0),
             Self::Bounding(disk) => disk.radius_in_scale(scale),
             Self::Inscribed { squared_radius, .. } => {
                 let scale = ExactRational::from_f64(scale);
@@ -120,7 +129,7 @@ impl CircleSolution {
     ) -> Result<Shape> {
         match self {
             Self::Empty => Ok(Shape::empty_polygon()),
-            Self::Zero(point) => Ok(Shape::Point(*point)),
+            Self::Zero(point) | Self::SourcePoint(point) => Ok(Shape::Point(*point)),
             Self::Bounding(disk) if disk.is_exact_zero() => Ok(Shape::Point(disk.center()?)),
             Self::Bounding(disk) => emit_minimum_bounding_circle(disk, quadrant_segments, budget),
             Self::Inscribed {
@@ -139,35 +148,9 @@ impl CircleSolution {
                         center,
                         candidate_radius,
                         quadrant_segments,
-                        None,
                         budget,
                     )?;
-                    let mut inside = true;
-                    let mut failure = None;
-                    candidate.for_each_point(|point| {
-                        if !inside || failure.is_some() {
-                            return;
-                        }
-                        let check = || -> Result<bool> {
-                            let dx = ExactRational::from_f64(point.x)
-                                .try_subtract(&ExactRational::from_f64(center.x))?;
-                            let dy = ExactRational::from_f64(point.y)
-                                .try_subtract(&ExactRational::from_f64(center.y))?;
-                            Ok(dx
-                                .try_square()?
-                                .try_add(&dy.try_square()?)?
-                                .try_cmp(squared_radius)?
-                                .is_le())
-                        };
-                        match check() {
-                            Ok(value) => inside = value,
-                            Err(error) => failure = Some(error),
-                        }
-                    });
-                    if let Some(error) = failure {
-                        return Err(error);
-                    }
-                    if inside {
+                    if inscribed_candidate_is_contained(center, squared_radius, &candidate)? {
                         return Ok(candidate);
                     }
                     retries = retries.wrapping_add(1);
@@ -181,5 +164,36 @@ impl CircleSolution {
                 }
             },
         }
+    }
+}
+
+/// Vertices inside a retained clearance disk certify a convex realization:
+/// no chord can cross its source boundary or enclose a source hole.
+pub(in crate::geometry) fn inscribed_candidate_is_contained(
+    center: Point,
+    squared_radius: &ExactRational,
+    candidate: &Shape,
+) -> Result<bool> {
+    use std::ops::ControlFlow;
+    let center_x = ExactRational::from_f64(center.x);
+    let center_y = ExactRational::from_f64(center.y);
+    let outcome = candidate.try_for_each_first_xy_point_run(|point| {
+        let check = || -> Result<bool> {
+            let dx = ExactRational::from_f64(point.x).try_subtract(&center_x)?;
+            let dy = ExactRational::from_f64(point.y).try_subtract(&center_y)?;
+            Ok(dx
+                .try_square()?
+                .try_add(&dy.try_square()?)?
+                .try_cmp(squared_radius)?
+                .is_le())
+        };
+        match check() {
+            Ok(true) => ControlFlow::Continue(()),
+            result => ControlFlow::Break(result),
+        }
+    });
+    match outcome {
+        ControlFlow::Continue(()) => Ok(true),
+        ControlFlow::Break(result) => result,
     }
 }

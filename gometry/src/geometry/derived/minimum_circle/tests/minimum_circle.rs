@@ -9,7 +9,7 @@ fn minimum_circle_radius_rounds_min_subnormal_support_exactly() {
         .expect("minimum-subnormal pair"),
     );
     assert_eq!(
-        shape.minimum_bounding_radius().unwrap().to_bits(),
+        crate::geometry::CircleSolution::bounding(&shape).unwrap().radius(1.0).unwrap().to_bits(),
         2,
         "the pair's exact radius sqrt(5)u rounds to 2u"
     );
@@ -268,9 +268,9 @@ fn minimum_circle_polygon_admits_the_complete_requested_ring_before_emission() {
 
 #[test]
 fn minimum_circle_polygon_maps_nonfinite_source_to_unrepresentable_output() {
-    let error = Shape::Point(Point::new_raw_xy(f64::INFINITY, 0.0))
-        .minimum_bounding_circle()
-        .unwrap_err();
+    let error = crate::geometry::CircleSolution::bounding(
+        &Shape::Point(Point::new_raw_xy(f64::INFINITY, 0.0)),
+    ).unwrap_err();
     assert!(matches!(
         error.kind(),
         ErrorKind::Geometry(crate::geometry::GeometryErrorKind::UnrepresentableOutput {

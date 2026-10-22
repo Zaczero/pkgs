@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
 use std::num::NonZeroU32;
 
-use super::polylabel::exact_difference;
 use crate::error::Result;
 use crate::geometry::numerics::product::ExactSign;
-use crate::geometry::tessellation::exact::{self, ExactDyadic, Interval};
+use crate::geometry::tessellation::exact::{
+    self, ExactDyadic, Interval, try_difference as exact_difference,
+};
 use crate::geometry::{
     CoordSeq, Coordinates as _, ExpansionBudget, Point, Polygon, Ring, Shape, XY,
 };

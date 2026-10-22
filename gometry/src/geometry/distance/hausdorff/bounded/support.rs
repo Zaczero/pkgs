@@ -2,17 +2,11 @@
 
 #[cfg(test)]
 use super::count_exact_span_evaluation;
-use super::cycle::{
-    CycleLocation, edge_location, exact_segment_enters_candidate, segment_box_intersection,
-};
-use super::inradius::exact_point_distance_squared;
-use super::span_bounds::{
-    box_distance_lower, nonnegative_upper_bound, point_span_squared_bounds,
-    point_span_squared_bounds_with,
-};
+use super::cycle::{CycleLocation, edge_location, segment_box_intersection};
+use super::span_bounds::{point_span_squared_bounds, point_span_squared_bounds_with};
 use super::{
     Arc, AreaLocationStrategy, BoundaryEdge, ExactDyadic, ExactMetricSpan, ExactMetricSupport,
-    ExactPoint, ExactSourceInventory, ExpansionBudget, FloatBox, Ordering, Point, PreparedSupport,
+    ExactPoint, ExactSourceInventory, ExpansionBudget, FloatBox, Ordering, PreparedSupport,
     PrimitiveId, Rational, Result, Segment, SelectedSpan, Shape, SourcePatch, SquaredBounds,
     SupportIndex, SupportSpan, Tightness, UnreducedRatio, XY, exact, point_span_distance_squared,
     storage,
@@ -353,72 +347,6 @@ impl PreparedSupport {
             .bounds
             .lower
             .is_zero())
-    }
-
-    pub(in crate::geometry) fn candidate_is_contained(
-        &self,
-        boundary: &Self,
-        center: Point,
-        clearance_squared: &Rational,
-        candidate: &[Point],
-        counter_clockwise: bool,
-    ) -> Result<bool> {
-        let center = ExactPoint::from_xy(center.xy());
-        // The directed result has already certified this center's membership
-        // and clearance against the retained source and boundary views.
-        // A convex polygon whose vertices lie in the center's clearance disk
-        // cannot cross the source boundary, including an enclosed hole.
-        let mut inside_disk = true;
-        let mut radius_squared = Rational::zero();
-        for &point in candidate {
-            let point = ExactPoint::from_xy(point.xy());
-            let squared = exact_point_distance_squared(&center, &point)?;
-            if squared.try_cmp(&radius_squared)? == Ordering::Greater {
-                radius_squared = squared.clone();
-            }
-            if squared.try_cmp(clearance_squared)? == Ordering::Greater {
-                inside_disk = false;
-                if !self.covers_support(&point)? {
-                    return Ok(false);
-                }
-            }
-        }
-        if inside_disk {
-            return Ok(true);
-        }
-        let radius_squared = nonnegative_upper_bound(&radius_squared)?;
-        let center_bounds = FloatBox::from_point(&center)?;
-        let center_xy = center.rounded_xy()?;
-        // The selected boundary spans include retained hole cycles. Testing
-        // the whole segment, rather than only its endpoints, rejects both an
-        // inward chord crossing and a hole wholly enclosed by the candidate.
-        for span in boundary.spans.iter() {
-            if box_distance_lower(center_bounds, span.bounds) > radius_squared {
-                continue;
-            }
-            let side = crate::geometry::orientation(span.source.start, span.source.end, center_xy);
-            if side != crate::geometry::Orientation::Collinear
-                && candidate.iter().all(|point| {
-                    let vertex_side = crate::geometry::orientation(
-                        span.source.start,
-                        span.source.end,
-                        point.xy(),
-                    );
-                    vertex_side == side || vertex_side == crate::geometry::Orientation::Collinear
-                })
-            {
-                // The selected span lies on its original exact carrier.
-                // A polygon in one closed carrier half-plane has no interior
-                // on that line, including when it touches a candidate vertex.
-                continue;
-            }
-            let start = span_point(span, span.lo())?;
-            let end = span_point(span, span.hi())?;
-            if exact_segment_enters_candidate(&start, &end, candidate, counter_clockwise)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     pub(in crate::geometry) const fn has_positive_area(&self) -> bool {

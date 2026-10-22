@@ -666,6 +666,8 @@ results remain available even for globally separated points. Their
 `.to_polygon()` uses the existing geographic point-buffer approximation and can
 raise `CRSError` when no sufficiently accurate local projection fits the
 realization. A single site has radius zero and realizes as its center `Point`.
+Selected zero-radius source points retain their Z/M and stored coordinate
+spelling; computed centers and positive-radius polygons are XY.
 For these ellipsoidal disks, `.unit` is `"meters"` and `.working_crs` is `None`
 because no Cartesian frame defines the solution. Other geographic bounding
 circles use a retained local-projection support disk.

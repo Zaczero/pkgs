@@ -231,24 +231,6 @@ pub(crate) fn geodesic_by_identity(
     )
 }
 
-#[cfg(test)]
-fn metric_minimum_bounding_circle(
-    model: &crate::crs::MetricModel,
-    crs: Option<&str>,
-    shape: &Shape,
-) -> Result<Shape> {
-    super::FramedCircle::solve(
-        model,
-        crs,
-        shape,
-        None,
-        false,
-        None,
-        crate::geometry::TopologyDomain::Cartesian,
-    )?
-    .to_polygon(std::num::NonZeroU32::new(16).unwrap())
-}
-
 /// Run a meter-based planar operation in the shape's best local projection,
 /// returning the result in the source CRS after a linear scale-error fit check.
 /// Used by the geodesic constructive paths; pure shape work, so array lanes
@@ -292,9 +274,7 @@ fn geodesic_local_shape(
     drop(initial);
     // Distance-driven ops (buffer/offset/densify) demand metric accuracy, so
     // they reject a result that exceeds the local projection's linear
-    // scale-error budget. The minimum bounding *circle* is an intentionally
-    // approximate bounding primitive (like bounds/centroid) that must remain
-    // usable at city-to-continental scale, so it skips the fit check.
+    // scale-error budget.
     if initial_fits {
         return Ok(restored);
     }
@@ -358,6 +338,7 @@ fn run_local_projected_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crs::local::FramedCircle;
     use crate::crs::runtime_state_snapshot;
     use crate::geometry::{
         BufferCapStyle, BufferJoinStyle, CoordSeq, GeodesicMetric as _, LineSeq, XY,
@@ -366,10 +347,35 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
     fn minimum_bounding_circle_of_one_point_keeps_the_source_record() {
-        let source = Shape::Point(Point::new_raw_xy(370.125, -0.0));
+        let source = Shape::Point(
+            Point::new_axes(
+                370.125,
+                -0.0,
+                crate::geometry::ZOrdinate(Some(7.25)),
+                crate::geometry::MOrdinate(Some(13.5)),
+            )
+            .unwrap(),
+        );
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let circle =
+            FramedCircle::solve(
+                &model,
+                Some("EPSG:4326"),
+                &source,
+                None,
+                false,
+                None,
+                crate::geometry::TopologyDomain::Geographic(
+                    crate::geographic::GeographicFrame::crs84(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(circle.radius().unwrap(), 0.0);
+        assert_eq!(circle.center().unwrap(), source);
         assert_eq!(
-            metric_minimum_bounding_circle(&model, Some("EPSG:4326"), &source).unwrap(),
+            circle
+                .to_polygon(std::num::NonZeroU32::new(16).unwrap())
+                .unwrap(),
             source
         );
     }
@@ -379,7 +385,22 @@ mod tests {
     fn minimum_bounding_circle_across_the_seam_publishes_minor_edges() {
         let source = crate::io::parse_wkt("MULTIPOINT ((179.8 0), (-179.8 0))").unwrap();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
-        let output = metric_minimum_bounding_circle(&model, Some("EPSG:4326"), &source).unwrap();
+        let circle =
+            FramedCircle::solve(
+                &model,
+                Some("EPSG:4326"),
+                &source,
+                None,
+                false,
+                None,
+                crate::geometry::TopologyDomain::Geographic(
+                    crate::geographic::GeographicFrame::crs84(),
+                ),
+            )
+            .unwrap();
+        let output = circle
+            .to_polygon(std::num::NonZeroU32::new(16).unwrap())
+            .unwrap();
         let Shape::Polygon(output) = output else {
             unreachable!()
         };
@@ -537,7 +558,10 @@ mod tests {
         let local = PreparedLocalInput::select_local_frame(&[&line], "EPSG:4326", &state).unwrap();
         let projected =
             crate::crs::transform_at(&line, "EPSG:4326", &local.definition, &state).unwrap();
-        let expected_edge_radius = projected.minimum_bounding_radius().unwrap();
+        let expected_edge_radius = crate::geometry::CircleSolution::bounding(&projected)
+            .unwrap()
+            .radius(1.0)
+            .unwrap();
 
         let expected_point_radius =
             crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&point_set], &state, |metric| {

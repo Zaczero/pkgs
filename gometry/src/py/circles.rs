@@ -72,6 +72,7 @@ impl PyCircle {
     }
 
     /// Circle center in the input CRS, retaining its coordinate epoch.
+    /// Computed centers are XY; selected zero-radius source points retain Z/M.
     #[getter]
     fn center(&self, py: Python<'_>) -> PyResult<Typed> {
         Ok(Typed(PyGeometry::with_frame(

@@ -1,8 +1,7 @@
 //! Exact cycle location and candidate-boundary intersection.
 
 use super::{
-    BoundaryEdge, DdInterval, ExactPoint, ExactSign, FloatBox, Ordering, Point, Rational, Result,
-    XY,
+    BoundaryEdge, DdInterval, ExactPoint, ExactSign, FloatBox, Ordering, Rational, Result, XY,
 };
 
 pub(super) enum CycleLocation {
@@ -231,78 +230,4 @@ pub(super) fn compare_box_extents(bounds: FloatBox) -> Option<Ordering> {
     } else {
         None
     }
-}
-
-pub(super) fn exact_segment_enters_candidate(
-    start: &ExactPoint,
-    end: &ExactPoint,
-    candidate: &[Point],
-    counter_clockwise: bool,
-) -> Result<bool> {
-    let zero = Rational::zero();
-    let one = Rational::one();
-    let mut lower = zero.clone();
-    let mut upper = one;
-    let mut lower_closed = true;
-    let mut upper_closed = true;
-    let source_x = end.x().try_subtract(start.x())?;
-    let source_y = end.y().try_subtract(start.y())?;
-
-    for (&left, &right) in candidate
-        .iter()
-        .zip(candidate.iter().cycle().skip(1))
-        .take(candidate.len())
-    {
-        let edge_x = Rational::from_f64(right.x).try_subtract(&Rational::from_f64(left.x))?;
-        let edge_y = Rational::from_f64(right.y).try_subtract(&Rational::from_f64(left.y))?;
-        let start_x = start.x().try_subtract(&Rational::from_f64(left.x))?;
-        let start_y = start.y().try_subtract(&Rational::from_f64(left.y))?;
-        let mut c0 = edge_x
-            .try_product(&start_y)?
-            .try_subtract(&edge_y.try_product(&start_x)?)?;
-        let mut c1 = edge_x
-            .try_product(&source_y)?
-            .try_subtract(&edge_y.try_product(&source_x)?)?;
-        if !counter_clockwise {
-            c0 = zero.try_subtract(&c0)?;
-            c1 = zero.try_subtract(&c1)?;
-        }
-
-        match c1.sign() {
-            ExactSign::Zero => {
-                if c0.sign() != ExactSign::Positive {
-                    return Ok(false);
-                }
-            },
-            ExactSign::Positive => {
-                let bound = zero.try_subtract(&c0)?.try_quotient(&c1)?;
-                match bound.try_cmp(&lower)? {
-                    Ordering::Greater => {
-                        lower = bound;
-                        lower_closed = false;
-                    },
-                    Ordering::Equal => lower_closed = false,
-                    Ordering::Less => {},
-                }
-            },
-            ExactSign::Negative => {
-                let bound = c0.try_quotient(&zero.try_subtract(&c1)?)?;
-                match bound.try_cmp(&upper)? {
-                    Ordering::Less => {
-                        upper = bound;
-                        upper_closed = false;
-                    },
-                    Ordering::Equal => upper_closed = false,
-                    Ordering::Greater => {},
-                }
-            },
-        }
-        let order = lower.try_cmp(&upper)?;
-        if order == Ordering::Greater
-            || (order == Ordering::Equal && !(lower_closed && upper_closed))
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }

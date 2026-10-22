@@ -36,13 +36,6 @@ fn degenerate_line_shape() -> Shape {
     ))
 }
 
-fn exact_inscribed_support(shape: &Shape) -> (PreparedSupport, PreparedSupport) {
-    let mut budget = ExpansionBudget::new("test", "support");
-    let source = PreparedSupport::from_shape(shape, &mut budget).unwrap();
-    let boundary = source.boundary_clone().unwrap();
-    (source, boundary)
-}
-
 fn dense_ring_capacity(subdivisions: usize) -> usize {
     subdivisions
         .checked_add(1)

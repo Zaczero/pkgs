@@ -227,12 +227,6 @@ struct DirectedCandidateProof {
 pub(crate) struct DirectedOptimizationResult {
     pub(in crate::geometry) center: Point,
     pub(in crate::geometry) center_squared: Rational,
-    // Native certificate tests also exercise source-based polygon publication.
-    // Production results retain only the center and its exact clearance disk.
-    #[cfg(test)]
-    source: PreparedSupport,
-    #[cfg(test)]
-    boundary: PreparedSupport,
 }
 
 #[cfg(test)]

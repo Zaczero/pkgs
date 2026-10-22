@@ -3,6 +3,8 @@ use super::*;
 use crate::geometry::XY;
 #[cfg(test)]
 use crate::geometry::numerics::product::ExactSign;
+#[cfg(test)]
+use crate::geometry::tessellation::exact::try_difference as exact_difference;
 
 /// Supporting half-planes bound every contained disk. The cyclic normal
 /// cross-products cancel its center; a three-plane solve only nominates a
@@ -183,10 +185,6 @@ pub(super) type ExactRatio = (ExactDyadic, ExactDyadic);
 #[cfg(test)]
 pub(super) fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Result<Ordering> {
     compare_ratios(&left.0, &left.1, &right.0, &right.1)
-}
-
-pub(in crate::geometry::derived) fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
-    ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 
 #[cfg(test)]

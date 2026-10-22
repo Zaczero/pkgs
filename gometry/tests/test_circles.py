@@ -21,6 +21,38 @@ def test_circle_array_generic_alias_is_a_native_runtime_contract() -> None:
     assert nullable.__args__ == (gm.Circle | None,)
 
 
+@pytest.mark.parametrize('crs', [None, 4326])
+def test_single_site_bounding_circle_preserves_the_first_source_record(
+    crs: int | None,
+) -> None:
+    source = gm.Point(370.125, -0.0, z=7.25, m=13.5, crs=crs)
+    duplicate = gm.Point(370.125, -0.0, z=8.5, m=19.25, crs=crs)
+    for shape in [source, gm.MultiPoint([source, duplicate])]:
+        circle = shape.minimum_bounding_circle()
+        assert circle.radius == 0
+        assert circle.center.to_wkb() == source.to_wkb()
+        assert circle.to_polygon().to_wkb() == source.to_wkb()
+        assert circle.center.crs == source.crs
+
+
+@pytest.mark.parametrize('crs', [None, 4326])
+def test_circle_array_preserves_selected_records_beside_computed_centers(
+    crs: int | None,
+) -> None:
+    first = gm.Point(0, -0.0, z=7.25, m=13.5, crs=crs)
+    second = gm.Point(0.001, 0.001, z=8.5, m=19.25, crs=crs)
+    circles = gm.GeometryArray([
+        gm.MultiPoint([first]),
+        gm.MultiPoint([first, second]),
+        None,
+    ]).minimum_bounding_circle()
+    assert circles.center[0].to_wkb() == first.to_wkb()
+    assert circles.to_polygon()[0].to_wkb() == first.to_wkb()
+    assert not circles.center[1].has_z
+    assert not circles.center[1].has_m
+    assert circles.center[2] is None
+
+
 @pytest.mark.parametrize(
     'operation', ['maximum_inscribed_circle', 'minimum_bounding_circle']
 )

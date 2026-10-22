@@ -196,35 +196,6 @@ pub(super) fn inradius_carrier_enclosure(
     Ok(best)
 }
 
-#[cfg(test)]
-impl DirectedOptimizationResult {
-    pub(in crate::geometry) const fn center(&self) -> Point {
-        self.center
-    }
-
-    pub(in crate::geometry) const fn source_support(&self) -> &PreparedSupport {
-        &self.source
-    }
-
-    pub(in crate::geometry) const fn boundary_support(&self) -> &PreparedSupport {
-        &self.boundary
-    }
-
-    pub(in crate::geometry) fn radius_in_scale(&self, scale: f64) -> Result<f64> {
-        if !(scale.is_finite() && scale > 0.0) {
-            return Err(crate::geometry::GeometryErrorKind::message(
-                "maximum_inscribed_circle scale must be positive and finite",
-            ));
-        }
-        let scale = Rational::from_f64(scale);
-        let squared = self
-            .center_squared
-            .try_product(&scale)?
-            .try_product(&scale)?;
-        downward_sqrt(&squared)
-    }
-}
-
 pub(super) fn downward_sqrt(squared: &Rational) -> Result<f64> {
     let interval = SqrtInterval::from_squared_with_error(squared, None)?;
     Rational::from_dyadic(interval.lower).round()
@@ -506,9 +477,5 @@ pub(crate) fn directed_inradius_scaled(
     Ok(Some(DirectedOptimizationResult {
         center: candidate.center,
         center_squared: candidate.center_squared,
-        #[cfg(test)]
-        source,
-        #[cfg(test)]
-        boundary: target,
     }))
 }

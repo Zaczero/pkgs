@@ -3134,7 +3134,9 @@ class Geometry:
         rather than an ellipsoidal optimum. Source-chart edges may be refined before
         the projected support calculation. Geographic radii are in meters; centers and
         polygons are in the source CRS.
-        The center retains the source coordinate epoch.
+        The center retains the source coordinate epoch. A zero-radius center selected
+        from an input site preserves the first source point's ordinates and spelling;
+        computed centers and positive-radius polygon realizations are XY.
 
         Parameters
         ----------
@@ -9909,7 +9911,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         rather than an ellipsoidal optimum. Source-chart edges may be refined before
         the projected support calculation. Geographic radii are in meters; centers and
         polygons are in the source CRS.
-        The center retains the source coordinate epoch.
+        The center retains the source coordinate epoch. A zero-radius center selected
+        from an input site preserves the first source point's ordinates and spelling;
+        computed centers and positive-radius polygon realizations are XY.
 
         Parameters
         ----------
@@ -11586,7 +11590,9 @@ class Circle:
     def __new__(cls, _nonconstructible: Never, /) -> Self: ...
     @property
     def center(self) -> Point:
-        """Circle center in the input CRS, retaining its coordinate epoch."""
+        """Circle center in the input CRS, retaining its coordinate epoch.
+        Computed centers are XY; selected zero-radius source points retain Z/M.
+        """
     @property
     def radius(self) -> float:
         """Radius in the selected metric units; NaN for an empty circle."""

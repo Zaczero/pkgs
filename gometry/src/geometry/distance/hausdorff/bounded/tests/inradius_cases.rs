@@ -22,7 +22,11 @@ fn public_inscribed_circle_work_does_not_follow_aspect_ratio(#[case] extent: f64
     let shape = polygon(&[(0.0, 0.0), (extent, 1.0), (2.0 * extent, 0.0), (0.0, 0.0)]);
     let _guard = limit_refinement_work(32);
     reset_exact_span_evaluations();
-    let circle = shape.maximum_inscribed_circle(None).unwrap();
+    let circle = crate::geometry::CircleSolution::inscribed(&shape, None, 1.0).unwrap()
+        .to_polygon(
+            std::num::NonZeroU32::new(16).unwrap(),
+            &mut ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments"),
+        ).unwrap();
     assert!(matches!(circle, Shape::Polygon(_)));
     assert!(refinement_work() <= 32, "extent {extent}");
     assert!(exact_span_evaluations() <= 512, "extent {extent}");
@@ -50,7 +54,11 @@ fn shared_polygon_pole_search_is_bounded_on_thin_nonrectangular_support(#[case] 
         let _guard = limit_refinement_work(32);
         reset_exact_span_evaluations();
         let label = shape.polylabel(Some(0.001)).unwrap();
-        let circle = shape.maximum_inscribed_circle(Some(0.001)).unwrap();
+        let circle = crate::geometry::CircleSolution::inscribed(&shape, Some(0.001), 1.0).unwrap()
+            .to_polygon(
+                std::num::NonZeroU32::new(16).unwrap(),
+                &mut ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments"),
+            ).unwrap();
         assert!(matches!(label, Shape::Point(_)));
         assert!(matches!(circle, Shape::Polygon(_)));
         assert!(exact_span_evaluations() <= 512, "extent {extent}");
@@ -231,7 +239,7 @@ fn boundary_clone_keeps_filled_source_separate_from_boundary_target() {
 }
 
 #[test]
-fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
+fn retained_clearance_disk_rejects_candidate_enclosing_a_hole() {
     let ring = |points: &[XY]| {
         crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
     };
@@ -255,41 +263,30 @@ fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
     let mut context = SearchContext::new(&accuracy);
     let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
     let boundary = source.boundary_clone().unwrap();
-    let valid = [
-        Point::new_raw_xy(3.0, 2.0),
-        Point::new_raw_xy(2.0, 3.0),
-        Point::new_raw_xy(1.0, 2.0),
-        Point::new_raw_xy(2.0, 1.0),
-    ];
+    let valid = polygon(&[(3.0, 2.0), (2.0, 3.0), (1.0, 2.0), (2.0, 1.0), (3.0, 2.0)]);
+    assert!(shape.covers(&valid).unwrap());
     assert!(
-        source
-            .candidate_is_contained(
-                &boundary,
+        crate::geometry::inscribed_candidate_is_contained(
                 Point::new_raw_xy(2.0, 2.0),
                 &boundary
                     .distance_squared(&ExactPoint::from_xy(XY::new(2.0, 2.0)))
                     .unwrap(),
                 &valid,
-                true,
             )
             .unwrap()
     );
-    let hole_enclosing = [
-        Point::new_raw_xy(12.0, 0.0),
-        Point::new_raw_xy(0.0, 12.0),
-        Point::new_raw_xy(-12.0, 0.0),
-        Point::new_raw_xy(0.0, -12.0),
-    ];
+    let hole_enclosing = polygon(&[
+        (12.0, 0.0), (0.0, 12.0), (-12.0, 0.0), (0.0, -12.0), (12.0, 0.0),
+    ]);
+    hole_enclosing.for_each_point(|point| assert!(shape.covers_point(point)));
+    assert!(!shape.covers(&hole_enclosing).unwrap());
     assert!(
-        !source
-            .candidate_is_contained(
-                &boundary,
+        !crate::geometry::inscribed_candidate_is_contained(
                 Point::new_raw_xy(0.0, 0.0),
                 &boundary
                     .distance_squared(&ExactPoint::from_xy(XY::new(0.0, 0.0)))
                     .unwrap(),
                 &hole_enclosing,
-                true,
             )
             .unwrap()
     );
@@ -316,36 +313,35 @@ fn boundary_target_cancels_shared_edges_of_filled_multipart_support() {
     assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 7.5);
     let center = ExactPoint::from_xy(result.center.xy());
     assert_eq!(
-        result
-            .boundary
+        target
             .distance_squared(&center)
             .unwrap()
             .try_cmp(&result.center_squared)
             .unwrap(),
         Ordering::Equal
     );
-    assert!(result.source.contains_area(&center).unwrap());
+    assert!(source.contains_area(&center).unwrap());
 }
 
 #[test]
-fn directed_result_drops_boundary_incidence_after_boundary_clone() {
+fn boundary_clone_drops_incidence_without_changing_the_solved_disk() {
     let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
-    let result = directed_inradius_scaled(&shape, 1e-3, 1.0)
-        .unwrap()
-        .unwrap();
-
+    let source = PreparedSupport::from_shape_with_boundary(
+        &shape, &mut ExpansionBudget::new("test", "support"),
+    ).unwrap().unwrap();
+    let boundary = source.boundary_clone().unwrap();
     assert!(
-        result.source.boundary_spans.is_none(),
-        "source support no longer needs boundary-span incidence after cloning"
-    );
-    assert!(
-        result.source.boundary_points.is_none(),
-        "source support no longer needs boundary-point incidence after cloning"
-    );
-    assert!(
-        result.boundary.boundary_spans.is_none() && result.boundary.boundary_points.is_none(),
+        boundary.boundary_spans.is_none() && boundary.boundary_points.is_none(),
         "boundary clone carries geometry only"
     );
+    let circle = crate::geometry::CircleSolution::inscribed(&shape, Some(1e-3), 1.0).unwrap();
+    assert_eq!(circle.radius(1.0).unwrap(), 2.0);
+    assert_eq!(circle.center().unwrap(), Shape::Point(Point::new_raw_xy(2.0, 2.0)));
+    let output = circle.to_polygon(
+        std::num::NonZeroU32::new(16).unwrap(),
+        &mut ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments"),
+    ).unwrap();
+    assert!(shape.covers(&output).unwrap());
 }
 
 #[test]
@@ -359,18 +355,13 @@ fn directed_inradius_ignores_collapsed_support_inside_positive_area() {
         .unwrap(),
     );
     let shape =
-        Shape::geometry_collection(vec![outer, line, Shape::Point(Point::new_raw_xy(2.0, 2.0))])
+        Shape::geometry_collection(vec![outer.clone(), line, Shape::Point(Point::new_raw_xy(2.0, 2.0))])
             .unwrap();
     let result = directed_inradius_scaled(&shape, 1e-9, 1.0)
         .unwrap()
         .unwrap();
     assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 2.0);
-    assert!(
-        result
-            .source
-            .contains_area(&ExactPoint::from_xy(result.center.xy()))
-            .unwrap()
-    );
+    assert!(outer.contains_point(result.center));
 }
 
 #[test]

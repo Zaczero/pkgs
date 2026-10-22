@@ -87,8 +87,7 @@ impl FramedCircle {
                     radius: br,
                     frame: bf,
                 },
-            ) => Ok(crate::geometry::same_topological_coordinate(a.x, b.x)
-                && crate::geometry::same_topological_coordinate(a.y, b.y)
+            ) => Ok(a == b
                 && ar.to_bits() == br.to_bits()
                 && af.crs == bf.crs
                 && af.state.generation == bf.state.generation),
@@ -134,10 +133,10 @@ impl FramedCircle {
                 if !inscribed && shape.point_set_only() {
                     crate::crs::ensure_geographic_domain_in_frame(frame.geographic, shape)?;
                     let mut points = Vec::with_capacity(3);
-                    let _scan_completion = shape.try_for_each_first_xy_point_run(|point| {
+                    let _scan_completion = shape.try_for_each_first_point_run(|point| {
                         let key = frame.geographic.quotient_vertex(point.x, point.y);
                         if points.iter().all(|(existing, _)| *existing != key) {
-                            points.push((key, point.to_xy()));
+                            points.push((key, point));
                         }
                         if points.len() == 3 {
                             std::ops::ControlFlow::Break(())
@@ -185,6 +184,11 @@ impl FramedCircle {
                     });
                 };
                 let disk = solve(prepared.projected_working(), 1.0)?;
+                let disk = if let CircleSolution::SourcePoint(point) = disk {
+                    CircleSolution::Zero(point.to_xy())
+                } else {
+                    disk
+                };
                 let local = prepared.local_crs().clone();
                 Ok(Self::Local { disk, local, frame })
             },
@@ -205,6 +209,9 @@ impl FramedCircle {
                 disk, geographic, ..
             } => {
                 let center = disk.center()?;
+                if matches!(disk, CircleSolution::SourcePoint(_)) {
+                    return Ok(center);
+                }
                 match geographic {
                     Some(frame) => crate::geometry::publish_computed_point_or_raw_shape(
                         &center,
@@ -248,6 +255,9 @@ impl FramedCircle {
                 disk, geographic, ..
             } => {
                 let polygon = disk.to_polygon(quadrant_segments, &mut budget)?;
+                if matches!(disk, CircleSolution::SourcePoint(_)) {
+                    return Ok(polygon);
+                }
                 match geographic {
                     Some(frame) => crate::geometry::publish_computed_point_or_raw_shape(
                         &polygon,

@@ -693,8 +693,9 @@ derivable and drop only the axis that cannot be sourced:
   [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.
 - Circle solutions from [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle]
   and [`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] have
-  XY centers and XY polygon realizations. They preserve the source CRS and
-  coordinate epoch, but do not invent Z/M values.
+  XY computed centers and positive-radius polygon realizations. They preserve
+  the source CRS and coordinate epoch. A zero-radius bounding center selected
+  from an input site retains the first source point's Z/M and stored spelling.
 
 ```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm

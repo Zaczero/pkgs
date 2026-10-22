@@ -1,7 +1,8 @@
 use super::hull::monotone_chain_hull;
-use super::polylabel::exact_difference;
 use crate::error::Result;
-use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_sqrt_ratio};
+use crate::geometry::tessellation::exact::{
+    ExactDyadic, compare_ratios, round_sqrt_ratio, try_difference as exact_difference,
+};
 use crate::geometry::{Point, Shape};
 
 fn height_numerator(a: Point, b: Point, p: Point) -> Result<ExactDyadic> {

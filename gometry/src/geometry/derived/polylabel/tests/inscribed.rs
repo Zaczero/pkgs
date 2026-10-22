@@ -1,7 +1,12 @@
 #[test]
 fn zero_radius_boundary_point_uses_closed_membership() {
     let shape = degenerate_line_shape();
-    let result = emit_zero_radius_point(&shape, Point::new_raw_xy(0.0, 0.0)).unwrap();
+    let circle = crate::geometry::CircleSolution::inscribed(&shape, None, 1.0).unwrap();
+    assert_eq!(circle.radius(1.0).unwrap(), 0.0);
+    let result = circle.to_polygon(
+        NonZeroU32::new(16).unwrap(),
+        &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+    ).unwrap();
     let Shape::Point(point) = result else {
         panic!("degenerate maximum circle must emit its point center");
     };
@@ -10,22 +15,15 @@ fn zero_radius_boundary_point_uses_closed_membership() {
 }
 
 #[test]
-fn zero_radius_outside_point_is_rejected_at_emission_boundary() {
+fn zero_clearance_certificate_rejects_an_outside_candidate_point() {
     let shape = degenerate_line_shape();
-    let result = emit_zero_radius_point(&shape, Point::new_raw_xy(1.0, 1.0));
-    assert!(matches!(
-        result,
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::Geometry(
-                    crate::geometry::GeometryErrorKind::UnrepresentableOutput {
-                        operation: "maximum_inscribed_circle",
-                        ..
-                    }
-                )
-            )
-    ));
+    let circle = crate::geometry::CircleSolution::inscribed(&shape, None, 1.0).unwrap();
+    let Shape::Point(center) = circle.center().unwrap() else { panic!("zero-radius center") };
+    let candidate = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+    assert!(!shape.covers(&candidate).unwrap());
+    assert!(!crate::geometry::inscribed_candidate_is_contained(
+        center, &Rational::zero(), &candidate,
+    ).unwrap());
 }
 
 #[test]
@@ -233,7 +231,7 @@ fn inward_chord_is_rejected_after_endpoint_only_checks_pass() {
 }
 
 #[test]
-fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
+fn inscribed_circle_certificate_rejects_a_rounded_radius_overrun() {
     let source = Shape::Polygon(Polygon::new(
         Ring::from_closed(
             crate::geometry::CoordSeq::try_from_points(&[
@@ -248,31 +246,64 @@ fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
         .unwrap(),
         Vec::new(),
     ));
-    let (prepared, boundary) = exact_inscribed_support(&source);
     let center = Point::new_raw_xy(0.5, 0.5);
     let clearance = exact_boundary_squared(&source, center).unwrap();
-    let support = Some((&prepared, &boundary, &clearance));
     let quadrants = NonZeroU32::new(16).expect("non-zero");
-    let steps = quadrants.get() as usize * 4;
     let radius = 0.5_f64.next_up();
-    let first = build_inscribed_circle_once(center, radius, steps, steps + 1, quadrants, support);
+    let first = build_inscribed_circle_budgeted(
+        center, radius, quadrants,
+        &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+    ).unwrap();
     assert!(
-        first.is_err(),
-        "the rounded first radius must expose the boundary-rounding retry"
+        !crate::geometry::inscribed_candidate_is_contained(center, &clearance, &first).unwrap(),
+        "the rounded first radius must fail the retained-clearance certificate"
     );
-    let emitted = build_inscribed_circle(center, radius, quadrants, support)
-        .expect("the one-ULP retry must produce a contained ring");
+    let circle = crate::geometry::CircleSolution::inscribed(&source, None, 1.0).unwrap();
+    let emitted = circle.to_polygon(
+        quadrants, &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+    ).expect("the retained solution must produce a contained ring");
     assert_eq!(emitted.geometry_type(), "Polygon");
+    assert!(source.covers(&emitted).unwrap());
+    assert!(crate::geometry::inscribed_candidate_is_contained(
+        center, &clearance, &emitted,
+    ).unwrap());
 }
 
 #[test]
-fn certified_inscribed_circle_reuses_the_directed_support_at_emission() {
+fn certified_inscribed_circle_realizations_reuse_one_directed_solution() {
     let source =
         crate::io::parse_wkt("MULTIPOLYGON (((0 0,2 0,2 4,0 4,0 0)),((2 0,4 0,4 4,2 4,2 0)))")
             .unwrap();
     overlay::reset_partition_calls();
-    source.maximum_inscribed_circle(Some(0.1)).unwrap();
+    let circle = crate::geometry::CircleSolution::inscribed(&source, Some(0.1), 1.0).unwrap();
+    let first = circle.to_polygon(
+        NonZeroU32::new(16).unwrap(),
+        &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+    ).unwrap();
+    let second = circle.to_polygon(
+        NonZeroU32::new(32).unwrap(),
+        &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+    ).unwrap();
+    assert!(circle.radius(1.0).unwrap() > 0.0);
+    assert!(matches!(circle.center().unwrap(), Shape::Point(_)));
     assert_eq!(overlay::partition_calls(), 1);
+    assert!(source.covers(&first).unwrap());
+    assert!(source.covers(&second).unwrap());
+}
+
+#[test]
+fn inscribed_circle_admits_the_complete_ring_before_emission() {
+    let source = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap();
+    let circle = crate::geometry::CircleSolution::inscribed(&source, None, 1.0).unwrap();
+    let mut budget = ExpansionBudget::new("circle.to_polygon", "quadrant_segments");
+    budget.add(crate::geometry::GENERATED_ITEM_LIMIT - 64).unwrap();
+    let error = circle.to_polygon(NonZeroU32::new(16).unwrap(), &mut budget).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
+            operation: "circle.to_polygon", parameter: "quadrant_segments", ..
+        })
+    ));
 }
 
 #[test]

@@ -20,6 +20,7 @@ pub(crate) use centroid::{
     point_centroid, point_set_center_summary,
 };
 pub(crate) use circle::CircleSolution;
+pub(in crate::geometry) use circle::inscribed_candidate_is_contained;
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
 pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_chart_hull, monotone_chain_hull, shape_from_open_hull,
@@ -29,8 +30,8 @@ pub(crate) use minimum_circle::{emit_minimum_bounding_circle, smallest_enclosing
 pub(crate) use minimum_rectangle::{minimum_area_rectangle, minimum_area_rectangle_chart};
 pub(crate) use minimum_width::minimum_width;
 pub(crate) use polylabel::{
-    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_zero_radius_point,
-    polylabel_point, scale_aware_default_tolerance,
+    build_inscribed_circle_budgeted, degenerate_polygon_center, polylabel_point,
+    scale_aware_default_tolerance,
 };
 pub(crate) use surface::{
     collection_surface_point, lineal_surface_point, multipoint_surface_point,

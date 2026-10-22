@@ -1,6 +1,3 @@
-#[cfg(test)]
-use std::num::NonZeroU32;
-
 use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, areal_centroid_with_bounds, canonicalize_concave_hull_points,
@@ -9,19 +6,11 @@ use crate::geometry::derived::{
     point_centroid, point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
     scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
 };
-#[cfg(test)]
-use crate::geometry::derived::{
-    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_minimum_bounding_circle,
-    emit_zero_radius_point, smallest_enclosing_circle,
-};
 use crate::geometry::{
-    Bounds, DirectedOptimizationResult, ExpansionBudget, GeometryErrorKind, LineSeq, Point,
-    Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled,
+    Bounds, DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
+    bounds_to_shape, carry_ordinates, directed_inradius_scaled,
 };
 use crate::{NonNegative, Positive};
-
-#[cfg(test)]
-const CIRCLE_QUADRANT_SEGMENTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is non-zero");
 
 impl Shape {
     #[expect(
@@ -291,122 +280,6 @@ impl Shape {
             return Ok(Self::empty_point());
         }
         Ok(Self::Point(polylabel_point(self, tolerance)?))
-    }
-
-    /// The smallest circle enclosing the geometry, as a `Polygon` — the
-    /// standard shape. A single distinct vertex returns itself (a radius-zero
-    /// circle); empty
-    /// input returns `POLYGON EMPTY`. The scalar minimum radius is the
-    /// correctly rounded mathematical source minimum. The geometry is a
-    /// certified circumscribed 64-gon whose edges enclose that minimum disk and
-    /// whose vertices lie outside it.
-    #[cfg(test)]
-    pub fn minimum_bounding_circle(&self) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
-        self.minimum_bounding_circle_budgeted(&mut budget)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn minimum_bounding_circle_budgeted(
-        &self,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        let source_finite = matches!(
-            self.try_for_each_first_xy_point_run(|point| {
-                if point.x.is_finite() && point.y.is_finite() {
-                    std::ops::ControlFlow::Continue(())
-                } else {
-                    std::ops::ControlFlow::Break(())
-                }
-            }),
-            std::ops::ControlFlow::Continue(())
-        );
-        if !source_finite {
-            return Err(GeometryErrorKind::unrepresentable_output(
-                "minimum_bounding_circle",
-            ));
-        }
-        let points = self.try_unique_xy_points()?;
-        if points.is_empty() {
-            return Ok(Self::empty_polygon());
-        }
-        let circle = smallest_enclosing_circle(&points)?;
-        let disk = circle.certified_disk(&points)?;
-        if disk.is_exact_zero() {
-            // A single distinct vertex: the degenerate circle is that source
-            // point, including its stored signed-zero spelling.
-            return Ok(Self::Point(disk.center()?));
-        }
-        emit_minimum_bounding_circle(&disk, CIRCLE_QUADRANT_SEGMENTS, budget)
-    }
-
-    /// Radius of the smallest circle enclosing the geometry. Empty input
-    /// returns ``NaN``; a single distinct vertex returns ``0``.
-    #[cfg(test)]
-    pub fn minimum_bounding_radius(&self) -> Result<f64> {
-        let points = self.try_unique_xy_points()?;
-        if points.is_empty() {
-            return Ok(f64::NAN);
-        }
-        let circle = smallest_enclosing_circle(&points)?;
-        circle.certified_disk(&points)?.radius()
-    }
-
-    /// The largest circle inscribed in a planar polygonal geometry, emitted as
-    /// a contained fixed-resolution filled disk. The center is one
-    /// representable point whose exact boundary clearance is within
-    /// `tolerance` of the global inradius; the radius alone is
-    /// [`maximum_inscribed_radius`](Self::maximum_inscribed_radius).
-    ///
-    /// Geographic callers use the documented local-projection approximation
-    /// through the CRS-aware wrapper.
-    #[cfg(test)]
-    pub fn maximum_inscribed_circle(&self, tolerance: Option<f64>) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
-        self.maximum_inscribed_circle_in_frame(tolerance, true, &mut budget)
-    }
-
-    /// Run the planar maximum-circle kernel in a local projected frame. The
-    /// geographic caller opts out of source-frame containment because that
-    /// frame is an explicitly approximate local-projection operation.
-    #[cfg(test)]
-    pub(crate) fn maximum_inscribed_circle_in_frame(
-        &self,
-        tolerance: Option<f64>,
-        certify_source: bool,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        let tolerance = tolerance
-            .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
-            .transpose()?;
-        self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
-        if self.is_empty() {
-            return Ok(Self::empty_polygon());
-        }
-        let Some(result) = self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?
-        else {
-            return Ok(Self::Point(degenerate_polygon_center(
-                self.bounds().expect("nonempty polygon has bounds"),
-            )));
-        };
-        let center = result.center();
-        let radius = result.radius_in_scale(1.0)?;
-        if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
-            return emit_zero_radius_point(self, center);
-        }
-        build_inscribed_circle_budgeted(
-            center,
-            radius,
-            CIRCLE_QUADRANT_SEGMENTS,
-            certify_source.then(|| {
-                (
-                    result.source_support(),
-                    result.boundary_support(),
-                    &result.center_squared,
-                )
-            }),
-            budget,
-        )
     }
 
     pub(crate) fn certified_inradius(
