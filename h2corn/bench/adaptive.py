@@ -6,7 +6,6 @@ import asyncio
 import json
 import secrets
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -23,9 +22,7 @@ from bench._core import (
     ResponseError,
     Scenario,
     deadline_bound,
-    ensure_large_upload_payload,
     ensure_static_file_payload,
-    terminate_process_tree,
     write_json,
 )
 from bench.evidence import run_identity
@@ -48,7 +45,6 @@ from bench.sampling import (
 class ProfileRun:
     family: str
     name: str
-    network_profile: Any | None
     scenarios: tuple[Any, ...]
     servers: tuple[str, ...]
     directory: Path
@@ -58,19 +54,11 @@ class ProfileRun:
     package_versions: dict[str, str | None]
     calibrations: dict[str, dict[str, Any]] = field(default_factory=dict)
     scenario_plans: dict[str, dict[str, Any]] = field(default_factory=dict)
-    netem_phases: list[dict[str, Any]] = field(default_factory=list)
     qualification: dict[str, Any] | None = None
 
 
 def _slug(scenario: Any) -> str:
     return scenario.slug()
-
-
-def _fixed_count(scenario: Any) -> bool:
-    return (
-        isinstance(scenario, Scenario)
-        and scenario.contract.request_body_path is not None
-    )
 
 
 def _minimum_window(scenario: Any) -> float:
@@ -79,10 +67,6 @@ def _minimum_window(scenario: Any) -> float:
         if isinstance(scenario, Scenario)
         else 0.0
     )
-
-
-def _window_text(seconds: float | None) -> str:
-    return 'fixed-count' if seconds is None else f'{seconds:g}s'
 
 
 def _elapsed(started: float, deadline: float) -> str:
@@ -143,24 +127,17 @@ def _initial_failures(calibration: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return failures
 
 
-def _prepare_http_profiles(
+def _prepare_http_profile(
     http: Any,
     suite_directory: Path,
     *,
-    profiles: Sequence[Any],
-    scenarios: dict[str, tuple[Any, ...]],
+    scenarios: tuple[Any, ...],
     servers: Sequence[str],
     wheel: Path | None,
-) -> list[ProfileRun]:
+) -> ProfileRun:
     ensure_static_file_payload()
-    if any(
-        scenario.type == 'h2_upload'
-        for cases in scenarios.values()
-        for scenario in cases
-    ):
-        ensure_large_upload_payload()
     required_tools = {'oha'}
-    if any(scenario.type == 'ws' for cases in scenarios.values() for scenario in cases):
+    if any(scenario.type == 'ws' for scenario in scenarios):
         required_tools.add('k6')
     for tool in required_tools:
         if shutil.which(tool) is None:
@@ -170,40 +147,31 @@ def _prepare_http_profiles(
         Path(http.__file__).resolve().parents[2],
         wheel,
     )
-    servers = tuple(servers)
-    system_summary = http.system_summary()
-    package_versions = http.package_versions()
-    output = []
-    for profile in profiles:
-        directory = suite_directory / profile.name
-        if directory.exists():
-            raise BenchmarkError(f'refusing to overwrite staged run {directory}')
-        (directory / 'raw').mkdir(parents=True)
-        (directory / 'plots').mkdir()
-        hypercorn_config = directory / 'hypercorn.toml'
-        http.write_hypercorn_config(hypercorn_config)
-        write_json(directory / 'identity.json', identity)
-        if identity['build'] is not None:
-            shutil.copy2(identity['build']['log']['path'], directory / 'build.log')
-        write_json(
-            directory / 'profile.json',
-            http.profile_record(profile, 'prepared'),
-        )
-        output.append(
-            ProfileRun(
-                family='http',
-                name=profile.name,
-                network_profile=profile,
-                scenarios=scenarios.get(profile.name, ()),
-                servers=servers,
-                directory=directory,
-                identity=identity,
-                hypercorn_config=hypercorn_config,
-                system_summary=system_summary,
-                package_versions=package_versions,
-            )
-        )
-    return output
+    directory = suite_directory / 'loopback'
+    if directory.exists():
+        raise BenchmarkError(f'refusing to overwrite staged run {directory}')
+    (directory / 'raw').mkdir(parents=True)
+    (directory / 'plots').mkdir()
+    hypercorn_config = directory / 'hypercorn.toml'
+    http.write_hypercorn_config(hypercorn_config)
+    write_json(directory / 'identity.json', identity)
+    if identity['build'] is not None:
+        shutil.copy2(identity['build']['log']['path'], directory / 'build.log')
+    write_json(
+        directory / 'profile.json',
+        {'profile': 'loopback', 'benchmark_family': 'http', 'status': 'prepared'},
+    )
+    return ProfileRun(
+        family='http',
+        name='loopback',
+        scenarios=scenarios,
+        servers=tuple(servers),
+        directory=directory,
+        identity=identity,
+        hypercorn_config=hypercorn_config,
+        system_summary=http.system_summary(),
+        package_versions=http.package_versions(),
+    )
 
 
 def _prepare_rpc_profile(
@@ -254,7 +222,6 @@ def _prepare_rpc_profile(
     return ProfileRun(
         family='grpc',
         name='grpc',
-        network_profile=None,
         scenarios=scenarios,
         servers=tuple(servers),
         directory=directory,
@@ -280,7 +247,6 @@ def _calibrate_profile(
             http, profile, scenario
         )
         servers = {}
-        fixed_count = _fixed_count(scenario)
         orders = (
             http.rotations(supported, len(supported), http.SEED) if supported else []
         )
@@ -299,7 +265,7 @@ def _calibrate_profile(
                     result = http.measure_cell(
                         name,
                         scenario,
-                        _window_text(windows[0]),
+                        f'{windows[0]:g}s',
                         '0s',
                         hypercorn_config=profile.hypercorn_config,
                         evidence_directory=evidence,
@@ -330,17 +296,13 @@ def _calibrate_profile(
                 flush=True,
             )
         try:
-            duration, limited = common_duration(
-                servers,
-                fixed_count=fixed_count,
-            )
+            duration, limited = common_duration(servers)
             status = 'calibrated'
         except ValueError:
             duration, limited = None, True
             status = 'all-cells-failed'
         profile.calibrations[slug] = {
             'scenario': scenario.name,
-            'fixed_count': fixed_count,
             'supported_servers': list(supported),
             'unsupported_servers': unsupported,
             'not_selected_servers': not_selected,
@@ -427,30 +389,17 @@ def _suite_cost_plan(
 ) -> dict[str, Any]:
     scenario_costs = {}
     scenario_cell_costs = {}
-    setup_reserve = 0.0
     for profile in profiles:
-        if profile.name == 'rtt50':
-            setup_reserve += max(
-                (
-                    phase.get('netem_setup_elapsed_seconds', 0.0)
-                    + phase.get('process_startup_overhead_seconds', 0.0)
-                    for phase in profile.netem_phases
-                ),
-                default=0.0,
-            )
         for scenario in profile.scenarios:
             slug = _slug(scenario)
             key = f'{profile.family}/{profile.name}/{slug}'
             calibration = profile.calibrations[slug]
-            fixed_count = calibration['fixed_count']
             duration = calibration['duration_seconds']
             cell_costs = {
                 name: calibration_production_cost(
                     cell,
-                    duration_seconds=None if fixed_count else duration,
-                    warmup_seconds=0.0
-                    if fixed_count
-                    else production_warmup_seconds(_minimum_window(scenario)),
+                    duration_seconds=duration,
+                    warmup_seconds=production_warmup_seconds(_minimum_window(scenario)),
                 )
                 for name, cell in calibration['servers'].items()
                 if cell.get('status') != 'failed'
@@ -464,7 +413,6 @@ def _suite_cost_plan(
     plan = allocate_production_blocks(
         scenario_costs=scenario_costs,
         elapsed_seconds=time.monotonic() - started,
-        setup_reserve_seconds=setup_reserve,
     )
     for profile in profiles:
         for scenario in profile.scenarios:
@@ -480,7 +428,6 @@ def _suite_cost_plan(
                 'scenario': scenario.name,
                 'supported_servers': calibration['supported_servers'],
                 'duration_seconds': calibration['duration_seconds'],
-                'fixed_count': calibration['fixed_count'],
                 'calibration_limited': calibration['calibration_limited'],
                 'calibration_status': calibration['status'],
                 'calibration_servers': calibration['servers'],
@@ -535,14 +482,8 @@ def _production_profile(
         slug = _slug(scenario)
         calibration = profile.calibrations[slug]
         scenario_plan = profile.scenario_plans[slug]
-        duration_seconds = scenario_plan['duration_seconds']
-        fixed_count = scenario_plan['fixed_count']
-        duration = '1s' if duration_seconds is None else f'{duration_seconds:g}s'
-        warmup = (
-            '0s'
-            if fixed_count
-            else f'{production_warmup_seconds(_minimum_window(scenario)):g}s'
-        )
+        duration = f'{scenario_plan["duration_seconds"]:g}s'
+        warmup = f'{production_warmup_seconds(_minimum_window(scenario)):g}s'
         failures = _initial_failures(calibration)
         record = http.run_scenario(
             scenario,
@@ -561,12 +502,8 @@ def _production_profile(
             initial_failures=failures,
         )
         record['sampling'] = scenario_plan
-        record['duration'] = 'fixed-count' if fixed_count else duration
-        record['warmup_duration'] = (
-            'none; each client process uses fresh connections'
-            if fixed_count
-            else warmup
-        )
+        record['duration'] = duration
+        record['warmup_duration'] = warmup
         record['production_started_elapsed_seconds'] = time.monotonic() - started
         record['system_summary'] = profile.system_summary
         record['package_versions'] = profile.package_versions
@@ -593,17 +530,7 @@ def _production_profile(
             for result in record['aggregate'].values():
                 result['rpc_rate'] = result['rps'] / messages_per_rpc
         else:
-            network_profile = profile.network_profile
-            assert network_profile is not None
-            record.update(
-                network_profile=profile.name,
-                target_rtt_ms=network_profile.target_rtt_ms,
-                measured_rtt_ms=(
-                    profile.netem_phases[-1]['measured_rtt_ms']
-                    if profile.netem_phases
-                    else None
-                ),
-            )
+            record['network_profile'] = profile.name
         write_json(profile.directory / 'raw' / f'{slug}.json', record)
         print(
             f'phase=production profile={profile.name} scenario={scenario.name} '
@@ -620,201 +547,8 @@ def _write_profile_state(profile: ProfileRun) -> None:
         {
             'calibrations': profile.calibrations,
             'scenario_plans': profile.scenario_plans,
-            'netem_phases': profile.netem_phases,
         },
     )
-
-
-def _read_profile_state(profile: ProfileRun) -> None:
-    path = profile.directory / 'adaptive-state.json'
-    if not path.is_file():
-        return
-    state = json.loads(path.read_text())
-    profile.calibrations = state.get('calibrations', {})
-    profile.scenario_plans = state.get('scenario_plans', {})
-    profile.netem_phases = state.get('netem_phases', [])
-
-
-def execute_rtt50_phase(job_path: Path) -> None:
-    """Execute one RTT-shaped phase in an isolated network namespace."""
-    from bench import bench as http
-    from bench import grpc
-
-    job = json.loads(job_path.read_text())
-    directory = Path(job['profile_directory'])
-    all_scenarios = {scenario.slug(): scenario for scenario in http.rtt50_scenarios()}
-    scenarios = tuple(all_scenarios[slug] for slug in job['scenario_slugs'])
-    profile = ProfileRun(
-        family='http',
-        name='rtt50',
-        network_profile=http.RTT50_PROFILE,
-        scenarios=scenarios,
-        servers=tuple(job['servers']),
-        directory=directory,
-        identity=json.loads((directory / 'identity.json').read_text()),
-        hypercorn_config=directory / 'hypercorn.toml',
-        system_summary=job['system_summary'],
-        package_versions=job['package_versions'],
-    )
-    _read_profile_state(profile)
-    if job['phase'] == 'production':
-        suite_plan = json.loads(Path(job['suite_plan_path']).read_text())
-        profile.scenario_plans = {
-            item['slug']: item
-            for item in suite_plan['scenarios']
-            if item['family'] == 'http' and item['profile'] == 'rtt50'
-        }
-
-    work_deadline = float(job['work_deadline'])
-    started = float(job['started_monotonic'])
-    with deadline_bound(work_deadline):
-        phase_started = time.monotonic()
-        netem_started = time.monotonic()
-        netem = http.configure_rtt50_profile()
-        phase_record = {
-            'phase': job['phase'],
-            'netem_setup_elapsed_seconds': time.monotonic() - netem_started,
-            **netem,
-        }
-        profile.netem_phases.append(phase_record)
-        write_json(
-            directory / 'evidence' / 'netem' / f'{job["phase"]}.json',
-            netem,
-        )
-        if job['phase'] == 'calibration':
-            _calibrate_profile(http, profile, deadline=work_deadline, started=started)
-        elif job['phase'] == 'production':
-            _production_profile(
-                http,
-                grpc,
-                profile,
-                deadline=work_deadline,
-                started=started,
-            )
-        else:
-            raise BenchmarkError(f'unknown RTT phase {job["phase"]!r}')
-        phase_record['worker_phase_elapsed_seconds'] = time.monotonic() - phase_started
-        _write_profile_state(profile)
-        profile_record = json.loads((directory / 'profile.json').read_text())
-        profile_record.update(
-            netem_phases=profile.netem_phases,
-            measured_rtt_ms=netem['measured_rtt_ms'],
-        )
-        write_json(directory / 'profile.json', profile_record)
-
-
-def _run_rtt50_phase(
-    http: Any,
-    profile: ProfileRun,
-    phase: str,
-    *,
-    suite_plan_path: Path | None,
-    work_deadline: float,
-    started: float,
-) -> None:
-    unshare = shutil.which('unshare')
-    if unshare is None:
-        raise BenchmarkError('unshare is required for the isolated RTT profile')
-    job_path = profile.directory / f'netem-{phase}.job.json'
-    write_json(
-        job_path,
-        {
-            'phase': phase,
-            'profile_directory': str(profile.directory),
-            'scenario_slugs': [_slug(scenario) for scenario in profile.scenarios],
-            'servers': profile.servers,
-            'system_summary': profile.system_summary,
-            'package_versions': profile.package_versions,
-            'work_deadline': work_deadline,
-            'started_monotonic': started,
-            'suite_plan_path': str(suite_plan_path) if suite_plan_path else None,
-        },
-    )
-    command = [
-        unshare,
-        '-rn',
-        '--',
-        sys.executable,
-        '-m',
-        'bench.netem_worker',
-        '--job',
-        str(job_path),
-    ]
-    process_started = time.monotonic()
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=Path(http.__file__).resolve().parents[1],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as error:
-        raise BenchmarkError(f'failed to start RTT worker: {error}') from error
-    try:
-        stdout, stderr = process.communicate(
-            timeout=max(0.001, work_deadline - time.monotonic())
-        )
-    except BaseException as error:
-        terminated = terminate_process_tree(
-            process,
-            timeout=CLEANUP_RESERVE_SECONDS,
-        )
-        stdout, stderr = process.communicate()
-        write_json(
-            profile.directory / 'evidence' / 'netem' / f'{phase}.process.json',
-            {
-                'command': command,
-                'status': (
-                    'timed_out'
-                    if isinstance(error, subprocess.TimeoutExpired)
-                    else 'interrupted'
-                ),
-                'elapsed_seconds': time.monotonic() - process_started,
-                'terminated_pids': terminated,
-                'stdout': stdout,
-                'stderr': stderr,
-                'error': str(error) or type(error).__name__,
-            },
-        )
-        if isinstance(error, subprocess.TimeoutExpired):
-            raise DeadlineError(
-                f'RTT {phase} worker exceeded the remaining suite deadline'
-            ) from error
-        raise
-    result = {
-        'command': command,
-        'returncode': process.returncode,
-        'stdout': stdout,
-        'stderr': stderr,
-        'elapsed_seconds': time.monotonic() - process_started,
-        'status': 'completed' if process.returncode == 0 else 'failed',
-    }
-    write_json(
-        profile.directory / 'evidence' / 'netem' / f'{phase}.process.json',
-        result,
-    )
-    if process.returncode:
-        if time.monotonic() >= work_deadline:
-            raise DeadlineError(f'RTT {phase} worker reached the suite work deadline')
-        raise BenchmarkError(
-            f'RTT {phase} worker failed: {stderr.strip() or stdout.strip()}'
-        )
-    _read_profile_state(profile)
-    profile_record = json.loads((profile.directory / 'profile.json').read_text())
-    profile.netem_phases = profile_record.get('netem_phases', profile.netem_phases)
-    if profile.netem_phases:
-        phase_record = profile.netem_phases[-1]
-        phase_record['worker_process_elapsed_seconds'] = result['elapsed_seconds']
-        phase_record['process_startup_overhead_seconds'] = max(
-            0.0,
-            result['elapsed_seconds']
-            - phase_record.get('worker_phase_elapsed_seconds', 0.0),
-        )
-        _write_profile_state(profile)
-        profile_record['netem_phases'] = profile.netem_phases
-        write_json(profile.directory / 'profile.json', profile_record)
 
 
 def _selected_profiles(
@@ -822,14 +556,12 @@ def _selected_profiles(
     grpc: Any,
     args: Any,
 ) -> tuple[
-    list[Any],
-    dict[str, tuple[Any, ...]],
+    tuple[Any, ...],
     list[Any] | None,
     tuple[str, ...],
     tuple[str, ...],
 ]:
-    http_profiles = []
-    http_scenarios: dict[str, tuple[Any, ...]] = {}
+    http_scenarios: tuple[Any, ...] = ()
     http_servers = tuple(
         name for name in (args.servers or http.SERVERS) if name in http.SERVERS
     )
@@ -839,22 +571,11 @@ def _selected_profiles(
     if args.family in {'all', 'http'}:
         if not http_servers:
             raise BenchmarkError('HTTP family has no selected server')
-        if args.network_profile in {'all', 'loopback'}:
-            http_scenarios['loopback'] = tuple(
-                scenario
-                for scenario in http.benchmark_scenarios()
-                if not args.types or scenario.type in args.types
-            )
-            if http_scenarios['loopback']:
-                http_profiles.append(http.LOOPBACK_PROFILE)
-        if args.network_profile in {'all', 'rtt50'}:
-            http_scenarios['rtt50'] = tuple(
-                scenario
-                for scenario in http.rtt50_scenarios()
-                if not args.types or scenario.type in args.types
-            )
-            if http_scenarios['rtt50']:
-                http_profiles.append(http.RTT50_PROFILE)
+        http_scenarios = tuple(
+            scenario
+            for scenario in http.benchmark_scenarios()
+            if not args.types or scenario.type in args.types
+        )
     if args.family in {'all', 'grpc'} and not grpc_servers:
         raise BenchmarkError('gRPC family has no selected server')
     rpc_selected = (
@@ -866,9 +587,9 @@ def _selected_profiles(
         if args.family in {'all', 'grpc'}
         else None
     )
-    if not http_profiles and not rpc_selected:
+    if not http_scenarios and not rpc_selected:
         raise BenchmarkError('scenario selection is empty')
-    return http_profiles, http_scenarios, rpc_selected, http_servers, grpc_servers
+    return http_scenarios, rpc_selected, http_servers, grpc_servers
 
 
 def _write_suite_status(
@@ -898,37 +619,25 @@ def _combined_publish_gate(
     suite_plan: dict[str, Any],
 ) -> None:
     from bench.bench import SERVERS as HTTP_SERVERS
+    from bench.bench import benchmark_scenarios
     from bench.grpc import SERVERS as RPC_SERVERS
+    from bench.grpc import scenarios as rpc_scenarios
 
-    profile_names = {profile.name for profile in profiles}
-    if profile_names != {'loopback', 'rtt50', 'grpc'}:
-        raise BenchmarkError(
-            'publication requires loopback HTTP, RTT-shaped HTTP, and gRPC profiles'
-        )
     if any(
         set(profile.servers)
         != (set(RPC_SERVERS) if profile.family == 'grpc' else set(HTTP_SERVERS))
         for profile in profiles
     ):
         raise BenchmarkError('publication requires every benchmark server')
-    if (
-        suite_plan.get('scenario_count') != 35
-        or suite_plan.get('supported_cell_count') != 109
-    ):
-        raise BenchmarkError(
-            'publication requires all 35 scenarios and 109 supported cells'
-        )
     planned = {
         (item['family'], item['profile'], item['slug'])
         for item in suite_plan.get('scenarios', ())
     }
-    expected = {
-        (profile.family, profile.name, _slug(scenario))
-        for profile in profiles
-        for scenario in profile.scenarios
-    }
-    if planned != expected:
-        raise BenchmarkError('frozen plan does not cover every selected scenario')
+    complete = {
+        ('http', 'loopback', scenario.slug()) for scenario in benchmark_scenarios()
+    } | {('grpc', 'grpc', scenario.slug()) for scenario in rpc_scenarios()}
+    if planned != complete:
+        raise BenchmarkError('publication requires every defined scenario')
 
 
 def run_adaptive_suite(
@@ -942,8 +651,8 @@ def run_adaptive_suite(
 ) -> Path:
     from bench import grpc
 
-    http_profiles, http_scenarios, rpc_scenarios, http_servers, grpc_servers = (
-        _selected_profiles(http, grpc, args)
+    http_scenarios, rpc_scenarios, http_servers, grpc_servers = _selected_profiles(
+        http, grpc, args
     )
     suite_directory = args.run_directory or args.output_directory.resolve() / 'runs' / (
         datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ') + f'-{secrets.token_hex(3)}'
@@ -960,12 +669,11 @@ def run_adaptive_suite(
                 file=sys.stderr,
                 flush=True,
             )
-            if http_profiles:
-                profiles.extend(
-                    _prepare_http_profiles(
+            if http_scenarios:
+                profiles.append(
+                    _prepare_http_profile(
                         http,
                         http_directory,
-                        profiles=http_profiles,
                         scenarios=http_scenarios,
                         servers=http_servers,
                         wheel=args.wheel,
@@ -989,20 +697,10 @@ def run_adaptive_suite(
                 profiles.append(rpc_profile)
 
             for profile in profiles:
-                if profile.name == 'rtt50':
-                    _run_rtt50_phase(
-                        http,
-                        profile,
-                        'calibration',
-                        suite_plan_path=None,
-                        work_deadline=work_deadline,
-                        started=started,
-                    )
-                else:
-                    _calibrate_profile(
-                        http, profile, deadline=work_deadline, started=started
-                    )
-                    _write_profile_state(profile)
+                _calibrate_profile(
+                    http, profile, deadline=work_deadline, started=started
+                )
+                _write_profile_state(profile)
 
             if rpc_profile is not None:
                 _calibrate_rpc_qualification(rpc_profile, grpc, deadline=work_deadline)
@@ -1051,24 +749,14 @@ def run_adaptive_suite(
                 _combined_publish_gate(profiles, suite_plan)
 
             for profile in profiles:
-                if profile.name == 'rtt50':
-                    _run_rtt50_phase(
-                        http,
-                        profile,
-                        'production',
-                        suite_plan_path=suite_directory / 'suite-plan.json',
-                        work_deadline=work_deadline,
-                        started=started,
-                    )
-                else:
-                    _production_profile(
-                        http,
-                        grpc,
-                        profile,
-                        deadline=work_deadline,
-                        started=started,
-                    )
-                    _write_profile_state(profile)
+                _production_profile(
+                    http,
+                    grpc,
+                    profile,
+                    deadline=work_deadline,
+                    started=started,
+                )
+                _write_profile_state(profile)
 
         for profile in profiles:
             raw_directory = profile.directory / 'raw'

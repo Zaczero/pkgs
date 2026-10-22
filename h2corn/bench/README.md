@@ -6,9 +6,8 @@ explains the published workloads and how to read their results.
 
 Run from the `h2corn` checkout on Linux with CPython 3.15, readable
 `/proc/<pid>/smaps_rollup`, and the project's Rust build environment. The full
-HTTP matrix also requires `oha`, `k6`, `unshare`, `ip`, `tc`, and working user
-and network namespaces. Build and install an explicit release wheel, then keep
-that installation for the measurement:
+HTTP matrix also requires `oha` and `k6`. Build and install an explicit release
+wheel, then keep that installation for the measurement:
 
 ```bash
 uv sync --upgrade --python 3.15
@@ -26,7 +25,7 @@ artifacts, and each trial verifies its response contract before and after load.
 
 ## Sampling and time budget
 
-Time-window scenarios calibrate each server in one verified serving process.
+Each scenario calibrates each server in one verified serving process.
 The harness measures successive 0.5, 1, 2, and 4 second windows, stopping when
 adjacent rates agree within 10%. Every server in a scenario then receives the
 longest selected duration. If rates have not stabilized by four seconds, that
@@ -34,8 +33,8 @@ scenario is marked calibration-limited and its comparisons are inconclusive.
 Calibration runs after the correctness probe without a separate load warmup.
 Calibration-trial elapsed time minus the requested calibration-window
 durations estimates per-cell setup and checks. Time-window production blocks
-use a 0.25-second warmup, one second for k6-driven WebSocket scenarios; the
-fixed-count upload has none. A warmup may complete no request. The production
+use a 0.25-second warmup, one second for k6-driven WebSocket scenarios. A
+warmup may complete no request. The production
 forecast adds the selected duration and applicable warmup.
 
 The harness freezes six fresh-process paired production blocks for every
@@ -57,7 +56,7 @@ For a smaller diagnostic collection, select a family and workload explicitly:
 ```bash
 uv run --no-sync python bench/bench.py \
   --family http --servers h2corn uvicorn --types h1 \
-  --network-profile loopback --wheel "$WHEELS"/*.whl
+  --wheel "$WHEELS"/*.whl
 ```
 
 Selectors reduce the collected scenarios or servers; they do not change the
@@ -80,17 +79,9 @@ adaptive sampling policy. Diagnostic runs cannot replace published results.
   fall between samples.
 - HTTP/2 trials retain the effective peer SETTINGS after a PING round trip.
   Listeners, sockets, and load-generator files are private to each trial.
-- The 8 MiB HTTP/2 upload completes sixteen requests on eight connections.
-  The handler checks each received body against its declared length, and the
-  load generator requires all responses to succeed and verifies their byte
-  total. Small-body correctness probes run before and after measurement. The
-  upload batch uses a separate client process with fresh connections, so it
-  needs no full-size warmup uploads.
 
-The default run includes loopback and a 50 ms round-trip network profile. The
-RTT profile is applied inside a throwaway network namespace; the host network
-is not changed. A run without the required namespace tools or capabilities
-fails rather than substituting loopback results.
+HTTP connections use loopback, so every result reflects server work rather
+than network round trips.
 
 ## gRPC workloads
 
@@ -138,4 +129,4 @@ uv run --no-sync python bench/bench.py \
 
 Publication occurs only after the complete matrix, frozen plan, retained
 qualification, and evidence pass their gates. Partial family, server, scenario,
-or network-profile selections cannot publish.
+or gRPC case selections cannot publish.

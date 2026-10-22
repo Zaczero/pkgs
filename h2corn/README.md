@@ -100,7 +100,7 @@ pure-Python HTTP/1.1 parsers.
 </picture>
 
 See [the measured environment, exact data, server configuration, and workloads](https://h2corn.monicz.dev/benchmarks/),
-including HTTP/2, streaming, WebSockets, and 50 ms round-trip latency.
+including HTTP/2, streaming, WebSockets, and gRPC.
 
 ## Support
 

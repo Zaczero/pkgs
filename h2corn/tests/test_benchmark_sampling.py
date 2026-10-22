@@ -11,8 +11,8 @@ from bench.sampling import (
     CalibrationPoint,
     ScenarioSamples,
     allocate_production_blocks,
-    calibration_duration,
     calibration_production_cost,
+    calibration_settled,
     calibration_status,
     calibration_windows,
     common_duration,
@@ -28,18 +28,17 @@ def point(duration: float, rate: float) -> CalibrationPoint:
 def test_calibration_stops_at_the_first_stable_adjacent_windows():
     windows = [point(0.5, 100), point(1.0, 108)]
 
-    assert calibration_duration([], fixed_count=False) == 0.5
-    assert calibration_duration(windows[:1], fixed_count=False) == 1.0
-    assert calibration_duration(windows, fixed_count=False) is None
-    assert calibration_status(windows, fixed_count=False) == ('stable', 1.0)
+    assert not calibration_settled(windows[:1])
+    assert calibration_settled(windows)
+    assert calibration_status(windows) == ('stable', 1.0)
 
 
 def test_calibration_extends_after_disagreement_and_records_exhaustion():
     windows = [point(0.5, 100), point(1.0, 130), point(2.0, 108)]
 
-    assert calibration_duration(windows[:2], fixed_count=False) == 2.0
-    assert calibration_duration(windows, fixed_count=False) == 4.0
-    assert calibration_status([*windows, point(4.0, 140)], fixed_count=False) == (
+    assert not calibration_settled(windows[:2])
+    assert not calibration_settled(windows)
+    assert calibration_status([*windows, point(4.0, 140)]) == (
         'calibration-limited',
         4.0,
     )
@@ -55,21 +54,18 @@ def test_calibration_windows_respect_the_load_driver_minimum():
 def test_window_without_completions_extends_calibration():
     windows = [point(0.5, 0.0), point(1.0, 900)]
 
-    assert calibration_duration(windows, fixed_count=False) == 2.0
+    assert not calibration_settled(windows)
 
 
 def test_common_duration_gives_each_competitor_equal_exposure():
-    duration, limited = common_duration(
-        {
-            'h2corn': {'status': 'stable', 'selected_duration_seconds': 0.5},
-            'hypercorn': {'status': 'stable', 'selected_duration_seconds': 2.0},
-            'gunicorn': {
-                'status': 'calibration-limited',
-                'selected_duration_seconds': 4.0,
-            },
+    duration, limited = common_duration({
+        'h2corn': {'status': 'stable', 'selected_duration_seconds': 0.5},
+        'hypercorn': {'status': 'stable', 'selected_duration_seconds': 2.0},
+        'gunicorn': {
+            'status': 'calibration-limited',
+            'selected_duration_seconds': 4.0,
         },
-        fixed_count=False,
-    )
+    })
 
     assert duration == 4.0
     assert limited
@@ -89,29 +85,6 @@ def test_production_cost_replaces_calibration_windows_with_selected_duration():
         duration_seconds=2.0,
         warmup_seconds=0.25,
     ) == pytest.approx(6.25)
-
-
-def test_fixed_count_calibration_uses_the_complete_workload():
-    points = [CalibrationPoint(None, 240.0, 6.5, 16)]
-    cell = {
-        'elapsed_seconds': 7.0,
-        'windows': [{'duration_seconds': None, 'elapsed_seconds': 6.5}],
-    }
-
-    assert calibration_duration(points, fixed_count=True) is None
-    assert calibration_status(points, fixed_count=True) == ('fixed-count-cost', None)
-    assert common_duration(
-        {'h2corn': {'status': 'fixed-count-cost'}},
-        fixed_count=True,
-    ) == (None, False)
-    assert (
-        calibration_production_cost(
-            cell,
-            duration_seconds=None,
-            warmup_seconds=0.0,
-        )
-        == 7.0
-    )
 
 
 def test_production_plan_assigns_six_blocks_to_every_scenario():

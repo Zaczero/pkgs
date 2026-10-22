@@ -37,7 +37,7 @@ def production_warmup_seconds(minimum_seconds: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class CalibrationPoint:
-    duration_seconds: float | None
+    duration_seconds: float
     rate: float
     elapsed_seconds: float
     completed: int
@@ -94,43 +94,18 @@ class ScenarioSamples:
         }
 
 
-def calibration_duration(
-    points: Sequence[CalibrationPoint],
-    *,
-    fixed_count: bool,
-) -> float | None:
-    """Choose the next same-process calibration window, or finish sampling."""
-    if fixed_count:
-        return None if points else 0.0
-    if not points:
-        return CALIBRATION_WINDOWS_SECONDS[0]
-    if len(points) == 1:
-        return CALIBRATION_WINDOWS_SECONDS[1]
-    if rates_are_stable(points[-2].rate, points[-1].rate):
-        return None
-    next_index = len(points)
-    if next_index < len(CALIBRATION_WINDOWS_SECONDS):
-        return CALIBRATION_WINDOWS_SECONDS[next_index]
-    return None
+def calibration_settled(points: Sequence[CalibrationPoint]) -> bool:
+    """Whether the two latest same-process windows agree within tolerance."""
+    return len(points) >= 2 and rates_are_stable(points[-2].rate, points[-1].rate)
 
 
-def calibration_status(
-    points: Sequence[CalibrationPoint],
-    *,
-    fixed_count: bool,
-) -> tuple[str, float | None]:
+def calibration_status(points: Sequence[CalibrationPoint]) -> tuple[str, float]:
     if not points:
         raise ValueError('calibration requires at least one completed window')
-    if fixed_count:
-        if len(points) != 1 or points[0].duration_seconds is not None:
-            raise ValueError('fixed-count calibration must retain one full-work sample')
-        return 'fixed-count-cost', None
-    if any(point.duration_seconds is None for point in points):
-        raise ValueError('time-window calibration needs a duration for every window')
-    stable = len(points) >= 2 and rates_are_stable(points[-2].rate, points[-1].rate)
     selected = points[-1].duration_seconds
-    assert selected is not None
-    return ('stable', selected) if stable else ('calibration-limited', selected)
+    if calibration_settled(points):
+        return 'stable', selected
+    return 'calibration-limited', selected
 
 
 def rates_are_stable(
@@ -150,19 +125,11 @@ def rates_are_stable(
 
 def common_duration(
     calibrations: Mapping[str, Mapping[str, Any]],
-    *,
-    fixed_count: bool,
-) -> tuple[float | None, bool]:
+) -> tuple[float, bool]:
     """Use equal production exposure, bounded by the slowest-settling server."""
     usable = [item for item in calibrations.values() if item.get('status') != 'failed']
     if not usable:
         raise ValueError('scenario has no successfully calibrated server')
-    if fixed_count:
-        if any(item.get('status') != 'fixed-count-cost' for item in usable):
-            raise ValueError('fixed-count scenario has a time-window calibration')
-        return None, False
-    if any(item.get('status') == 'fixed-count-cost' for item in usable):
-        raise ValueError('time-window scenario has a fixed-count calibration')
     durations = []
     for item in usable:
         value = item.get('selected_duration_seconds')
@@ -177,28 +144,17 @@ def common_duration(
 def calibration_production_cost(
     calibration: Mapping[str, Any],
     *,
-    duration_seconds: float | None,
+    duration_seconds: float,
     warmup_seconds: float,
 ) -> float:
     """Estimate one production cell by replacing its calibration load windows."""
     calibration_seconds = float(calibration['elapsed_seconds'])
-    windows = calibration['windows']
-    fixed_count = duration_seconds is None
-    if fixed_count:
-        if len(windows) != 1 or windows[0]['duration_seconds'] is not None:
-            raise ValueError('fixed-count production needs one full-work calibration')
-        window_times = [float(windows[0]['elapsed_seconds'])]
-        production_load_seconds = window_times[0]
-    else:
-        assert duration_seconds is not None
-        if duration_seconds <= 0 or not math.isfinite(duration_seconds):
-            raise ValueError('production duration must be finite and positive')
-        if any(window['duration_seconds'] is None for window in windows):
-            raise ValueError('time-window production needs time-window calibration')
-        # Subtract requested load time, retaining per-window launch and teardown cost.
-        window_times = [float(window['duration_seconds']) for window in windows]
-        production_load_seconds = duration_seconds
-    window_seconds = sum(window_times)
+    if duration_seconds <= 0 or not math.isfinite(duration_seconds):
+        raise ValueError('production duration must be finite and positive')
+    # Subtract requested load time, retaining per-window launch and teardown cost.
+    window_seconds = sum(
+        float(window['duration_seconds']) for window in calibration['windows']
+    )
     if not math.isfinite(calibration_seconds) or calibration_seconds <= 0:
         raise ValueError('calibration elapsed time must be finite and positive')
     if not math.isfinite(window_seconds) or window_seconds <= 0:
@@ -207,9 +163,7 @@ def calibration_production_cost(
         raise ValueError('calibration elapsed time is shorter than its load windows')
     if warmup_seconds < 0 or not math.isfinite(warmup_seconds):
         raise ValueError('production warmup must be finite and nonnegative')
-    return (
-        calibration_seconds - window_seconds + production_load_seconds + warmup_seconds
-    )
+    return calibration_seconds - window_seconds + duration_seconds + warmup_seconds
 
 
 def allocate_production_blocks(
@@ -218,7 +172,6 @@ def allocate_production_blocks(
     elapsed_seconds: float,
     target_seconds: float = TARGET_TOTAL_SECONDS,
     hard_seconds: float = HARD_TOTAL_SECONDS,
-    setup_reserve_seconds: float = 0.0,
     report_reserve_seconds: float = REPORT_RESERVE_SECONDS,
     cleanup_reserve_seconds: float = CLEANUP_RESERVE_SECONDS,
 ) -> dict[str, Any]:
@@ -233,9 +186,7 @@ def allocate_production_blocks(
     production_cost = sum(
         scenario_costs[name] * count for name, count in blocks.items()
     )
-    fixed_reserve = (
-        setup_reserve_seconds + report_reserve_seconds + cleanup_reserve_seconds
-    )
+    fixed_reserve = report_reserve_seconds + cleanup_reserve_seconds
     forecast = elapsed_seconds + production_cost + fixed_reserve
     if forecast > hard_seconds:
         raise BudgetError(
@@ -247,7 +198,6 @@ def allocate_production_blocks(
         'blocks': blocks,
         'elapsed_before_production_seconds': elapsed_seconds,
         'production_estimate_seconds': production_cost,
-        'setup_reserve_seconds': setup_reserve_seconds,
         'report_reserve_seconds': report_reserve_seconds,
         'cleanup_reserve_seconds': cleanup_reserve_seconds,
         'forecast_total_seconds': forecast,

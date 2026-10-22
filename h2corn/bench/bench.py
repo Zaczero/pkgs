@@ -18,17 +18,14 @@ import math
 import platform
 import shutil
 import signal
-import socket
 import statistics
 import subprocess
 import sys
 import textwrap
-import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 import matplotlib as mpl
 from benchroom.plot import save, theme
@@ -48,7 +45,6 @@ from bench._core import (
     NoCompletionsError,
     ResponseError,
     Scenario,
-    _run,
     allocated_listener,
     check_response,
     deadline_bound,
@@ -77,8 +73,8 @@ from bench.sampling import (
     REPORT_RESERVE_SECONDS,
     CalibrationPoint,
     ScenarioSamples,
-    calibration_duration,
     calibration_record,
+    calibration_settled,
     calibration_status,
     median_order_interval,
 )
@@ -89,12 +85,6 @@ if TYPE_CHECKING:
 CONCURRENCY = 100
 STREAMING_CONCURRENCY = 1000
 SEED = 20_260_726
-
-NETEM_DELAY_MS = 25.0
-NETEM_RTT_MS = NETEM_DELAY_MS * 2
-NETEM_RATE = '1gbit'
-NETEM_RTT_TOLERANCE_MS = 15.0
-NETEM_RTT_SAMPLES = 10
 
 # Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
 # where it has one (uvicorn `--http h11`, gunicorn's Python parser). The
@@ -172,32 +162,6 @@ SERVERS: dict[str, list[str]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class NetworkProfile:
-    name: str
-    description: str
-    target_rtt_ms: float | None = None
-
-
-class RTT50Netem(TypedDict):
-    """Verified shape of the isolated netem profile written to each run."""
-
-    name: str
-    description: str
-    status: str
-    target_rtt_ms: float
-    measured_rtt_ms: float
-    one_way_delay_ms: float
-    rate: str
-    qdisc: str
-
-
-LOOPBACK_PROFILE = NetworkProfile('loopback', 'loopback')
-RTT50_PROFILE = NetworkProfile(
-    'rtt50', f'{NETEM_RTT_MS:.0f} ms RTT, {NETEM_RATE} netem', NETEM_RTT_MS
-)
-
-
 def benchmark_scenarios() -> tuple[Scenario, ...]:
     return (
         Scenario('HTTP/1 GET (1 Worker)', 1, 'h1'),
@@ -236,154 +200,6 @@ def benchmark_scenarios() -> tuple[Scenario, ...]:
         Scenario('HTTP/1 WebSocket (1 Worker)', 1, 'ws'),
         Scenario('HTTP/1 WebSocket (4 Workers)', 4, 'ws'),
     )
-
-
-def rtt50_scenarios() -> tuple[Scenario, ...]:
-    """WAN-shaped cells where bytes in flight or HTTP/2 windows matter.
-
-    Small requests are intentionally absent: at 50 ms RTT their rate is a
-    concurrency/RTT property of the generator, not a server comparison. Four
-    workers are the deployment headline shape, except for the existing HTTP/2
-    multiplexing cell whose ten streams per connection are the point of the
-    workload.
-
-    The streaming POSTs run at `CONCURRENCY`, not `STREAMING_CONCURRENCY`, for
-    that same reason. A 1 Gbit, 50 ms path holds about 6.25 MiB in flight, so a
-    thousand simultaneous uploads are bounded by the link and the generator
-    rather than by the server -- measurably so: every one of the 1000 virtual
-    users aborted on the deadline without a single completed request, which
-    failed the whole suite rather than producing a slow number.
-    """
-    return (
-        Scenario(
-            'HTTP/1 Portable streaming download (4 Workers, 50 ms RTT)',
-            4,
-            'h1_download',
-        ),
-        Scenario(
-            'HTTP/2 Portable streaming download (4 Workers, 50 ms RTT)',
-            4,
-            'h2_download',
-        ),
-        Scenario(
-            'HTTP/1 Streaming POST (4 Workers, 50 ms RTT)',
-            4,
-            'h1_stream',
-            CONCURRENCY,
-        ),
-        Scenario(
-            'HTTP/2 Streaming POST (4 Workers, 50 ms RTT)',
-            4,
-            'h2_stream',
-            CONCURRENCY,
-        ),
-        Scenario('HTTP/2 8 MiB upload (4 Workers, 50 ms RTT)', 4, 'h2_upload', 8),
-        Scenario(
-            'HTTP/2 GET multiplexed (1 Worker, 50 ms RTT)',
-            1,
-            'h2',
-            concurrency=1,
-            http2_parallelism=10,
-        ),
-    )
-
-
-def _run_checked(command: list[str]) -> str:
-    try:
-        return _run(command, 15)
-    except OSError as error:
-        raise BenchmarkError(f'failed to run {command[0]!r}: {error}') from error
-    except DeadlineError:
-        raise
-    except BenchmarkError as error:
-        raise BenchmarkError(f'{" ".join(command)} failed: {error}') from error
-
-
-def loopback_rtt_ms() -> float:
-    """Measure TCP round trips through loopback without a benchmark server."""
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(1)
-    address = listener.getsockname()
-    failures: list[BaseException] = []
-
-    def echo() -> None:
-        try:
-            with listener.accept()[0] as connection:
-                connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                for _ in range(NETEM_RTT_SAMPLES):
-                    payload = connection.recv(1)
-                    if not payload:
-                        raise OSError('RTT client closed before completing probes')
-                    connection.sendall(payload)
-        except BaseException as error:  # pragma: no cover - reported to the caller
-            failures.append(error)
-
-    thread = threading.Thread(target=echo, name='h2corn-bench-rtt', daemon=True)
-    thread.start()
-    samples = []
-    try:
-        with socket.create_connection(address, timeout=5) as connection:
-            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            for _ in range(NETEM_RTT_SAMPLES):
-                started = time.perf_counter()
-                connection.sendall(b'x')
-                if connection.recv(1) != b'x':
-                    raise BenchmarkError('RTT echo returned the wrong payload')
-                samples.append((time.perf_counter() - started) * 1000)
-    finally:
-        listener.close()
-        thread.join(timeout=5)
-    if thread.is_alive():
-        raise BenchmarkError('RTT echo server did not stop')
-    if failures:
-        raise BenchmarkError(f'RTT echo failed: {failures[0]}')
-    return statistics.median(samples)
-
-
-def configure_rtt50_profile() -> RTT50Netem:
-    """Install and prove the isolated 50 ms RTT profile before any cell runs."""
-    for tool in ('ip', 'tc'):
-        if shutil.which(tool) is None:
-            raise BenchmarkError(f'{tool} is unavailable')
-    _run_checked(['ip', 'link', 'set', 'lo', 'up'])
-    _run_checked([
-        'tc',
-        'qdisc',
-        'replace',
-        'dev',
-        'lo',
-        'root',
-        'netem',
-        'delay',
-        f'{NETEM_DELAY_MS:g}ms',
-        'rate',
-        NETEM_RATE,
-    ])
-    qdisc = _run_checked(['tc', 'qdisc', 'show', 'dev', 'lo']).strip()
-    if 'netem' not in qdisc:
-        raise BenchmarkError(f'netem did not attach to loopback: {qdisc or "no qdisc"}')
-    measured_rtt = loopback_rtt_ms()
-    if abs(measured_rtt - NETEM_RTT_MS) > NETEM_RTT_TOLERANCE_MS:
-        raise BenchmarkError(
-            f'netem RTT was {measured_rtt:.1f} ms, expected '
-            f'{NETEM_RTT_MS:.0f}±{NETEM_RTT_TOLERANCE_MS:.0f} ms'
-        )
-    print(
-        f'  verified {measured_rtt:.1f} ms loopback RTT (target {NETEM_RTT_MS:.0f} ms)',
-        flush=True,
-    )
-    return {
-        'name': RTT50_PROFILE.name,
-        'description': RTT50_PROFILE.description,
-        'status': 'ready',
-        'target_rtt_ms': NETEM_RTT_MS,
-        'measured_rtt_ms': measured_rtt,
-        'one_way_delay_ms': NETEM_DELAY_MS,
-        'rate': NETEM_RATE,
-        'qdisc': qdisc,
-    }
 
 
 def write_hypercorn_config(path: Path) -> None:
@@ -647,17 +463,6 @@ class TrialError(BenchmarkError):
         self.phase = phase
 
 
-def load_plan(scenario: Scenario, duration: str, warmup: str) -> dict[str, Any]:
-    if scenario.contract.request_body_path is not None:
-        concurrency = scenario.concurrency or CONCURRENCY
-        return {
-            'mode': 'fixed-count',
-            'requests': 2 * concurrency,
-            'timeout_seconds': 120,
-        }
-    return {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
-
-
 def measure_cell(
     name: str,
     scenario: Scenario | RpcScenario,
@@ -684,7 +489,6 @@ def measure_cell(
             calibration_windows=calibration_windows,
         )
     concurrency = scenario.concurrency or CONCURRENCY
-    plan = load_plan(scenario, duration, warmup)
     evidence_directory.mkdir(parents=True)
     identity_directory = evidence_directory / 'worker-identities'
     identity_directory.mkdir()
@@ -694,10 +498,9 @@ def measure_cell(
         'phase': 'listener',
         'status': 'running',
         'started_at': datetime.now(UTC).isoformat(),
-        'load_plan': plan,
+        'load_plan': {'duration': duration, 'warmup_duration': warmup},
     }
     try:
-        fixed_count = plan['mode'] == 'fixed-count'
         with allocated_listener(scenario) as (live, listener):
             command = server_command(
                 name,
@@ -742,9 +545,7 @@ def measure_cell(
                 trial['phase'] = 'correctness-before'
                 check_response(live)
                 trial['correctness_before'] = 'passed'
-                # The fixed upload's measured batch uses a fresh client process
-                # and new connections, so a separate full-size warmup carries no state over.
-                if calibration_windows is None and not fixed_count:
+                if calibration_windows is None:
                     trial['phase'] = 'warmup'
                     # Warmup measures nothing; a slow server may finish no request
                     # in it, and the calibrated measured window covers that latency.
@@ -758,26 +559,22 @@ def measure_cell(
                 if calibration_windows is not None:
                     calibration_pids = sorted(server.process_pids())
                     points: list[CalibrationPoint] = []
-                    windows = (None,) if fixed_count else calibration_windows
-                    for window in windows:
-                        label = 'fixed-count' if window is None else f'{window:g}s'
+                    for window in calibration_windows:
+                        label = f'{window:g}s'
                         window_directory = evidence_directory / f'window-{label}'
                         window_started = time.monotonic()
                         trial['phase'] = f'calibration-{label}'
                         # Use the production PSS observer so its cost is in the forecast.
 
                         def load_window(
-                            selected_window: float | None = window,
+                            selected_window: float = window,
                             directory: Path = window_directory,
                         ) -> Metrics:
                             return run_load(
                                 live,
-                                duration='1s'
-                                if selected_window is None
-                                else f'{selected_window:g}s',
+                                duration=f'{selected_window:g}s',
                                 concurrency=concurrency,
                                 evidence_path=directory / 'load.json',
-                                requests=plan.get('requests') if fixed_count else None,
                             )
 
                         try:
@@ -789,7 +586,7 @@ def measure_cell(
                         except NoCompletionsError:
                             # A window shorter than one request's latency proves
                             # nothing about the server; only the longest may fail.
-                            if window is None or window == windows[-1]:
+                            if window == calibration_windows[-1]:
                                 raise
                             metrics = {
                                 'rps': 0.0,
@@ -804,10 +601,7 @@ def measure_cell(
                                 completed=metrics['completed'],
                             )
                         )
-                        if (
-                            fixed_count
-                            or calibration_duration(points, fixed_count=False) is None
-                        ):
+                        if calibration_settled(points):
                             break
                     if calibration_pids != sorted(server.process_pids()):
                         raise BenchmarkError(
@@ -816,10 +610,7 @@ def measure_cell(
                     trial['phase'] = 'correctness-after'
                     check_response(live)
                     trial['correctness_after'] = 'passed'
-                    status, selected_duration = calibration_status(
-                        points,
-                        fixed_count=fixed_count,
-                    )
+                    status, selected_duration = calibration_status(points)
                     measured = {
                         'server': name,
                         'status': status,
@@ -836,7 +627,6 @@ def measure_cell(
                             duration=duration,
                             concurrency=concurrency,
                             evidence_path=evidence_directory / 'load.json',
-                            requests=plan.get('requests'),
                         ),
                         evidence_path=evidence_directory / 'memory.json',
                     )
@@ -931,7 +721,6 @@ def workload_description(scenario: Scenario) -> str:
         'h2_download': '128 KiB download in eight 16 KiB ASGI chunks',
         'h1_stream': '1 KiB upload, then three response chunks with 20 ms application delay',
         'h2_stream': '1 KiB upload, then three response chunks with 20 ms application delay',
-        'h2_upload': '8 MiB upload, then the received byte count',
         'ws': 'Connect, echo one text message, disconnect; fresh sessions',
     }
     concurrency = scenario.concurrency or CONCURRENCY
@@ -980,16 +769,9 @@ def run_scenario(
     )
     if not supported:
         raise BenchmarkError(f'no selected server supports {scenario.name}')
-    fixed_count = (
-        isinstance(scenario, Scenario)
-        and scenario.contract.request_body_path is not None
-    )
-    warmup_description = (
-        'none; fresh client process and connections' if fixed_count else warmup
-    )
     print(
         f'phase={phase} profile={profile} scenario={scenario.name} '
-        f'duration={duration} warmup={warmup_description} blocks={max_trials}',
+        f'duration={duration} warmup={warmup} blocks={max_trials}',
         file=sys.stderr,
         flush=True,
     )
@@ -1094,15 +876,7 @@ def run_scenario(
         )
         if trial < max_trials and time.monotonic() > deadline:
             raise DeadlineError(f'{scenario.name} deadline after block {trial}')
-    plan = (
-        {'mode': 'time-window', 'duration': duration, 'warmup_duration': warmup}
-        if rpc
-        else load_plan(scenario, duration, warmup)
-    )
     description = scenario.workload if rpc else workload_description(scenario)
-    if plan['mode'] == 'fixed-count':
-        description += f'; {plan["requests"]} completed requests per trial'
-        duration = 'fixed-count'
     samples = sampled.values()
     failures = sampled.failures
     successful_samples = sampled.successful_values()
@@ -1111,7 +885,7 @@ def run_scenario(
         'scenario': scenario.name,
         'status': 'attempted_with_failures' if failures else 'completed',
         'workload': description,
-        'load_plan': plan,
+        'load_plan': {'duration': duration, 'warmup_duration': warmup},
         'type': scenario.type,
         'workers': scenario.workers,
         'trials': trials,
@@ -1319,19 +1093,8 @@ def _plot_results(
     else:
         latency.set_title('Latency data unavailable')
 
-    fixed_count = record.get('load_plan', {}).get('mode') == 'fixed-count'
-    window = (
-        'fixed complete-request batch'
-        if fixed_count
-        else f'{record.get("duration", "adaptive")} load'
-    )
-    warmup = (
-        'none; fresh client process and connections'
-        if fixed_count
-        else record.get('warmup_duration', '0.25s')
-    )
     sampling = (
-        f'\nSampling: {window} · {warmup} warmup · '
+        f'\nSampling: {record["duration"]} load · {record["warmup_duration"]} warmup · '
         f'{record["planned_trials"]} production blocks · calibration excluded'
     )
     calibration_note = (
@@ -1358,27 +1121,6 @@ def _plot_results(
     figure.supxlabel(footer, fontsize=9)
     save(figure, path)
     plt.close(figure)
-
-
-def profile_record(
-    profile: NetworkProfile,
-    status: str,
-    *,
-    reason: str | None = None,
-    measured_rtt_ms: float | None = None,
-    netem: RTT50Netem | None = None,
-) -> dict[str, Any]:
-    record = {
-        'profile': profile.name,
-        'description': profile.description,
-        'target_rtt_ms': profile.target_rtt_ms,
-        'measured_rtt_ms': measured_rtt_ms,
-        'status': status,
-        'reason': reason,
-    }
-    if netem is not None:
-        record['netem'] = netem
-    return record
 
 
 def publish(run_directories: Sequence[Path]) -> None:
@@ -1497,9 +1239,6 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
                 incomplete.append(
                     f'{record["scenario"]}: production blocks differ from the frozen plan'
                 )
-            if record.get('status') == 'skipped':
-                incomplete.append(record['scenario'])
-                continue
             if record.get('stopped') == 'time-budget' or (
                 not record.get('aggregate') and not record.get('failures')
             ):
@@ -1609,13 +1348,8 @@ def main() -> int:
     parser.add_argument('--connect-source', type=Path)
     parser.add_argument('--comparator-selection', type=Path)
     parser.add_argument('--qualify-only', action='store_true')
-    benchmark_types = sorted({
-        scenario.type for scenario in (*benchmark_scenarios(), *rtt50_scenarios())
-    })
+    benchmark_types = sorted({scenario.type for scenario in benchmark_scenarios()})
     parser.add_argument('--types', nargs='+', choices=benchmark_types)
-    parser.add_argument(
-        '--network-profile', choices=('all', 'loopback', 'rtt50'), default='all'
-    )
     parser.add_argument(
         '--output-directory',
         type=Path,
@@ -1664,7 +1398,7 @@ def main() -> int:
         parser.error('benchmark collection requires Linux PSS accounting and listeners')
     from bench import grpc
 
-    if args.family == 'grpc' and (args.types or args.network_profile != 'all'):
+    if args.family == 'grpc' and args.types:
         parser.error('--family grpc uses --rpc-cases and its cleartext/TLS plans')
     if args.family == 'http' and (
         args.rpc_cases
@@ -1687,13 +1421,6 @@ def main() -> int:
         and set(args.rpc_cases) - {scenario.case for scenario in grpc.scenarios()}
     ):
         parser.error('unknown --rpc-cases selection')
-    if (
-        args.family in {'all', 'http'}
-        and args.types
-        and set(args.types)
-        - {scenario.type for scenario in (*benchmark_scenarios(), *rtt50_scenarios())}
-    ):
-        parser.error('unknown HTTP scenario type')
     if args.connect_development_revision and (
         not args.qualify_only or not args.rpc_cases or args.connect_source is None
     ):
@@ -1708,7 +1435,6 @@ def main() -> int:
         or args.servers
         or args.types
         or args.rpc_cases
-        or args.network_profile != 'all'
         or args.qualify_only
         or args.connect_wheel
         or args.connect_development_revision

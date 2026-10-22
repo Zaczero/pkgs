@@ -50,8 +50,7 @@ STATIC_FILE_PATH = Path('bench/_file_response_payload.bin')
 STATIC_FILE_BODY = b'\x00' * (128 * 1024)
 DOWNLOAD_BODY = b'x' * (128 * 1024)
 LARGE_UPLOAD_PATH = Path('bench/_large_upload_payload.bin')
-# Exceeds the 6.25 MiB BDP of the shaped 1 Gbit, 50 ms path and matches
-# h2corn's advertised HTTP/2 receive window.
+# Matches h2corn's advertised HTTP/2 receive window.
 LARGE_UPLOAD_SIZE = 8 * 1024 * 1024
 K6_SCRIPT = Path('bench/k6/ws.js')
 

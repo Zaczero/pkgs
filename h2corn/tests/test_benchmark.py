@@ -26,7 +26,6 @@ from bench._core import (
 )
 from bench.bench import (
     benchmark_scenarios,
-    load_plan,
     paired_contrasts,
     server_command,
     unsupported_reason,
@@ -244,20 +243,6 @@ def test_benchmark_multiplexing_is_one_connection_with_ten_streams():
     )
     assert scenario.concurrency == 1
     assert scenario.http2_parallelism == 10
-
-
-def test_benchmark_fixed_upload_uses_one_measured_batch_without_warmup():
-    plan = load_plan(
-        Scenario('Fixed 8 MiB upload', 4, 'h2_upload', concurrency=8),
-        '1s',
-        '0s',
-    )
-
-    assert plan == {
-        'mode': 'fixed-count',
-        'requests': 16,
-        'timeout_seconds': 120,
-    }
 
 
 @pytest.mark.parametrize(

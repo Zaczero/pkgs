@@ -10,7 +10,7 @@ hide:
 comparison, using standard asyncio and pure-Python parsers for Uvicorn and Gunicorn.
 
 These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
-same Starlette application, over loopback and a 50 ms round-trip network profile.
+same Starlette application over loopback.
 Results cover throughput, latency, and memory.
 
 **Connect on h2corn delivered 1.2–2.8× the throughput of grpc.aio** in seven
@@ -44,16 +44,14 @@ seconds is marked calibration-limited, and its comparisons are inconclusive.
 WebSocket scenarios start at one second, the shortest run k6 accepts. A window
 that ends before any request completes moves calibration to the next window;
 a server fails calibration only if the four-second window completes nothing.
-The 8 MiB upload retains its fixed complete-request batch.
 
 Calibration runs after the correctness probe without a separate load warmup.
 Subtracting requested calibration-window durations from calibration-trial
 elapsed time estimates each server's setup and correctness-check cost. The
 runner adds the common selected duration and a 0.25-second production warmup
-(one second for WebSocket) to forecast one time-window cell; the fixed-count
-upload has no warmup. It then
-freezes exactly six fresh-start paired production blocks per scenario. Server
-order is rotated, CPU placement is unpinned, and production never stops early.
+(one second for WebSocket) to forecast each cell. It then freezes exactly six
+fresh-start paired production blocks per scenario. Server order is rotated,
+CPU placement is unpinned, and production never stops early.
 
 Comparisons use paired production-block throughput ratios and
 distribution-free order-statistic intervals for the common median of
@@ -67,14 +65,6 @@ One monotonic deadline covers the combined HTTP and gRPC collection. Thirty
 minutes is the target and 45 minutes is the hard total. If the complete
 six-block plan cannot fit the hard limit, the run retains diagnostic evidence,
 exits unsuccessfully, and does not publish.
-
-The 8 MiB network upload uses a fixed batch of sixteen completed requests on
-eight connections. Correctness probes use the endpoint's small request body.
-The handler checks each received body against its declared length, and the
-load generator requires every response to succeed and verifies the response
-byte total. The full batch runs in a separate client process on fresh
-connections, so no warmup uploads are needed. Throughput counts successful
-completions over actual elapsed time.
 
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
 across unique supervisor and worker processes in production blocks. PSS shares
@@ -100,8 +90,6 @@ retain the commands, observations, and identities behind the figures.
 - Streaming downloads that yield eight 16 KiB chunks.
 - POSTs that upload 1 KiB, then receive three response chunks with 20 ms of
   application delay.
-- An 8 MiB HTTP/2 upload on the shaped network, with the complete upload
-  verified before and after load.
 - HTTP/1.1 WebSocket sessions that connect, echo one text message, and
   disconnect. They measure session turnover, not sustained message throughput.
 

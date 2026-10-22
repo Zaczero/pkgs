@@ -35,8 +35,8 @@ from bench._core import (
 from bench.evidence import file_identity, run_identity, verify_workers
 from bench.sampling import (
     CalibrationPoint,
-    calibration_duration,
     calibration_record,
+    calibration_settled,
     calibration_status,
 )
 
@@ -487,7 +487,7 @@ def calibrate_rpc_server(
                 completed=raw['verified_ok'],
             )
         )
-        if calibration_duration(points, fixed_count=False) is None:
+        if calibration_settled(points):
             break
     after = process_snapshot(server.process_pids())
     if before.keys() != after.keys() or any(
@@ -500,7 +500,7 @@ def calibrate_rpc_server(
         raise BenchmarkError('gRPC serving receipt belongs to an unowned process')
     if worker['active'] or worker['readers']:
         raise ResponseError('gRPC work remains active after calibration')
-    status, selected_duration = calibration_status(points, fixed_count=False)
+    status, selected_duration = calibration_status(points)
     return {
         'server': name,
         'status': status,

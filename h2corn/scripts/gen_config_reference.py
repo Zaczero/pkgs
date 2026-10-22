@@ -233,15 +233,10 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
 
     servers = tuple(
         dict.fromkeys(
-            name
-            for record in records.values()
-            if record.get('status') != 'skipped'
-            for name in record['requested_servers']
+            name for record in records.values() for name in record['requested_servers']
         )
     )
-    environment = next(
-        record for record in records.values() if record.get('status') != 'skipped'
-    )
+    environment = next(iter(records.values()))
     sections: list[str] = [
         f'## {title}Environment\n\n',
         environment['system_summary'].replace('\n', ' · ') + '\n\n',
@@ -270,13 +265,10 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
         sections.append('\n')
     sections.extend((
         f'## {title}Results\n\n',
-        '| Workload | Network | ' + ' | '.join(servers) + ' |\n',
-        '| --- | --- | ' + ' | '.join('---' for _ in servers) + ' |\n',
+        '| Workload | ' + ' | '.join(servers) + ' |\n',
+        '| --- | ' + ' | '.join('---' for _ in servers) + ' |\n',
     ))
     for path, record in records.items():
-        network = record['network_profile']
-        if (measured_rtt := record.get('measured_rtt_ms')) is not None:
-            network = f'{measured_rtt:.1f} ms RTT'
         states = [
             'timed'
             if name in record.get('aggregate', {})
@@ -289,23 +281,12 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
         ]
         sections.append(
             f'| [{record["scenario"]}](#result-{path.stem}) '
-            f'| {network} | ' + ' | '.join(states) + ' |\n',
+            '| ' + ' | '.join(states) + ' |\n',
         )
     sections.append('\n')
     for raw_path, record in records.items():
         scenario = record.get('scenario', raw_path.stem)
-        profile = record.get('network_profile')
         sections.append(f'<a id="result-{raw_path.stem}"></a>\n\n')
-        if record.get('status') == 'skipped':
-            excluded = record.get('excluded', {})
-            reason = record.get('reason') or next(
-                iter(excluded.values()), 'the measurement was skipped'
-            )
-            sections.extend((
-                f'### {scenario} — {profile}\n\n',
-                f'{profile} measurements were skipped: {reason}\n\n',
-            ))
-            continue
         if not record.get('aggregate') and not record.get('failures'):
             raise RuntimeError(f'{raw_path.name} contains no benchmark measurements')
 
@@ -341,7 +322,7 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
             quote=True,
         )
         sections.extend((
-            f'### {scenario} — {profile}\n\n',
+            f'### {scenario}\n\n',
             '<picture>\n'
             f'  <source media="(max-width: 600px)" srcset="../assets/benchmarks/{narrow_plot.name}">\n'
             f'  <img src="{relative_plot}#only-light" alt="{description}">\n'
