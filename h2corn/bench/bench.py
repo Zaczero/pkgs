@@ -1,8 +1,9 @@
 """Cross-server benchmark suite: runs every scenario against every server and plots it.
 
 Servers and load generators run unpinned, exactly as a deployment runs them.
-Same-process calibration selects equal scenario exposure and forecasts six
-fresh-process paired production blocks. One monotonic deadline bounds the run.
+Same-process calibration selects equal scenario exposure. Prespecified six-
+and twelve-block looks bound fresh-process paired collection and uncertainty.
+One monotonic deadline bounds the run.
 
     uv run python bench/bench.py            # stage a run under bench/results/runs/
     uv run python bench/bench.py --publish  # also replace the checked-in plots
@@ -23,12 +24,14 @@ import subprocess
 import sys
 import textwrap
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matplotlib as mpl
 from benchroom.plot import save, theme
+from benchroom.sampling import assess_ratios, fits_budget
 
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -69,14 +72,13 @@ from bench.report import (
 from bench.sampling import (
     CLEANUP_RESERVE_SECONDS,
     HARD_TOTAL_SECONDS,
-    PRODUCTION_BLOCKS,
     REPORT_RESERVE_SECONDS,
+    SAMPLING_POLICY,
     CalibrationPoint,
     ScenarioSamples,
     calibration_record,
     calibration_settled,
     calibration_status,
-    median_order_interval,
 )
 
 if TYPE_CHECKING:
@@ -670,12 +672,20 @@ def paired_contrasts(
         name: list(range(len(values))) for name, values in samples.items()
     }
     candidate_by_block = dict(zip(blocks['h2corn'], samples['h2corn'], strict=True))
+    if len(candidate_by_block) != len(samples['h2corn']):
+        raise ValueError('duplicate reference block identity')
     contrasts = {}
     for name, values in samples.items():
         if name == 'h2corn':
             continue
         competitor_by_block = dict(zip(blocks[name], values, strict=True))
-        common_blocks = sorted(candidate_by_block.keys() & competitor_by_block.keys())
+        if len(competitor_by_block) != len(values) or (
+            competitor_by_block.keys() != candidate_by_block.keys()
+        ):
+            raise ValueError(
+                'paired observations require matching distinct block identities'
+            )
+        common_blocks = sorted(candidate_by_block)
         ratios = [
             candidate_by_block[block]['rps'] / competitor_by_block[block]['rps']
             for block in common_blocks
@@ -686,8 +696,24 @@ def paired_contrasts(
             'block_ids': common_blocks,
             'sample_size': len(ratios),
         }
-        if len(ratios) == PRODUCTION_BLOCKS:
-            contrast.update(median_order_interval(ratios))
+        if len(ratios) in SAMPLING_POLICY.looks:
+            decision = assess_ratios(
+                ratios, block_ids=common_blocks, policy=SAMPLING_POLICY
+            )
+            contrast.update(
+                asdict(decision.uncertainty),
+                interval=(
+                    list(decision.uncertainty.interval)
+                    if decision.uncertainty.interval is not None
+                    else None
+                ),
+                confidence=decision.confidence,
+                error_probability=decision.error_probability,
+                method='binomial order-statistic median interval with across-look error allocation',
+                collection_complete=decision.complete,
+                next_look=decision.next_look,
+                look_reason=decision.reason,
+            )
         else:
             contrast.update(
                 h2corn_over_competitor=None,
@@ -698,6 +724,7 @@ def paired_contrasts(
         if calibration_limited:
             contrast['decision'] = 'inconclusive'
             contrast['decision_reason'] = 'calibration-limited'
+            contrast['collection_complete'] = True
         elif contrast['interval'] is None:
             contrast['decision'] = 'inconclusive'
             contrast['decision_reason'] = 'insufficient paired blocks'
@@ -735,13 +762,31 @@ def workload_description(scenario: Scenario) -> str:
     )
 
 
+def scenario_stop_reason(
+    contrasts: Mapping[str, Mapping[str, Any]], *, calibration_limited: bool
+) -> str | None:
+    """Stop a whole scenario only after every surviving comparison is settled."""
+    if calibration_limited:
+        return 'calibration-limited'
+    if not contrasts:
+        return 'no-comparison'
+    if any(
+        not contrast.get('collection_complete', False)
+        for contrast in contrasts.values()
+    ):
+        return None
+    reasons = {contrast.get('look_reason') for contrast in contrasts.values()}
+    if 'maximum-look' in reasons:
+        return 'maximum-look'
+    return 'precision-met' if 'precision-met' in reasons else 'direction-resolved'
+
+
 def run_scenario(
     scenario: Scenario | RpcScenario,
     servers: Sequence[str],
     *,
     duration: str,
     warmup: str,
-    max_trials: int,
     deadline: float,
     hypercorn_config: Path,
     evidence_directory: Path,
@@ -751,8 +796,11 @@ def run_scenario(
     calibration: dict[str, Any] | None = None,
     calibration_limited: bool = False,
     initial_failures: dict[str, dict[str, Any]] | None = None,
+    required_seconds_after_scenario: float = 0.0,
+    estimated_block_seconds: float = 0.0,
 ) -> dict[str, Any]:
     scenario_started = time.monotonic()
+    max_trials = SAMPLING_POLICY.looks[-1]
     names = list(servers)
     rpc = scenario.type == 'grpc'
     rpc_case = scenario.case if isinstance(scenario, RpcScenario) else None
@@ -794,7 +842,9 @@ def run_scenario(
         failures.setdefault(name, failure)
     for name, failure in failures.items():
         sampled.fail(name, failure)
-    stopped = 'max-trials'
+    stopped = 'failed'
+    planned_trials = SAMPLING_POLICY.looks[0]
+    look_history = []
     trials = 0
     blocks = []
     for trial in range(1, max_trials + 1):
@@ -876,6 +926,41 @@ def run_scenario(
         )
         if trial < max_trials and time.monotonic() > deadline:
             raise DeadlineError(f'{scenario.name} deadline after block {trial}')
+        if trial in SAMPLING_POLICY.looks:
+            contrasts = paired_contrasts(
+                sampled.successful_values(),
+                sampled.successful_block_ids(),
+                calibration_limited=calibration_limited,
+            )
+            reason = scenario_stop_reason(
+                contrasts, calibration_limited=calibration_limited
+            )
+            budget = None
+            if reason is not None:
+                stopped = reason
+            else:
+                extra_blocks = max_trials - trial
+                observed_cost = (time.monotonic() - scenario_started) / trial
+                optional_cost = extra_blocks * max(
+                    estimated_block_seconds, observed_cost
+                )
+                budget = {
+                    'remaining_seconds': deadline - time.monotonic(),
+                    'required_seconds': required_seconds_after_scenario,
+                    'optional_seconds': optional_cost,
+                }
+                can_extend = fits_budget(**budget)
+                stopped = 'continue' if can_extend else 'budget-limited'
+                if can_extend:
+                    planned_trials = max_trials
+            look_history.append({
+                'blocks': trial,
+                'decision': stopped,
+                'contrasts': contrasts,
+                'budget': budget,
+            })
+            if stopped != 'continue':
+                break
     description = scenario.workload if rpc else workload_description(scenario)
     samples = sampled.values()
     failures = sampled.failures
@@ -889,7 +974,9 @@ def run_scenario(
         'type': scenario.type,
         'workers': scenario.workers,
         'trials': trials,
-        'planned_trials': max_trials,
+        'planned_trials': planned_trials,
+        'sampling_policy': asdict(SAMPLING_POLICY),
+        'look_history': look_history,
         'stopped': stopped,
         'unsupported': unsupported,
         **({'not_selected': not_selected} if rpc else {}),
@@ -922,6 +1009,79 @@ def run_scenario(
             name: aggregate(values) for name, values in successful_samples.items()
         },
     }
+
+
+def validate_sampling_record(
+    record: Mapping[str, Any],
+    scenario_plan: Mapping[str, Any],
+    policy_record: Mapping[str, Any],
+) -> None:
+    """Check completed collection against its frozen looks and recorded evidence."""
+    policy = SAMPLING_POLICY
+    if (
+        tuple(policy_record.get('looks', ())) != policy.looks
+        or tuple(policy_record.get('error_probabilities', ()))
+        != policy.error_probabilities
+        or policy_record.get('precision_ratio') != policy.precision_ratio
+        or record.get('sampling_policy') != policy_record
+        or scenario_plan.get('minimum_blocks') != policy.looks[0]
+        or scenario_plan.get('maximum_blocks') != policy.looks[-1]
+        or record.get('sampling') != scenario_plan
+    ):
+        raise ValueError('sampling policy differs from the frozen plan')
+    count = record.get('planned_trials')
+    if count not in policy.looks:
+        raise ValueError('collection did not finish at an allowed look')
+    if not record.get('aggregate') and record.get('failures'):
+        return
+    history = record.get('look_history', [])
+    expected_looks = [look for look in policy.looks if look <= count]
+    if [look.get('blocks') for look in history] != expected_looks:
+        raise ValueError('collection lacks the prespecified look decisions')
+    for index, look in enumerate(history):
+        size = look['blocks']
+        failures = record.get('failures', {})
+        samples = {}
+        blocks = {}
+        for name, values in record['samples'].items():
+            if name in failures and failures[name]['block'] <= size:
+                continue
+            pairs = [
+                (block, value)
+                for block, value in zip(
+                    record['sample_blocks'][name], values, strict=True
+                )
+                if block <= size
+            ]
+            blocks[name] = [block for block, _ in pairs]
+            samples[name] = [value for _, value in pairs]
+        contrasts = paired_contrasts(
+            samples,
+            blocks,
+            calibration_limited=record.get('calibration_limited', False),
+        )
+        if contrasts != look.get('contrasts'):
+            raise ValueError('look contrasts differ from the paired observations')
+        reason = scenario_stop_reason(
+            contrasts, calibration_limited=record.get('calibration_limited', False)
+        )
+        last = index == len(history) - 1
+        if reason is None:
+            budget = look.get('budget')
+            if not isinstance(budget, dict):
+                raise ValueError('optional look lacks a recorded budget decision')
+            expected = 'continue' if fits_budget(**budget) else 'budget-limited'
+            if (last and expected != 'budget-limited') or (
+                not last and expected != 'continue'
+            ):
+                raise ValueError('optional look does not match the remaining budget')
+            reason = expected
+        elif not last:
+            raise ValueError('collection continued after its stopping decision')
+        if look.get('decision') != reason or (last and record.get('stopped') != reason):
+            raise ValueError('collection stop reason differs from its evidence')
+    if record.get('paired_contrasts') != history[-1]['contrasts']:
+        raise ValueError('reported contrasts differ from the final look')
 
 
 def plot_results(
@@ -1097,6 +1257,8 @@ def _plot_results(
         f'\nSampling: {record["duration"]} load · {record["warmup_duration"]} warmup · '
         f'{record["planned_trials"]} production blocks · calibration excluded'
     )
+    if record.get('look_history'):
+        sampling += f' · {record["stopped"]}'
     calibration_note = (
         ' · calibration-limited; comparisons inconclusive'
         if record.get('calibration_limited')
@@ -1229,16 +1391,13 @@ def assert_publishable(run_directories: Sequence[Path]) -> None:
             scenario_plan = planned.get(record_path.stem)
             if scenario_plan is None:
                 continue
-            expected_blocks = scenario_plan['production_blocks']
-            if (
-                expected_blocks != PRODUCTION_BLOCKS
-                or record.get('planned_trials') != expected_blocks
-                or record.get('sampling', {}).get('production_blocks')
-                != expected_blocks
-            ):
-                incomplete.append(
-                    f'{record["scenario"]}: production blocks differ from the frozen plan'
+            expected_blocks = record.get('planned_trials', 0)
+            try:
+                validate_sampling_record(
+                    record, scenario_plan, suite_plan.get('sampling_policy', {})
                 )
+            except ValueError as error:
+                incomplete.append(f'{record["scenario"]}: {error}')
             if record.get('stopped') == 'time-budget' or (
                 not record.get('aggregate') and not record.get('failures')
             ):

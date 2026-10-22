@@ -8,7 +8,7 @@ import secrets
 import shutil
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,8 +29,8 @@ from bench.evidence import run_identity
 from bench.sampling import (
     CLEANUP_RESERVE_SECONDS,
     HARD_TOTAL_SECONDS,
-    PRODUCTION_BLOCKS,
     REPORT_RESERVE_SECONDS,
+    SAMPLING_POLICY,
     TARGET_TOTAL_SECONDS,
     BudgetError,
     allocate_production_blocks,
@@ -382,6 +382,8 @@ def _calibrate_rpc_qualification(
     profile.qualification = qualification
     write_json(profile.directory / 'identity.json', profile.identity)
     write_json(profile.directory / 'qualification.json', qualification)
+    if any(cell['status'] != 'passed' for cell in framework):
+        raise BenchmarkError('gRPC application framework qualification failed')
 
 
 def _suite_cost_plan(
@@ -432,7 +434,8 @@ def _suite_cost_plan(
                 'calibration_status': calibration['status'],
                 'calibration_servers': calibration['servers'],
                 'production_cell_cost_seconds': cell_costs,
-                'production_blocks': plan['blocks'].get(key, PRODUCTION_BLOCKS),
+                'minimum_blocks': SAMPLING_POLICY.looks[0],
+                'maximum_blocks': SAMPLING_POLICY.looks[-1],
                 'scenario_cost_seconds': scenario_cost,
             }
     return plan
@@ -451,6 +454,7 @@ def _freeze_suite_plan(
         'schema': 1,
         'status': 'frozen',
         'frozen_before_production': True,
+        'sampling_policy': asdict(SAMPLING_POLICY),
         'started_at': started_at.isoformat(),
         'frozen_at_elapsed_seconds': time.monotonic() - started,
         'target_seconds': TARGET_TOTAL_SECONDS,
@@ -477,11 +481,13 @@ def _production_profile(
     *,
     deadline: float,
     started: float,
+    required_seconds_other_profiles: float = 0.0,
 ) -> None:
-    for scenario in profile.scenarios:
+    frozen_scenarios = _profile_scenarios(profile)
+    for index, scenario in enumerate(profile.scenarios):
         slug = _slug(scenario)
         calibration = profile.calibrations[slug]
-        scenario_plan = profile.scenario_plans[slug]
+        scenario_plan = frozen_scenarios[index]
         duration = f'{scenario_plan["duration_seconds"]:g}s'
         warmup = f'{production_warmup_seconds(_minimum_window(scenario)):g}s'
         failures = _initial_failures(calibration)
@@ -490,7 +496,6 @@ def _production_profile(
             profile.servers,
             duration=duration,
             warmup=warmup,
-            max_trials=scenario_plan['production_blocks'],
             deadline=deadline,
             hypercorn_config=profile.hypercorn_config,
             evidence_directory=profile.directory / 'evidence' / slug,
@@ -500,6 +505,15 @@ def _production_profile(
             calibration=calibration['servers'],
             calibration_limited=calibration['calibration_limited'],
             initial_failures=failures,
+            estimated_block_seconds=scenario_plan['scenario_cost_seconds'],
+            required_seconds_after_scenario=(
+                required_seconds_other_profiles
+                + sum(
+                    profile.scenario_plans[_slug(later)]['scenario_cost_seconds']
+                    * SAMPLING_POLICY.looks[0]
+                    for later in profile.scenarios[index + 1 :]
+                )
+            ),
         )
         record['sampling'] = scenario_plan
         record['duration'] = duration
@@ -748,13 +762,19 @@ def run_adaptive_suite(
             if args.publish:
                 _combined_publish_gate(profiles, suite_plan)
 
-            for profile in profiles:
+            for index, profile in enumerate(profiles):
                 _production_profile(
                     http,
                     grpc,
                     profile,
                     deadline=work_deadline,
                     started=started,
+                    required_seconds_other_profiles=sum(
+                        scenario_plan['scenario_cost_seconds']
+                        * SAMPLING_POLICY.looks[0]
+                        for later in profiles[index + 1 :]
+                        for scenario_plan in later.scenario_plans.values()
+                    ),
                 )
                 _write_profile_state(profile)
 

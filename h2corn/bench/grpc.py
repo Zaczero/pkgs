@@ -849,8 +849,10 @@ def assert_rpc_publishable(directory: Path) -> None:
         'reserved-flag',
         'truncated-suffix',
         'expired-deadline',
-    }:
-        raise BenchmarkError('gRPC publication has missing framework qualification')
+    } or any(cell['status'] != 'passed' for cell in qualification['framework']):
+        raise BenchmarkError(
+            'gRPC publication requires passing framework qualification'
+        )
 
 
 async def qualify_framework() -> list[dict[str, Any]]:

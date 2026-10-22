@@ -25,7 +25,9 @@ from bench._core import (
     running_server,
 )
 from bench.bench import (
+    TrialError,
     benchmark_scenarios,
+    measure_cell,
     paired_contrasts,
     server_command,
     unsupported_reason,
@@ -208,7 +210,7 @@ def test_benchmark_rate_comparison_uses_order_interval_on_paired_blocks():
     assert contrasts['baseline']['decision'] == 'slower'
 
 
-def test_benchmark_paired_contrast_with_fewer_than_six_shared_blocks_is_inconclusive():
+def test_benchmark_paired_contrast_rejects_mismatched_block_identity():
     def sample(rate: float) -> MeasuredMetrics:
         return {
             'rps': rate,
@@ -218,23 +220,79 @@ def test_benchmark_paired_contrast_with_fewer_than_six_shared_blocks_is_inconclu
             'latency_percentiles': {},
         }
 
-    contrasts = paired_contrasts(
-        {
-            'h2corn': [sample(rate) for rate in (20, 200, 40, 400, 60, 600)],
-            'baseline': [sample(rate) for rate in (10, 100, 20, 200, 30)],
-        },
-        {
-            'h2corn': [1, 2, 3, 4, 5, 6],
-            'baseline': [1, 2, 3, 4, 5],
-        },
+    with pytest.raises(ValueError, match='matching distinct block'):
+        paired_contrasts(
+            {
+                'h2corn': [sample(rate) for rate in (20, 200, 40, 400, 60, 600)],
+                'baseline': [sample(rate) for rate in (10, 100, 20, 200, 30)],
+            },
+            {
+                'h2corn': [1, 2, 3, 4, 5, 6],
+                'baseline': [1, 2, 3, 4, 5],
+            },
+        )
+
+
+def test_calibration_without_early_completions_extends_in_the_same_server(
+    monkeypatch, tmp_path
+):
+    from bench import bench
+
+    windows = []
+
+    def load(scenario, *, duration, **kwargs):
+        windows.append(duration)
+        if len(windows) == 1:
+            raise NoCompletionsError('no completed request in this short window')
+        return {'rps': 100.0, 'completed': 100, 'latency_percentiles': {}}
+
+    monkeypatch.setattr(bench, 'run_load', load)
+    measured = measure_cell(
+        'uvicorn',
+        Scenario('Calibration without early completions', 1, 'h1'),
+        '0.5s',
+        '0s',
+        hypercorn_config=tmp_path / 'unused.toml',
+        evidence_directory=tmp_path / 'calibration',
+        calibration_windows=(0.5, 1.0, 2.0, 4.0),
     )
 
-    assert contrasts['baseline']['sample_size'] == 5
-    assert contrasts['baseline']['block_ratios'] == [2, 2, 2, 2, 2]
-    assert contrasts['baseline']['h2corn_over_competitor'] is None
-    assert contrasts['baseline']['interval'] is None
-    assert contrasts['baseline']['decision'] == 'inconclusive'
-    assert contrasts['baseline']['decision_reason'] == 'insufficient paired blocks'
+    assert windows == ['0.5s', '1s', '2s']
+    assert 'status' in measured
+    assert measured['status'] == 'stable'
+    assert measured['windows'][0]['completed'] == 0
+    assert measured['selected_duration_seconds'] == 2.0
+
+
+@pytest.mark.parametrize(
+    ('failure', 'expected_windows'),
+    [(NoCompletionsError, 4), (ResponseError, 1)],
+)
+def test_calibration_distinguishes_no_completions_from_invalid_responses(
+    monkeypatch, tmp_path, failure, expected_windows
+):
+    from bench import bench
+
+    windows = []
+
+    def load(scenario, *, duration, **kwargs):
+        windows.append(duration)
+        raise failure('load did not produce valid completed work')
+
+    monkeypatch.setattr(bench, 'run_load', load)
+    with pytest.raises(TrialError, match='load did not produce') as caught:
+        measure_cell(
+            'uvicorn',
+            Scenario('Calibration failure', 1, 'h1'),
+            '0.5s',
+            '0s',
+            hypercorn_config=tmp_path / 'unused.toml',
+            evidence_directory=tmp_path / 'calibration',
+            calibration_windows=(0.5, 1.0, 2.0, 4.0),
+        )
+
+    assert type(caught.value.__cause__) is failure
+    assert len(windows) == expected_windows
 
 
 def test_benchmark_multiplexing_is_one_connection_with_ten_streams():

@@ -6,12 +6,13 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from benchroom.sampling import SamplingPolicy, rates_are_stable
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 CALIBRATION_WINDOWS_SECONDS = (0.5, 1.0, 2.0, 4.0)
-CALIBRATION_RELATIVE_TOLERANCE = 0.10
-PRODUCTION_BLOCKS = 6
+SAMPLING_POLICY = SamplingPolicy()
 PRODUCTION_WARMUP_SECONDS = 0.25
 TARGET_TOTAL_SECONDS = 30 * 60
 HARD_TOTAL_SECONDS = 45 * 60
@@ -57,6 +58,8 @@ class ScenarioSamples:
         self._samples = {server: {} for server in self.servers}
 
     def add(self, server: str, block: int, metrics: Mapping[str, Any]) -> None:
+        if type(block) is not int or block < 1:
+            raise ValueError('production block identity must be a positive integer')
         samples = self._samples[server]
         if server in self.failures or block in samples:
             raise ValueError(f'{server} block {block} is already terminal')
@@ -106,21 +109,6 @@ def calibration_status(points: Sequence[CalibrationPoint]) -> tuple[str, float]:
     if calibration_settled(points):
         return 'stable', selected
     return 'calibration-limited', selected
-
-
-def rates_are_stable(
-    previous: float,
-    current: float,
-    tolerance: float = CALIBRATION_RELATIVE_TOLERANCE,
-) -> bool:
-    if (
-        not math.isfinite(previous)
-        or not math.isfinite(current)
-        or previous <= 0
-        or current <= 0
-    ):
-        return False
-    return max(previous, current) / min(previous, current) - 1 <= tolerance
 
 
 def common_duration(
@@ -175,14 +163,14 @@ def allocate_production_blocks(
     report_reserve_seconds: float = REPORT_RESERVE_SECONDS,
     cleanup_reserve_seconds: float = CLEANUP_RESERVE_SECONDS,
 ) -> dict[str, Any]:
-    """Freeze six production blocks per scenario within the hard total."""
+    """Protect the complete first-look matrix before optional second looks."""
     if not scenario_costs:
         raise ValueError('production planning requires at least one scenario')
     if elapsed_seconds < 0 or any(
         not math.isfinite(cost) or cost <= 0 for cost in scenario_costs.values()
     ):
         raise ValueError('production planning needs finite positive observed costs')
-    blocks = dict.fromkeys(scenario_costs, PRODUCTION_BLOCKS)
+    blocks = dict.fromkeys(scenario_costs, SAMPLING_POLICY.looks[0])
     production_cost = sum(
         scenario_costs[name] * count for name, count in blocks.items()
     )
@@ -204,26 +192,6 @@ def allocate_production_blocks(
         'target_seconds': target_seconds,
         'hard_seconds': hard_seconds,
         'target_met': forecast <= target_seconds,
-    }
-
-
-def median_order_interval(values: Sequence[float]) -> dict[str, Any]:
-    """Six-pair min/max interval for the common median."""
-    if len(values) != PRODUCTION_BLOCKS:
-        raise ValueError(f'median interval requires exactly {PRODUCTION_BLOCKS} pairs')
-    if any(not math.isfinite(value) for value in values):
-        raise ValueError('median interval values must be finite')
-    ordered = sorted(values)
-    return {
-        'interval': [ordered[0], ordered[-1]],
-        'achieved_coverage': 62 / 64,
-        'method': (
-            'distribution-free order-statistic interval for the common median; '
-            'independent paired blocks'
-        ),
-        'sample_size': PRODUCTION_BLOCKS,
-        'lower_order': 1,
-        'upper_order': PRODUCTION_BLOCKS,
     }
 
 

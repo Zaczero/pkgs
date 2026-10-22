@@ -1,12 +1,23 @@
 """Adaptive benchmark calibration, planning, and median uncertainty."""
 
+import json
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from bench import bench
+from bench._core import BenchmarkError, ResponseError, Scenario, write_json
+from bench.adaptive import (
+    ProfileRun,
+    _calibrate_rpc_qualification,
+    _freeze_suite_plan,
+    _production_profile,
+)
 from bench.sampling import (
     CalibrationPoint,
     ScenarioSamples,
@@ -16,7 +27,6 @@ from bench.sampling import (
     calibration_status,
     calibration_windows,
     common_duration,
-    median_order_interval,
     production_warmup_seconds,
 )
 
@@ -102,24 +112,6 @@ def test_production_plan_assigns_six_blocks_to_every_scenario():
     assert plan['target_met']
 
 
-def test_six_paired_blocks_get_the_fixed_conservative_median_interval():
-    six = median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-
-    assert six['interval'] == [1.0, 6.0]
-    assert six['achieved_coverage'] == 62 / 64
-    assert (six['lower_order'], six['upper_order']) == (1, 6)
-    assert 'independent paired blocks' in six['method']
-
-
-def test_median_interval_rejects_non_six_or_nonfinite_pairs():
-    with pytest.raises(ValueError, match='exactly 6'):
-        median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0])
-    with pytest.raises(ValueError, match='exactly 6'):
-        median_order_interval([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
-    with pytest.raises(ValueError, match='finite'):
-        median_order_interval([1.0, float('nan'), 3.0, 4.0, 5.0, 6.0])
-
-
 def test_six_block_minimum_must_fit_the_hard_budget():
     with pytest.raises(ValueError, match='minimum six-block'):
         allocate_production_blocks(
@@ -159,3 +151,251 @@ def test_failed_cell_cannot_accept_later_success():
 
     with pytest.raises(ValueError, match='already terminal'):
         samples.add('h2corn', 2, {'rps': 42.0})
+
+
+@pytest.mark.parametrize('block', [0, -1, True])
+def test_production_block_identity_must_name_a_real_block(block):
+    samples = ScenarioSamples(('h2corn',))
+
+    with pytest.raises(ValueError, match='positive integer'):
+        samples.add('h2corn', block, {'rps': 42.0})
+
+
+@pytest.fixture
+def collect_scenario(monkeypatch, tmp_path):
+    """Supply the external cell-measurement boundary with chosen observations."""
+
+    def collect(ratios, *, required=0, limited=False, fail=None, later_cost=0):
+        scenario = Scenario('Paired collection', 1, 'h1')
+        scenarios = (
+            (scenario, Scenario('Later required collection', 1, 'h1'))
+            if later_cost
+            else (scenario,)
+        )
+        root = tmp_path / 'loopback'
+        calls = []
+
+        def measured_cell(
+            name, scenario, duration, warmup, *, evidence_directory, **kwargs
+        ):
+            block = int(evidence_directory.parent.name.removeprefix('block-'))
+            calls.append((name, block))
+            if (name, block) == fail:
+                write_json(evidence_directory / 'trial.json', {'status': 'failed'})
+                try:
+                    raise ResponseError('invalid response body')
+                except ResponseError as error:
+                    raise bench.TrialError('correctness-after', str(error)) from error
+            ratio = ratios[block - 1] if scenario.name == 'Paired collection' else 1.2
+            metrics = {
+                'rps': 100 * ratio if name == 'h2corn' else 100.0,
+                'completed': 100,
+                'peak_memory_bytes': 1234,
+                'elapsed_seconds': 1.0,
+                'latency_percentiles': {'p50': 0.001, 'p99': 0.002},
+            }
+            write_json(evidence_directory / 'trial.json', {'status': 'completed'})
+            return metrics
+
+        monkeypatch.setattr(bench, 'measure_cell', measured_cell)
+        plan = {
+            'family': 'http',
+            'profile': 'loopback',
+            'slug': scenario.slug(),
+            'minimum_blocks': 6,
+            'maximum_blocks': 12,
+            'calibration_limited': limited,
+            'duration_seconds': 1.0,
+            'scenario_cost_seconds': 2.0,
+        }
+        profile = ProfileRun(
+            family='http',
+            name='loopback',
+            scenarios=scenarios,
+            servers=('h2corn', 'uvicorn'),
+            directory=root,
+            identity={},
+            hypercorn_config=root / 'unused.toml',
+            system_summary='test host',
+            package_versions={},
+            calibrations={
+                item.slug(): {
+                    'servers': {},
+                    'supported_servers': ['h2corn', 'uvicorn'],
+                    'calibration_limited': limited,
+                }
+                for item in scenarios
+            },
+            scenario_plans={
+                item.slug(): {
+                    **plan,
+                    'slug': item.slug(),
+                    'scenario_cost_seconds': 2.0 if item is scenario else later_cost,
+                }
+                for item in scenarios
+            },
+        )
+        started = time.monotonic()
+        _freeze_suite_plan(
+            [profile],
+            {},
+            started=started,
+            started_at=datetime.now(UTC),
+            suite_directory=tmp_path,
+        )
+        _production_profile(
+            bench,
+            None,
+            profile,
+            deadline=started + 100,
+            started=started,
+            required_seconds_other_profiles=required,
+        )
+        record = json.loads((root / 'raw' / f'{scenario.slug()}.json').read_text())
+        write_json(root / 'identity.json', {'build': {}})
+        write_json(
+            root / 'profile.json',
+            {
+                'profile': 'loopback',
+                'benchmark_family': 'http',
+                'status': 'completed',
+            },
+        )
+        return record, root, calls
+
+    return collect
+
+
+@pytest.mark.parametrize(
+    ('ratios', 'reason', 'verdict'),
+    [
+        ([1.2] * 6, 'direction-resolved', 'slower'),
+        ([0.98, 1.01, 0.99, 1.02, 1.03, 1.0], 'precision-met', 'inconclusive'),
+    ],
+)
+def test_scenario_stops_at_six_for_direction_or_reporting_precision(
+    collect_scenario, ratios, reason, verdict
+):
+    record, root, calls = collect_scenario(ratios)
+
+    assert record['stopped'] == reason
+    assert record['planned_trials'] == 6
+    assert len(calls) == 12
+    assert record['paired_contrasts']['uvicorn']['decision'] == verdict
+    bench.assert_publishable([root])
+
+
+def test_scenario_extends_only_an_unresolved_comparison_to_twelve(collect_scenario):
+    record, root, calls = collect_scenario([0.5, 2.0] * 6)
+
+    assert record['stopped'] == 'maximum-look'
+    assert record['planned_trials'] == 12
+    assert len(calls) == 24
+    assert [look['decision'] for look in record['look_history']] == [
+        'continue',
+        'maximum-look',
+    ]
+    assert record['paired_contrasts']['uvicorn']['decision'] == 'inconclusive'
+    assert record['paired_contrasts']['uvicorn']['interval'] == [0.5, 2.0]
+    bench.assert_publishable([root])
+
+
+def test_optional_budget_exhaustion_is_complete_first_look_collection(collect_scenario):
+    record, root, calls = collect_scenario([0.5, 2.0] * 3, required=99)
+
+    assert record['stopped'] == 'budget-limited'
+    assert record['status'] == 'completed'
+    assert record['planned_trials'] == 6
+    assert len(calls) == 12
+    assert record['paired_contrasts']['uvicorn']['decision'] == 'inconclusive'
+    bench.assert_publishable([root])
+
+
+def test_optional_extension_protects_later_scenarios_in_the_same_profile(
+    collect_scenario,
+):
+    record, root, calls = collect_scenario([0.5, 2.0] * 6, later_cost=16.5)
+
+    assert record['stopped'] == 'budget-limited'
+    assert record['look_history'][0]['budget']['required_seconds'] == 99
+    assert len(calls) == 24
+    bench.assert_publishable([root])
+
+
+def test_calibration_limited_exposure_remains_inconclusive(collect_scenario):
+    record, root, _ = collect_scenario([2.0] * 6, limited=True)
+
+    assert record['stopped'] == 'calibration-limited'
+    assert (
+        record['paired_contrasts']['uvicorn']['decision_reason']
+        == 'calibration-limited'
+    )
+    bench.assert_publishable([root])
+
+
+def test_response_failure_retains_evidence_without_numeric_ranking(collect_scenario):
+    record, root, calls = collect_scenario([2.0] * 6, fail=('uvicorn', 2))
+
+    assert record['status'] == 'attempted_with_failures'
+    assert record['failures']['uvicorn']['block'] == 2
+    assert 'uvicorn' not in record['aggregate']
+    assert ('uvicorn', 3) not in calls
+    bench.assert_publishable([root])
+
+
+def test_optional_look_response_failure_preserves_the_original_look(collect_scenario):
+    record, root, _ = collect_scenario([0.5, 2.0] * 6, fail=('uvicorn', 8))
+
+    assert record['status'] == 'attempted_with_failures'
+    assert record['failures']['uvicorn']['block'] == 8
+    assert record['look_history'][0]['contrasts']['uvicorn']['next_look'] == 12
+    assert 'uvicorn' not in record['aggregate']
+    bench.assert_publishable([root])
+
+
+def test_publication_rejects_a_missing_required_process_block(collect_scenario):
+    _, root, _ = collect_scenario([2.0] * 6)
+    slug = next((root / 'raw').glob('*.json')).stem
+    (root / 'evidence' / slug / 'block-06' / 'h2corn' / 'trial.json').unlink()
+
+    with pytest.raises(BenchmarkError, match='incomplete h2corn block 6'):
+        bench.assert_publishable([root])
+
+
+def test_publication_rejects_a_fabricated_precision_stop(collect_scenario):
+    record, root, _ = collect_scenario([0.5, 2.0] * 3, required=99)
+    record['stopped'] = 'precision-met'
+    path = next((root / 'raw').glob('*.json'))
+    path.write_text(json.dumps(record))
+
+    with pytest.raises(BenchmarkError, match='stop reason differs'):
+        bench.assert_publishable([root])
+
+
+def test_failed_framework_oracle_stops_before_production(tmp_path):
+    class FailedFramework:
+        @staticmethod
+        async def qualify_framework():
+            return [{'case': 'reserved-flag', 'status': 'failed'}]
+
+    profile = ProfileRun(
+        family='grpc',
+        name='grpc',
+        scenarios=(),
+        servers=(),
+        directory=tmp_path,
+        identity={
+            'rpc_artifacts': {'connectrpc': {'kind': 'release', 'sha256': 'app'}}
+        },
+        hypercorn_config=tmp_path / 'unused.toml',
+        system_summary='test host',
+        package_versions={},
+    )
+
+    with pytest.raises(BenchmarkError, match='framework qualification failed'):
+        _calibrate_rpc_qualification(
+            profile, FailedFramework, deadline=time.monotonic() + 100
+        )
+
+    retained = json.loads((tmp_path / 'qualification.json').read_text())
+    assert retained['framework'][0]['status'] == 'failed'

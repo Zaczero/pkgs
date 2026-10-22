@@ -128,4 +128,6 @@ def render_accessible_results(record: dict[str, Any]) -> str:
             comparison,
         ]
         rows.append('| ' + ' | '.join(cells) + ' |')
+    if record.get('look_history'):
+        rows.extend(['', f'Collection: {record["stopped"]}.'])
     return '\n'.join(rows) + '\n'

@@ -49,15 +49,28 @@ Calibration runs after the correctness probe without a separate load warmup.
 Subtracting requested calibration-window durations from calibration-trial
 elapsed time estimates each server's setup and correctness-check cost. The
 runner adds the common selected duration and a 0.25-second production warmup
-(one second for WebSocket) to forecast each cell. It then freezes exactly six
-fresh-start paired production blocks per scenario. Server order is rotated,
-CPU placement is unpinned, and production never stops early.
+(one second for WebSocket) to forecast each cell. Before production it freezes
+allowed decisions at six and twelve fresh-start paired blocks per scenario.
+Server order is rotated and CPU placement is unpinned.
 
 Comparisons use paired production-block throughput ratios and
 distribution-free order-statistic intervals for the common median of
-independent paired-block ratios. Six blocks use the minimum and maximum ratios
-(96.875% coverage). Each comparison records its method and achieved coverage.
-An interval containing one is inconclusive. Rates are medians; dots show
+independent paired-block ratios. Six blocks use the minimum and maximum ratios;
+twelve use the second-smallest and second-largest. Error allocations of 1/32
+and 3/160 bound the probability that either interval misses the common median
+by 5%, per comparison. The inference requires independent blocks with a common
+median; restarting processes does not remove persistent host drift.
+
+A scenario stops at six blocks when every surviving comparison resolves a
+direction or has an upper/lower interval ratio at most 1.10. The latter is a
+reporting-precision goal, not equivalence. Unresolved scenarios may extend to
+twelve only after protecting the complete remaining six-block matrix and
+reporting and cleanup reserves. Otherwise they finish as budget-limited, with
+inconclusive comparisons. At twelve, remaining uncertainty stays inconclusive.
+An interval containing one never establishes a tie. The published figures
+retain their recorded six-block plans and intervals.
+
+Each comparison records its method and achieved coverage. Rates are medians; dots show
 individual blocks and whiskers show their observed range. Latencies are
 medians of per-trial percentiles. Clients use closed-loop load.
 
@@ -95,8 +108,8 @@ retain the commands, observations, and identities behind the figures.
 
 ## gRPC methodology {#grpc-measurement-method}
 
-The gRPC family uses the same adaptive calibration, fixed six-block production
-plan, and paired-median intervals described in the HTTP methodology. Its 27
+The gRPC family uses the same adaptive calibration, bounded production
+looks, and paired-median intervals described in the HTTP methodology. Its 27
 supported cells use one serving process and one standard
 asyncio loop per server, with one HTTP/2 client connection per trial. Five
 grpclib cells are intentionally not selected. Compression is identity. TLS
