@@ -1,8 +1,7 @@
 use super::{
     Bounds, CoordSeq, ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative,
-    OverlayOp, Polygon, Result, SegmentPlacement, Shape, Strictness,
-    overlay_intersection_with_rectangle, remove_repeated_points, remove_repeated_ring_points,
-    split,
+    Polygon, Result, SegmentPlacement, Shape, Strictness, overlay_intersection_with_rectangle,
+    remove_repeated_points, remove_repeated_ring_points, split,
 };
 
 impl Shape {

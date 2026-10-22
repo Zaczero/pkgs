@@ -11,10 +11,7 @@ use crate::geometry::numerics::product::{
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
 use crate::geometry::numerics::product_sum::ExactSum;
-use crate::geometry::overlay::{
-    OverlayOp, overlay_all_geographic_from_with_output_frame, overlay_intersection_with_rectangle,
-    overlay_view_error,
-};
+use crate::geometry::overlay::overlay_intersection_with_rectangle;
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon, ReduceSimd, Shape,
