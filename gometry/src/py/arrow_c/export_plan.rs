@@ -9,7 +9,9 @@ use crate::array::ArrayRow;
 use crate::error::BatchError;
 use crate::geometry::storage::gather::materialized_gather;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelectionRef};
-use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape, storage};
+use crate::geometry::{
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Polygon, Shape, storage,
+};
 use crate::py::arrow::interchange::InterchangeArray;
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
 #[cfg(test)]
@@ -265,7 +267,14 @@ fn describe_published_array(
                     axes: coords.axes(),
                 }
             },
-            GeometryArrayStorage::Mixed(shapes) => describe_shape_iter(shapes.iter()),
+            GeometryArrayStorage::Mixed(shapes) => {
+                describe_shape_iter(shapes.iter().enumerate().filter_map(|(row, shape)| {
+                    array
+                        .missing()
+                        .is_none_or(|mask| !mask.is_missing(row))
+                        .then_some(shape)
+                }))
+            },
         },
         ArrowEncoding::Wkb => GeometrySchema {
             encoding: GeometryEncoding::Wkb,
@@ -325,7 +334,7 @@ fn plan_geometry_array_auto(
     }
     let gathered = materialized_gather(array.storage()).map_err(packed_columns_error)?;
     let storage = gathered.as_ref().unwrap_or_else(|| array.storage());
-    plan_storage(storage, layout)
+    plan_storage(storage, layout, array.missing())
 }
 
 fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<StoragePlan> {
@@ -375,6 +384,7 @@ fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<S
 fn plan_storage(
     storage: &GeometryArrayStorage,
     layout: GeometrySchema,
+    missing: Option<&storage::ValidityMask>,
 ) -> NativeArrowExportResult<StoragePlan> {
     match storage {
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
@@ -446,7 +456,18 @@ fn plan_storage(
             })
         },
         GeometryArrayStorage::Mixed(shapes) => {
-            let refs: Vec<_> = shapes.iter().collect();
+            let empty = Shape::typed_empty(GeometryKind::GeometryCollection, layout.axes);
+            let refs: Vec<_> = shapes
+                .iter()
+                .enumerate()
+                .map(|(row, shape)| {
+                    if missing.is_some_and(|mask| mask.is_missing(row)) {
+                        &empty
+                    } else {
+                        shape
+                    }
+                })
+                .collect();
             plan_shape_refs_with_layout(&refs, layout)
         },
     }
@@ -489,63 +510,25 @@ fn describe_shape_iter<'a>(mut shapes: impl Iterator<Item = &'a Shape> + Clone) 
             axes,
         };
     };
-    // Top-level typed empties remain WKB; native packing admits concrete
-    // storage variants, while multipart values retain their empty members.
-    let encoding = match first {
-        Shape::Point(_) if shapes.clone().all(|shape| matches!(shape, Shape::Point(_))) => {
-            GeometryEncoding::Point
-        },
-        Shape::MultiPoint(points)
-            if shapes
-                .clone()
-                .all(|shape| matches!(shape, Shape::MultiPoint(_))) =>
-        {
-            let has_empty_members = points.has_empty_members()
-                || shapes.clone().any(|shape| {
-                    matches!(shape, Shape::MultiPoint(points) if points.has_empty_members())
-                });
-            if has_empty_members {
-                GeometryEncoding::Wkb
-            } else {
-                GeometryEncoding::MultiPoint
-            }
-        },
-        Shape::LineString(_)
-            if shapes
-                .clone()
-                .all(|shape| matches!(shape, Shape::LineString(_))) =>
-        {
-            GeometryEncoding::LineString
-        },
-        Shape::MultiLineString(_)
-            if shapes
-                .clone()
-                .all(|shape| matches!(shape, Shape::MultiLineString(_))) =>
-        {
-            GeometryEncoding::MultiLineString
-        },
-        Shape::Polygon(_)
-            if shapes
-                .clone()
-                .all(|shape| matches!(shape, Shape::Polygon(_))) =>
-        {
-            GeometryEncoding::Polygon
-        },
-        Shape::MultiPolygon(_)
-            if shapes
-                .clone()
-                .all(|shape| matches!(shape, Shape::MultiPolygon(_))) =>
-        {
-            GeometryEncoding::MultiPolygon
-        },
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_)
-        | Shape::GeometryCollection(_)
-        | Shape::Empty(..) => GeometryEncoding::Wkb,
+    let kind = GeometryKind::of(first);
+    if shapes.clone().any(|shape| GeometryKind::of(shape) != kind)
+        || std::iter::once(first)
+            .chain(shapes)
+            .any(|shape| matches!(shape, Shape::MultiPoint(points) if points.has_empty_members()))
+    {
+        return GeometrySchema {
+            encoding: GeometryEncoding::Wkb,
+            axes: CoordinateAxes::XY,
+        };
+    }
+    let encoding = match kind {
+        GeometryKind::Point => GeometryEncoding::Point,
+        GeometryKind::MultiPoint => GeometryEncoding::MultiPoint,
+        GeometryKind::LineString => GeometryEncoding::LineString,
+        GeometryKind::MultiLineString => GeometryEncoding::MultiLineString,
+        GeometryKind::Polygon => GeometryEncoding::Polygon,
+        GeometryKind::MultiPolygon => GeometryEncoding::MultiPolygon,
+        GeometryKind::GeometryCollection => GeometryEncoding::Wkb,
     };
     GeometrySchema { encoding, axes }
 }
@@ -556,41 +539,56 @@ fn plan_shape_refs_with_layout(
 ) -> NativeArrowExportResult<StoragePlan> {
     match layout.encoding {
         GeometryEncoding::Point => {
-            let mut points = Vec::with_capacity(shapes.len());
+            let mut points = CoordSeqBuilder::with_capacity(layout.axes, shapes.len());
             for shape in shapes {
-                let Shape::Point(point) = shape else {
-                    unreachable!("schema description selected point payload")
-                };
-                points.push(*point);
+                match shape {
+                    Shape::Point(point) => points.push(*point),
+                    // GeoArrow EMPTY points use the same all-NaN wire
+                    // coordinates as missing point payload slots.
+                    Shape::Empty(..) => points.push_xyzm(
+                        f64::NAN,
+                        f64::NAN,
+                        layout.axes.has_z().then_some(f64::NAN),
+                        layout.axes.has_m().then_some(f64::NAN),
+                    ),
+                    Shape::MultiPoint(_)
+                    | Shape::LineString(_)
+                    | Shape::MultiLineString(_)
+                    | Shape::Polygon(_)
+                    | Shape::MultiPolygon(_)
+                    | Shape::GeometryCollection(_) => {
+                        unreachable!("schema description selected point payload")
+                    },
+                }
             }
-            Ok(StoragePlan::Coordinates(CoordSeq::try_from_points(
-                &points,
-            )?))
+            Ok(StoragePlan::Coordinates(
+                points.finish_with_missing_placeholders()?,
+            ))
         },
         GeometryEncoding::MultiPoint => {
             plan_single_list(shapes, layout.axes, |shape| match shape {
-                Shape::MultiPoint(points) => points,
+                Shape::MultiPoint(points) => Some(points),
+                Shape::Empty(..) => None,
                 Shape::Point(_)
                 | Shape::LineString(_)
                 | Shape::MultiLineString(_)
                 | Shape::Polygon(_)
                 | Shape::MultiPolygon(_)
-                | Shape::GeometryCollection(_)
-                | Shape::Empty(..) => {
+                | Shape::GeometryCollection(_) => {
                     unreachable!("schema description selected multipoint payload")
                 },
             })
         },
         GeometryEncoding::LineString => {
             plan_single_list(shapes, layout.axes, |shape| match shape {
-                Shape::LineString(points) => points,
+                Shape::LineString(points) => Some(points.as_coords()),
+                Shape::Empty(..) => None,
                 Shape::Point(_)
                 | Shape::MultiPoint(_)
                 | Shape::MultiLineString(_)
                 | Shape::Polygon(_)
                 | Shape::MultiPolygon(_)
-                | Shape::GeometryCollection(_)
-                | Shape::Empty(..) => {
+                | Shape::GeometryCollection(_) => {
                     unreachable!("schema description selected linestring payload")
                 },
             })
@@ -605,16 +603,20 @@ fn plan_shape_refs_with_layout(
 fn plan_single_list(
     shapes: &[&Shape],
     axes: CoordinateAxes,
-    points_of: impl Fn(&Shape) -> &CoordSeq,
+    points_of: impl Fn(&Shape) -> Option<&CoordSeq>,
 ) -> NativeArrowExportResult<StoragePlan> {
     let mut offsets = initial_offsets(shapes.len());
     let mut count = 0_i32;
     for shape in shapes {
-        count = checked_i32_offset_total(count, points_of(shape).len())?;
+        count = checked_i32_offset_total(count, points_of(shape).map_or(0, CoordSeq::len))?;
         offsets.push(count);
     }
     let total = count as usize;
-    let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
+    let coords = gather_coordseqs(
+        axes,
+        total,
+        shapes.iter().filter_map(|shape| points_of(shape)),
+    )?;
     Ok(StoragePlan::List {
         offsets: crate::geometry::SharedSlice::from_vec(offsets),
         start: 0,
@@ -631,6 +633,10 @@ fn plan_multilines(
     let (total_lines, total_stored_lines) = shapes.iter().try_fold(
         (0_i32, 0_usize),
         |(total_lines, total_stored_lines), shape| {
+            if matches!(shape, Shape::Empty(..)) {
+                geometry_offsets.push(total_lines);
+                return Ok((total_lines, total_stored_lines));
+            }
             let Shape::MultiLineString(lines) = shape else {
                 unreachable!()
             };
@@ -646,6 +652,9 @@ fn plan_multilines(
     let mut lines = Vec::with_capacity(total_stored_lines);
     let mut point_count = 0_i32;
     for shape in shapes {
+        if matches!(shape, Shape::Empty(..)) {
+            continue;
+        }
         let Shape::MultiLineString(items) = shape else {
             unreachable!()
         };
@@ -687,6 +696,10 @@ fn plan_multilines(
 fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportResult<StoragePlan> {
     let mut polygon_offsets = initial_offsets(shapes.len());
     let total_rings = shapes.iter().try_fold(0_i32, |total, shape| {
+        if matches!(shape, Shape::Empty(..)) {
+            polygon_offsets.push(total);
+            return Ok(total);
+        }
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
@@ -699,6 +712,9 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
     let mut rings = Vec::with_capacity(total_rings);
     let mut point_count = 0_i32;
     for shape in shapes {
+        if matches!(shape, Shape::Empty(..)) {
+            continue;
+        }
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
@@ -727,6 +743,10 @@ fn plan_multipolygons(
         shapes
             .iter()
             .try_fold((0_i32, 0_i32), |(polygons, rings), shape| {
+                if matches!(shape, Shape::Empty(..)) {
+                    multipolygon_offsets.push(polygons);
+                    return Ok((polygons, rings));
+                }
                 let Shape::MultiPolygon(items) = shape else {
                     unreachable!()
                 };
@@ -744,6 +764,9 @@ fn plan_multipolygons(
     let mut rings = Vec::with_capacity(total_rings);
     let mut point_count = 0_i32;
     for shape in shapes {
+        if matches!(shape, Shape::Empty(..)) {
+            continue;
+        }
         let Shape::MultiPolygon(polygons) = shape else {
             unreachable!()
         };

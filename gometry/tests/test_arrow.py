@@ -47,6 +47,53 @@ def _assert_same_crs(left: gm.CRS | None, right: gm.CRS | None) -> None:
         assert left.same_as(right, mode='exact')
 
 
+@pytest.mark.parametrize(
+    ('wkt', 'empty', 'encoding'),
+    [
+        ('POINT (7 13)', 'POINT EMPTY', 'point'),
+        ('MULTIPOINT ((7 13))', 'MULTIPOINT EMPTY', 'multipoint'),
+        ('LINESTRING (7 13, 11 17)', 'LINESTRING EMPTY', 'linestring'),
+        ('MULTILINESTRING ((7 13, 11 17))', 'MULTILINESTRING EMPTY', 'multilinestring'),
+        ('POLYGON ((0 0, 3 0, 0 3, 0 0))', 'POLYGON EMPTY', 'polygon'),
+        ('MULTIPOLYGON (((0 0, 3 0, 0 3, 0 0)))', 'MULTIPOLYGON EMPTY', 'multipolygon'),
+    ],
+)
+@pytest.mark.parametrize('frontend', ['pyarrow', 'cdata', 'stream'])
+def test_homogeneous_native_layout_keeps_empty_and_missing_rows(
+    wkt: str, empty: str, encoding: str, frontend: str
+) -> None:
+    source = gm.GeometryArray([gm.from_wkt(wkt), gm.from_wkt(empty), None], crs=4326)
+    arrow = source.to_arrow()
+    assert arrow.type.extension_name == f'geoarrow.{encoding}'
+    if frontend == 'cdata':
+        foreign = _capsule_only_from_pyarrow(arrow)
+    elif frontend == 'stream':
+        foreign = _StreamOnly(pa.table({'geometry': arrow}))
+    else:
+        foreign = arrow
+    restored = gm.from_arrow(foreign)
+    assert restored.to_wkt() == [wkt, empty, None]
+    assert restored.is_missing.tolist() == [False, False, True]
+    assert restored.crs == source.crs
+
+
+def test_native_empty_point_sentinel_retains_z_and_m_axes() -> None:
+    source = gm.GeometryArray([
+        gm.from_wkt('POINT ZM (7 13 19 23)'),
+        gm.from_wkt('POINT ZM EMPTY'),
+        None,
+    ])
+    arrow: Any = source.to_arrow()
+    assert arrow.type.extension_name == 'geoarrow.point'
+    assert arrow.storage.type.names == ['x', 'y', 'z', 'm']
+    assert all(
+        math.isnan(arrow.storage.field(axis)[1].as_py())
+        for axis in ('x', 'y', 'z', 'm')
+    )
+    restored = gm.from_arrow(arrow)
+    assert restored.to_wkt() == ['POINT ZM (7 13 19 23)', 'POINT ZM EMPTY', None]
+
+
 _ARROW_LAYOUT_WKTS: dict[str, tuple[str, str, str]] = {
     'points': ('POINT (0 0)', 'POINT (1 1)', 'POINT (2 2)'),
     'lines': (
