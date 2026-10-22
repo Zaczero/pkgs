@@ -347,42 +347,10 @@ pub(crate) fn pair_select_mask(
     }
 }
 
-/// Map one equal-length `f64` column through a SIMD kernel.
+/// Map one equal-length `f64` column through a fallible SIMD kernel.
 ///
 /// Full `REDUCE_LANES` chunks run `vector`; the tail and inputs below
-/// [`REDUCE_SIMD_MIN`] use `scalar` exclusively.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the caller admits equal-length source and destination columns before mapping"
-)]
-pub(crate) fn simd_map_f64(
-    src: &[f64],
-    dst: &mut [f64],
-    mut scalar: impl FnMut(f64) -> f64,
-    mut vector: impl FnMut(ReduceSimd) -> ReduceSimd,
-) {
-    debug_assert_eq!(src.len(), dst.len());
-    let len = src.len();
-    if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            dst[index] = scalar(src[index]);
-        }
-        return;
-    }
-    let (src_chunks, _) = src.as_chunks::<REDUCE_LANES>();
-    {
-        let (dst_chunks, _) = dst.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..src_chunks.len() {
-            vector(ReduceSimd::from_array(src_chunks[chunk])).copy_to_slice(&mut dst_chunks[chunk]);
-        }
-    }
-    let lanes = src_chunks.len().wrapping_mul(REDUCE_LANES);
-    for index in lanes..len {
-        dst[index] = scalar(src[index]);
-    }
-}
-
-/// Fallible [`simd_map_f64`]: `vector`/`scalar` errors propagate immediately.
+/// [`REDUCE_SIMD_MIN`] use `scalar` exclusively. Errors propagate immediately.
 pub(crate) fn try_simd_map_f64<E>(
     src: &[f64],
     dst: &mut [f64],

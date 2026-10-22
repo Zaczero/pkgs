@@ -1,6 +1,6 @@
 use super::{
-    CoordinateAxes, GeometryKind, LineSeq, LocalInputPurpose, PreparedLocalInput, Shape, crs,
-    dispatch_metric_model, geodesic_by_identity,
+    CoordinateAxes, GeometryKind, LineSeq, LocalInputPurpose, Shape, crs, dispatch_metric_model,
+    geodesic_by_identity,
 };
 use crate::geometry::{
     GeographicProvenancePlan, emit_from_original_with_source_roots, emit_from_original_xy,

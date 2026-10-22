@@ -1,6 +1,6 @@
 use super::*;
-use crate::geometry::ChartMetric as _;
 use crate::geometry::tessellation::sampling::sample_weighted_filtered;
+use crate::geometry::{ChartMetric as _, SampleDraw};
 
 // The common a²(1-e²)*angular-unit factors cancel from the distribution.
 // Pole-referenced cosine retains density on arbitrarily narrow polar slivers.

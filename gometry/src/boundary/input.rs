@@ -165,27 +165,6 @@ pub(crate) fn f64_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult
     }
 }
 
-/// Range-bounded boundary parser: extract an integer and enforce an
-/// inclusive range, raising the caller's exact error — the one engine behind
-/// precision/resolution/level/positive-count parsers. The closure builds the
-/// full `PyErr`, so each surface owns its exact message (every lane is a
-/// `GeometryError` parameter-value violation).
-pub(crate) fn py_i64_bounded(
-    name: &str,
-    value: &Bound<'_, PyAny>,
-    range: std::ops::RangeInclusive<i64>,
-    error: &dyn Fn(i64) -> PyErr,
-) -> PyResult<i64> {
-    let parsed = py_i64_required(name, value)?;
-    if range.contains(&parsed) {
-        Ok(parsed)
-    } else {
-        Err(error(parsed))
-    }
-}
-
-/// Optional sibling of [`py_i64_bounded`] (None/`None` → `default`,
-/// which is trusted to be in range).
 /// Canonical parameter-value violation for integer minimum bounds.
 ///
 /// Attaches structured ``.param`` / ``.value`` so handlers can branch without

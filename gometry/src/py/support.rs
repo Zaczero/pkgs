@@ -9,7 +9,7 @@ use crate::{
     Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
     float_values, float_values_at_most, float_values_exact, metric_nearest_points_resolved,
-    non_negative_int, py_i64_bounded, pyfunction, rows_err, wgs84_crs,
+    non_negative_int, pyfunction, rows_err, wgs84_crs,
 };
 
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
