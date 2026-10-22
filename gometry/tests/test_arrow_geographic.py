@@ -111,6 +111,29 @@ def test_geographic_export_canonicalizes_aliases_without_mutating_source() -> No
     assert source.coords.to_nested() == [(530, 2, 7), (190, 4, 19)]
 
 
+@pytest.mark.parametrize(
+    ('wkt', 'inside', 'outside'),
+    [
+        pytest.param('LINESTRING (170 75, -170 75)', (180, 75), (0, 75), id='seam'),
+        pytest.param(
+            'POLYGON ((-135 80, -45 80, 45 80, 135 80, -135 80))',
+            (0, 89),
+            (0, 0),
+            id='pole',
+        ),
+    ],
+)
+def test_geographic_wkb_drawing_is_readable_by_shapely(
+    wkt: str, inside: tuple[int, int], outside: tuple[int, int]
+) -> None:
+    shapely = pytest.importorskip('shapely', reason='independent WKB reader')
+    source = gm.from_wkt(wkt, crs=4326)
+    column = source.to_arrow(encoding='wkb')
+    drawing = shapely.from_wkb(column.storage[0].as_py())
+    assert drawing.intersects(shapely.Point(inside))
+    assert not drawing.intersects(shapely.Point(outside))
+
+
 @pytest.mark.parametrize('frontend', ['pyarrow', 'cdata', 'stream', 'wkb'])
 def test_adjacent_binary64_heights_export_as_a_finite_seam_drawing(
     frontend: str,
