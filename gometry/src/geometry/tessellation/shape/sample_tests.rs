@@ -47,6 +47,23 @@ fn prolate_area_sampling_envelope_dominates_equatorial_density() {
     }
 }
 
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+fn flattened_ellipsoid_sampling_keeps_the_polar_density_bounded() {
+    let model =
+        crate::crs::metric_model(Some("+proj=longlat +a=6371000 +b=0.06371 +type=crs")).unwrap();
+    let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+    let triangle = [
+        Point::new(0.0, 89.0).unwrap(),
+        Point::new(1.0, 89.0).unwrap(),
+        Point::new(0.0, 90.0).unwrap(),
+    ];
+    let density = area_density(&metric, 90.0_f64.next_down());
+    assert!(density.is_finite());
+    assert!(density > 0.0);
+    assert!(area_density_bound(&metric, &triangle) >= density);
+}
+
 fn xy_bits(points: &[Point]) -> Vec<(u64, u64)> {
     points
         .iter()

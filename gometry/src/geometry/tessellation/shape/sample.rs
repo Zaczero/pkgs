@@ -7,8 +7,11 @@ use crate::geometry::tessellation::sampling::sample_weighted_filtered;
 fn area_density(metric: &crate::crs::GeodesicMetric, latitude: f64) -> f64 {
     let frame = metric.frame;
     let cosine = ((frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit()).sin();
-    let e2 = metric.geodesic.f * (2.0 - metric.geodesic.f);
-    cosine / (1.0 - e2 + e2 * cosine * cosine).powi(2)
+    let sine = (latitude * frame.latitude_radians_per_unit()).sin();
+    let axis_ratio = 1.0 - metric.geodesic.f;
+    // Keep both positive terms: 1-e² loses the polar denominator when e² rounds to 1.
+    let denominator = cosine * cosine + axis_ratio * axis_ratio * sine * sine;
+    cosine / (denominator * denominator)
 }
 
 fn area_density_bound(metric: &crate::crs::GeodesicMetric, vertices: &[Point; 3]) -> f64 {
