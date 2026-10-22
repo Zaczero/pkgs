@@ -124,8 +124,10 @@ if TYPE_CHECKING:
     gm.Geometry()  # type: ignore[call-arg]
     gm.Coordinates()  # type: ignore[call-arg]
     gm.GeometryParts()  # type: ignore[call-arg]
-    gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
+
+    # Groups requires typed values and offsets.
+    gm.Groups()  # type: ignore[call-overload]
 
     gm.H3VertexArray([1.5])  # type: ignore[list-item]
     gm.H3EdgeArray([1.5])  # type: ignore[list-item]
@@ -280,7 +282,7 @@ if TYPE_CHECKING:
     gm.pluscode_encode(POINT, 47.0)  # type: ignore[call-overload]
 
     # A box infers seam splitting from geographic metadata; there is no wrap flag.
-    gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')  # type: ignore[call-arg]
+    gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')  # type: ignore[call-overload]
 
     # The builtin object spelling necessarily widens __array__ to type[object],
     # so use dtype instances to probe static rejection of unsupported dtypes.
