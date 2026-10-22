@@ -244,8 +244,8 @@ pub(crate) fn weight_scale(largest: f64) -> f64 {
 /// The weighted-pick engine behind `sample_points`: cumulative weights over
 /// `pieces` (zero-weight slivers never selected), then `count` draws of
 /// piece-by-prefix-sum followed by the piece's own placement map. `None`
-/// when the total weight is not positive finite — the caller falls back to
-/// a lower-dimension sample space.
+/// when every weight is zero — the caller falls back to a lower-dimension
+/// sample space. A finite measure need not have a representable unscaled sum.
 pub(crate) fn sample_weighted<T>(
     count: usize,
     seed: u64,
@@ -253,18 +253,45 @@ pub(crate) fn sample_weighted<T>(
     weight: impl Fn(&T) -> f64,
     place: impl Fn(&T, &mut u64) -> Result<(Point, SampleRecipe)>,
 ) -> Result<Option<Vec<SampleDraw>>> {
+    sample_weighted_filtered(count, seed, pieces, weight, place, |_, _, _| true)
+}
+
+pub(crate) fn sample_weighted_filtered<T>(
+    count: usize,
+    seed: u64,
+    pieces: &[T],
+    weight: impl Fn(&T) -> f64,
+    place: impl Fn(&T, &mut u64) -> Result<(Point, SampleRecipe)>,
+    accept: impl Fn(&T, Point, &mut u64) -> bool,
+) -> Result<Option<Vec<SampleDraw>>> {
     let mut total = 0.0;
+    let mut largest = 0.0_f64;
     let mut cumulative = Vec::with_capacity(pieces.len());
     for piece in pieces {
-        total += weight(piece);
+        let value = weight(piece);
+        largest = largest.max(value);
+        total += value;
         cumulative.push(total);
     }
-    if total <= 0.0 || !total.is_finite() {
+    if total <= 0.0 {
         return Ok(None);
+    }
+    if !total.is_finite() {
+        if !largest.is_finite() {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "sampling support weight is not representable".into(),
+            )
+            .into());
+        }
+        total = 0.0;
+        for (piece, edge) in pieces.iter().zip(&mut cumulative) {
+            total += weight(piece) / largest;
+            *edge = total;
+        }
     }
     let mut draws = Vec::with_capacity(count);
     let mut state = seed;
-    for draw_ordinal in 0..count {
+    while draws.len() < count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative.partition_point(|&edge| edge <= pick);
         let element_id = index.min(pieces.len().saturating_sub(1));
@@ -272,8 +299,11 @@ pub(crate) fn sample_weighted<T>(
             .get(element_id)
             .expect("a positive finite total comes from at least one piece");
         let (point, recipe) = place(support, &mut state)?;
+        if !accept(support, point, &mut state) {
+            continue;
+        }
         draws.push(SampleDraw {
-            draw_ordinal,
+            draw_ordinal: draws.len(),
             selected_element: element_id,
             recipe,
             point,

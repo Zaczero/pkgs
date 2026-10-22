@@ -384,6 +384,29 @@ pub(crate) fn parse_sample_seed(value: &Bound<'_, PyAny>) -> PyResult<u64> {
     Ok(py_i64_required("seed", value)? as u64)
 }
 
+/// One randomness input: an integer/row array, a NumPy Generator, or fresh
+/// entropy. A Generator advances once per call; the native row streams then
+/// preserve the same scalar/array derivation as an integer seed.
+pub(crate) fn resolve_sample_seed<'py>(
+    py: Python<'py>,
+    seed: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(seed) = seed
+        && py_index_check(seed)
+    {
+        return Ok(seed.clone());
+    }
+    let random = py.import("numpy.random")?;
+    let generator = random.getattr("Generator")?;
+    match seed {
+        Some(seed) if !seed.is_none() && !seed.is_instance(&generator)? => Ok(seed.clone()),
+        Some(seed) if !seed.is_none() => seed.call_method1("integers", (i64::MAX,)),
+        _ => random
+            .call_method0("default_rng")?
+            .call_method1("integers", (i64::MAX,)),
+    }
+}
+
 /// Python transform options shared by raw CRS operations and geometry `to_crs`.
 /// Geometry callers leave both epoch inputs as `None`; the frame owner fills
 /// them from its source metadata and output epoch policy after this parse.

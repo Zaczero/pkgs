@@ -1224,7 +1224,7 @@ def test_sample_points_raw_compatible_geographic_support_keeps_base_bits() -> No
         gm.Polygon([(190, 10), (200, 10), (200, 20), (190, 20)]),
     )
     for geographic_shape, planar_shape in zip(geographic, planar, strict=True):
-        geographic_samples = geographic_shape.sample_points(7, seed=19)
+        geographic_samples = geographic_shape.sample_points(7, seed=19, unit='planar')
         planar_samples = planar_shape.sample_points(7, seed=19)
         assert [(point.x.hex(), point.y.hex()) for point in geographic_samples] == [
             (point.x.hex(), point.y.hex()) for point in planar_samples
@@ -1235,8 +1235,7 @@ def test_sample_points_error_gates() -> None:
     box = gm.box(0, 0, 1, 1)
     with pytest.raises(gm.GeometryError, match='count must be >= 0'):
         box.sample_points(-1, seed=1)
-    with pytest.raises(TypeError, match='seed'):
-        box.sample_points(5)
+    assert len(box.sample_points(5)) == 5
     with pytest.raises(TypeError, match='count must be an integer'):
         box.sample_points(cast('Any', 2.5), seed=1)
     rows = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.from_wkt('POLYGON EMPTY')])

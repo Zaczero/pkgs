@@ -17,7 +17,8 @@ impl PyGeometryArray {
     pub(crate) fn sample_points_impl(
         &self,
         count: &Bound<'_, PyAny>,
-        seed: &Bound<'_, PyAny>,
+        seed: Option<&Bound<'_, PyAny>>,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<Groups> {
         let py = count.py();
         let count = I64Param::parse(count, "count", self.len())?;
@@ -30,11 +31,27 @@ impl PyGeometryArray {
         if let Some(value) = negative_count {
             return Err(int_min_error("sample_points", "count", 0, value));
         }
-        let seed = I64Param::parse(seed, "seed", self.len())?;
-        Ok(py.detach(|| self.sample_point_groups(&count, &seed))?)
+        let seed = crate::boundary::input::resolve_sample_seed(py, seed)?;
+        let seed = I64Param::parse(&seed, "seed", self.len())?;
+        let model = crate::broadcast::resolve_metric(
+            self.frame.crs_str(),
+            unit,
+            crate::dispatch::MetricOp::SamplePoints,
+        )?;
+        let metric = crate::crs::ResolvedMetric::from_model(&model)?;
+        Ok(py.detach(|| self.sample_point_groups(&count, &seed, &metric))?)
     }
 
-    fn sample_point_groups(&self, count: &I64Param, seed: &I64Param) -> BatchResult<Groups> {
+    fn sample_point_groups(
+        &self,
+        count: &I64Param,
+        seed: &I64Param,
+        metric: &crate::crs::ResolvedMetric,
+    ) -> BatchResult<Groups> {
+        let metric = match metric {
+            crate::crs::ResolvedMetric::Geodesic(metric) => Some(metric),
+            crate::crs::ResolvedMetric::Planar { .. } => None,
+        };
         let mut total = 0_usize;
         for row in 0..self.len() {
             if !self.is_row_missing(row) {
@@ -62,7 +79,9 @@ impl PyGeometryArray {
                             usize::try_from(count.get(logical)).expect("validated non-negative");
                         let seed = sample_seed(seed, logical);
                         samples.push(Some(row.row().try_with_shape(|shape| {
-                            shape.sample_point_receipts_in_domain(count, seed, logical, domain)
+                            shape.sample_point_receipts_in_metric(
+                                count, seed, logical, domain, metric,
+                            )
                         })?));
                     },
                 }

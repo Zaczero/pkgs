@@ -279,6 +279,7 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
             | MetricOp::RhumbBearing
             | MetricOp::RhumbDestination
             | MetricOp::RhumbDistance
+            | MetricOp::SamplePoints
             | MetricOp::Segmentize
             | MetricOp::ShortestLine
             | MetricOp::SpatialIndexDistanceQuery,

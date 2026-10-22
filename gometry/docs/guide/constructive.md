@@ -275,6 +275,28 @@ requires `by`; whole-collection aggregation is `gm.union_all(array)`.
     `union_all([])` raises because an empty sequence has no geometry metadata.
     Filter the sequence or branch on emptiness before aggregation.
 
+## Sample random points
+
+[`sample_points`][gometry.Geometry.sample_points] draws from the highest-dimensional
+support: area for polygons, length for lines, and equal-weight point occurrences.
+Geographic data defaults to ellipsoid surface area and physical arclength along
+the straight source-chart edges. This includes seam crossings and polar regions;
+overlapping multipart members contribute separately. Degenerate area falls back
+to linework, then vertices. Empty input produces no points, and new sampled
+locations are XY.
+
+```python exec="on" source="block" result="text" interactive="off"
+import gometry as gm
+region = gm.box(10, 50, 11, 51, crs=4326)
+print(len(region.sample_points(100, seed=42)))
+```
+
+Omit `seed` for fresh entropy, pass an integer to reproduce a stream, or pass a
+NumPy `Generator` to advance that generator once per call. Array calls accept
+per-row counts and integer seeds; a scalar seed derives a separate stream for
+each row, with row zero matching the scalar call. `unit='planar'` selects native
+chart area or length instead of physical measure.
+
 ## Simplify and offset
 
 [`simplify`][gometry.Geometry.simplify] drops vertices within a `tolerance`, keeping the

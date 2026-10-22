@@ -79,7 +79,7 @@ fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
         let count = PyInt::new(py, 3).into_any();
         let seed = PyInt::new(py, 0x1234).into_any();
         let output = geometry
-            .sample_points_impl(py, &count, &seed)
+            .sample_points_impl(py, &count, Some(&seed), Some(crate::DistanceUnit::Planar))
             .expect("geographic sampling publishes its prepared draw receipt");
         let output = Py::new(py, output).unwrap();
         let wkts = output
@@ -259,7 +259,7 @@ fn geographic_array_sampling_preserves_line_area_atom_and_gathered_group_rows() 
         let count = PyInt::new(py, 2).into_any();
         let seed = PyInt::new(py, seed).into_any();
         let groups = array
-            .sample_points_impl(&count, &seed)
+            .sample_points_impl(&count, Some(&seed), Some(crate::DistanceUnit::Planar))
             .expect("geographic array sampling publishes its prepared group receipts");
         let groups = Py::new(py, groups).unwrap();
         let groups = groups.bind(py);

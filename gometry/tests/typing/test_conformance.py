@@ -2399,6 +2399,11 @@ assert_type(
     gm.Groups[gm.GeometryArray[gm.Point]],
 )
 assert_type(POINT.sample_points(3, seed=7), gm.GeometryArray[gm.Point])
+assert_type(POINT.sample_points(3), gm.GeometryArray[gm.Point])
+assert_type(
+    POINT.sample_points(3, seed=np.random.default_rng(7), unit='planar'),
+    gm.GeometryArray[gm.Point],
+)
 assert_type(
     POINTS.sample_points([2, 3], seed=[11, 12]),
     gm.Groups[gm.GeometryArray[gm.Point]],

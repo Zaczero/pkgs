@@ -309,10 +309,22 @@ impl PyGeometry {
         &self,
         py: Python<'_>,
         count: &Bound<'_, PyAny>,
-        seed: &Bound<'_, PyAny>,
+        seed: Option<&Bound<'_, PyAny>>,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<PyGeometryArray> {
         let count = parse_sample_count(count)?;
-        let seed = parse_sample_seed(seed)?;
+        let seed = crate::boundary::input::resolve_sample_seed(py, seed)?;
+        let seed = parse_sample_seed(&seed)?;
+        let model = crate::broadcast::resolve_metric(
+            self.frame.crs_str(),
+            unit,
+            crate::dispatch::MetricOp::SamplePoints,
+        )?;
+        let metric = crate::crs::ResolvedMetric::from_model(&model)?;
+        let metric = match &metric {
+            crate::crs::ResolvedMetric::Geodesic(metric) => Some(metric),
+            crate::crs::ResolvedMetric::Planar { .. } => None,
+        };
         let domain = if count == 0 {
             crate::geometry::TopologyDomain::Cartesian
         } else {
@@ -324,11 +336,12 @@ impl PyGeometry {
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
         Ok(py.detach(move || {
-            let prepared = shape.sample_point_receipts_in_domain(
+            let prepared = shape.sample_point_receipts_in_metric(
                 count,
                 crate::geometry::row_sample_seed(seed, 0),
                 0,
                 domain,
+                metric,
             )?;
             if domain.is_geographic() {
                 geometry::publish_sampling_array(prepared, self.frame.clone())

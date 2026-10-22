@@ -1,4 +1,73 @@
 use super::*;
+use crate::geometry::ChartMetric as _;
+use crate::geometry::tessellation::sampling::sample_weighted_filtered;
+
+// The common a²(1-e²)*angular-unit factors cancel from the distribution.
+// Pole-referenced cosine retains density on arbitrarily narrow polar slivers.
+fn area_density(metric: &crate::crs::GeodesicMetric, latitude: f64) -> f64 {
+    let frame = metric.frame;
+    let cosine = ((frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit()).sin();
+    let e2 = metric.geodesic.f * (2.0 - metric.geodesic.f);
+    cosine / (1.0 - e2 + e2 * cosine * cosine).powi(2)
+}
+
+fn area_density_bound(metric: &crate::crs::GeodesicMetric, vertices: &[Point; 3]) -> f64 {
+    let south = vertices
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let north = vertices
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let closest = if south <= 0.0 && north >= 0.0 {
+        0.0
+    } else {
+        south.abs().min(north.abs())
+    };
+    let cosine = ((metric.frame.pole() - closest) * metric.frame.latitude_radians_per_unit()).sin();
+    // The denominator ranges between 1 and (1-f)^2. Prolate ellipsoids
+    // attain its minimum at the equator, rather than at a pole.
+    let denominator_min = (1.0 - metric.geodesic.f).powi(2).min(1.0);
+    cosine / denominator_min.powi(2) * (1.0 + 16.0 * f64::EPSILON)
+}
+
+fn physical_line_draws(
+    metric: &crate::crs::GeodesicMetric,
+    supports: &[SampleSupport],
+    count: usize,
+    seed: u64,
+) -> Result<Option<Vec<SampleDraw>>> {
+    let pieces = supports
+        .iter()
+        .map(|support| {
+            let SampleSupport::GeographicSegment { segment } = support else {
+                unreachable!("physical line sampling retains geographic source edges")
+            };
+            let edge = crate::crs::ChartEdge::from_retained(
+                segment.start,
+                segment.end,
+                metric.frame,
+                segment.longitude,
+            )?;
+            let length = metric.chart_edge_length(&edge)?;
+            Ok((segment, edge, length))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sample_weighted(
+        count,
+        seed,
+        &pieces,
+        |piece| piece.2,
+        |(segment, edge, length), state| {
+            let along = metric.chart_edge_locate_t(edge, uniform_f64(state) * length, *length)?;
+            Ok((
+                segment.sample(along, metric.frame)?,
+                SampleRecipe::Segment { along },
+            ))
+        },
+    )
+}
 
 #[expect(
     clippy::float_cmp,
@@ -182,6 +251,7 @@ impl Shape {
             0,
             TopologyDomain::Cartesian,
             None,
+            None,
         )
         .map(PreparedSampling::into_points)
     }
@@ -204,6 +274,17 @@ impl Shape {
         logical_row: usize,
         domain: TopologyDomain,
     ) -> Result<PreparedSampling> {
+        self.sample_point_receipts_in_metric(count, seed, logical_row, domain, None)
+    }
+
+    pub(crate) fn sample_point_receipts_in_metric(
+        &self,
+        count: usize,
+        seed: u64,
+        logical_row: usize,
+        domain: TopologyDomain,
+        metric: Option<&crate::crs::GeodesicMetric>,
+    ) -> Result<PreparedSampling> {
         ExpansionBudget::check("sample_points", "count", count)?;
         if count == 0 {
             return Ok(PreparedSampling::empty(logical_row, seed, domain));
@@ -216,6 +297,7 @@ impl Shape {
                 logical_row,
                 domain,
                 None,
+                metric,
             );
         };
         if self.topological_dimension() < Dimension::Curve {
@@ -226,11 +308,12 @@ impl Shape {
                 logical_row,
                 domain,
                 None,
+                metric,
             );
         }
         crate::geographic::ScalarGeographicView::try_new(frame, self)
             .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
-        if !geographic_sample_requires_preparation(self, frame)? {
+        if metric.is_none() && !geographic_sample_requires_preparation(self, frame)? {
             return self.sample_point_receipts_from_support(
                 self,
                 count,
@@ -238,6 +321,7 @@ impl Shape {
                 logical_row,
                 domain,
                 None,
+                metric,
             );
         }
         let area_support = geographic_areal_sample_support(self, frame)?;
@@ -249,6 +333,7 @@ impl Shape {
             logical_row,
             domain,
             Some(segments),
+            metric,
         )
     }
 
@@ -260,6 +345,7 @@ impl Shape {
         logical_row: usize,
         domain: TopologyDomain,
         mut geographic_segments: Option<Vec<SampleSupport>>,
+        metric: Option<&crate::crs::GeodesicMetric>,
     ) -> Result<PreparedSampling> {
         if self.topological_dimension() >= Dimension::Surface {
             let mut supports = Vec::new();
@@ -289,7 +375,7 @@ impl Shape {
                 )?;
                 AxisFrame::from_origin_extents(origin, extent_x, extent_y)
             });
-            let placed = sample_weighted(
+            let placed = sample_weighted_filtered(
                 count,
                 seed,
                 &supports,
@@ -302,6 +388,9 @@ impl Shape {
                     let b = frame.frame_point(*b);
                     let c = frame.frame_point(*c);
                     ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs()
+                        * metric.map_or(1.0, |metric| {
+                            area_density_bound(metric, sample_triangle_vertices(support))
+                        })
                 },
                 |support, state| {
                     let [base, mid, apex] = sample_triangle_vertices(support);
@@ -314,6 +403,13 @@ impl Shape {
                     let y =
                         (1.0 - spread) * base.y + spread * ((1.0 - blend) * mid.y + blend * apex.y);
                     Ok((Point::new(x, y)?, SampleRecipe::Triangle { spread, blend }))
+                },
+                |support, point, state| {
+                    metric.is_none_or(|metric| {
+                        uniform_f64(state)
+                            * area_density_bound(metric, sample_triangle_vertices(support))
+                            < area_density(metric, point.y)
+                    })
                 },
             )?;
             if let Some(draws) = placed {
@@ -331,38 +427,43 @@ impl Shape {
                 let TopologyDomain::Geographic(frame) = domain else {
                     unreachable!("retained sample segments require a geographic domain")
                 };
-                let scale = weight_scale(supports.iter().fold(0.0_f64, |largest, support| {
-                    let SampleSupport::GeographicSegment { segment } = support else {
-                        unreachable!("geographic support contains retained segments")
-                    };
-                    [segment.start, segment.end]
-                        .into_iter()
-                        .flat_map(|point| [point.x.abs(), point.y.abs()])
-                        .fold(largest, f64::max)
-                }));
-                sample_weighted(
-                    count,
-                    seed,
-                    &supports,
-                    |support| {
+                if let Some(metric) = metric {
+                    physical_line_draws(metric, &supports, count, seed)?
+                        .map(|draws| (supports, draws))
+                } else {
+                    let scale = weight_scale(supports.iter().fold(0.0_f64, |largest, support| {
                         let SampleSupport::GeographicSegment { segment } = support else {
                             unreachable!("geographic support contains retained segments")
                         };
-                        let dx = segment.delta_x * scale;
-                        let dy = segment.delta_y * scale;
-                        (dx * dx + dy * dy).sqrt()
-                    },
-                    |support, state| {
-                        let SampleSupport::GeographicSegment { segment } = support else {
-                            unreachable!("geographic support contains retained segments")
-                        };
-                        let along = uniform_f64(state);
-                        Ok((segment.sample(along, frame)?, SampleRecipe::Segment {
-                            along,
-                        }))
-                    },
-                )?
-                .map(|draws| (supports, draws))
+                        [segment.start, segment.end]
+                            .into_iter()
+                            .flat_map(|point| [point.x.abs(), point.y.abs()])
+                            .fold(largest, f64::max)
+                    }));
+                    sample_weighted(
+                        count,
+                        seed,
+                        &supports,
+                        |support| {
+                            let SampleSupport::GeographicSegment { segment } = support else {
+                                unreachable!("geographic support contains retained segments")
+                            };
+                            let dx = segment.delta_x * scale;
+                            let dy = segment.delta_y * scale;
+                            (dx * dx + dy * dy).sqrt()
+                        },
+                        |support, state| {
+                            let SampleSupport::GeographicSegment { segment } = support else {
+                                unreachable!("geographic support contains retained segments")
+                            };
+                            let along = uniform_f64(state);
+                            Ok((segment.sample(along, frame)?, SampleRecipe::Segment {
+                                along,
+                            }))
+                        },
+                    )?
+                    .map(|draws| (supports, draws))
+                }
             } else {
                 let segment_count = ShapeCountQuery::default().segments(self)?;
                 let mut segments: Vec<SampleSupport> = Vec::with_capacity(segment_count);
@@ -406,8 +507,16 @@ impl Shape {
                         let SampleSupport::Segment { segment, .. } = support else {
                             unreachable!("Cartesian support contains line segments")
                         };
-                        let dx = (segment.end.x - segment.start.x) * scale;
-                        let dy = (segment.end.y - segment.start.y) * scale;
+                        let delta = |start: f64, end: f64| {
+                            let difference = end - start;
+                            if difference.is_finite() {
+                                difference * scale
+                            } else {
+                                end * scale - start * scale
+                            }
+                        };
+                        let dx = delta(segment.start.x, segment.end.x);
+                        let dy = delta(segment.start.y, segment.end.y);
                         (dx * dx + dy * dy).sqrt()
                     },
                     |support, state| {

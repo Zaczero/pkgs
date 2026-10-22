@@ -33,14 +33,15 @@ impl PyGeometry {
         }
     }
     #[doc = doc_sample_points!(scalar)]
-    #[pyo3(signature = (count, *, seed))]
+    #[pyo3(signature = (count, *, seed = None, unit = None))]
     pub fn sample_points(
         &self,
         py: Python<'_>,
         count: &Bound<'_, PyAny>,
-        seed: &Bound<'_, PyAny>,
+        seed: Option<&Bound<'_, PyAny>>,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<PyGeometryArray> {
-        self.sample_points_impl(py, count, seed)
+        self.sample_points_impl(py, count, seed, unit)
     }
     #[doc = doc_voronoi!(scalar)]
     #[pyo3(
@@ -90,13 +91,14 @@ impl PyGeometryArray {
         }
     }
     #[doc = doc_sample_points!(array)]
-    #[pyo3(signature = (count, *, seed))]
+    #[pyo3(signature = (count, *, seed = None, unit = None))]
     pub fn sample_points(
         &self,
         count: &Bound<'_, PyAny>,
-        seed: &Bound<'_, PyAny>,
+        seed: Option<&Bound<'_, PyAny>>,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<Groups> {
-        self.sample_points_impl(count, seed)
+        self.sample_points_impl(count, seed, unit)
     }
     #[doc = doc_voronoi!(array)]
     #[pyo3(

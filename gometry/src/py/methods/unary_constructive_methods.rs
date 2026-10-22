@@ -918,8 +918,13 @@ macro_rules! doc_sample_points {
         concat!(doc_sample_points!(@pre), r"
 count : int
     Number of points to draw (``>= 0``).
-seed : int
-    Seed for the deterministic sample stream.
+seed : int, numpy.random.Generator, or None, default None
+    An integer reproduces the sample stream. A Generator advances once to
+    seed the native stream. ``None`` uses fresh entropy.
+unit : {'meters', 'planar'} or None, default None
+    ``None`` samples physical ellipsoid area or length on geographic input,
+    and coordinate area or length otherwise. ``'planar'`` samples the native
+    chart instead. ``'meters'`` requires a CRS and uses its metric measure.
 ", r"
 
 Returns
@@ -934,9 +939,14 @@ GeometryArray
 count : int or iterable of int
     Number of points to draw per row (``>= 0``). A scalar broadcasts;
     otherwise pass one count per row.
-seed : int or iterable of int
+seed : int, iterable of int, numpy.random.Generator, or None, default None
     Seed for the deterministic sample stream. A scalar derives a distinct
-    stream for every row; otherwise pass one explicit seed per row.
+    stream for every row; otherwise pass one explicit seed per row. A Generator
+    advances once per call. ``None`` uses fresh entropy.
+unit : {'meters', 'planar'} or None, default None
+    ``None`` uses ellipsoidal area/length on geographic input and coordinate
+    measures otherwise. ``'planar'`` uses chart measures. ``'meters'`` requires
+    a CRS.
 ", r"
 
 Returns
@@ -948,19 +958,20 @@ Groups
     };
     (@pre) => {
         r"Random points on the geometry. The sample space is its highest
-dimension: coordinate-area weighted for areal input, coordinate-length
+dimension: area weighted for areal input, length
 weighted for lineal input, and equal weight across point atoms. Geographic
 lines follow each retained longitude branch, while geographic areas are split
-into seam- and pole-aware chart parts before sampling. Length and area weights
-use the native coordinate chart, not ellipsoidal measures; for example, a
+into seam- and pole-aware chart parts before sampling. Geographic defaults are
+uniform in ellipsoid surface area and arclength on the straight source-chart
+edges, not in a local projection or along geodesic replacement edges.
+``unit='planar'`` instead uses native chart measure; for example, a
 degree-based 170° to -170° line follows its retained +20° path, contributing
 20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
 chart area, not the complementary raw-coordinate span. Each logical
 member contributes separately, so overlapping members retain their sampling
 multiplicity. A zero-area polygon falls back to its linework, and zero-length
-linework falls back to vertices, like centroid. Deterministic: the same input
-and ``seed`` always produce the same points (an explicit seed is required —
-no hidden global RNG). Array rows draw distinct deterministic streams derived
+linework falls back to vertices, like centroid. An integer ``seed`` reproduces
+the same points for the same input and measure. Array rows draw distinct streams derived
 from ``seed`` and the row index, and a scalar geometry IS row 0 — so
         ``arr.sample_points(n, seed=s)[0]`` and
         ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to

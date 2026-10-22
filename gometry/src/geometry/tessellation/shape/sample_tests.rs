@@ -1,4 +1,4 @@
-use super::geographic_sample_segments;
+use super::{area_density, area_density_bound, geographic_sample_segments};
 use crate::geographic::GeographicFrame;
 use crate::geometry::tessellation::{
     GeographicSampleSegment, PreparedSampling, SampleRecipe, SampleSupport, sample_weighted,
@@ -26,6 +26,25 @@ fn polygon(points: &[(f64, f64)]) -> Polygon {
         Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()).unwrap(),
         Vec::new(),
     )
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+fn prolate_area_sampling_envelope_dominates_equatorial_density() {
+    let model =
+        crate::crs::metric_model(Some("+proj=longlat +a=6371000 +b=6434710 +type=crs")).unwrap();
+    let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+    let triangle = [
+        Point::new(0.0, 0.0).unwrap(),
+        Point::new(1.0, 0.0).unwrap(),
+        Point::new(0.0, 80.0).unwrap(),
+    ];
+    let bound = area_density_bound(&metric, &triangle);
+    assert!(metric.geodesic.f < 0.0);
+    assert!(bound >= 1.0);
+    for latitude in [0.0, 15.0, 45.0, 80.0] {
+        assert!(bound >= area_density(&metric, latitude));
+    }
 }
 
 fn xy_bits(points: &[Point]) -> Vec<(u64, u64)> {
