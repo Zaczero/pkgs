@@ -10,7 +10,7 @@ from gometry._arrow import (
     _extension_type_from_storage,
     _metadata_frame,
 )
-from gometry._geoparquet import (
+from gometry._geoparquet_metadata import (
     _embedded_frame_conflicts,
     _metadata_error,
     _validate_column_metadata,

@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import itertools
 import json
-import math
 import numbers
 import os  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
-import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
+from gometry._geoparquet_metadata import (
+    _ENCODING_BASE_KIND,
+    GEOARROW_ENCODINGS,
+    _embedded_frame_conflicts,
+    _geometry_type_base,
+    _layout_error,
+    _metadata_error,
+    _parse_geo_metadata,
+    _require_native_geometry_types_axes,
+    _validate_column_metadata,
+)
 from gometry._lib import (
-    CRS,
     Geometry,
     GeometryArray,
     GeometryError,
-    ParseError,
     _GeoParquetPhysicalLayout,
 )
 from gometry._optional import missing_optional_dependency
@@ -25,41 +32,6 @@ from gometry._types import FloatScalar, mapping_as_dict
 if TYPE_CHECKING:
     import pyarrow as pa
 
-GEOARROW_ENCODINGS = frozenset({
-    'point',
-    'linestring',
-    'polygon',
-    'multipoint',
-    'multilinestring',
-    'multipolygon',
-})
-_ENCODING_BASE_KIND = {
-    'point': 'Point',
-    'linestring': 'LineString',
-    'polygon': 'Polygon',
-    'multipoint': 'MultiPoint',
-    'multilinestring': 'MultiLineString',
-    'multipolygon': 'MultiPolygon',
-}
-_GEOMETRY_TYPES = frozenset({
-    kind + suffix
-    for kind in (
-        'Point',
-        'LineString',
-        'Polygon',
-        'MultiPoint',
-        'MultiLineString',
-        'MultiPolygon',
-        'GeometryCollection',
-    )
-    for suffix in ('', ' Z')
-})
-_SEMVER_IDENTIFIER = r'(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
-_VERSION_PATTERN = re.compile(
-    rf'^1\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
-    rf'(?:-{_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*)?'
-    r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
-)
 _READ_TABLE_OPTIONS = frozenset({
     'arrow_extensions_enabled',
     'binary_type',
@@ -140,31 +112,6 @@ def _axes_token(has_z: bool, has_m: bool) -> str:
 def _geometry_types(arr: GeometryArray[Geometry | None]) -> list[str]:
     """Sorted unique GeoParquet geometry_types via one native batch call."""
     return arr._geoparquet_geometry_types()
-
-
-def _embedded_frame_conflicts(
-    embedded_crs: str | None,
-    embedded_epoch: float | None,
-    declared_crs: str | None,
-    declared_epoch: float | None,
-    *,
-    declared_epoch_present: bool = True,
-) -> bool:
-    """Whether declared frame metadata contradicts an embedded frame.
-
-    Missing embedded fields are no opinion. CRS labels that name the same
-    coordinate frame, including axis-order aliases, are not conflicts.
-    """
-    if embedded_crs is not None and (
-        declared_crs is None
-        or not CRS(embedded_crs).same_as(declared_crs, mode='ignore_axis_order')
-    ):
-        return True
-    return (
-        embedded_epoch is not None
-        and declared_epoch_present
-        and (declared_epoch is None or embedded_epoch != declared_epoch)
-    )
 
 
 def _remove_id_from_member_of_ensembles(json_dict: dict[str, Any]) -> None:
@@ -407,219 +354,6 @@ def to_geoparquet(
     metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
     table = table.replace_schema_metadata(metadata)
     _pyarrow_parquet().write_table(table, path, **kwargs)
-
-
-def _metadata_error(detail: str) -> ParseError:
-    error = ParseError(f'malformed GeoParquet geo metadata: {detail}')
-    error.format = 'geoparquet'
-    error.category = 'metadata'
-    return error
-
-
-def _layout_error(detail: str) -> GeometryError:
-    error = GeometryError(detail)
-    error.category = 'layout'
-    return error
-
-
-def _geometry_type_base(label: str) -> str:
-    """Strip ordinate suffixes from a GeoParquet geometry_types label."""
-    for suffix in (' ZM', ' Z', ' M'):
-        if label.endswith(suffix):
-            return label[: -len(suffix)]
-    return label
-
-
-def _geometry_type_axes(label: str) -> tuple[bool, bool]:
-    """Return ``(has_z, has_m)`` for a GeoParquet geometry_types label."""
-    if label.endswith(' ZM'):
-        return True, True
-    if label.endswith(' Z'):
-        return True, False
-    if label.endswith(' M'):
-        return False, True
-    return False, False
-
-
-def _require_encoding_geometry_types(
-    column_name: str,
-    encoding: str,
-    geometry_types: Sequence[str],
-) -> None:
-    """Native encoding declares a single kind; geometry_types must agree."""
-    if encoding not in _ENCODING_BASE_KIND:
-        return
-    expected = _ENCODING_BASE_KIND[encoding]
-    for label in geometry_types:
-        if _geometry_type_base(label) != expected:
-            raise _metadata_error(
-                f'column {column_name!r} encoding {encoding!r} is incompatible '
-                f'with geometry_types entry {label!r}'
-            )
-
-
-def _require_native_geometry_types_axes(
-    column_name: str,
-    encoding: str,
-    geometry_types: Sequence[str],
-    storage_has_z: bool,
-    storage_has_m: bool,
-) -> None:
-    """Reject native declarations whose axes exceed structural storage (F6).
-
-    Native GeoArrow storage has fixed ordinate fields. A ``Point Z`` (or M/ZM)
-    inventory entry over fixed XY struct storage is physically impossible.
-    WKB is not checked here — axes live in the blob (N6).
-    """
-    if encoding not in GEOARROW_ENCODINGS:
-        return
-    for label in geometry_types:
-        has_z, has_m = _geometry_type_axes(label)
-        if (has_z and not storage_has_z) or (has_m and not storage_has_m):
-            raise _layout_error(
-                f'column {column_name!r} geometry_types entry {label!r} exceeds '
-                f'structural storage axes (has_z={storage_has_z}, has_m={storage_has_m})'
-            )
-
-
-def _crs_allows_antimeridian_bbox(crs: str | None) -> bool:
-    """True when *crs* is geographic (or absent → default CRS84).
-
-    GeoParquet 1.x defaults missing CRS to OGC:CRS84 and adopts RFC 7946
-    antimeridian bboxes (west > east is legal for longitude). The frame
-    parser only returns a normalized constructible CRS or raises, so a
-    bare geographic check is sufficient.
-    """
-    if crs is None:
-        return True
-    from gometry import CRS
-
-    return bool(CRS(crs).is_geographic)
-
-
-def _validate_bbox(
-    column_name: str,
-    bbox: object,
-    *,
-    allow_antimeridian: bool = False,
-    allow_m: bool = False,
-) -> None:
-    """Reject non-finite, wrong-length, or unordered GeoParquet bbox values.
-
-    When *allow_antimeridian* is true (geographic / default CRS84), X may wrap
-    (west > east). Y and Z must still be ordered min <= max (D14.2).
-    """
-    if (
-        not isinstance(bbox, list)
-        or len(bbox) not in ({4, 6, 8} if allow_m else {4, 6})
-        or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            for value in bbox
-        )
-    ):
-        lengths = 'four, six, or eight' if allow_m else 'four or six'
-        raise _metadata_error(
-            f'column {column_name!r} bbox must contain {lengths} finite numbers'
-        )
-    values = [float(value) for value in bbox]
-    dimensions = len(values) // 2
-    ordered = (allow_antimeridian or values[0] <= values[dimensions]) and all(
-        values[axis] <= values[dimensions + axis] for axis in range(1, dimensions)
-    )
-    if not ordered:
-        raise _metadata_error(
-            f'column {column_name!r} bbox min ordinates must not exceed max ordinates'
-        )
-
-
-def _parse_geo_metadata(schema: Any) -> Mapping[str, Any]:
-    schema_metadata = schema.metadata
-    if schema_metadata is None or b'geo' not in schema_metadata:
-        raise _metadata_error('missing geo metadata in GeoParquet file')
-    try:
-        metadata = json.loads(schema_metadata[b'geo'].decode('utf-8'))
-    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise _metadata_error('geo field is not valid UTF-8 JSON') from error
-    if not isinstance(metadata, Mapping):
-        raise _metadata_error('geo field must contain a JSON object')
-
-    version = metadata.get('version')
-    if not isinstance(version, str):
-        raise _metadata_error('version is required and must be a string')
-    if version != '2.0.0' and _VERSION_PATTERN.fullmatch(version) is None:
-        raise _metadata_error(
-            f'unsupported GeoParquet version: {version!r}; expected 1.x or 2.0.0'
-        )
-    return metadata
-
-
-def _validate_column_metadata(
-    metadata: Mapping[str, Any],
-    column_name: str,
-) -> tuple[Mapping[str, Any], str, str | None, float | None]:
-    columns = metadata.get('columns')
-    if not isinstance(columns, Mapping):
-        raise _metadata_error('columns must be an object')
-    column_metadata = columns.get(column_name)
-    if not isinstance(column_metadata, Mapping):
-        raise _metadata_error(f'columns has no object entry for {column_name!r}')
-
-    encoding = column_metadata.get('encoding')
-    if not isinstance(encoding, str):
-        raise _metadata_error(f'column {column_name!r} encoding is required')
-    if encoding not in {'WKB', *GEOARROW_ENCODINGS, 'geometrycollection'}:
-        raise _metadata_error(f'unsupported GeoParquet geometry encoding: {encoding!r}')
-
-    geometry_types = column_metadata.get('geometry_types')
-    allowed_types = _GEOMETRY_TYPES
-    if metadata.get('version') == '2.0.0':
-        allowed_types |= {
-            _geometry_type_base(kind) + suffix
-            for kind in _GEOMETRY_TYPES
-            for suffix in (' M', ' ZM')
-        }
-    if (
-        not isinstance(geometry_types, list)
-        or any(not isinstance(value, str) for value in geometry_types)
-        or len(set(geometry_types)) != len(geometry_types)
-        or any(value not in allowed_types for value in geometry_types)
-    ):
-        raise _metadata_error(
-            f'column {column_name!r} geometry_types must be a unique array of supported type names'
-        )
-    _require_encoding_geometry_types(column_name, encoding, geometry_types)
-
-    orientation = column_metadata.get('orientation')
-    if orientation is not None and orientation != 'counterclockwise':
-        raise _metadata_error(
-            f'column {column_name!r} orientation must be counterclockwise'
-        )
-
-    from gometry._arrow import _CRS_DEFINITION_KEY
-    from gometry._lib import _parse_geoparquet_column_frame
-
-    # Resolve CRS before bbox validation: absent CRS defaults to CRS84, and
-    # geographic frames allow RFC 7946 antimeridian wrap (west > east).
-    # Native parser owns the CRS/epoch/edges frame boundary on the already-
-    # decoded mapping (no JSON dump → parse round trip).
-    frame_payload = {
-        key: column_metadata[key]
-        for key in ('crs', 'epoch', 'edges', _CRS_DEFINITION_KEY)
-        if key in column_metadata
-    }
-    frame = _parse_geoparquet_column_frame(frame_payload, column_name)
-    crs, epoch = frame.crs, frame.epoch
-    bbox = column_metadata.get('bbox')
-    if bbox is not None:
-        _validate_bbox(
-            column_name,
-            bbox,
-            allow_antimeridian=_crs_allows_antimeridian_bbox(crs),
-            allow_m=metadata.get('version') == '2.0.0',
-        )
-    return column_metadata, encoding, crs, epoch
 
 
 def _dictionary_decode_column(pa: Any, column: Any) -> Any:

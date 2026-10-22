@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from gometry._geoparquet import _metadata_error
+from gometry._geoparquet_metadata import _metadata_error
 from gometry._lib import CRS
 
 _XY_FIELDS = ('xmin', 'ymin', 'xmax', 'ymax')
