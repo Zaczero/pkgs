@@ -200,7 +200,7 @@ pub(crate) fn geometry_to_array_capsules(
     let epoch = geometry.epoch();
     let plan = py
         .detach(move || {
-            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            let plan = arrow_c::plan_shapes(&shapes, crs.as_deref(), epoch)?;
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -278,7 +278,7 @@ pub(crate) fn geometry_to_stream_capsule(
     let epoch = geometry.epoch();
     let plan = py
         .detach(move || {
-            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            let plan = arrow_c::plan_shapes(&shapes, crs.as_deref(), epoch)?;
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;

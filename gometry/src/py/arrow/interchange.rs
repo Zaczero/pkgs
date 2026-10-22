@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::array::{ArrayRow, ComputedCaches, StorageLayout};
 use crate::geometry::storage::GeometryArrayStorage;
+use crate::geometry::storage::validity::ValidityMask;
 use crate::geometry::{
     GeometryKind, Shape, TopologyDomain, admit_literal_geographic_shape,
     geographic_interchange_drawing, geographic_interchange_ready,
@@ -51,7 +52,7 @@ impl<'a> InterchangeArray<'a> {
         };
         let present_count = array
             .missing()
-            .map_or(array.len(), |mask| mask.present_count());
+            .map_or(array.len(), ValidityMask::present_count);
         let mut shapes = Vec::with_capacity(present_count);
         for row in array.row_operation().rows_with_missing(|| ()) {
             if let ArrayRow::Present(row) = row {

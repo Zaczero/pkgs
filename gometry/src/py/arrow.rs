@@ -734,10 +734,10 @@ fn py_from_geoparquet_arrow(
 #[pyo3(name = "_geoparquet_publication", signature = (array, *, encoding = ArrowEncoding::Auto))]
 fn py_geoparquet_publication(
     py: Python<'_>,
-    array: PyRef<'_, PyGeometryArray>,
+    array: &Bound<'_, PyGeometryArray>,
     encoding: ArrowEncoding,
 ) -> PyResult<(Py<PyAny>, PyGeometryArray)> {
-    export::geoparquet_publication(py, &array, encoding)
+    export::geoparquet_publication(py, &array.borrow(), encoding)
 }
 
 pub(crate) use metadata::{

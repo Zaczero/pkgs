@@ -454,20 +454,20 @@ fn plan_storage(
 
 pub(crate) fn plan_shapes(
     shapes: &[Shape],
-    crs: Option<String>,
+    crs: Option<&str>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let frame = crate::Frame::new(crs.as_deref().map(crate::crs_arc), epoch)?;
+    let frame = crate::Frame::new(crs.map(crate::crs_arc), epoch)?;
     let array = PyGeometryArray::mixed_shapes(shapes.to_vec(), frame)?;
     plan_geometry_array(&array, ArrowEncoding::Auto)
 }
 
 pub(crate) fn plan_wkb_shapes(
     shapes: &[Shape],
-    crs: Option<String>,
+    crs: Option<&str>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let frame = crate::Frame::new(crs.as_deref().map(crate::crs_arc), epoch)?;
+    let frame = crate::Frame::new(crs.map(crate::crs_arc), epoch)?;
     let array = PyGeometryArray::mixed_shapes(shapes.to_vec(), frame)?;
     plan_geometry_array(&array, ArrowEncoding::Wkb)
 }

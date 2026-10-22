@@ -54,7 +54,7 @@ pub(crate) fn shapes_to_arrow(
     let crs = crs.map(str::to_owned);
     let plan = py
         .detach(move || {
-            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            let plan = arrow_c::plan_shapes(&shapes, crs.as_deref(), epoch)?;
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -71,7 +71,7 @@ pub(crate) fn shapes_to_wkb_arrow(
     let crs = crs.map(str::to_owned);
     let plan = py
         .detach(move || {
-            let plan = arrow_c::plan_wkb_shapes(&shapes, crs, epoch)?;
+            let plan = arrow_c::plan_wkb_shapes(&shapes, crs.as_deref(), epoch)?;
             arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;

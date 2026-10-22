@@ -3,6 +3,7 @@
 use crate::error::{ResourceError, Result};
 use crate::geographic::retained_exact::sites::round_native_longitude_with_work;
 use crate::geographic::{ChartStep, EdgeDirection, GeographicFrame, Latitude};
+use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, Coordinates as _, ExactDyadic, ExactRational,
     ExpansionBudget, GeometryErrorKind, LineSeq, MOrdinate, Point, Shape, SourceArcMetricAccess,
@@ -66,6 +67,11 @@ fn canonical_point(point: Point, frame: GeographicFrame) -> Result<Point> {
     Ok(point.with_xy_raw(x, y))
 }
 
+#[expect(
+    clippy::while_float,
+    clippy::arithmetic_side_effects,
+    reason = "the loop doubles a checked integer count starting at two; subtraction cannot underflow and overflow or the work budget terminates expansion"
+)]
 fn literal_piece_count(
     start: Point,
     end: Point,
@@ -85,10 +91,14 @@ fn literal_piece_count(
         budget.check_additional(pieces - 1)?;
     }
     budget.add(pieces - 1)?;
-    crate::geometry::types::ensure_coordseq_vertex_capacity(pieces)?;
+    ensure_coordseq_vertex_capacity(pieces)?;
     Ok(pieces)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "usize trailing-zero counts are at most the word width and their i64 negation cannot overflow"
+)]
 fn literal_vertex(
     start: Point,
     end: Point,

@@ -41,12 +41,8 @@ fn release_schema_twice(mut schema: Box<ArrowSchema>) {
 fn exported(geometry: &PyGeometry) -> ExportedArray {
     crate::test_support::initialize_python();
     let shapes = vec![geometry.shape.shape().clone()];
-    let plan = plan_shapes(
-        &shapes,
-        geometry.crs_str().map(str::to_owned),
-        geometry.epoch(),
-    )
-    .expect("test export plan");
+    let plan =
+        plan_shapes(&shapes, geometry.crs_str(), geometry.epoch()).expect("test export plan");
     Python::attach(|py| {
         materialize_export_plan(py, prepare_export_plan(plan).expect("test export schema"))
             .expect("test export")
@@ -59,12 +55,8 @@ fn exported(geometry: &PyGeometry) -> ExportedArray {
 )]
 fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
     let shapes = vec![geometry.shape.shape().clone()];
-    let plan = plan_shapes(
-        &shapes,
-        geometry.crs_str().map(str::to_owned),
-        geometry.epoch(),
-    )
-    .expect("test schema plan");
+    let plan =
+        plan_shapes(&shapes, geometry.crs_str(), geometry.epoch()).expect("test schema plan");
     materialize_schema_plan(&prepare_export_plan(plan).expect("test schema"))
         .expect("test schema")
         .into_box()
