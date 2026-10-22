@@ -8,7 +8,7 @@ import json
 import platform
 import sys
 import sysconfig
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -151,6 +151,70 @@ class RuntimeAdmission:
     distribution_files: frozenset[str] | None
     wheel: WheelAdmission | None
     runtime_selection: Mapping[str, Any] | None
+    shared_inputs: bool = False
+
+
+def admission_record(admission: RuntimeAdmission) -> dict[str, Any]:
+    """Serialize inert admission evidence for a single benchmark run."""
+    record = {
+        field.name: getattr(admission, field.name)
+        for field in fields(admission)
+        if field.name not in {'distribution', 'wheel', 'shared_inputs'}
+    }
+    record['wheel'] = None if admission.wheel is None else asdict(admission.wheel)
+    record['interpreter'] = {
+        key: value for key, value in admission.interpreter.items() if key != 'pid'
+    }
+    # A JSON round trip also normalizes paths, sets and tuples for comparison at
+    # run completion without retaining live distribution objects.
+    return json.loads(
+        json.dumps(
+            record,
+            default=lambda value: (
+                str(value) if isinstance(value, Path) else sorted(value)
+            ),
+        )
+    )
+
+
+def admitted_runtime_inputs(record: Mapping[str, Any]) -> RuntimeAdmission:
+    """Bind digest-admitted run evidence to this worker's distribution."""
+    values = dict(record)
+    for name in (
+        'root',
+        'package_dir',
+        'facade_path',
+        'extension_path',
+        'package_root',
+    ):
+        if values[name] is not None:
+            values[name] = Path(values[name])
+    interpreter = _runtime_interpreter()
+    if {key: value for key, value in interpreter.items() if key != 'pid'} != values[
+        'interpreter'
+    ]:
+        raise AssertionError('worker interpreter differs from run admission')
+    values['interpreter'] = interpreter
+    package_root = values['package_root'] or values['package_dir'].parent
+    distributions = [
+        item
+        for item in importlib.metadata.distributions(path=[str(package_root)])
+        if str(item.metadata.get('Name', '')).lower() == 'gometry'
+    ]
+    if len(distributions) != 1:
+        raise AssertionError('admitted package has no unique gometry distribution')
+    values['distribution'] = distributions[0]
+    inventory = values['distribution_files']
+    values['distribution_files'] = None if inventory is None else frozenset(inventory)
+    wheel = values['wheel']
+    if wheel is not None:
+        wheel = dict(wheel)
+        wheel['path'] = Path(wheel['path'])
+        for name in ('python_members', 'signatures'):
+            wheel[name] = frozenset(wheel[name])
+        wheel['tags'] = tuple(wheel['tags'])
+        values['wheel'] = WheelAdmission(**wheel)
+    return RuntimeAdmission(**values, shared_inputs=True)
 
 
 def _resident_gometry_modules() -> dict[str, ModuleType]:
@@ -184,7 +248,9 @@ def _validate_resident_module_files(
             raise AssertionError(f'resident Gometry module has no file: {name}')
         path = Path(module_file).resolve()
         if name == 'gometry':
-            if path != facade_path:
+            if path != facade_path or sha256_file(path) != python_members.get(
+                'gometry/__init__.py'
+            ):
                 raise AssertionError('a different Gometry facade is already imported')
         elif name == 'gometry._lib':
             payload = (
@@ -664,11 +730,9 @@ def verify_runtime_completion(
         package_dir=admission.package_dir,
         python_members=admission.python_members,
     )
-    if sha256_file(admission.extension_path) != admission.extension_sha256:
-        raise AssertionError(
-            'loaded Gometry extension changed after benchmark admission'
-        )
-    if python_member_hashes(admission.package_dir) != admission.python_members:
+    if not admission.shared_inputs and (
+        python_member_hashes(admission.package_dir) != admission.python_members
+    ):
         raise AssertionError(
             'loaded Gometry Python files changed after benchmark admission'
         )
@@ -687,18 +751,21 @@ def verify_runtime_completion(
         raise AssertionError(
             'Gometry distribution ownership changed after benchmark admission'
         )
-    current_files = distribution.files
-    if admission.distribution_files is not None and (
-        current_files is None
-        or frozenset(PurePosixPath(str(member)).as_posix() for member in current_files)
-        != admission.distribution_files
-    ):
-        raise AssertionError(
-            'Gometry distribution inventory changed after benchmark admission'
-        )
+    if not admission.shared_inputs and admission.distribution_files is not None:
+        current_files = distribution.files
+        if (
+            current_files is None
+            or frozenset(
+                PurePosixPath(str(member)).as_posix() for member in current_files
+            )
+            != admission.distribution_files
+        ):
+            raise AssertionError(
+                'Gometry distribution inventory changed after benchmark admission'
+            )
 
     wheel = admission.wheel
-    if wheel is not None:
+    if wheel is not None and not admission.shared_inputs:
         if sha256_file(wheel.path) != wheel.sha256:
             raise AssertionError('runtime wheel changed after benchmark admission')
         immutable_quality_tree = (
@@ -728,7 +795,10 @@ def verify_runtime_completion(
                     f'installed wheel member changed after benchmark admission: {member}'
                 )
 
-    if admission.receipt.get('kind') == 'gometry-quality-runtime':
+    if (
+        not admission.shared_inputs
+        and admission.receipt.get('kind') == 'gometry-quality-runtime'
+    ):
         if read_quality_receipt(admission.root) != admission.receipt:
             raise AssertionError('quality runtime receipt changed after admission')
         try:
@@ -794,12 +864,14 @@ def verify_admitted_runtime(
         python_members=python_members,
         extension_payload=extension_payload,
     )
-    actual_python_members = python_member_hashes(package_dir)
-    if actual_python_members != python_members:
+    if (
+        not admission.shared_inputs
+        and python_member_hashes(package_dir) != python_members
+    ):
         raise AssertionError(
             'loaded Gometry Python files changed after runtime admission'
         )
-    if receipt.get('kind') == 'gometry-quality-runtime':
+    if not admission.shared_inputs and receipt.get('kind') == 'gometry-quality-runtime':
         try:
             validate_quality_producer_inputs(root, receipt)
         except QualityPreparationRequired as error:
@@ -883,7 +955,7 @@ def verify_admitted_runtime(
     ):
         raise AssertionError('gometry distribution ownership changed after admission')
 
-    if admission.distribution_files is not None:
+    if not admission.shared_inputs and admission.distribution_files is not None:
         current_distribution_files = distribution.files
         if (
             current_distribution_files is None
@@ -897,7 +969,7 @@ def verify_admitted_runtime(
                 'gometry distribution file inventory changed after admission'
             )
 
-    if wheel is not None:
+    if wheel is not None and not admission.shared_inputs:
         if sha256_file(wheel.path) != wheel.sha256:
             raise AssertionError('runtime wheel changed after inert admission')
         immutable_quality_tree = (
@@ -928,7 +1000,11 @@ def verify_admitted_runtime(
                 )
 
     target_policy = admission.target_policy
-    actual_native = native_image_facts(extension_payload, extension_path)
+    actual_native = (
+        wheel.native['extension']
+        if admission.shared_inputs and wheel is not None
+        else native_image_facts(extension_payload, extension_path)
+    )
     if wheel is None:
         validate_wheel_native_target(
             {'native': actual_native},

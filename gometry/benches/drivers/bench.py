@@ -246,6 +246,8 @@ def _benchmark_environment(
         'GOMETRY_BENCH_PACKAGE_ROOT',
         'GOMETRY_BENCH_INVOCATION_ID',
         'GOMETRY_BENCH_CONTROL',
+        'GOMETRY_BENCH_ADMISSION_PATH',
+        'GOMETRY_BENCH_ADMISSION_SHA256',
     }
     if side is not None:
         environment['GOMETRY_BENCH_SIDE'] = side
@@ -505,6 +507,15 @@ def _resource_summaries(
         if plan['kind'] != 'resource' or not output.is_file():
             continue
         payload = json.loads(output.read_text(encoding='utf-8'))
+        reference = subject.get('run_admission')
+        if reference is not None:
+            from benchmark_evidence import expand_artifact, read_admission
+
+            payload = expand_artifact(
+                payload,
+                read_admission(Path(reference['path']), reference['sha256']),
+                reference['sha256'],
+            )
         identity = payload.get('producer_identity')
         case_process = payload.get('case_process')
         case_path = Path(plan['case_path']).resolve()
@@ -643,6 +654,26 @@ def _stage_run_evidence(
             f'publication rejected: reserved evidence path: {relative_oracle}'
         )
     sources[relative_oracle] = oracle_path
+    admission = result.get('artifact_admission')
+    if admission is not None:
+        from benchmark_evidence import run_admission
+
+        try:
+            run_admission(result, run_manifest)
+            relative, source = _confined_run_artifact(
+                run_directory, admission['path'], label='artifact admission'
+            )
+        except (OSError, ValueError, KeyError) as error:
+            raise SystemExit(
+                f'publication rejected: admission evidence: {error}'
+            ) from error
+        if (
+            relative in sources
+            or relative == 'run.json'
+            or relative.startswith('receipts/')
+        ):
+            raise SystemExit('publication rejected: duplicate admission evidence path')
+        sources[relative] = source
 
     evidence_root.mkdir(parents=True, exist_ok=True)
     stage: Path | None = None
@@ -1394,6 +1425,15 @@ def publish_run(run_manifest: Path, *, current_dir: Path | None = None) -> Path:
         ) from error
     if not isinstance(result, dict):
         raise SystemExit(f'run manifest {run_manifest} must contain a JSON object')
+    if 'artifact_admission' in result:
+        from benchmark_evidence import expand_run_manifest
+
+        try:
+            result = expand_run_manifest(result, run_manifest)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise SystemExit(
+                f'publication rejected: admission evidence: {error}'
+            ) from error
     if (
         result.get('manifest_type') != _RUN_MANIFEST_TYPE
         or result.get('schema_version') != _MANIFEST_SCHEMA_VERSION
@@ -1579,6 +1619,10 @@ def main() -> None:
         ) from exc
     raw_directory = run_directory / 'raw'
     raw_directory.mkdir()
+    if not args.plan_only:
+        benchmark_runtime.prepare_run_admission(
+            receipt_binding, package_root, run_directory / 'admission.json'
+        )
     cpu, cpu_selection = select_benchmark_cpu(args.cpu)
     plans, _outputs = _benchmark_plans(
         profile_name=args.profile,
@@ -1607,7 +1651,12 @@ def main() -> None:
         'suite': 'oracle',
         'label': 'oracle',
         'rows': (),
-        'environment': None,
+        'environment': _benchmark_environment(
+            receipt_binding,
+            package_root,
+            invocation_id=uuid.uuid4().hex,
+            control=False,
+        ),
         'command': _oracle_command(selected, output=oracle_output),
         'output': str(oracle_output),
     }
@@ -1666,12 +1715,16 @@ def main() -> None:
     if not args.plan_only:
         oracle_result = _run(
             oracle_plan['command'],
-            environment=None,
+            environment=oracle_plan['environment'],
             timeout=min(profile.command_timeout, profile.total_timeout),
         )
         oracle_result['suite'] = 'oracle'
         oracle_result['label'] = 'oracle'
         oracle_result['kind'] = 'oracle'
+        if oracle_result['returncode'] == 0 and oracle_output.is_file():
+            oracle_result['phase_seconds'] = _read_json_object(
+                oracle_output, label='oracle result'
+            ).get('phase_seconds', {})
         commands.append(oracle_result)
         if oracle_result['returncode']:
             # Failed oracle: no measurement commands, publishable=false, nonzero.
@@ -1716,6 +1769,10 @@ def main() -> None:
                 result['suite'] = plan['suite']
                 result['label'] = plan['label']
                 result['kind'] = plan.get('kind', 'paired-block')
+                if result['returncode'] == 0 and Path(plan['output']).is_file():
+                    result['phase_seconds'] = _read_json_object(
+                        Path(plan['output']), label='worker result'
+                    ).get('phase_seconds', {})
                 commands.append(result)
                 if result['returncode']:
                     break
@@ -1740,6 +1797,9 @@ def main() -> None:
             and len(commands) == expected_commands
             and all(command['returncode'] == 0 for command in commands)
         )
+    admission_completion = None
+    if not args.plan_only:
+        admission_completion = benchmark_runtime.complete_run_admission(receipt_binding)
     artifact_plans = ([] if args.plan_only else [oracle_plan]) + timing_plans
     artifacts = [
         Path(plan['output']).relative_to(run_directory).as_posix()
@@ -1808,6 +1868,19 @@ def main() -> None:
             else _resource_summaries(plans, subject=receipt_binding)
         ),
     }
+    if admission_completion is not None:
+        result['artifact_admission'] = {
+            'path': 'admission.json',
+            'sha256': receipt_binding['run_admission']['sha256'],
+            'completion_verified': True,
+            'phase_seconds': {
+                'admission': receipt_binding['run_admission']['seconds'],
+                **admission_completion,
+            },
+        }
+        from benchmark_evidence import compact_artifact
+
+        result = compact_artifact(result, receipt_binding['run_admission']['sha256'])
     output = run_directory / 'run.json'
     _write_json_once(output, result, label='run manifest')
     print(f'wrote {output}')

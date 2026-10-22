@@ -218,6 +218,7 @@ def run_block(
     if min_sample_ns < 1:
         raise SystemExit('minimum sample duration must be positive')
     phase = operation.phase
+    fixture_started = time.perf_counter()
     invocation_id = os.environ.get('GOMETRY_BENCH_INVOCATION_ID') or uuid.uuid4().hex
     if phase == 'first-use':
         raise SystemExit(
@@ -261,6 +262,7 @@ def run_block(
     # first so the attested native libraries cannot change mid-block.
     for package in sorted(packages_required_by_operations((operation,))):
         importlib.import_module(package)
+    fixture_ended = time.perf_counter()
     common_before = identity()
     block_started = clock_ns()
     if common_before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
@@ -275,6 +277,7 @@ def run_block(
         }
     else:
         arm_identity_before = {'A': {}, 'B': {}}
+    measurement_started = time.perf_counter()
     measured = {
         side: _measure_arm(
             row=arms[side][0],
@@ -291,6 +294,7 @@ def run_block(
         )
         for side in order
     }
+    measurement_ended = time.perf_counter()
     common_after = completion() if completion is not None else identity()
     if common_before != common_after:
         raise SystemExit(
@@ -355,6 +359,10 @@ def run_block(
             'scaling': scaling_record(operation),
         },
         'arms': measured,
+        'phase_seconds': {
+            'fixture_and_competitor_import': fixture_ended - fixture_started,
+            'measurement': measurement_ended - measurement_started,
+        },
     }
 
 
@@ -408,6 +416,13 @@ def main(argv: list[str] | None = None) -> int:
         completion=runtime.complete,
         min_sample_ns=int(args.min_sample_time * 1_000_000_000),
     )
+    artifact['phase_seconds'].update(runtime.phase_seconds or {})
+    if runtime.run_admission is not None:
+        from benchmark_evidence import compact_artifact
+
+        artifact = compact_artifact(
+            artifact, runtime.subject['run_admission']['sha256']
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:
         json.dump(artifact, stream, indent=2, sort_keys=True)

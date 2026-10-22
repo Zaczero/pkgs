@@ -159,26 +159,10 @@ def _uv_lock_identity() -> dict[str, Any]:
     return {'path': None, 'sha256': None, 'size_bytes': None}
 
 
-_CONTENT_DIGESTS: dict[tuple[str, int, int, int], tuple[str, int]] = {}
-
-
 def _content_digest(path: Path) -> tuple[str, int]:
-    """SHA-256 and byte size of `path`, reused while its stat identity holds.
-
-    A paired block attests the extension and every loaded native library both
-    before and after timing; a changed file has a new stat key and is hashed
-    again, so the attestation still detects replacement.
-    """
-    stat = path.stat()
-    key = (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns)
-    known = _CONTENT_DIGESTS.get(key)
-    if known is None:
-        payload = path.read_bytes()
-        known = _CONTENT_DIGESTS[key] = (
-            hashlib.sha256(payload).hexdigest(),
-            len(payload),
-        )
-    return known
+    """Identify current bytes, including replacements preserving file metadata."""
+    payload = path.read_bytes()
+    return hashlib.sha256(payload).hexdigest(), len(payload)
 
 
 def _file_identity(path: Path | None) -> dict[str, Any] | None:

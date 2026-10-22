@@ -32,8 +32,10 @@ for _path in (_TOOLS, _DRIVERS):
 from _artifact_common import _runtime_interpreter, sha256_file
 from bench_doctor import (
     PACKAGES,
-    _loaded_native_libraries,
     _package_identity,
+    _distribution_owned_paths,
+    _ENGINE_LIBRARY_TOKENS,
+    _native_library_paths,
     _run,
     _source_inputs_digest,
     _uv_lock_identity,
@@ -49,6 +51,8 @@ from benchmark_identity import (
     validate_producer_identity,
 )
 from benchmark_observation import validate_observation
+from benchmark_evidence import expand_artifact, read_admission
+from benchmark_evidence import identity_digest as identity_sha256
 
 _DEPENDENCIES = (
     'gometry',
@@ -84,6 +88,29 @@ def _distribution_identity(distribution: Any) -> dict[str, Any]:
         'record': _file_identity(record) if record.is_file() else None,
         'record_available': record.is_file(),
     }
+
+
+def _benchmark_libraries(
+    packages: dict[str, Any], extension_path: Path
+) -> list[dict[str, Any]]:
+    owned_paths = {
+        path
+        for package in packages.values()
+        for path in (_distribution_owned_paths(package['distribution']) or ())
+    }
+    engine_tokens = tuple(
+        token for name in packages for token in _ENGINE_LIBRARY_TOKENS.get(name, ())
+    )
+    libraries = [
+        _file_identity(path)
+        for path in _native_library_paths()
+        if str(path.resolve()) in owned_paths
+        or path.resolve() == extension_path
+        or any(token in path.name.lower() for token in engine_tokens)
+    ]
+    if not any(item['path'] == str(extension_path) for item in libraries):
+        libraries.append(_file_identity(extension_path))
+    return libraries
 
 
 def default_subject_path(root: Path = _GOMETRY_ROOT) -> Path:
@@ -202,6 +229,13 @@ def environment_for_subject(
     environment['GOMETRY_BENCH_SUBJECT_SHA256'] = subject['receipt_sha256']
     environment['GOMETRY_BENCH_PACKAGE_ROOT'] = str(package_root.resolve())
     environment['GOMETRY_BENCH_INVOCATION_ID'] = invocation_id
+    reference = subject.get('run_admission')
+    if reference is not None:
+        environment['GOMETRY_BENCH_ADMISSION_PATH'] = reference['path']
+        environment['GOMETRY_BENCH_ADMISSION_SHA256'] = reference['sha256']
+    else:
+        environment.pop('GOMETRY_BENCH_ADMISSION_PATH', None)
+        environment.pop('GOMETRY_BENCH_ADMISSION_SHA256', None)
     if control:
         environment['GOMETRY_BENCH_CONTROL'] = '1'
     else:
@@ -220,8 +254,12 @@ class BenchmarkRuntime:
     wheel_item: dict[str, Any]
     package_root: Path
     identity: dict[str, Any] | None = None
+    run_admission: dict[str, Any] | None = None
+    phase_seconds: dict[str, float] | None = None
+    modules: dict[str, Any] | None = None
 
     def collect_identity(self) -> dict[str, Any]:
+        started = time.perf_counter()
         if self.identity is not None:
             raise AssertionError('benchmark process identity was already collected')
         _, extension_module, _ = self.runtime
@@ -240,7 +278,7 @@ class BenchmarkRuntime:
             )
         source_digest = benchmark_source_inputs_identity(
             build_info,
-            _source_inputs_digest(),
+            None if self.run_admission is not None else _source_inputs_digest(),
             expected_source,
         )
         facade_identity = _file_identity(self.admission.facade_path)
@@ -248,6 +286,7 @@ class BenchmarkRuntime:
         packages = {
             name: identity
             for name in _DEPENDENCIES
+            if name in sys.modules
             if (identity := _package_identity(name)) is not None
         }
         packages['gometry'] = {
@@ -269,13 +308,19 @@ class BenchmarkRuntime:
             'wheel': {
                 'path': str(self.wheel_path),
                 'filename': self.wheel_item['filename'],
-                'archive': _file_identity(self.wheel_path),
+                'archive': (
+                    self.run_admission['wheel_archive']
+                    if self.run_admission is not None
+                    else _file_identity(self.wheel_path)
+                ),
                 'extension_member': self.wheel_item['extension_member'],
                 'extension_sha256': self.wheel_item['extension_sha256'],
             },
             'distribution': distribution,
             'python_members': dict(self.admission.python_members),
         }
+        if self.run_admission is not None:
+            binding['admission_sha256'] = self.subject['run_admission']['sha256']
         if binding['wheel']['archive']['sha256'] != self.wheel_item['sha256']:
             raise AssertionError('selected benchmark wheel changed after admission')
         if (
@@ -284,14 +329,16 @@ class BenchmarkRuntime:
         ):
             raise AssertionError('quality package root differs from runtime admission')
 
-        native_libraries = _loaded_native_libraries()
+        native_libraries = _benchmark_libraries(packages, extension_path)
         native_libraries = [
             extension if item.get('path') == extension['path'] else item
             for item in native_libraries
         ]
-        if not any(item.get('path') == extension['path'] for item in native_libraries):
-            native_libraries.append(extension)
-        harness_commit = _run(['git', 'rev-parse', 'HEAD'])
+        harness_commit = (
+            self.run_admission['harness_commit']
+            if self.run_admission is not None
+            else _run(['git', 'rev-parse', 'HEAD'])
+        )
         if not harness_commit:
             raise AssertionError('cannot identify benchmark harness commit')
         python_build = {
@@ -300,6 +347,12 @@ class BenchmarkRuntime:
             'build': platform.python_build(),
             'debug': bool(sysconfig.get_config_var('Py_DEBUG')),
         }
+        interpreter_binary = _file_identity(Path(sys.executable))
+        if (
+            self.run_admission is not None
+            and interpreter_binary != self.run_admission['interpreter_binary']
+        ):
+            raise AssertionError('worker interpreter bytes differ from run admission')
         gil_probe = getattr(sys, '_is_gil_enabled', None)
         source_commit = source.get('commit')
         common = {
@@ -307,7 +360,11 @@ class BenchmarkRuntime:
             'harness_commit': harness_commit,
             'source_inputs_sha256': source_digest,
             'extension': extension,
-            'uv_lock': _uv_lock_identity(),
+            'uv_lock': (
+                self.run_admission['uv_lock']
+                if self.run_admission is not None
+                else _uv_lock_identity()
+            ),
             'packages': packages,
             'loaded_native_libraries': native_libraries,
             'python': {
@@ -321,6 +378,7 @@ class BenchmarkRuntime:
                 'gil_disabled': bool(sysconfig.get_config_var('Py_GIL_DISABLED')),
                 'gil_enabled': bool(gil_probe()) if callable(gil_probe) else True,
                 'build': python_build,
+                'binary': interpreter_binary,
             },
             'runtime_binding': binding,
             'source_commit': source_commit,
@@ -351,38 +409,73 @@ class BenchmarkRuntime:
             verify_archive=False,
         )
         self.identity = common
+        self.modules = {
+            name: module
+            for name, module in tuple(sys.modules.items())
+            if name.split('.', 1)[0] in packages
+        }
+        if self.phase_seconds is not None:
+            self.phase_seconds['identity'] = time.perf_counter() - started
         return common
 
     def complete(self) -> dict[str, Any]:
+        started = time.perf_counter()
         if self.identity is None:
             raise AssertionError(
                 'benchmark process completed before identity collection'
             )
-        if sha256_file(self.receipt_path) != self.receipt_sha256:
-            raise AssertionError('benchmark subject receipt changed during measurement')
         if (
+            self.run_admission is None
+            and sha256_file(self.receipt_path) != self.receipt_sha256
+        ):
+            raise AssertionError('benchmark subject receipt changed during measurement')
+        if self.run_admission is None and (
             sha256_file(self.wheel_path)
             != self.identity['runtime_binding']['wheel']['archive']['sha256']
         ):
             raise AssertionError('benchmark subject wheel changed during measurement')
         runtime_artifact.verify_runtime_completion(self.admission, self.runtime)
+        if _file_identity(Path(sys.executable)) != self.identity['python']['binary']:
+            raise AssertionError(
+                'benchmark interpreter bytes changed during measurement'
+            )
+        if self.modules is not None and any(
+            sys.modules.get(name) is not module for name, module in self.modules.items()
+        ):
+            raise AssertionError('benchmark module objects changed during measurement')
+        for name, package in self.identity['packages'].items():
+            if name != 'gometry' and _package_identity(name) != package:
+                raise AssertionError(
+                    f'benchmark package changed during measurement: {name}'
+                )
+        libraries = _benchmark_libraries(
+            self.identity['packages'], self.admission.extension_path
+        )
+        expected_libraries = [
+            {key: item[key] for key in ('path', 'sha256', 'size_bytes')}
+            for item in self.identity['loaded_native_libraries']
+        ]
+        if libraries != expected_libraries:
+            raise AssertionError(
+                'benchmark native libraries changed during measurement'
+            )
+        if self.run_admission is not None:
+            _verify_distribution(self.admission, self.run_admission)
+            if (
+                sha256_file(Path(self.subject['run_admission']['path']))
+                != self.subject['run_admission']['sha256']
+            ):
+                raise AssertionError(
+                    'benchmark run admission changed during measurement'
+                )
+        if self.phase_seconds is not None:
+            self.phase_seconds['completion'] = time.perf_counter() - started
         return self.identity
 
 
-def admit_runtime(
-    receipt_path: Path | None = None,
-    *,
-    expected_receipt_sha256: str | None = None,
-    package_root: Path | str | None = None,
-) -> BenchmarkRuntime:
-    subject = load_subject(
-        receipt_path,
-        expected_receipt_sha256=expected_receipt_sha256,
-    )
-    selected_package_root = package_root_for_subject(subject, package_root)
-    runtime_artifact.check_import_resolution(
-        selected_package_root / 'gometry' / '__init__.py'
-    )
+def _inspect_subject(
+    subject: dict[str, Any], selected_package_root: Path
+) -> tuple[Any, Path, dict[str, Any]]:
     if subject['kind'] == 'wheel':
         runtime_receipt = {
             **subject['runtime_receipt'],
@@ -417,8 +510,113 @@ def admit_runtime(
             'admitted Gometry package root differs from the selected path: '
             f'{actual_package_root} != {selected_package_root}'
         )
+    return admission, wheel_path, wheel_item
+
+
+def prepare_run_admission(
+    subject: dict[str, Any], package_root: Path, path: Path
+) -> dict[str, Any]:
+    """Inspect shared artifacts once before any fresh benchmark workers start."""
+    started = time.perf_counter()
+    if 'run_admission' in subject:
+        raise AssertionError('benchmark subject already belongs to a run admission')
+    admission, wheel_path, _ = _inspect_subject(subject, package_root)
+    record = {
+        'kind': 'gometry-benchmark-admission',
+        'subject': dict(subject),
+        'runtime': runtime_artifact.admission_record(admission),
+        'distribution': _distribution_identity(admission.distribution),
+        'wheel_archive': _file_identity(wheel_path),
+        'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
+        'uv_lock': _uv_lock_identity(),
+        'interpreter_binary': _file_identity(Path(sys.executable)),
+    }
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(record, stream, sort_keys=True, indent=2)
+        stream.write('\n')
+    subject['run_admission'] = {
+        'path': str(path.resolve()),
+        'sha256': sha256_file(path),
+        'seconds': time.perf_counter() - started,
+    }
+    return record
+
+
+def _verify_distribution(admission: Any, record: dict[str, Any]) -> None:
+    if _distribution_identity(admission.distribution) != record['distribution']:
+        raise AssertionError('worker distribution ownership differs from run admission')
+
+
+def complete_run_admission(subject: dict[str, Any]) -> dict[str, float]:
+    """Revalidate shared bytes and source evidence before accepting the run."""
+    started = time.perf_counter()
+    reference = subject['run_admission']
+    path = Path(reference['path'])
+    record = read_admission(path, reference['sha256'])
+    original = record['subject']
+    current = load_subject(
+        Path(original['path']),
+        expected_receipt_sha256=original['receipt_sha256'],
+    )
+    if current != original:
+        raise AssertionError('benchmark subject evidence changed during run')
+    admission, _, _ = _inspect_subject(
+        current, Path(record['runtime']['package_dir']).parent
+    )
+    if runtime_artifact.admission_record(admission) != record['runtime']:
+        raise AssertionError('benchmark artifact evidence changed during run')
+    _verify_distribution(admission, record)
+    if _uv_lock_identity() != record['uv_lock']:
+        raise AssertionError('benchmark dependency lock changed during run')
+    if _file_identity(Path(sys.executable)) != record['interpreter_binary']:
+        raise AssertionError('benchmark interpreter bytes changed during run')
+    return {'completion': time.perf_counter() - started}
+
+
+def admit_runtime(
+    receipt_path: Path | None = None,
+    *,
+    expected_receipt_sha256: str | None = None,
+    package_root: Path | str | None = None,
+) -> BenchmarkRuntime:
+    started = time.perf_counter()
+    record_path = os.environ.get('GOMETRY_BENCH_ADMISSION_PATH')
+    record_digest = os.environ.get('GOMETRY_BENCH_ADMISSION_SHA256')
+    if (record_path is None) != (record_digest is None):
+        raise AssertionError('benchmark admission path and digest must be paired')
+    record = None
+    if record_path is not None:
+        path = Path(record_path)
+        assert record_digest is not None
+        record = read_admission(path, record_digest)
+        subject = dict(record['subject'])
+        if (
+            receipt_path is not None and str(receipt_path.resolve()) != subject['path']
+        ) or (
+            expected_receipt_sha256 is not None
+            and expected_receipt_sha256 != subject['receipt_sha256']
+        ):
+            raise AssertionError('worker subject differs from run admission')
+        subject['run_admission'] = {'path': str(path), 'sha256': record_digest}
+        selected_package_root = package_root_for_subject(subject, package_root)
+        admission = runtime_artifact.admitted_runtime_inputs(record['runtime'])
+        if admission.package_dir.parent != selected_package_root:
+            raise AssertionError('worker package root differs from run admission')
+        _verify_distribution(admission, record)
+        wheel_path = Path(record['wheel_archive']['path'])
+        wheel_item = admission.receipt['wheel']
+    else:
+        subject = load_subject(
+            receipt_path, expected_receipt_sha256=expected_receipt_sha256
+        )
+        selected_package_root = package_root_for_subject(subject, package_root)
+        admission, wheel_path, wheel_item = _inspect_subject(
+            subject, selected_package_root
+        )
     runtime_artifact.check_runtime_resolution(admission)
+    admitted = time.perf_counter()
     runtime = runtime_artifact.verify_admitted_runtime(admission)
+    imported = time.perf_counter()
     return BenchmarkRuntime(
         subject=subject,
         admission=admission,
@@ -428,6 +626,8 @@ def admit_runtime(
         wheel_path=wheel_path,
         wheel_item=wheel_item,
         package_root=selected_package_root,
+        run_admission=record,
+        phase_seconds={'admission': admitted - started, 'import': imported - admitted},
     )
 
 
@@ -443,6 +643,9 @@ def validate_identity_for_subject(
     binding = identity.get('runtime_binding')
     if not isinstance(binding, dict):
         raise TypeError('case process did not report runtime admission')
+    reference = subject.get('run_admission')
+    if reference is not None and binding.get('admission_sha256') != reference['sha256']:
+        raise AssertionError('worker admission reference differs from selected run')
     if (
         binding.get('kind') != subject.get('kind')
         or binding.get('path') != subject.get('path')
@@ -517,12 +720,6 @@ def validate_identity_for_subject(
     }:
         raise AssertionError('case process source attribution differs from subject')
     return attributed
-
-
-def identity_sha256(identity: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    ).hexdigest()
 
 
 def _stop_controlled_process(process: subprocess.Popen[bytes]) -> None:
@@ -777,7 +974,11 @@ def run_controlled_process(
                 payload = json.loads(result_line)
             except json.JSONDecodeError as error:
                 raise SystemExit(f'{case}: observation JSON is malformed') from error
-            if not isinstance(payload, dict) or set(payload) != {'observation'}:
+            if (
+                not isinstance(payload, dict)
+                or 'observation' not in payload
+                or set(payload) - {'observation', 'benchmark_evidence', 'phase_seconds'}
+            ):
                 raise SystemExit(f'{case}: case stdout contains an unexpected result')
         else:
             try:
@@ -788,6 +989,16 @@ def run_controlled_process(
                 ) from error
         if not isinstance(payload, dict):
             raise SystemExit(f'{case}: controlled case result is not an object')
+        reference = subject.get('run_admission')
+        payload = expand_artifact(
+            payload,
+            (
+                read_admission(Path(reference['path']), reference['sha256'])
+                if reference is not None
+                else None
+            ),
+            reference['sha256'] if reference is not None else None,
+        )
         case_process = payload.get('case_process')
         identity = payload.get('producer_identity')
         if result_path is None:

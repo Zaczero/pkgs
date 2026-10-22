@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -28,11 +29,13 @@ _INVOCATION_ID: str | None = None
 _CASE_FACTS: dict[str, Any] | None = None
 _MEASUREMENT_AUTHORIZED = False
 _MEASUREMENT_FINISHED = False
+_PREPARATION_STARTED: float | None = None
+_MEASUREMENT_STARTED: float | None = None
 
 
 def bootstrap() -> None:
     """Admit the explicitly selected package before the case imports Gometry."""
-    global _RUNTIME, _INVOCATION_ID
+    global _RUNTIME, _INVOCATION_ID, _PREPARATION_STARTED
     if _RUNTIME is not None:
         raise AssertionError('focused case runtime was bootstrapped twice')
     receipt_path = os.environ.get('GOMETRY_BENCH_SUBJECT_PATH')
@@ -49,11 +52,17 @@ def bootstrap() -> None:
         expected_receipt_sha256=receipt_sha256,
         package_root=package_root,
     )
+    _PREPARATION_STARTED = time.perf_counter()
 
 
 def prepare_measurement() -> dict[str, Any]:
     """Report admitted case identity and wait for driver permission before timing."""
-    global _IDENTITY, _COMMON_IDENTITY, _CASE_FACTS, _MEASUREMENT_AUTHORIZED
+    global \
+        _IDENTITY, \
+        _COMMON_IDENTITY, \
+        _CASE_FACTS, \
+        _MEASUREMENT_AUTHORIZED, \
+        _MEASUREMENT_STARTED
     if _RUNTIME is None:
         raise AssertionError('focused case did not admit its runtime before imports')
     if _MEASUREMENT_FINISHED:
@@ -63,6 +72,10 @@ def prepare_measurement() -> dict[str, Any]:
         return _IDENTITY
     if _INVOCATION_ID is None:
         raise SystemExit('focused benchmark timing requires the driver control channel')
+    if _PREPARATION_STARTED is not None and _RUNTIME.phase_seconds is not None:
+        _RUNTIME.phase_seconds['case_import_and_preparation'] = (
+            time.perf_counter() - _PREPARATION_STARTED
+        )
     _COMMON_IDENTITY = _RUNTIME.collect_identity()
     side = os.environ.get('GOMETRY_BENCH_SIDE')
     row = os.environ.get('GOMETRY_BENCH_ROW')
@@ -104,6 +117,7 @@ def prepare_measurement() -> dict[str, Any]:
     ):
         raise SystemExit('benchmark driver did not authorize this case invocation')
     _MEASUREMENT_AUTHORIZED = True
+    _MEASUREMENT_STARTED = time.perf_counter()
     return _IDENTITY
 
 
@@ -121,6 +135,10 @@ def finish_measurement() -> dict[str, Any]:
         raise AssertionError('focused case completed without driver authorization')
     if _MEASUREMENT_FINISHED:
         raise AssertionError('focused case measurement completion was reported twice')
+    if _MEASUREMENT_STARTED is not None and _RUNTIME.phase_seconds is not None:
+        _RUNTIME.phase_seconds['measurement'] = (
+            time.perf_counter() - _MEASUREMENT_STARTED
+        )
     identity_digest = identity_sha256(_IDENTITY)
     measurement_done = {
         'type': 'measurement-done',
@@ -171,6 +189,18 @@ def finish_measurement() -> dict[str, Any]:
     }
 
 
+def result_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach process phase costs and share admitted run evidence on disk."""
+    if _RUNTIME is None:
+        raise AssertionError('benchmark result has no admitted runtime')
+    payload['phase_seconds'] = dict(_RUNTIME.phase_seconds or {})
+    if _RUNTIME.run_admission is None:
+        return payload
+    from benchmark_evidence import compact_artifact
+
+    return compact_artifact(payload, _RUNTIME.subject['run_admission']['sha256'])
+
+
 def emit(
     *,
     metric: str,
@@ -201,4 +231,4 @@ def emit(
     observation['producer_identity'] = _IDENTITY
     validate_observation(observation)
     observation['case_process'] = finish_measurement()
-    print(json.dumps({'observation': observation}, sort_keys=True))
+    print(json.dumps(result_evidence({'observation': observation}), sort_keys=True))

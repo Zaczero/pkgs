@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 _PYTHON = Path(__file__).resolve().parent
@@ -36,6 +38,17 @@ from _bench_oracles import (
     public_oracle_identity,
 )
 from _bench_registry import ALL_PUBLIC_OPERATIONS, RELEASE_OPERATIONS, ScalingOperation
+
+_RUNTIME = None
+if os.environ.get('GOMETRY_BENCH_SUBJECT_PATH'):
+    import benchmark_runtime
+
+    _RUNTIME = benchmark_runtime.admit_runtime(
+        Path(os.environ['GOMETRY_BENCH_SUBJECT_PATH']),
+        expected_receipt_sha256=os.environ['GOMETRY_BENCH_SUBJECT_SHA256'],
+        package_root=os.environ['GOMETRY_BENCH_PACKAGE_ROOT'],
+    )
+_FIXTURE_STARTED = time.perf_counter()
 
 # Register the public PairCase builders (side-effect import).
 import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
@@ -171,6 +184,14 @@ def run_oracle(
             gc.collect()
 
     print(f'oracle complete: {verified} passed, 0 skipped', flush=True)
+    producer_identity = None
+    if _RUNTIME is not None:
+        if _RUNTIME.phase_seconds is not None:
+            _RUNTIME.phase_seconds['fixture_and_oracle'] = (
+                time.perf_counter() - _FIXTURE_STARTED
+            )
+        producer_identity = _RUNTIME.collect_identity()
+        _RUNTIME.complete()
     if output is not None:
         payload = {
             'schema_version': 1,
@@ -180,6 +201,15 @@ def run_oracle(
             'verified': verified,
             'state_scope': 'external-fresh-process',
         }
+        if _RUNTIME is not None:
+            from benchmark_evidence import compact_artifact
+
+            payload['producer_identity'] = producer_identity
+            payload['phase_seconds'] = dict(_RUNTIME.phase_seconds or {})
+            if _RUNTIME.run_admission is not None:
+                payload = compact_artifact(
+                    payload, _RUNTIME.subject['run_admission']['sha256']
+                )
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open('x', encoding='utf-8') as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)

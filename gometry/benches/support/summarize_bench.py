@@ -113,7 +113,16 @@ def _manifest_payload(path: Path) -> dict[str, Any] | None:
         payload = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    if 'artifact_admission' in payload:
+        from benchmark_evidence import expand_run_manifest
+
+        try:
+            return expand_run_manifest(payload, path)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise SystemExit(f'invalid run admission evidence: {error}') from error
+    return payload
 
 
 def load_run_artifacts(
@@ -124,6 +133,12 @@ def load_run_artifacts(
     if not isinstance(artifacts, list):
         return {}
     documents: dict[Path, dict[str, Any]] = {}
+    from benchmark_evidence import expand_artifact, run_admission
+
+    try:
+        admission, admission_sha256 = run_admission(payload, manifest_path)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SystemExit(f'invalid run admission evidence: {error}') from error
     for artifact in artifacts:
         if not isinstance(artifact, str):
             raise SystemExit(
@@ -139,7 +154,16 @@ def load_run_artifacts(
         document = _manifest_payload(candidate)
         if document is None:
             raise SystemExit(f'invalid benchmark artifact {candidate}')
-        documents[candidate] = document
+        if candidate in documents:
+            raise SystemExit(f'duplicate benchmark artifact reference: {artifact}')
+        try:
+            documents[candidate] = expand_artifact(
+                document, admission, admission_sha256
+            )
+        except (ValueError, KeyError, TypeError) as error:
+            raise SystemExit(
+                f'invalid benchmark evidence {candidate}: {error}'
+            ) from error
     return documents
 
 

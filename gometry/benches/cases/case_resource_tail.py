@@ -29,7 +29,12 @@ _CASE_DIR = Path(__file__).resolve().parent
 if str(_CASE_DIR) not in sys.path:
     sys.path.insert(0, str(_CASE_DIR))
 
-from _observation import bootstrap, finish_measurement, prepare_measurement
+from _observation import (
+    bootstrap,
+    finish_measurement,
+    prepare_measurement,
+    result_evidence,
+)
 from _validation import emit_validation
 
 if __name__ == '__main__':
@@ -289,7 +294,7 @@ def main() -> None:
         'environment_before': environment_before,
         'environment_after': cpu_state(),
     }
-    encoded = json.dumps(payload, sort_keys=True)
+    encoded = json.dumps(result_evidence(payload), sort_keys=True)
     if args.output is None:
         print(encoded)
     else:
