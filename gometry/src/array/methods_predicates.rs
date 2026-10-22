@@ -87,6 +87,10 @@ impl PyGeometryArray {
     }
     /// Export the array as a `GeoArrow` array.
     ///
+    /// Geographic export follows ``Geometry.to_arrow`` finite-drawing rules.
+    /// A cut can promote a homogeneous line or polygon column to its multi-part
+    /// family. Missing rows, CRS and coordinate epoch are retained.
+    ///
     /// Parameters
     /// ----------
     /// encoding : {'auto', 'wkb'}, default auto

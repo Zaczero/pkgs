@@ -294,7 +294,7 @@ impl NativeArrowAccumulator {
         let epoch = reconcile_arrow_epoch(metadata_epoch, epoch)?;
         let output = py.detach(|| -> crate::error::Result<_> {
             let frame = Frame::new(crs, epoch)?;
-            let storage = combine_native_storage(storage)?;
+            let storage = interchange::admit_storage(combine_native_storage(storage)?, &frame)?;
             let missing = storage::ValidityMask::from_sparse(length, &missing_rows);
             PyGeometryArray::from_result_storage(
                 Arc::new(storage),
@@ -729,12 +729,24 @@ fn py_from_geoparquet_arrow(
     geometries_from_pyarrow_with_classification(py, data, classification, crs, epoch)
 }
 
+/// Publish one typed geometry column and retain its rows for file metadata.
+#[pyfunction]
+#[pyo3(name = "_geoparquet_publication", signature = (array, *, encoding = ArrowEncoding::Auto))]
+fn py_geoparquet_publication(
+    py: Python<'_>,
+    array: PyRef<'_, PyGeometryArray>,
+    encoding: ArrowEncoding,
+) -> PyResult<(Py<PyAny>, PyGeometryArray)> {
+    export::geoparquet_publication(py, &array, encoding)
+}
+
 pub(crate) use metadata::{
     decode_extension_name, geoarrow_parse_error, parse_geoarrow_extension_metadata_for,
 };
 
 mod axes;
 mod export;
+pub(crate) mod interchange;
 mod metadata;
 
 pub(crate) use axes::accumulate_geometry_axes;
@@ -746,6 +758,12 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 /// Arrow null slots become missing rows; typed empty geometries remain typed
 /// empty values. Empty arrays and streams return an empty array while retaining
 /// compatible CRS and epoch metadata when the input provides it.
+///
+/// Geographic literal edges are subdivided as needed for the periodic native
+/// chart, with rounded new coordinates and affine wire Z/M interpolation.
+/// Longitude aliases may be canonicalized. Original ordinate occurrences are
+/// retained; exact external point incidence is not a round-trip guarantee.
+/// Raw WKT/WKB readers retain literal coordinates without this adaptation.
 ///
 /// Parameters
 /// ----------
@@ -860,6 +878,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m;
         from_arrow,
         py_from_geoparquet_arrow,
+        py_geoparquet_publication,
         metadata::py_parse_geoarrow_extension_metadata,
         metadata::py_parse_geoparquet_column_frame,
         metadata::py_admit_geoparquet_geometry_storage,

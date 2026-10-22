@@ -61,6 +61,22 @@ pub(super) fn split_polygon<M: ChartMetric>(
     preferred: PoleClosure,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<Polygon>> {
+    split_polygon_with_policy(
+        source,
+        polygon,
+        preferred,
+        metric_access,
+        PoleOrdinatePolicy::PreserveSource,
+    )
+}
+
+fn split_polygon_with_policy<M: ChartMetric>(
+    source: &Shape,
+    polygon: &Polygon,
+    preferred: PoleClosure,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    pole_ordinates: PoleOrdinatePolicy,
+) -> Result<Vec<Polygon>> {
     let parts = split_polygon_core(
         polygon,
         None,
@@ -73,7 +89,9 @@ pub(super) fn split_polygon<M: ChartMetric>(
         .into_iter()
         .map(|(polygon, _)| polygon)
         .collect::<Vec<_>>();
-    reject_fabricated_pole_ordinates(source, &polygons)?;
+    if pole_ordinates == PoleOrdinatePolicy::PreserveSource {
+        reject_fabricated_pole_ordinates(source, &polygons)?;
+    }
     Ok(polygons)
 }
 
@@ -255,6 +273,7 @@ pub(super) fn split_polygon_member<M: ChartMetric>(
     lineage: Option<&super::super::lineage::LineagePolygon>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: Option<&mut super::super::lineage::LineageCatalog>,
+    pole_ordinates: PoleOrdinatePolicy,
 ) -> Result<Vec<(Polygon, Option<super::super::lineage::LineagePolygon>)>> {
     match lineage {
         Some(lineage) => {
@@ -269,6 +288,7 @@ pub(super) fn split_polygon_member<M: ChartMetric>(
                 HoleOverlayMode::Select,
                 metric_access,
                 catalog,
+                pole_ordinates,
             )
             .map(|parts| {
                 parts
@@ -277,8 +297,14 @@ pub(super) fn split_polygon_member<M: ChartMetric>(
                     .collect()
             })
         },
-        None => split_polygon(source, polygon, PoleClosure::Auto, metric_access)
-            .map(|parts| parts.into_iter().map(|polygon| (polygon, None)).collect()),
+        None => split_polygon_with_policy(
+            source,
+            polygon,
+            PoleClosure::Auto,
+            metric_access,
+            pole_ordinates,
+        )
+        .map(|parts| parts.into_iter().map(|polygon| (polygon, None)).collect()),
     }
 }
 
@@ -935,6 +961,7 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
     overlay_mode: HoleOverlayMode,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     catalog: &mut super::super::lineage::LineageCatalog,
+    pole_ordinates: PoleOrdinatePolicy,
 ) -> Result<Vec<super::super::lineage::PolygonWithLineage>> {
     let parts = split_polygon_core(
         polygon,
@@ -948,7 +975,9 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
         .iter()
         .map(|(polygon, _)| polygon.clone())
         .collect::<Vec<_>>();
-    reject_fabricated_pole_ordinates(source, &polygons)?;
+    if pole_ordinates == PoleOrdinatePolicy::PreserveSource {
+        reject_fabricated_pole_ordinates(source, &polygons)?;
+    }
     parts
         .into_iter()
         .map(|(polygon, lineage)| {

@@ -82,8 +82,7 @@ type.
 ## Round-trip
 
 A `GeometryArray` converts to an Arrow array with
-`to_arrow` and back with `gm.from_arrow`,
-preserving geometry, CRS, and coordinate epoch:
+`to_arrow` and back with `gm.from_arrow`, retaining CRS and coordinate epoch:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -101,6 +100,24 @@ print("round-trip:", [g.to_wkt() for g in restored])
 print("crs preserved:", restored.crs.to_authority())
 ```
 
+### Geographic drawings
+
+GeoArrow and GeoParquet use literal planar edges. Typed conversion adapts
+geographic branches and regions to that model: export may canonicalize longitude
+aliases, split parts at the seam, and add pole closures; import may subdivide long
+literal edges before admitting them to gometry's periodic chart. Required new
+vertices have finite, rounded coordinates. A split line or polygon can become its
+multi-part counterpart, including other rows in a homogeneous column.
+
+Original Z/M occurrences are retained. New export seam vertices use native
+source-arclength interpolation; new import vertices use affine interpolation along
+the wire edge. Synthetic pole closures extend the incident endpoint's Z/M values.
+These finite drawings do not promise identical point incidence, boundary
+relationships, or continuous Z/M interpolation across conversion. Arrow capsules,
+PyArrow, and all GeoParquet encodings follow the same conversion rules.
+Use [raw WKT/WKB](text-formats.md) when you need literal stored coordinates
+without this typed geographic adaptation.
+
 ## Native packed layouts vs WKB fallback
 
 Homogeneous **XY / XYZ / XYM / XYZM** point, multipoint, linestring,
@@ -113,7 +130,7 @@ batches, and record batch readers are copied through PyArrow.
 Other capsule providers use the dependency-free Arrow C interface; their
 selected geometry buffers are copied before validation and decoding.
 Mixed geometry types, mixed coordinate axes, and geometry
-collections fall back to GeoArrow **WKB** encoding so nothing is lost. The
+collections fall back to GeoArrow **WKB** encoding to retain their structure. The
 PyArrow export path also uses WKB when explicit multipart member slots cannot
 be represented by its selected native layout; the Arrow-C nested layout
 retains explicit empty line and polygon slots.
@@ -197,8 +214,9 @@ Choose `encoding='geoarrow'` for separated coordinates in a homogeneous
 GeoParquet 1.1 column, or `encoding='geometry'` for native Parquet `GEOMETRY`
 with GeoParquet 2.0 metadata. Native geometry preserves XY, XYZ, XYM and XYZM;
 the 1.1 encodings support XY and XYZ and reject M rather than silently dropping
-it. All encodings retain straight source-chart edges. Nonplanar `GEOGRAPHY`
-curves require explicit conversion before import.
+it. All encodings use the finite geographic drawings described above, rather
+than spherical or ellipsoidal geodesic curves. Nonplanar `GEOGRAPHY` curves
+require explicit conversion before import.
 
 The 1.1 writer includes a per-row bbox covering; native geometry uses Parquet's
 row-group geospatial statistics. Read a spatial subset with

@@ -394,9 +394,9 @@ fn extend_over_poles_with_direction(
     // extends, or the assembled ring would mix Z/M presence — violating the
     // CoordSeq axis-homogeneity invariant (a `from_points` debug-assert, and a
     // silently malformed sequence in release). The placeholder ordinate (copied
-    // from the capped chain's endpoint) is never observed: a measured/3D ring
-    // whose cap survives is rejected by `reject_fabricated_pole_ordinates`, and
-    // an XY ring carries no ordinate to fabricate.
+    // from the capped chain's endpoint) is rejected for source-geometry
+    // operations. Typed interchange explicitly publishes endpoint extension on
+    // these representation-only chart closures, not inferred surface data.
     let pole_vertex = |like: Point, lon: f64, lat: f64| -> Result<Point> {
         Point::new_axes(lon, lat, ZOrdinate(like.z()), MOrdinate(like.m()))
     };

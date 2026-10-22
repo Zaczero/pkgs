@@ -1757,6 +1757,12 @@ class Geometry:
     def to_arrow(self, *, encoding: ArrowEncoding = 'auto') -> PyArrowArray:
         """Export the geometry as a `GeoArrow` array.
 
+        Geographic export may canonicalize longitude aliases, split parts and
+        add rounded seam vertices or pole closures. Original Z/M occurrences
+        remain; seam Z/M uses native source arclength and pole closures extend
+        incident endpoint values. This is a finite drawing, not a lossless raw
+        coordinate codec or a guarantee of identical source-point incidence.
+
         Parameters
         ----------
         encoding : {'auto', 'wkb'}, default auto
@@ -7633,6 +7639,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def to_arrow(self, *, encoding: ArrowEncoding = 'auto') -> PyArrowArray:
         """Export the array as a `GeoArrow` array.
 
+        Geographic export follows ``Geometry.to_arrow`` finite-drawing rules.
+        A cut can promote a homogeneous line or polygon column to its multi-part
+        family. Missing rows, CRS and coordinate epoch are retained.
+
         Parameters
         ----------
         encoding : {'auto', 'wkb'}, default auto
@@ -7776,8 +7786,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             ``'wkb'`` (portable default) and ``'geoarrow'`` (separated coordinates
             for homogeneous arrays) write GeoParquet 1.1 with a bbox covering.
             ``'geometry'`` writes native Parquet GEOMETRY with GeoParquet 2.0
-            metadata, including M ordinates. All modes preserve linear source-chart
-            edges, not spherical or ellipsoidal geodesic curves.
+            metadata, including M ordinates. Geographic conversion may canonicalize
+            longitude aliases, split parts and add rounded vertices or pole closures.
+            All modes use finite planar drawings, not geodesic curves or a promise
+            of identical source-point incidence.
         kwargs : mapping, optional
             Additional options forwarded to ``pyarrow.parquet.write_table``.
 
@@ -21536,6 +21548,11 @@ def _from_geoparquet_arrow(
 ) -> GeometryArray[Geometry | None]:
     """Decode a PyArrow column with one already-admitted physical layout."""
 
+def _geoparquet_publication(
+    array: GeometryArray[Geometry | None], *, encoding: ArrowEncoding = 'auto'
+) -> tuple[PyArrowArray, GeometryArray[Geometry | None]]:
+    """Publish one typed drawing for Arrow payload and file metadata."""
+
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
 ) -> GeometryArray[Geometry | None]:
@@ -21545,6 +21562,12 @@ def from_arrow(
     Arrow null slots become missing rows; typed empty geometries remain typed
     empty values. Empty arrays and streams return an empty array while retaining
     compatible CRS and epoch metadata when the input provides it.
+
+    Geographic literal edges are subdivided as needed for the periodic native
+    chart, with rounded new coordinates and affine wire Z/M interpolation.
+    Longitude aliases may be canonicalized. Original ordinate occurrences are
+    retained; exact external point incidence is not a round-trip guarantee.
+    Raw WKT/WKB readers retain literal coordinates without this adaptation.
 
     Parameters
     ----------

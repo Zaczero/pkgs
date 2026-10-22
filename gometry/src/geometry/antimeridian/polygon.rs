@@ -40,9 +40,17 @@ use super::normalize;
 
 type SplitLinePart = (LineSeq, Option<super::lineage::LineageSequence>);
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum PoleOrdinatePolicy {
+    #[default]
+    PreserveSource,
+    ExtendForInterchange,
+}
+
 #[derive(Default)]
 struct ShapeTransformMemo {
     owners: Option<HashMap<ShapeOwnerKey, (Shape, Option<ShapeLineage>)>>,
+    pole_ordinates: PoleOrdinatePolicy,
 }
 
 impl ShapeTransformMemo {
@@ -117,6 +125,23 @@ impl Shape {
         let view =
             ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
         split_geographic_view_captured(view, metric_access)
+    }
+
+    pub(crate) fn interchange_drawing_in_frame<M: ChartMetric>(
+        &self,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    ) -> Result<super::publication::SplitDrawing> {
+        let view =
+            ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
+        let mut capture = SplitCapture::enabled(frame);
+        let (shape, _) = split_geographic_view_with_capture(
+            view,
+            metric_access,
+            Some(&mut capture),
+            PoleOrdinatePolicy::ExtendForInterchange,
+        )?;
+        Ok(capture.into_drawing(shape))
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
@@ -399,6 +424,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                 source,
                 metric_access,
                 catalog.as_deref_mut(),
+                memo.pole_ordinates,
             )?;
             polygon_parts_shape(parts, polygon.axes(), source.is_some())
         },
@@ -453,6 +479,7 @@ fn split_shape_with_lineage<M: ChartMetric>(
                             source,
                             metric_access,
                             catalog.as_deref_mut(),
+                            memo.pole_ordinates,
                         )? {
                             split.push(MultiMember::Value(polygon));
                             if let Some(lineages) = &mut output_lineages {
@@ -572,7 +599,13 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
-    split_geographic_view_with_capture(view, metric_access, None).map(|(shape, _)| shape)
+    split_geographic_view_with_capture(
+        view,
+        metric_access,
+        None,
+        PoleOrdinatePolicy::PreserveSource,
+    )
+    .map(|(shape, _)| shape)
 }
 
 fn split_geographic_view_captured<M: ChartMetric>(
@@ -581,7 +614,12 @@ fn split_geographic_view_captured<M: ChartMetric>(
 ) -> Result<super::publication::SplitDrawing> {
     let frame = view.frame();
     let mut capture = SplitCapture::enabled(frame);
-    let (shape, _) = split_geographic_view_with_capture(view, metric_access, Some(&mut capture))?;
+    let (shape, _) = split_geographic_view_with_capture(
+        view,
+        metric_access,
+        Some(&mut capture),
+        PoleOrdinatePolicy::PreserveSource,
+    )?;
     Ok(capture.into_drawing(shape))
 }
 
@@ -593,6 +631,7 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     mut capture: Option<&mut SplitCapture>,
+    pole_ordinates: PoleOrdinatePolicy,
 ) -> Result<(Shape, Option<ShapeLineage>)> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
@@ -645,18 +684,34 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
             &chart,
             Some(lineage),
             Some(capture.lineage_mut()),
-            &mut ShapeTransformMemo::default(),
+            &mut ShapeTransformMemo {
+                pole_ordinates,
+                ..ShapeTransformMemo::default()
+            },
             metric_access,
         )?
     } else {
         (
-            chart.split_antimeridian_chart(&mut ShapeTransformMemo::default(), metric_access)?,
+            chart.split_antimeridian_chart(
+                &mut ShapeTransformMemo {
+                    pole_ordinates,
+                    ..ShapeTransformMemo::default()
+                },
+                metric_access,
+            )?,
             None,
         )
     };
     let shape = map_xy_with_shared_owners(
         &split,
         &|x, y| {
+            let longitude = if x == 180.0 {
+                frame.longitude().half_period() * frame.longitude_orientation_sign()
+            } else if x == -180.0 {
+                -frame.longitude().half_period() * frame.longitude_orientation_sign()
+            } else {
+                x / longitude_scale
+            };
             let latitude = if y == 90.0 {
                 frame.native_latitude_pole(GeodeticPole::North)
             } else if y == -90.0 {
@@ -664,7 +719,7 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
             } else {
                 y / latitude_scale
             };
-            Ok((x / longitude_scale, latitude))
+            Ok((longitude, latitude))
         },
         &mut ShapeTransformMemo::default(),
     )?;

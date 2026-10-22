@@ -153,6 +153,10 @@ pub(crate) mod embedding_completion;
 mod embedding_search;
 mod exact_point;
 mod grid_outline;
+mod interchange;
+pub(crate) use interchange::{
+    admit_literal_geographic_shape, geographic_interchange_drawing, geographic_interchange_ready,
+};
 pub(crate) mod publication;
 pub(crate) use grid_outline::finish_grid_outline;
 mod facet_bvh;

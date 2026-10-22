@@ -367,7 +367,7 @@ pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
 pub(crate) use export_plan::materialize_schema_plan;
 pub(crate) use export_plan::{
     PreparedArrowExportPlan, describe_geometry_array, describe_shape, materialize_export_plan,
-    plan_geometry_array, plan_shapes, plan_wkb_shapes, prepare_export_plan,
+    plan_geometry_array, plan_interchange_array, plan_shapes, plan_wkb_shapes, prepare_export_plan,
 };
 #[cfg(test)]
 pub(crate) use export_plan::{payload_events, reset_payload_events};

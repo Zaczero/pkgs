@@ -149,7 +149,7 @@ pub(crate) fn geometry_to_schema_capsule(
     let node = py
         .detach(move || {
             let description =
-                arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch());
+                arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch())?;
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -168,7 +168,7 @@ pub(crate) fn array_to_schema_capsule(
     let array = array.clone();
     let node = py
         .detach(move || {
-            let description = arrow_c::describe_geometry_array(&array, ArrowEncoding::Auto);
+            let description = arrow_c::describe_geometry_array(&array, ArrowEncoding::Auto)?;
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -189,7 +189,7 @@ pub(crate) fn geometry_to_array_capsules(
     {
         let schema =
             arrow_c::describe_shape(geometry.shape.shape(), geometry.crs_str(), geometry.epoch())
-                .materialize_schema()
+                .and_then(|description| description.materialize_schema())
                 .map_err(|error| error.into_py_err(py))?;
         arrow::reject_requested_schema(Some(requested_schema), &schema)?
     } else {
@@ -218,7 +218,7 @@ pub(crate) fn array_to_array_capsules(
     let omit_extension_metadata =
         if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
             let schema = arrow_c::describe_geometry_array(array, ArrowEncoding::Auto)
-                .materialize_schema()
+                .and_then(|description| description.materialize_schema())
                 .map_err(|error| error.into_py_err(py))?;
             arrow::reject_requested_schema(Some(requested_schema), &schema)?
         } else {
@@ -267,7 +267,7 @@ pub(crate) fn geometry_to_stream_capsule(
     {
         let schema =
             arrow_c::describe_shape(geometry.shape.shape(), geometry.crs_str(), geometry.epoch())
-                .materialize_schema()
+                .and_then(|description| description.materialize_schema())
                 .map_err(|error| error.into_py_err(py))?;
         arrow::reject_requested_schema(Some(requested_schema), &schema)?
     } else {
@@ -296,7 +296,7 @@ pub(crate) fn array_to_stream_capsule(
     let omit_extension_metadata =
         if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
             let schema = arrow_c::describe_geometry_array(array, ArrowEncoding::Auto)
-                .materialize_schema()
+                .and_then(|description| description.materialize_schema())
                 .map_err(|error| error.into_py_err(py))?;
             arrow::reject_requested_schema(Some(requested_schema), &schema)?
         } else {

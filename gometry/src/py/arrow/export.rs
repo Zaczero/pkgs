@@ -27,6 +27,23 @@ pub(crate) fn array_to_arrow(
     materialize_pyarrow(py, plan)
 }
 
+pub(crate) fn geoparquet_publication(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    encoding: ArrowEncoding,
+) -> PyResult<(Py<PyAny>, PyGeometryArray)> {
+    let array = array.clone();
+    let (plan, published) = py
+        .detach(move || {
+            let publication = super::interchange::InterchangeArray::prepare(&array)?;
+            let plan = arrow_c::plan_interchange_array(&publication, encoding)?;
+            let plan = arrow_c::prepare_export_plan(plan)?;
+            Ok::<_, arrow_c::NativeArrowExportError>((plan, publication.into_array()))
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    Ok((materialize_pyarrow(py, plan)?, published))
+}
+
 pub(crate) fn shapes_to_arrow(
     py: Python<'_>,
     shapes: &[crate::geometry::Shape],

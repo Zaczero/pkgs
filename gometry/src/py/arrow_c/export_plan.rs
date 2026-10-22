@@ -10,6 +10,7 @@ use crate::error::BatchError;
 use crate::geometry::storage::gather::materialized_gather;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelectionRef};
 use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape, storage};
+use crate::py::arrow::interchange::InterchangeArray;
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
 #[cfg(test)]
 use crate::py::arrow_c::GometryArrowSchema;
@@ -50,19 +51,6 @@ impl<'a> SchemaDescription<'a> {
             layout,
             nullable: GEOARROW_SCHEMA_FIELDS_NULLABLE,
             crs: crs.map(Cow::Borrowed),
-            epoch,
-        }
-    }
-
-    fn owned(
-        layout: GeometrySchema,
-        crs: Option<String>,
-        epoch: Option<f64>,
-    ) -> SchemaDescription<'static> {
-        SchemaDescription {
-            layout,
-            nullable: GEOARROW_SCHEMA_FIELDS_NULLABLE,
-            crs: crs.map(Cow::Owned),
             epoch,
         }
     }
@@ -252,6 +240,14 @@ pub(crate) fn materialize_schema_plan(
 pub(crate) fn describe_geometry_array(
     array: &PyGeometryArray,
     encoding: ArrowEncoding,
+) -> NativeArrowExportResult<SchemaDescription<'static>> {
+    let publication = InterchangeArray::prepare(array)?;
+    Ok(describe_published_array(publication.array(), encoding).into_owned())
+}
+
+fn describe_published_array(
+    array: &PyGeometryArray,
+    encoding: ArrowEncoding,
 ) -> SchemaDescription<'_> {
     let layout = match encoding {
         ArrowEncoding::Auto => match array.storage() {
@@ -279,19 +275,30 @@ pub(crate) fn describe_geometry_array(
     SchemaDescription::borrowed(layout, array.crs_str(), array.epoch())
 }
 
-pub(crate) fn describe_shape<'a>(
+pub(crate) fn describe_shape(
     shape: &Shape,
-    crs: Option<&'a str>,
+    crs: Option<&str>,
     epoch: Option<f64>,
-) -> SchemaDescription<'a> {
-    SchemaDescription::borrowed(describe_shape_iter(std::iter::once(shape)), crs, epoch)
+) -> NativeArrowExportResult<SchemaDescription<'static>> {
+    let frame = crate::Frame::new(crs.map(crate::crs_arc), epoch)?;
+    let array = PyGeometryArray::mixed_shapes(vec![shape.clone()], frame)?;
+    describe_geometry_array(&array, ArrowEncoding::Auto)
 }
 
 pub(crate) fn plan_geometry_array(
     array: &PyGeometryArray,
     encoding: ArrowEncoding,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let schema = describe_geometry_array(array, encoding).into_owned();
+    let publication = InterchangeArray::prepare(array)?;
+    plan_interchange_array(&publication, encoding)
+}
+
+pub(crate) fn plan_interchange_array(
+    publication: &InterchangeArray<'_>,
+    encoding: ArrowEncoding,
+) -> NativeArrowExportResult<ArrowExportPlan> {
+    let array = publication.array();
+    let schema = describe_published_array(array, encoding).into_owned();
     #[cfg(test)]
     record_payload_builder();
     let storage = match encoding {
@@ -450,16 +457,9 @@ pub(crate) fn plan_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let refs: Vec<_> = shapes.iter().collect();
-    let schema = SchemaDescription::owned(describe_shape_iter(refs.iter().copied()), crs, epoch);
-    #[cfg(test)]
-    record_payload_builder();
-    let storage = plan_shape_refs_with_layout(&refs, schema.layout)?;
-    Ok(ArrowExportPlan {
-        schema,
-        storage,
-        validity: None,
-    })
+    let frame = crate::Frame::new(crs.as_deref().map(crate::crs_arc), epoch)?;
+    let array = PyGeometryArray::mixed_shapes(shapes.to_vec(), frame)?;
+    plan_geometry_array(&array, ArrowEncoding::Auto)
 }
 
 pub(crate) fn plan_wkb_shapes(
@@ -467,19 +467,9 @@ pub(crate) fn plan_wkb_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let refs: Vec<_> = shapes.iter().collect();
-    let layout = GeometrySchema {
-        encoding: GeometryEncoding::Wkb,
-        axes: CoordinateAxes::XY,
-    };
-    #[cfg(test)]
-    record_payload_builder();
-    let storage = plan_wkb_refs(&refs)?;
-    Ok(ArrowExportPlan {
-        schema: SchemaDescription::owned(layout, crs, epoch),
-        storage,
-        validity: None,
-    })
+    let frame = crate::Frame::new(crs.as_deref().map(crate::crs_arc), epoch)?;
+    let array = PyGeometryArray::mixed_shapes(shapes.to_vec(), frame)?;
+    plan_geometry_array(&array, ArrowEncoding::Wkb)
 }
 
 fn describe_shape_iter<'a>(mut shapes: impl Iterator<Item = &'a Shape> + Clone) -> GeometrySchema {

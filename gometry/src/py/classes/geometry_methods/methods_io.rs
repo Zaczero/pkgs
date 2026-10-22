@@ -68,6 +68,12 @@ impl PyGeometry {
 
     /// Export the geometry as a `GeoArrow` array.
     ///
+    /// Geographic export may canonicalize longitude aliases, split parts and
+    /// add rounded seam vertices or pole closures. Original Z/M occurrences
+    /// remain; seam Z/M uses native source arclength and pole closures extend
+    /// incident endpoint values. This is a finite drawing, not a lossless raw
+    /// coordinate codec or a guarantee of identical source-point incidence.
+    ///
     /// Parameters
     /// ----------
     /// encoding : {'auto', 'wkb'}, default auto

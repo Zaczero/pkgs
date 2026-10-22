@@ -149,8 +149,10 @@ impl PyGeometryArray {
     ///     ``'wkb'`` (portable default) and ``'geoarrow'`` (separated coordinates
     ///     for homogeneous arrays) write GeoParquet 1.1 with a bbox covering.
     ///     ``'geometry'`` writes native Parquet GEOMETRY with GeoParquet 2.0
-    ///     metadata, including M ordinates. All modes preserve linear source-chart
-    ///     edges, not spherical or ellipsoidal geodesic curves.
+    ///     metadata, including M ordinates. Geographic conversion may canonicalize
+    ///     longitude aliases, split parts and add rounded vertices or pole closures.
+    ///     All modes use finite planar drawings, not geodesic curves or a promise
+    ///     of identical source-point incidence.
     /// kwargs : mapping, optional
     ///     Additional options forwarded to ``pyarrow.parquet.write_table``.
     ///

@@ -265,8 +265,10 @@ def to_geoparquet(
     encoding : {'wkb', 'geoarrow', 'geometry'}, default 'wkb'
         Plain WKB or separated GeoArrow (homogeneous arrays) in GeoParquet
         1.1, or native Parquet GEOMETRY with GeoParquet 2.0 metadata.
-        Only ``'geometry'`` supports M ordinates. All modes preserve linear
-        source-chart edges, not spherical or ellipsoidal geodesic curves.
+        Only ``'geometry'`` supports M ordinates. Geographic conversion may
+        canonicalize longitude aliases, split parts and add rounded vertices
+        or pole closures. These are finite planar drawings, not geodesic curves
+        or a promise of identical source-point incidence.
     kwargs : mapping, optional
         Options forwarded to ``pyarrow.parquet.write_table``.
 
@@ -296,7 +298,11 @@ def to_geoparquet(
             f"unknown GeoParquet encoding {encoding!r}; expected 'wkb', 'geoarrow', or 'geometry'"
         )
 
-    arrow = arr.to_arrow(encoding='auto' if encoding == 'geoarrow' else 'wkb')
+    from gometry._lib import _geoparquet_publication
+
+    arrow, published = _geoparquet_publication(
+        arr, encoding='auto' if encoding == 'geoarrow' else 'wkb'
+    )
     extension_name = arrow.type.extension_name
     parquet_encoding = (
         'WKB'
@@ -344,12 +350,12 @@ def to_geoparquet(
     else:
         table = attributes_table.add_column(0, 'geometry', geometry_column)
     geo_metadata = _build_geo_metadata(
-        arr, parquet_encoding, native=encoding == 'geometry'
+        published, parquet_encoding, native=encoding == 'geometry'
     )
     if encoding != 'geometry':
         from gometry._geoparquet_bbox import add_covering
 
-        table = add_covering(pa, table, arr, geo_metadata['columns']['geometry'])
+        table = add_covering(pa, table, published, geo_metadata['columns']['geometry'])
     metadata = dict(table.schema.metadata or {})
     metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
     table = table.replace_schema_metadata(metadata)
