@@ -7,12 +7,67 @@ import math
 import random
 import statistics
 from collections import Counter
+from dataclasses import dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 _BOOTSTRAP_SAMPLES = 10_000
+
+
+@dataclass(frozen=True, slots=True)
+class OrderInterval:
+    """Binomial order-statistic interval for a common population median.
+
+    ``interval`` is None when the sample cannot supply a finite interval at the
+    requested error probability. Coverage assumes independent observations with
+    a common median; atoms at the median make the interval conservative.
+    """
+
+    interval: tuple[float, float] | None
+    achieved_coverage: float
+    sample_size: int
+    lower_order: int | None
+    upper_order: int | None
+
+
+def median_order_interval(
+    values: Sequence[float], *, error_probability: float
+) -> OrderInterval:
+    """Return the narrowest central median interval within the error budget.
+
+    The two-sided miss probability for order k is
+    ``2 * sum(comb(n, j) for j in range(k)) / 2**n``. This is a fixed-look
+    interval: repeated inspection needs a separately allocated across-look
+    error budget, as provided by ``benchroom.sampling.SamplingPolicy``.
+    """
+    if not values or any(not math.isfinite(value) for value in values):
+        raise ValueError('median observations must be nonempty and finite')
+    if not 0 < error_probability < 1:
+        raise ValueError('error probability must lie strictly between zero and one')
+    size = len(values)
+    budget = Fraction(error_probability)
+    tail = 0
+    selected = 0
+    miss = Fraction(0)
+    for order in range(1, (size + 1) // 2 + 1):
+        tail += math.comb(size, order - 1)
+        candidate = Fraction(2 * tail, 2**size)
+        if candidate > budget:
+            break
+        selected, miss = order, candidate
+    if not selected:
+        return OrderInterval(None, 1.0, size, None, None)
+    ordered = sorted(values)
+    return OrderInterval(
+        (ordered[selected - 1], ordered[size - selected]),
+        float(1 - miss),
+        size,
+        selected,
+        size - selected + 1,
+    )
 
 
 def _exact_distribution_fits(size: int, samples: int) -> bool:
