@@ -420,6 +420,11 @@ pub(in crate::py::functions::constructors) fn build_box_shape(
             Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?)
         }
     } else {
+        if minx > maxx {
+            return Err(InvalidGeometryError::new_err(format!(
+                "box minx ({minx}) must not exceed maxx ({maxx}) without a geographic CRS"
+            )));
+        }
         Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?)
     };
     // Box construction already orders its chart sides counterclockwise.

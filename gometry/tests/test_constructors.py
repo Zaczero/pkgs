@@ -191,12 +191,14 @@ def test_geographic_box_building_leaves_projected_and_split_boxes_unchanged() ->
     assert [len(values[index].exterior.coords) for index in range(2)] == [7, 5]
     assert values[0].to_wkb() == gm.box(-100.0, -10.0, 100.0, 10.0, crs=4326).to_wkb()
     assert values[1].to_wkb() == gm.box(20.0, 51.0, 21.0, 52.0, crs=4326).to_wkb()
-    assert gm.box(-200.0, -10.0, 200.0, 10.0, crs=4326).bounds == (
-        -200.0,
-        -10.0,
-        200.0,
-        10.0,
-    )
+    literal = gm.box(-200.0, -10.0, 200.0, 10.0, crs=4326)
+    assert list(literal.exterior.coords) == [
+        (-200.0, -10.0),
+        (200.0, -10.0),
+        (200.0, 10.0),
+        (-200.0, 10.0),
+        (-200.0, -10.0),
+    ]
 
 
 def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topology() -> (
