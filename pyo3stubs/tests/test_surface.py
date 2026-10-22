@@ -77,9 +77,9 @@ def test_surface_discovery_does_not_invoke_custom_descriptors(tmp_path):
 
 def test_module_surface_does_not_compare_class_constructors(tmp_path):
     left = ModuleType('left')
-    left.PublicError = ValueError
+    left.__dict__['PublicError'] = ValueError
     right = ModuleType('right')
-    right.PublicError = RuntimeError
+    right.__dict__['PublicError'] = RuntimeError
     cfg = make_config(
         tmp_path,
         surface=SurfaceConfig(targets=(('left', left), ('right', right))),

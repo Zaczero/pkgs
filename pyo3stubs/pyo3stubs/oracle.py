@@ -98,7 +98,9 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
     if result.returncode == 0:
         return []
     output = (result.stdout + result.stderr).strip()
-    return [line for line in output.splitlines() if line.strip()]
+    return [line for line in output.splitlines() if line.strip()] or [
+        f'mypy exited with status {result.returncode} without diagnostics'
+    ]
 
 
 def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
@@ -131,7 +133,18 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
     if result.returncode == 0:
         return []
     output = (result.stdout + result.stderr).strip()
-    return [line for line in output.splitlines() if line.strip()]
+    if not output:
+        return [f'stubtest exited with status {result.returncode} without diagnostics']
+    diagnostics: list[str] = []
+    current: list[str] = []
+    for line in output.splitlines():
+        if line.startswith('error: ') and current:
+            diagnostics.append('\n'.join(current).strip())
+            current = []
+        current.append(line)
+    if current:
+        diagnostics.append('\n'.join(current).strip())
+    return diagnostics
 
 
 def _pyright_project(cfg: StubConfig) -> Path:
@@ -200,4 +213,9 @@ def collect_pyright_errors(cfg: StubConfig) -> Findings:
         for item in report.get('generalDiagnostics', ())
         if item['severity'] in ('error', 'warning')
     ]
+    if result.returncode != 0 and not errors:
+        detail = (
+            result.stderr.strip() or 'no error or warning diagnostics in its report'
+        )
+        errors.append(f'pyright exited with status {result.returncode}: {detail}')
     return Findings(errors, examined=report.get('summary', {}).get('filesAnalyzed'))
