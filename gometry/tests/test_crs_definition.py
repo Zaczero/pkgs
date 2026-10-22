@@ -289,7 +289,7 @@ def test_authored_definition_crosses_pickle_arrow_geoparquet_and_pandas(
     assert arrow.crs.definition == authored.definition
     _assert_same_axis_meaning(authored, arrow.crs)
 
-    for encoding in ('wkb', 'native'):
+    for encoding in ('wkb', 'geoarrow', 'geometry'):
         path = tmp_path / f'{encoding}.parquet'
         values.to_geoparquet(path, encoding=encoding)
         restored, _ = gm.from_geoparquet(path)
@@ -386,7 +386,7 @@ def test_arrow_epoch_roundtrip_preserves_exact_crs_definition() -> None:
         assert ipc_restored.epoch == 2020.0
 
 
-@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize('encoding', ['wkb', 'geoarrow', 'geometry'])
 def test_geoparquet_roundtrip_preserves_exact_crs_definition_and_epoch(
     encoding: str,
     tmp_path: Any,

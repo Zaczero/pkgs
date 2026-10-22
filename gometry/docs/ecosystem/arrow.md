@@ -193,12 +193,28 @@ gometry's missing rows travel as Arrow validity bits instead of sentinel
 geometries. GeoParquet builds on pyarrow (the `arrow` extra provides it); for an
 in-memory handoff without a file, use `to_arrow`.
 
-GeoParquet 1.x supports XY and XYZ, not M. Gometry rejects M-bearing inputs on
-write, including empty and all-missing arrays whose stored layout still carries
-M, and rejects decoded M geometries or M-typed native storage on read. It never
-drops M implicitly. Use `with_coordinates(m=None)` to remove M while retaining
-Z, or `force_2d()` to remove both Z and M. The broader XYM and XYZM layouts
-available in GeoArrow do not change GeoParquet's axis limit.
+Choose `encoding='geoarrow'` for separated coordinates in a homogeneous
+GeoParquet 1.1 column, or `encoding='geometry'` for native Parquet `GEOMETRY`
+with GeoParquet 2.0 metadata. Native geometry preserves XY, XYZ, XYM and XYZM;
+the 1.1 encodings support XY and XYZ and reject M rather than silently dropping
+it. All encodings retain straight source-chart edges. Nonplanar `GEOGRAPHY`
+curves require explicit conversion before import.
+
+The 1.1 writer includes a per-row bbox covering; native geometry uses Parquet's
+row-group geospatial statistics. Read a spatial subset with
+`gm.from_geoparquet(path, bbox=(xmin, ymin, xmax, ymax))`. The rectangle uses the
+selected column's CRS, includes boundary contact, and can cross the geographic
+longitude seam. Coverings or statistics prune candidate reads, then exact
+intersection refinement selects geometry and attributes together. Missing and
+empty geometries do not match. Attribute `filters`, `columns` and `row_groups`
+compose with the spatial selection; requested row-group order and repetitions
+are retained. Geographic pruning uses conservative latitude bounds; native
+coordinate statistics do not exclude potentially polar areal geometries.
+
+Native Parquet geometry can also be read without `geo` metadata. When several
+geometry columns have no declared primary, select one with `geometry='name'`.
+Native logical types, stored Arrow metadata and any GeoParquet declarations
+must describe the same frame.
 
 The GeoParquet reader and writer also accept binary streams, including
 `io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;

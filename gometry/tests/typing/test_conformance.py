@@ -490,11 +490,15 @@ def _check_geoparquet_binary_stream_types(
     arrow_file: pa.NativeFile,
 ) -> None:
     assert_type(
-        gm.from_geoparquet(binary_stream),
+        gm.from_geoparquet(binary_stream, bbox=(0.0, 0.0, 2.0, 3.0)),
         tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
     )
     assert_type(
         gm.from_geoparquet(arrow_file),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    assert_type(
+        gm.from_geoparquet(binary_stream, bbox=np.array([0.0, 0.0, 2.0, 3.0])),
         tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
     )
     POINTS.to_geoparquet(binary_stream)
@@ -1461,7 +1465,8 @@ if TYPE_CHECKING:
     assert_type(features.__geo_interface__, sht.GeoJsonFeatureCollection)
     with TemporaryDirectory() as _temporary:
         parquet_path = Path(_temporary) / 'points.parquet'
-        assert_type(POINTS.to_geoparquet(parquet_path, encoding='native'), None)
+        assert_type(POINTS.to_geoparquet(parquet_path, encoding='geoarrow'), None)
+        assert_type(POINTS.to_geoparquet(parquet_path, encoding='geometry'), None)
         assert parquet_path.is_file()
     assert_type(
         gm.to_feature_collection(features, properties=None, ids=None),

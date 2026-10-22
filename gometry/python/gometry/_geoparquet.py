@@ -20,7 +20,7 @@ from gometry._lib import (
     _GeoParquetPhysicalLayout,
 )
 from gometry._optional import missing_optional_dependency
-from gometry._types import mapping_as_dict
+from gometry._types import FloatScalar, mapping_as_dict
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -178,7 +178,7 @@ def _remove_id_from_member_of_ensembles(json_dict: dict[str, Any]) -> None:
 
 
 def _build_geo_metadata(
-    arr: GeometryArray[Geometry | None], encoding: str
+    arr: GeometryArray[Geometry | None], encoding: str, *, native: bool = False
 ) -> dict[str, Any]:
     from gometry._arrow import _CRS_DEFINITION_KEY, _crs_projjson
 
@@ -197,8 +197,7 @@ def _build_geo_metadata(
     if arr.epoch is not None:
         column_meta['epoch'] = arr.epoch
 
-    # GeoParquet 1.1: 4-number bbox for 2D; 6-number when Z is present
-    # (xmin, ymin, zmin, xmax, ymax, zmax). M is not a GeoParquet 1.x ordinate.
+    # The JSON bbox cannot express M without Z; native statistics retain M bounds.
     if arr.has_z.any():
         import numpy as np
 
@@ -214,13 +213,19 @@ def _build_geo_metadata(
                 bounds[3],
                 float(arr.max_z[has_z_extent].max()),
             ]
+            if native and arr.has_m.any():
+                min_m = arr.min_m
+                has_m_extent = np.isfinite(min_m)
+                if has_m_extent.any():
+                    column_meta['bbox'].insert(3, float(min_m[has_m_extent].min()))
+                    column_meta['bbox'].append(float(arr.max_m[has_m_extent].max()))
     else:
         bounds = arr.total_bounds
         if bounds is not None:
             column_meta['bbox'] = list(bounds)
 
     return {
-        'version': '1.1.0',
+        'version': '2.0.0' if native else '1.1.0',
         'primary_column': 'geometry',
         'columns': {'geometry': column_meta},
     }
@@ -295,7 +300,7 @@ def to_geoparquet(
     path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     attributes: pa.Table | Mapping[str, Any] | None = None,
-    encoding: Literal['wkb', 'native'] = 'wkb',
+    encoding: Literal['wkb', 'geoarrow', 'geometry'] = 'wkb',
     **kwargs: Any,
 ) -> None:
     """Write a geometry feature table to GeoParquet.
@@ -310,8 +315,11 @@ def to_geoparquet(
         streams are not supported; the writer leaves streams open.
     attributes : pyarrow.Table or mapping, optional
         Aligned non-geometry columns to preserve beside the geometry column.
-    encoding : {'wkb', 'native'}, default 'wkb'
-        Portable WKB or a separated native layout for homogeneous arrays.
+    encoding : {'wkb', 'geoarrow', 'geometry'}, default 'wkb'
+        Plain WKB or separated GeoArrow (homogeneous arrays) in GeoParquet
+        1.1, or native Parquet GEOMETRY with GeoParquet 2.0 metadata.
+        Only ``'geometry'`` supports M ordinates. All modes preserve linear
+        source-chart edges, not spherical or ellipsoidal geodesic curves.
     kwargs : mapping, optional
         Options forwarded to ``pyarrow.parquet.write_table``.
 
@@ -330,31 +338,31 @@ def to_geoparquet(
     arr = _as_array(values)
     # Packed storage keeps its M axis when every row is missing or the array is
     # empty; native encoding writes that axis and the reader rejects it.
-    if 'M' in (arr.common_coordinate_axes or '') or arr.has_m.any():
+    if encoding != 'geometry' and (
+        'M' in (arr.common_coordinate_axes or '') or arr.has_m.any()
+    ):
         raise GeometryError(
             'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
-    if encoding not in {'wkb', 'native'}:
+    if encoding not in {'wkb', 'geoarrow', 'geometry'}:
         raise GeometryError(
-            f"unknown GeoParquet encoding {encoding!r}; expected 'wkb' or 'native'"
+            f"unknown GeoParquet encoding {encoding!r}; expected 'wkb', 'geoarrow', or 'geometry'"
         )
 
-    arrow = arr.to_arrow(encoding='wkb' if encoding == 'wkb' else 'auto')
+    arrow = arr.to_arrow(encoding='auto' if encoding == 'geoarrow' else 'wkb')
     extension_name = arrow.type.extension_name
     parquet_encoding = (
         'WKB'
         if extension_name == 'geoarrow.wkb'
         else extension_name.removeprefix('geoarrow.')
     )
-    if encoding == 'native' and parquet_encoding == 'WKB':
-        raise GeometryError(
-            'native GeoParquet encoding requires one homogeneous geometry type'
-        )
+    if encoding == 'geoarrow' and parquet_encoding == 'WKB':
+        raise GeometryError('GeoArrow encoding requires one homogeneous geometry type')
 
     attributes_table = _attributes_table(pa, attributes, len(arr))
     # Native layouts keep the GeoArrow extension type so kind identity
     # (multipoint vs linestring, polygon vs multilinestring) survives Parquet
-    # and cannot be silently relabeled by forging geo metadata. WKB stays plain
+    # and cannot be silently relabeled by forging geo metadata. 1.1 WKB stays plain
     # binary storage: kind lives in the WKB payload, and some Parquet readers
     # rewrite geoarrow.wkb extension CRS metadata (EPSG:4326 → OGC:CRS84).
     if parquet_encoding == 'WKB':
@@ -362,16 +370,41 @@ def to_geoparquet(
             raise TypeError('WKB GeoArrow output must be an extension array')
         # pyarrow-stubs omits storage from the narrowed ExtensionArray model.
         geometry_column = arrow.storage  # pyright: ignore[reportAttributeAccessIssue]
+        if encoding == 'geometry':
+            from gometry._arrow import _serialized_extension_type
+
+            extension_metadata = json.loads(arrow.type.__arrow_ext_serialize__())
+            if arr.crs is None:
+                # Missing GeoArrow CRS would become Parquet's default CRS84.
+                extension_metadata['crs'] = 'srid:0'
+            else:
+                # Arrow elides CRS definitions based on a root EPSG:4326 ID alone.
+                # An authored definition can retain that ID while changing its frame.
+                extension_metadata['crs'].pop('id', None)
+            parquet_type = _serialized_extension_type(
+                pa,
+                'geoarrow.wkb',
+                arrow.type.storage_type,
+                json.dumps(extension_metadata, separators=(',', ':')).encode(),
+            )
+            geometry_column = pa.ExtensionArray.from_storage(
+                parquet_type, geometry_column
+            )
     else:
         geometry_column = arrow
     if attributes_table is None:
         table = pa.table({'geometry': geometry_column})
     else:
         table = attributes_table.add_column(0, 'geometry', geometry_column)
+    geo_metadata = _build_geo_metadata(
+        arr, parquet_encoding, native=encoding == 'geometry'
+    )
+    if encoding != 'geometry':
+        from gometry._geoparquet_bbox import add_covering
+
+        table = add_covering(pa, table, arr, geo_metadata['columns']['geometry'])
     metadata = dict(table.schema.metadata or {})
-    metadata[b'geo'] = json.dumps(
-        _build_geo_metadata(arr, parquet_encoding), separators=(',', ':')
-    ).encode('utf-8')
+    metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
     table = table.replace_schema_metadata(metadata)
     _pyarrow_parquet().write_table(table, path, **kwargs)
 
@@ -469,6 +502,7 @@ def _validate_bbox(
     bbox: object,
     *,
     allow_antimeridian: bool = False,
+    allow_m: bool = False,
 ) -> None:
     """Reject non-finite, wrong-length, or unordered GeoParquet bbox values.
 
@@ -477,7 +511,7 @@ def _validate_bbox(
     """
     if (
         not isinstance(bbox, list)
-        or len(bbox) not in {4, 6}
+        or len(bbox) not in ({4, 6, 8} if allow_m else {4, 6})
         or any(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -485,21 +519,15 @@ def _validate_bbox(
             for value in bbox
         )
     ):
+        lengths = 'four, six, or eight' if allow_m else 'four or six'
         raise _metadata_error(
-            f'column {column_name!r} bbox must contain four or six finite numbers'
+            f'column {column_name!r} bbox must contain {lengths} finite numbers'
         )
     values = [float(value) for value in bbox]
-    if len(values) == 4:
-        xmin, ymin, xmax, ymax = values
-        y_ok = ymin <= ymax
-        x_ok = allow_antimeridian or xmin <= xmax
-        ordered = x_ok and y_ok
-    else:
-        xmin, ymin, zmin, xmax, ymax, zmax = values
-        y_ok = ymin <= ymax
-        z_ok = zmin <= zmax
-        x_ok = allow_antimeridian or xmin <= xmax
-        ordered = x_ok and y_ok and z_ok
+    dimensions = len(values) // 2
+    ordered = (allow_antimeridian or values[0] <= values[dimensions]) and all(
+        values[axis] <= values[dimensions + axis] for axis in range(1, dimensions)
+    )
     if not ordered:
         raise _metadata_error(
             f'column {column_name!r} bbox min ordinates must not exceed max ordinates'
@@ -520,9 +548,9 @@ def _parse_geo_metadata(schema: Any) -> Mapping[str, Any]:
     version = metadata.get('version')
     if not isinstance(version, str):
         raise _metadata_error('version is required and must be a string')
-    if _VERSION_PATTERN.fullmatch(version) is None:
+    if version != '2.0.0' and _VERSION_PATTERN.fullmatch(version) is None:
         raise _metadata_error(
-            f'unsupported GeoParquet version: {version!r}; expected 1.x'
+            f'unsupported GeoParquet version: {version!r}; expected 1.x or 2.0.0'
         )
     return metadata
 
@@ -545,11 +573,18 @@ def _validate_column_metadata(
         raise _metadata_error(f'unsupported GeoParquet geometry encoding: {encoding!r}')
 
     geometry_types = column_metadata.get('geometry_types')
+    allowed_types = _GEOMETRY_TYPES
+    if metadata.get('version') == '2.0.0':
+        allowed_types |= {
+            _geometry_type_base(kind) + suffix
+            for kind in _GEOMETRY_TYPES
+            for suffix in (' M', ' ZM')
+        }
     if (
         not isinstance(geometry_types, list)
         or any(not isinstance(value, str) for value in geometry_types)
         or len(set(geometry_types)) != len(geometry_types)
-        or any(value not in _GEOMETRY_TYPES for value in geometry_types)
+        or any(value not in allowed_types for value in geometry_types)
     ):
         raise _metadata_error(
             f'column {column_name!r} geometry_types must be a unique array of supported type names'
@@ -582,6 +617,7 @@ def _validate_column_metadata(
             column_name,
             bbox,
             allow_antimeridian=_crs_allows_antimeridian_bbox(crs),
+            allow_m=metadata.get('version') == '2.0.0',
         )
     return column_metadata, encoding, crs, epoch
 
@@ -691,6 +727,7 @@ def _decode_geometry_column(
     epoch: float | None,
     field: Any | None = None,
     layout: _GeoParquetPhysicalLayout | None = None,
+    allow_m: bool = False,
 ) -> GeometryArray[Geometry | None]:
     if encoding == 'geometrycollection':
         raise _metadata_error(
@@ -761,7 +798,7 @@ def _decode_geometry_column(
 
     # GeoParquet 1.x has no M ordinate; reject schema-wide from decoded content
     # OR structural native storage (empty/all-null native XYM must not slip).
-    if storage_has_m or result.has_m.any():
+    if not allow_m and (storage_has_m or result.has_m.any()):
         raise _metadata_error(
             'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
@@ -941,6 +978,38 @@ def _attribute_result(table: Any) -> Any:
     return table.replace_schema_metadata(metadata or None)
 
 
+def _read_filtered_groups(
+    pa: Any,
+    pq: Any,
+    parquet_file: Any,
+    path: Any,
+    filesystem: Any,
+    groups: list[int],
+    columns: list[str],
+    expression: Any,
+    options: dict[str, Any],
+) -> Any:
+    if not groups:
+        return parquet_file.read_row_groups([], columns=columns)
+    dataset_options = {
+        key: value
+        for key, value in options.items()
+        if key not in {'use_threads', 'use_pandas_metadata'}
+    }
+    dataset = pq.ParquetDataset(path, filesystem=filesystem, **dataset_options)
+    (fragment,) = dataset.fragments
+    # A multi-group fragment sorts and deduplicates row groups. Scan each
+    # requested occurrence to preserve the caller's order and repetitions.
+    return pa.concat_tables([
+        fragment.subset(row_group_ids=[group]).to_table(
+            columns=columns,
+            filter=expression,
+            use_threads=options.get('use_threads', True),
+        )
+        for group in groups
+    ])
+
+
 def from_geoparquet(
     path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
@@ -948,6 +1017,7 @@ def from_geoparquet(
     columns: Iterable[str] | None = None,
     filters: Any = None,
     row_groups: Iterable[int] | None = None,
+    bbox: Iterable[FloatScalar] | None = None,
     filesystem: Any = None,
     **kwargs: Any,
 ) -> tuple[GeometryArray[Geometry | None], pa.Table]:
@@ -961,13 +1031,20 @@ def from_geoparquet(
     geometry : str, optional
         Geometry column to decode; the primary column is used by default.
     columns : iterable of str, optional
-        Attribute columns to preserve; all non-geometry columns by default.
+        Attribute columns to preserve; all non-geometry, non-covering columns
+        by default. Covering columns remain available by explicit selection.
         One-shot iterables (e.g. generators) are materialized once.
     filters : object, optional
         Predicate filters forwarded to ``pyarrow.parquet.read_table``.
     row_groups : iterable of int, optional
-        Row groups to read from a single file. Cannot be combined with filters.
-        One-shot iterables (e.g. generators) are materialized once.
+        Row groups to read from a single file, in the requested order, including
+        repetitions. One-shot iterables are materialized once.
+    bbox : iterable of four floats, optional
+        Closed query rectangle ``(xmin, ymin, xmax, ymax)`` in the selected
+        geometry column's CRS. Geographic rectangles may cross the longitude
+        seam. Available covering columns or native statistics prune reads;
+        exact intersection refinement removes bbox-only candidates. Empty and
+        missing geometries do not match.
     filesystem : object, optional
         PyArrow filesystem used to open the source.
     kwargs : mapping, optional
@@ -983,22 +1060,21 @@ def from_geoparquet(
     ModuleNotFoundError
         If pyarrow is not installed.
     ParseError
-        If GeoParquet metadata is missing, malformed, or unsupported, including
-        decoded M ordinates or M-typed native storage. Empty and all-null native
-        columns are rejected when their stored layout carries M.
+        If declarations are malformed or inconsistent, or edge interpolation is
+        incompatible with gometry's straight source-chart edges. Native Parquet
+        GEOMETRY files can be read without GeoParquet metadata. M ordinates
+        require native GEOMETRY / GeoParquet 2.0.
     """
     pa = _pyarrow()
     pq = _pyarrow_parquet()
     unknown_options = sorted(set(kwargs) - _READ_TABLE_OPTIONS)
     if unknown_options:
         raise TypeError(f'unsupported GeoParquet read options: {unknown_options!r}')
+    if geometry is not None and not isinstance(geometry, str):
+        raise TypeError('geometry must be a column name or None')
 
-    # Materialize row_groups early (needed to choose ParquetFile vs schema-only
-    # open). columns= is validated online against the finite schema later so
-    # infinite iterators terminate on unknown/duplicate names.
     selected_row_groups = _materialize_row_groups(row_groups)
 
-    parquet_file = None
     if selected_row_groups is not None:
         if any(
             isinstance(group, bool)
@@ -1010,8 +1086,6 @@ def from_geoparquet(
         # Normalize NumPy integer scalars / other Integral to plain int for
         # pyarrow (which accepts int but not all Integral subclasses uniformly).
         selected_row_groups = [int(group) for group in selected_row_groups]
-        if filters is not None:
-            raise GeometryError('row_groups cannot be combined with filters')
         row_group_unknown = sorted(
             set(kwargs) - _ROW_GROUP_OPTIONS - _PARQUET_FILE_OPTIONS
         )
@@ -1019,22 +1093,31 @@ def from_geoparquet(
             raise TypeError(
                 f'row_groups do not support read options: {row_group_unknown!r}'
             )
-        parquet_file_options = {
-            key: value for key, value in kwargs.items() if key in _PARQUET_FILE_OPTIONS
-        }
-        parquet_file = pq.ParquetFile(
-            path, filesystem=filesystem, **parquet_file_options
-        )
-        schema = parquet_file.schema_arrow
-    else:
-        schema_options = {
-            key: kwargs[key]
-            for key in ('memory_map', 'decryption_properties')
-            if key in kwargs
-        }
-        schema = pq.read_schema(path, filesystem=filesystem, **schema_options)
 
-    geo_metadata = _parse_geo_metadata(schema)
+    parquet_file_options = {
+        key: value for key, value in kwargs.items() if key in _PARQUET_FILE_OPTIONS
+    }
+    parquet_file = pq.ParquetFile(path, filesystem=filesystem, **parquet_file_options)
+    schema = parquet_file.schema_arrow
+    if selected_row_groups is not None and any(
+        group >= parquet_file.num_row_groups for group in selected_row_groups
+    ):
+        raise pa.ArrowInvalid('row group index is out of range')
+    from gometry._geoparquet_native import admit_native_columns, logical_columns
+
+    native_columns = logical_columns(parquet_file.schema, schema)
+    geo_metadata = (
+        _parse_geo_metadata(schema)
+        if b'geo' in (schema.metadata or {}) or not native_columns
+        else None
+    )
+    if native_columns or (
+        geo_metadata is not None and geo_metadata['version'] == '2.0.0'
+    ):
+        schema, geo_metadata = admit_native_columns(
+            pa, schema, native_columns, geo_metadata, geometry
+        )
+    assert geo_metadata is not None
     primary = geo_metadata.get('primary_column')
     if not isinstance(primary, str):
         raise _metadata_error('primary_column is required and must be a string')
@@ -1046,8 +1129,6 @@ def from_geoparquet(
             f'primary geometry column {primary!r} not found in GeoParquet file'
         )
     selected_geometry = primary if geometry is None else geometry
-    if not isinstance(selected_geometry, str):
-        raise TypeError('geometry must be a column name or None')
     if selected_geometry not in schema.names:
         raise _metadata_error(
             f'geometry column {selected_geometry!r} not found in GeoParquet file'
@@ -1066,8 +1147,61 @@ def from_geoparquet(
     )
     layout = admitted_layouts[selected_geometry]
 
+    from gometry._geoparquet_bbox import (
+        candidate_groups,
+        covering_column,
+        covering_filter,
+        query_rectangle,
+    )
+
+    coverings = (
+        {
+            name: covering_column(pa, schema, name, column_meta)
+            for name, column_meta in geometry_metadata.items()
+        }
+        if geo_metadata['version'].startswith('1.')
+        else {}
+    )
+    if columns is None:
+        auxiliary_columns = set(coverings.values())
+        attribute_columns = [
+            name for name in attribute_columns if name not in auxiliary_columns
+        ]
+
+    rectangle = None
+    if bbox is not None:
+        rectangle, bounds = query_rectangle(bbox, crs, epoch)
+        covering = coverings.get(selected_geometry)
+        if covering is not None:
+            spatial_filter = covering_filter(covering, bounds, crs)
+            filters = (
+                spatial_filter
+                if filters is None
+                else pq.filters_to_expression(filters) & spatial_filter
+            )
+        if selected_geometry in native_columns:
+            candidates = candidate_groups(parquet_file, selected_geometry, bounds, crs)
+            groups = (
+                range(parquet_file.num_row_groups)
+                if selected_row_groups is None
+                else selected_row_groups
+            )
+            selected_row_groups = [group for group in groups if group in candidates]
+
     projected_columns = [selected_geometry, *attribute_columns]
-    if parquet_file is not None:
+    if selected_row_groups is not None and filters is not None:
+        table = _read_filtered_groups(
+            pa,
+            pq,
+            parquet_file,
+            path,
+            filesystem,
+            selected_row_groups,
+            projected_columns,
+            pq.filters_to_expression(filters),
+            kwargs,
+        )
+    elif selected_row_groups is not None:
         row_group_read_options = {
             key: value for key, value in kwargs.items() if key in _ROW_GROUP_OPTIONS
         }
@@ -1089,9 +1223,15 @@ def from_geoparquet(
     # metadata / ExtensionType on the materialised column while the schema
     # field still carries the producer frame.
     geometry_field = schema.field(schema.get_field_index(selected_geometry))
+    geometry_column = table[selected_geometry]
+    if selected_geometry in native_columns:
+        geometry_column = pa.chunked_array(
+            [getattr(chunk, 'storage', chunk) for chunk in geometry_column.chunks],
+            type=getattr(geometry_column.type, 'storage_type', geometry_column.type),
+        )
     geometry_array = _decode_geometry_column(
         pa,
-        table[selected_geometry],
+        geometry_column,
         column_metadata,
         selected_geometry,
         encoding,
@@ -1099,6 +1239,13 @@ def from_geoparquet(
         epoch,
         field=geometry_field,
         layout=layout,
+        allow_m=geo_metadata['version'] == '2.0.0',
     )
     attributes = _attribute_result(table.select(attribute_columns))
+    if rectangle is not None:
+        from gometry import intersects
+
+        mask = intersects(geometry_array, rectangle)
+        geometry_array = geometry_array[mask]
+        attributes = attributes.filter(pa.array(mask))
     return geometry_array, attributes

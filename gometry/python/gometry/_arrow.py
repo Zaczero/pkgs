@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 import sys
-from functools import lru_cache
+from functools import cache, lru_cache
 from typing import Any
 
 from gometry._lib import CRS, ParseError
@@ -136,15 +136,14 @@ def _extension_type(
     return _extension_type_from_storage(pa, extension_name, storage_type, crs, epoch)
 
 
-def _restore_extension_type_v1(
+def _restore_extension_type(
     extension_name: str,
     storage_type: Any,
-    crs: str | None,
-    epoch: float | None,
+    serialized: bytes,
 ) -> Any:
     """Restore a pickled GeoArrow extension type without pickling ``pyarrow``."""
-    return _extension_type_from_storage(
-        _pyarrow(), extension_name, storage_type, crs, epoch
+    return _serialized_extension_type(
+        _pyarrow(), extension_name, storage_type, serialized
     )
 
 
@@ -177,12 +176,47 @@ def _extension_type_from_storage(
             )
         metadata['epoch'] = epoch
 
+    return _serialized_extension_type(
+        pa,
+        extension_name,
+        storage_type,
+        json.dumps(metadata, separators=(',', ':')).encode(),
+    )
+
+
+def _serialized_extension_type(
+    pa: Any, extension_name: str, storage_type: Any, serialized: bytes
+) -> Any:
+    """Retain provider metadata until the importing boundary admits its frame.
+
+    Parquet SRIDs need file context, which PyArrow extension deserialization
+    does not supply. Resolving them here would reject a column before its
+    native logical type and GeoParquet metadata can be reconciled.
+    """
+    return _extension_type_class(pa, extension_name)(storage_type, serialized)
+
+
+@cache
+def _extension_type_class(pa: Any, extension_name: str) -> type[Any]:
+    # PyArrow requires stable class identity as well as matching metadata.
+    # Cache the registered encoding classes, not arbitrary incoming metadata.
     class GeoArrowType(pa.ExtensionType):
-        def __init__(self) -> None:
+        def __init__(self, storage_type: Any, serialized: bytes) -> None:
+            self._serialized = serialized
             super().__init__(storage_type, extension_name)
 
+        def __eq__(self, other: object) -> bool:
+            return (
+                isinstance(other, GeoArrowType)
+                and self.storage_type == other.storage_type
+                and self._serialized == other._serialized
+            )
+
+        def __hash__(self) -> int:
+            return hash((extension_name, self.storage_type, self._serialized))
+
         def __arrow_ext_serialize__(self) -> bytes:
-            return json.dumps(metadata, separators=(',', ':')).encode()
+            return self._serialized
 
         @classmethod
         def __arrow_ext_deserialize__(
@@ -190,19 +224,15 @@ def _extension_type_from_storage(
             storage_type: Any,
             serialized: bytes,
         ) -> GeoArrowType:
-            crs, epoch = _metadata_frame(serialized)
-            return _extension_type_from_storage(
-                pa, extension_name, storage_type, crs, epoch
-            )
+            return cls(storage_type, serialized)
 
         def __reduce__(
             self,
-        ) -> tuple[Any, tuple[str, Any, str | None, float | None]]:
-            return _restore_extension_type_v1, (
+        ) -> tuple[Any, tuple[str, Any, bytes]]:
+            return _restore_extension_type, (
                 extension_name,
-                storage_type,
-                crs,
-                epoch,
+                self.storage_type,
+                self._serialized,
             )
 
-    return GeoArrowType()
+    return GeoArrowType

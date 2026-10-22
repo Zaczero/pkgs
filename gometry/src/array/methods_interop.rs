@@ -146,8 +146,11 @@ impl PyGeometryArray {
     ///     Per-row attribute columns written beside the geometry column
     ///     (lengths must match).
     /// encoding : str, default "wkb"
-    ///     Geometry encoding: ``'wkb'`` (portable default) or ``'native'``
-    ///     (GeoArrow separated coordinates for homogeneous arrays).
+    ///     ``'wkb'`` (portable default) and ``'geoarrow'`` (separated coordinates
+    ///     for homogeneous arrays) write GeoParquet 1.1 with a bbox covering.
+    ///     ``'geometry'`` writes native Parquet GEOMETRY with GeoParquet 2.0
+    ///     metadata, including M ordinates. All modes preserve linear source-chart
+    ///     edges, not spherical or ellipsoidal geodesic curves.
     /// kwargs : mapping, optional
     ///     Additional options forwarded to ``pyarrow.parquet.write_table``.
     ///
@@ -158,11 +161,10 @@ impl PyGeometryArray {
     /// Raises
     /// ------
     /// GeometryError
-    ///     If the geometry layout carries M (including empty or all-missing
-    ///     arrays), encoding is unknown, or attributes clash with the geometry
-    ///     column or mismatch the row count. GeoParquet 1.x does not support M;
-    ///     remove it explicitly with ``with_coordinates(m=None)`` before
-    ///     writing, or use ``force_2d()`` to remove both Z and M.
+    ///     If the encoding is unknown, attributes clash with the geometry column
+    ///     or mismatch the row count, or a GeoParquet 1.1 encoding carries M.
+    ///     Use ``encoding='geometry'`` to preserve M, or explicitly remove it
+    ///     with ``with_coordinates(m=None)``.
     ///
     /// Examples
     /// --------

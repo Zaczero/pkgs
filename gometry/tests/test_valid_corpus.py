@@ -343,7 +343,7 @@ def test_corpus_geoparquet_wkb_and_native_roundtrips(tmp_path: Path) -> None:
     assert wkb_restored.crs.to_epsg() == 4326
 
     native_path = tmp_path / 'native.parquet'
-    values.to_geoparquet(str(native_path), encoding='native', attributes=attributes)
+    values.to_geoparquet(str(native_path), encoding='geoarrow', attributes=attributes)
     native_restored, native_attrs = gm.from_geoparquet(str(native_path))
     assert native_restored.to_wkt() == values.to_wkt()
     assert [str(v) for v in native_attrs['name']] == ['a', 'b']

@@ -7238,7 +7238,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def _geoparquet_geometry_types(self) -> list[str]:
         """Sorted unique GeoParquet ``geometry_types`` inventory for present rows.
 
-        Labels match GeoParquet 1.x (``'Point'``, ``'Point Z'``, …). Missing
+        Labels match GeoParquet (``'Point'``, ``'Point Z'``, ``'Point M'``, …). Missing
         rows are skipped; an all-missing or empty array yields ``[]``.
 
         Returns
@@ -7700,7 +7700,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         path: str | PathLike[str] | BinaryIO | PyArrowNativeFile,
         *,
         attributes: PyArrowTable | Mapping[str, Any] | None = None,
-        encoding: Literal['wkb', 'native'] = 'wkb',
+        encoding: Literal['wkb', 'geoarrow', 'geometry'] = 'wkb',
         **kwargs: Any,
     ) -> None:
         """Write this array to a GeoParquet file, optionally as a feature table.
@@ -7714,8 +7714,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Per-row attribute columns written beside the geometry column
             (lengths must match).
         encoding : str, default "wkb"
-            Geometry encoding: ``'wkb'`` (portable default) or ``'native'``
-            (GeoArrow separated coordinates for homogeneous arrays).
+            ``'wkb'`` (portable default) and ``'geoarrow'`` (separated coordinates
+            for homogeneous arrays) write GeoParquet 1.1 with a bbox covering.
+            ``'geometry'`` writes native Parquet GEOMETRY with GeoParquet 2.0
+            metadata, including M ordinates. All modes preserve linear source-chart
+            edges, not spherical or ellipsoidal geodesic curves.
         kwargs : mapping, optional
             Additional options forwarded to ``pyarrow.parquet.write_table``.
 
@@ -7726,11 +7729,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If the geometry layout carries M (including empty or all-missing
-            arrays), encoding is unknown, or attributes clash with the geometry
-            column or mismatch the row count. GeoParquet 1.x does not support M;
-            remove it explicitly with ``with_coordinates(m=None)`` before
-            writing, or use ``force_2d()`` to remove both Z and M.
+            If the encoding is unknown, attributes clash with the geometry column
+            or mismatch the row count, or a GeoParquet 1.1 encoding carries M.
+            Use ``encoding='geometry'`` to preserve M, or explicitly remove it
+            with ``with_coordinates(m=None)``.
 
         Examples
         --------

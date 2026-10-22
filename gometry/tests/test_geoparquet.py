@@ -53,7 +53,7 @@ def _read_geometry(path: str, **kwargs: object) -> gm.GeometryArray:
     return geometries
 
 
-@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize('encoding', ['wkb', 'geoarrow', 'geometry'])
 @pytest.mark.parametrize(
     ('crs', 'coordinates'),
     [
@@ -149,7 +149,7 @@ def test_scalar_geometry_writes_single_row(parquet_path: str) -> None:
     _assert_roundtrip(gm.GeometryArray([point]), restored)
 
 
-@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize('encoding', ['wkb', 'geoarrow'])
 @pytest.mark.parametrize(
     'rows',
     [
@@ -293,7 +293,7 @@ def test_geoparquet_writer_rejects_m_ordinates(parquet_path: str) -> None:
         values.to_geoparquet(parquet_path)
 
 
-@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize('encoding', ['wkb', 'geoarrow'])
 def test_geoparquet_writer_rejects_structural_m_without_present_rows(
     parquet_path: str, encoding: str
 ) -> None:
@@ -388,15 +388,17 @@ def test_missing_pyarrow_raises_install_hint(monkeypatch: pytest.MonkeyPatch) ->
         gm.GeometryArray([gm.Point(0, 0)]).to_geoparquet('unused.parquet')
 
 
+@pytest.mark.parametrize('encoding', ['zzz', 'native'])
 def test_unknown_geoparquet_encoding_names_expected_tokens(
     parquet_path: str,
+    encoding: str,
 ) -> None:
     """Encoding rejections match the shared token template with alternatives."""
     with pytest.raises(gm.GeometryError) as excinfo:
-        gm.points([0.0], [0.0]).to_geoparquet(parquet_path, encoding='zzz')
+        gm.points([0.0], [0.0]).to_geoparquet(parquet_path, encoding=encoding)
     assert (
         str(excinfo.value)
-        == "unknown GeoParquet encoding 'zzz'; expected 'wkb' or 'native'"
+        == f"unknown GeoParquet encoding {encoding!r}; expected 'wkb', 'geoarrow', or 'geometry'"
     )
 
 
@@ -525,7 +527,7 @@ def test_geoparquet_selected_geometry_preserves_all_declared_columns(
 
 def test_geoparquet_native_point_roundtrip(parquet_path: str) -> None:
     values = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326)
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     restored = _read_geometry(parquet_path)
     assert canon(restored) == ['POINT (1 2)', 'POINT (3 4)']
     assert restored.crs.to_epsg() == 4326
@@ -672,7 +674,7 @@ def test_geoparquet_matching_field_extension_multipoint_decodes(
 def test_geoparquet_native_separated_layouts_roundtrip(
     parquet_path: str, values: gm.GeometryArray
 ) -> None:
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     restored = _read_geometry(parquet_path)
     _assert_roundtrip(values, restored)
 
@@ -1359,13 +1361,13 @@ def test_native_public_roundtrip_preserves_kinds(parquet_path: str) -> None:
     values = gm.GeometryArray([
         gm.MultiPoint([(0, 0), (1, 1)], crs=4326),
     ])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     restored = _read_geometry(parquet_path)
     _assert_roundtrip(values, restored)
     assert restored.geometry_type[0] == 'MultiPoint'
 
     line = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)], crs=4326)])
-    line.to_geoparquet(parquet_path, encoding='native')
+    line.to_geoparquet(parquet_path, encoding='geoarrow')
     restored_line = _read_geometry(parquet_path)
     _assert_roundtrip(line, restored_line)
     assert restored_line.geometry_type[0] == 'LineString'
@@ -1414,7 +1416,7 @@ def test_public_path_rejects_multipoint_relabeled_as_linestring(
 ) -> None:
     """Public native write+forge: MultiPoint must not become LineString."""
     values = gm.GeometryArray([gm.MultiPoint([(0, 0), (1, 1)], crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path, encoding='linestring', geometry_types=['LineString']
     )
@@ -1429,7 +1431,7 @@ def test_public_path_rejects_polygon_relabeled_as_multilinestring(
 ) -> None:
     """Public native write+forge: Polygon must not become MultiLineString."""
     values = gm.GeometryArray([gm.box(0, 0, 1, 1, crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='multilinestring',
@@ -1446,7 +1448,7 @@ def test_plain_storage_rejects_encoding_geometry_types_mismatch(
 ) -> None:
     """Plain parquet storage (no extension): encoding must agree with geometry_types."""
     values = gm.GeometryArray([gm.MultiPoint([(0, 0), (1, 1)], crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='linestring',
@@ -1465,7 +1467,7 @@ def test_plain_storage_rejects_wrong_depth_encoding(
 ) -> None:
     """Plain storage without extension: depth-incompatible encoding is rejected."""
     values = gm.GeometryArray([gm.MultiPoint([(0, 0), (1, 1)], crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='point',  # depth 0; multipoint storage is depth 1
@@ -1486,7 +1488,7 @@ def test_plain_storage_declared_encoding_resolves_depth(
     when an *embedded* extension disagrees (see sister tests).
     """
     values = gm.GeometryArray([gm.MultiPoint([(0, 0), (1, 1)], crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='linestring',
@@ -1502,7 +1504,7 @@ def test_plain_storage_polygon_as_multilinestring_via_encoding(
 ) -> None:
     """Same-depth polygon storage + multilinestring encoding follows the declaration."""
     values = gm.GeometryArray([gm.box(0, 0, 1, 1, crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='multilinestring',
@@ -1518,7 +1520,7 @@ def test_depth_ambiguous_plain_storage_with_matching_encoding(
 ) -> None:
     """Bare multipoint storage + matching multipoint encoding is legal (R09)."""
     values = gm.GeometryArray([gm.MultiPoint([(0, 0), (1, 1)], crs=4326)])
-    values.to_geoparquet(parquet_path, encoding='native')
+    values.to_geoparquet(parquet_path, encoding='geoarrow')
     _forge_geo_column_metadata(
         parquet_path,
         encoding='multipoint',
@@ -1622,7 +1624,7 @@ def test_public_roundtrip_preserves_attributes(parquet_path: str) -> None:
     assert restored_attrs.equals(attributes)
     assert restored.crs.to_epsg() == 4326
 
-    values.to_geoparquet(parquet_path, attributes=attributes, encoding='native')
+    values.to_geoparquet(parquet_path, attributes=attributes, encoding='geoarrow')
     restored_n, restored_attrs_n = gm.from_geoparquet(parquet_path)
     _assert_roundtrip(values, restored_n)
     assert restored_attrs_n.equals(attributes)
@@ -2337,7 +2339,7 @@ def test_geoparquet_wkb_and_native_roundtrips_preserve_metadata(
     values = values.with_epoch(2020.5)
     attributes = pa.table({'id': [1, 2], 'label': ['x', 'y']})
 
-    for encoding in ('wkb', 'native'):
+    for encoding in ('wkb', 'geoarrow'):
         values.to_geoparquet(parquet_path, attributes=attributes, encoding=encoding)
         restored, restored_attrs = gm.from_geoparquet(parquet_path)
         _assert_roundtrip(values, restored)
@@ -2566,7 +2568,7 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
     assert json.loads(crs) == gm.CRS(4326).to_projjson(as_dict=True)
     with pytest.raises(
         gm.ParseError,
-        match=r"edges 'spherical' are unsupported; only planar edges are accepted",
+        match=r"edges 'spherical' are unsupported.*straight source-chart edges",
     ):
         _parse_geoparquet_column_frame({'edges': 'spherical'}, 'geometry')
 

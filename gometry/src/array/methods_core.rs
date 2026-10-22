@@ -539,7 +539,7 @@ impl PyGeometryArray {
 
     /// Sorted unique GeoParquet ``geometry_types`` inventory for present rows.
     ///
-    /// Labels match GeoParquet 1.x (``'Point'``, ``'Point Z'``, …). Missing
+    /// Labels match GeoParquet (``'Point'``, ``'Point Z'``, ``'Point M'``, …). Missing
     /// rows are skipped; an all-missing or empty array yields ``[]``.
     ///
     /// Returns

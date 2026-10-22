@@ -586,13 +586,19 @@ fn parse_geoparquet_column_frame_value_typed(
         return Err(column_error("metadata must be a JSON object".to_owned()));
     };
 
-    // edges: planar only; spherical is real unsupported metadata; other tokens unknown.
+    // Geographic source-chart edges are not sphere/ellipsoid geodesics.
     match object.get("edges") {
         None => {},
         Some(Value::String(value)) if value == "planar" => {},
-        Some(Value::String(value)) if value == "spherical" => {
+        Some(Value::String(value))
+            if matches!(
+                value.as_str(),
+                "spherical" | "vincenty" | "thomas" | "andoyer" | "karney"
+            ) =>
+        {
             return Err(column_error(format!(
-                "edges '{value}' are unsupported; only planar edges are accepted"
+                "edges '{value}' are unsupported: gometry uses straight source-chart edges; \
+                 explicitly convert the curves to linear edges before reading"
             )));
         },
         Some(Value::String(value)) => {

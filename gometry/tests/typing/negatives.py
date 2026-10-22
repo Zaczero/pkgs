@@ -243,6 +243,7 @@ if TYPE_CHECKING:
     gm.LineString([(0.0, 0.0), (1.0, 1.0)], x=[0.0], y=[1.0])  # type: ignore[call-overload]
     POINT.with_coordinates(x=None)  # type: ignore[call-overload]
     POINTS.to_geoparquet('points.parquet', encoding='bogus')  # type: ignore[arg-type]
+    POINTS.to_geoparquet('points.parquet', encoding='native')  # type: ignore[arg-type]
 
     # Optional dataframe boundaries are explicit and statically typed; native
     # arrays are not framework Series/GeoSeries values.
