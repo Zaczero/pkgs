@@ -732,7 +732,7 @@ fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders(
         assert_eq!(owners, &[(source, false)]);
     }
 
-    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle source ordinals");
+    let mut budget = ExpansionBudget::new("intersection", "rectangle source ordinals");
     let partition = inventory
         .partition_in_window(&intervals, bounds, &mut budget)
         .unwrap();

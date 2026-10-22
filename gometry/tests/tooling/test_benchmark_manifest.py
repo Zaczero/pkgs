@@ -229,7 +229,7 @@ def test_revised_operations_and_labels() -> None:
     assert not any('s2_cover' in row for row in rows)
     assert any('from_wkt' in row for row in rows)
     assert any('bounds/10k_projected_buildings' in row for row in rows)
-    assert any('clip_by_rect' in row for row in rows)
+    assert 'gometry.intersection/10k_realistic_linework_categories' in rows
     assert any('point_on_surface' in row for row in rows)
     intersects = next(op for op in RELEASE_OPERATIONS if 'intersects' in op.gometry)
     assert '12k' in intersects.workload and '12k' in intersects.gometry

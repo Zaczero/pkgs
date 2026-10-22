@@ -1139,32 +1139,6 @@ pub(crate) fn unary_quantize(
     data.shape().quantize(precision)
 }
 
-/// Clip-by-rect kernel shared by the spine-routed free function.
-pub(crate) fn unary_clip_by_rect(
-    data: &PreparedPlan,
-    ctx: &MetricRowContext<'_>,
-    rect: Bounds,
-    drop: bool,
-) -> Result<Shape> {
-    if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
-        let metric_access = || {
-            ctx.metric
-                .geographic_chart_metric()?
-                .ok_or_else(|| crate::crs::CrsError::invalid(
-                    "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
-                ))
-        };
-        return data.shape().clip_by_rect_in_geographic_frame(
-            rect,
-            drop,
-            frame,
-            ctx.frame,
-            &metric_access,
-        );
-    }
-    data.clip_by_rect_with_bounds(rect, drop, data.bounds())
-}
-
 /// Bounds kernel shared by the spine-routed free function.
 #[expect(
     clippy::unnecessary_wraps,

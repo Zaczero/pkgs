@@ -13,7 +13,7 @@ pub(in crate::geometry) fn clip_non_areal_rectangle(
     strict: bool,
 ) -> Result<Shape> {
     let (inventory, intervals) = ExactSourceInventory::from_non_areal_rect_clip(subject, bounds)?;
-    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
+    let mut budget = ExpansionBudget::new("intersection", "rectangle-local exact partition");
     let partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
     let (topology, edges) = partition.local_topology()?;
     let plan =
@@ -54,7 +54,7 @@ pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     else {
         return Ok(None);
     };
-    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
+    let mut budget = ExpansionBudget::new("intersection", "rectangle-local exact partition");
     let mut partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
     let (topology, edges) = partition.local_topology()?;
     let global = partition.global_faces(&topology, &edges)?;

@@ -11,6 +11,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import box_in_frame
+
 FLAT_FAMILY_EXPORTS = {
     'crs_apply',
     'crs_authorities',
@@ -373,8 +375,8 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: line.remove_repeated_points(tolerance=huge), TypeError, 'tolerance'),
         (lambda: line.segmentize(huge), 'max_length'),
         (lambda: line.segmentize(huge), 'max_length'),
-        (lambda: line.clip_by_rect(huge, 0, 1, 1), 'minx'),
-        (lambda: line.clip_by_rect(huge, 0, 1, 1), 'minx'),
+        (lambda: gm.intersection(line, box_in_frame(line, (huge, 0, 1, 1))), 'minx'),
+        (lambda: gm.intersection(line, box_in_frame(line, (huge, 0, 1, 1))), 'minx'),
         (lambda: line.line_interpolate(huge), 'at'),
         (lambda: line.line_interpolate(huge), 'at'),
         (lambda: line.line_substring(huge, 1), 'start'),
@@ -534,7 +536,11 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     )
     assert (
         signatures['box']
-        == '(minx, miny, maxx, maxy, *, crs=None, wrap=None, ccw=True, epoch=None)'
+        == '(minx, miny, maxx, maxy, *, crs=None, ccw=True, epoch=None)'
+    )
+    assert (
+        signatures['boxes']
+        == '(minx, miny, maxx, maxy, *, crs=None, ccw=True, epoch=None)'
     )
     assert (
         signatures['points'] == '(x, y=None, *, z=None, m=None, crs=None, epoch=None)'
@@ -555,10 +561,15 @@ def test_version_matches_installed_metadata() -> None:
     assert gm.__version__ == metadata.version('gometry')
 
 
+def test_rectangle_intersection_is_the_single_public_clipping_operation() -> None:
+    assert not hasattr(gm.Geometry, 'clip_by_rect')
+    assert not hasattr(gm.GeometryArray, 'clip_by_rect')
+
+
 def test_readme_quickstart_stays_executable() -> None:
     point = gm.Point(21.0, 52.0, crs=4326)
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    wrapped_area = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')
+    wrapped_area = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326)
     multi = gm.MultiPolygon([area], crs=4326)
     assert point.geometry_type == 'Point'
     assert area.geometry_type == 'Polygon'

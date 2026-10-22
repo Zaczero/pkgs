@@ -13,7 +13,7 @@ import gometry as gm
 import numpy as np
 import pytest
 
-from tests._support import WEST_RADIAN_SOUTH_GRAD_CRS, ids, pair_rows
+from tests._support import WEST_RADIAN_SOUTH_GRAD_CRS, box_in_frame, ids, pair_rows
 
 
 def seam_box() -> gm.Polygon:
@@ -1545,7 +1545,9 @@ def test_t2_split_strip_remains_clippable_and_overlayable() -> None:
     split = strip.split_antimeridian()
     band = gm.box(-180, -30, 180, 30, crs=4326)
 
-    assert gm.equals(split.clip_by_rect(-180, -30, 180, 30), strip)
+    assert gm.equals(
+        gm.intersection(split, box_in_frame(split, (-180, -30, 180, 30))), strip
+    )
 
     second_intersection = gm.intersection(split, band)
     assert second_intersection.is_valid

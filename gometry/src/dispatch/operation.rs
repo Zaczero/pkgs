@@ -157,7 +157,6 @@ define_operation! {
     Bounds => { name: "bounds", resolver: MetricResolver::None },
     BuildArea => { name: "build_area", resolver: MetricResolver::GeographicCarry },
     Centroid => { name: "centroid", resolver: MetricResolver::None },
-    ClipByRect => { name: "clip_by_rect", resolver: MetricResolver::GeographicCarry },
     ConvexHull => { name: "convex_hull", resolver: MetricResolver::GeographicCarry },
     CrossesAntimeridian => { name: "crosses_antimeridian", resolver: MetricResolver::Antimeridian },
     Difference => { name: "difference", resolver: MetricResolver::GeographicCarry },

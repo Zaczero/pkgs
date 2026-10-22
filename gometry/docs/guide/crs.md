@@ -75,7 +75,7 @@ chart, as described below.
 |---|---|---|
 | **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | Geographic area, length, and LRS measure straight chart edges on the ellipsoid. Point-to-point distance uses a geodesic; shape distance, `dwithin`, `nearest_points`, and `shortest_line` minimize ellipsoidal geodesic separation over closed chart-edge supports, including filled polygons. Geographic Hausdorff ranges continuously over points and linework only. `unit='planar'` selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
-| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits endpoints within the CRS frame's native longitude half-period and latitude poles, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
+| **Topology** | predicates, overlay, [`relate`][gometry.relate] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength of the retained chart-straight source edge and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], [`triangulate`][gometry.Geometry.triangulate], [`voronoi`][gometry.Geometry.voronoi] | Planar or local-projection construction; see [constructive operations](constructive.md#tessellation-triangulate-voronoi-polygonize) for geographic tessellation behavior. |
@@ -415,18 +415,20 @@ value.
 
 #### Geographic box boundary fidelity
 
-For nondegenerate geographic bounds with `wrap=None` whose longitude and
-latitude values all lie within the CRS frame's native ranges, `box` constructs
-edges along parallels and meridians. It inserts only enough intermediate
-longitudes to keep each step strictly below half the longitude period. A span
-below half a period has five ring positions including closure; a span from half
-to less than a full period has seven, and a full-world band has nine. Geographic
-area and length measure these stored chart edges.
+For nondegenerate geographic bounds whose longitude and latitude values lie
+within the CRS frame's native ranges, `box` constructs edges along parallels
+and meridians.
+It inserts only enough intermediate longitudes to keep each step strictly
+below half the longitude period. A span below half a period has five ring
+positions including closure; a span from half to less than a full period has
+seven, and a full-world band has nine. Geographic area and length measure these
+stored chart edges. When `west > east`, `box` splits the interval at the seam
+automatically; its bounds retain that west/east ordering.
 
-Degenerate or out-of-range `wrap=None` bounds retain the ordinary corner-only,
-unwrapped construction; the native-range directed-span guarantee does not
-apply on that path. Antimeridian-crossing bounds use the separate EPSG:4326
-`wrap='split'` construction.
+Degenerate bounds and ordered bounds outside the native ranges retain the
+corner-only, unwrapped construction. The native-range directed-span guarantee
+does not apply on that path. A seam-crossing box must use valid endpoints in
+the frame's native longitude and latitude ranges.
 
 #### Geographic geodesic numerical domain
 
@@ -888,7 +890,8 @@ On a geographic CRS, the physical seam is represented by the CRS-native periodic
 longitude axis. It is ±180° for EPSG:4326, ±200 grads for EPSG:4807, and ±π for
 a radian frame with Greenwich as its prime meridian. gometry's **topology** ops —
 predicates, relate, overlay,
-[`clip_by_rect`][gometry.Geometry.clip_by_rect], centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds, distance/[`dwithin`][gometry.dwithin], the
+centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds,
+distance/[`dwithin`][gometry.dwithin], the
 spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — interpret
@@ -938,8 +941,10 @@ does not normalize or split it. A crossing geometry's
 [`bounds`][gometry.Geometry.bounds] reports
 `west > east` (minx > maxx) — the established geographic convention.
 
-For WGS 84 boxes that wrap longitude 180/−180, use `wrap="split"` so the visible
-geometry is split into valid pieces. For arbitrary crossing linework, call
+For WGS 84 boxes that cross longitude 180/−180, pass west > east; `box`
+automatically splits the interval into valid pieces. A geographic geometry's
+bounds can be passed back to `box` or `boxes` in the same frame. For arbitrary
+crossing linework, call
 `split_antimeridian()` before planar algorithms that document that requirement,
 including Earcut:
 
@@ -954,7 +959,7 @@ print(antimeridian_before_after(line, line.split_antimeridian()))
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-region = gm.box(170, -10, -170, 10, crs=4326, wrap="split")
+region = gm.box(170, -10, -170, 10, crs=4326)
 track = gm.LineString([(179, 10), (-179, 10)], crs=4326)
 split_track = track.split_antimeridian()
 

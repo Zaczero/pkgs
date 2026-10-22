@@ -10,6 +10,7 @@ import pytest
 from tests._support import (
     EAST_DEGREE_SOUTH_LATITUDE_CRS,
     WEST_RADIAN_SOUTH_GRAD_CRS,
+    box_in_frame,
 )
 
 pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
@@ -551,7 +552,7 @@ def test_split_seam_connected_polygon_centroid_matches_unsplit_scalar_and_array(
         crs=4326,
     )
     split = raw.split_antimeridian()
-    wrapped = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
+    wrapped = gm.box(170, -10, -170, 10, crs=4326)
     expected = raw.centroid()
     assert (expected.x, expected.y) == (-180.0, 0.0)
 
@@ -722,6 +723,32 @@ def test_packed_bounds_match_scalar_antimeridian_crossing() -> None:
         ]),
     )
     assert mixed.total_bounds == (150.0, 40.0, -170.0, 50.0)
+
+
+def test_crossing_bounds_round_trip_through_box_and_boxes() -> None:
+    source = gm.Polygon(
+        [(170, 40), (-170, 40), (-170, 50), (170, 50), (170, 40)],
+        crs=4326,
+        epoch=2020.0,
+    )
+    bounds = source.bounds
+    assert bounds == (170.0, 40.0, -170.0, 50.0)
+
+    scalar = gm.box(*bounds, crs=source.crs, epoch=source.epoch)
+    array = gm.boxes(
+        [bounds[0]],
+        [bounds[1]],
+        [bounds[2]],
+        [bounds[3]],
+        crs=source.crs,
+        epoch=source.epoch,
+    )
+    assert scalar.bounds == bounds
+    assert array[0].bounds == bounds
+    assert (scalar.crs, scalar.epoch) == (source.crs, source.epoch)
+    assert (array.crs, array.epoch) == (source.crs, source.epoch)
+    assert gm.equals(source, scalar)
+    assert gm.equals(source, array[0])
 
 
 def test_seam_only_bounds_use_the_canonical_seam() -> None:
@@ -1602,31 +1629,39 @@ def test_crossing_polygon_relate_centroid_bounds_point_on_surface() -> None:
     assert poly.bounds == (170.0, 40.0, -170.0, 50.0)
 
 
-def test_crossing_polygon_clip_by_rect_scalar_and_array() -> None:
+def test_crossing_polygon_intersection_with_box_scalar_and_array() -> None:
     poly = _crossing_band_polygon()
     split = poly.split_antimeridian()
     east_rect = (172, 42, 178, 48)
-    assert poly.clip_by_rect(*east_rect).area == pytest.approx(
-        split.clip_by_rect(*east_rect).area
+    assert gm.intersection(poly, box_in_frame(poly, east_rect)).area == pytest.approx(
+        gm.intersection(split, box_in_frame(split, east_rect)).area
     )
     rows = gm.GeometryArray([poly, split])
-    east_clips = rows.clip_by_rect(*east_rect)
+    east_clips = gm.intersection(rows, box_in_frame(rows, east_rect))
     assert east_clips[0].area == pytest.approx(east_clips[1].area)
     cross_rect = (175, 42, -175, 48)
-    cross_clip = poly.clip_by_rect(*cross_rect)
+    cross_clip = gm.intersection(poly, box_in_frame(poly, cross_rect))
     half_union = gm.union(
-        poly.clip_by_rect(175, 42, 180, 48), poly.clip_by_rect(-180, 42, -175, 48)
+        gm.intersection(poly, box_in_frame(poly, (175, 42, 180, 48))),
+        gm.intersection(poly, box_in_frame(poly, (-180, 42, -175, 48))),
     )
     assert cross_clip.area == pytest.approx(half_union.area)
-    cross_rows = gm.GeometryArray([poly]).clip_by_rect(*cross_rect)
-    half_rows = gm.GeometryArray([poly]).clip_by_rect(175, 42, 180, 48)
-    west_rows = gm.GeometryArray([poly]).clip_by_rect(-180, 42, -175, 48)
+    single_row = gm.GeometryArray([poly])
+    cross_rows = gm.intersection(single_row, box_in_frame(single_row, cross_rect))
+    half_rows = gm.intersection(
+        single_row, box_in_frame(single_row, (175, 42, 180, 48))
+    )
+    west_rows = gm.intersection(
+        single_row, box_in_frame(single_row, (-180, 42, -175, 48))
+    )
     assert cross_rows[0].area == pytest.approx(
         gm.union(half_rows[0], west_rows[0]).area
     )
 
 
-def test_geographic_clip_by_rect_canonical_boundaries_match_scalar_and_array() -> None:
+def test_geographic_intersection_with_box_canonical_boundaries_match_scalar_and_array() -> (
+    None
+):
     cases = [
         (
             gm.LineString([(-2, 0), (2, 0)], crs=4326),
@@ -1650,11 +1685,13 @@ def test_geographic_clip_by_rect_canonical_boundaries_match_scalar_and_array() -
         ),
     ]
     for shape, rect, expected in cases:
-        assert gm.equals(shape.clip_by_rect(*rect), expected)
-        assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
+        assert gm.equals(gm.intersection(shape, box_in_frame(shape, rect)), expected)
+        rows = gm.GeometryArray([shape])
+        result = gm.intersection(rows, box_in_frame(rows, rect))
+        assert gm.equals(result[0], expected)
 
 
-def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
+def test_geographic_intersection_with_box_resolves_longitude_and_pole_aliases() -> None:
     noncanonical = gm.Point(360, 0, crs=4326)
     pole = gm.Point(0, 90, crs=4326)
     cases = [
@@ -1668,89 +1705,70 @@ def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
         (gm.Point(0, 0, crs=4326), (-1, -1, 1, 1), gm.Point(0, 0, crs=4326)),
     ]
     for shape, rect, expected in cases:
-        clipped = shape.clip_by_rect(*rect)
+        clipped = gm.intersection(shape, box_in_frame(shape, rect))
         assert gm.equals(clipped, expected)
-        assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
+        rows = gm.GeometryArray([shape])
+        assert gm.equals(gm.intersection(rows, box_in_frame(rows, rect))[0], expected)
 
 
-@pytest.mark.parametrize(
-    ('shape', 'rect'),
-    [
-        (
-            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
-            (170, -1, 190, 1),
-        ),
-        (
-            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
-            (190, -1, -170, 1),
-        ),
-        (
-            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
-            (-190, -1, 170, 1),
-        ),
-    ],
-    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain'],
-)
-def test_geographic_clip_by_rect_rejects_endpoints_outside_the_frame(
-    shape: gm.Geometry, rect: tuple[float, float, float, float]
-) -> None:
-    for clipped in (
-        lambda: shape.clip_by_rect(*rect),
-        lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
-    ):
-        with pytest.raises(ValueError, match='geographic rectangle bounds'):
-            clipped()
+def test_geographic_boxes_preserve_ordered_unwrapped_bounds() -> None:
+    line = gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326)
+    east_unwrapped = gm.box(170, -1, 190, 1, crs=4326)
+    west_unwrapped = gm.box(-190, -1, 170, 1, crs=4326)
+    assert east_unwrapped.bounds == (170.0, -1.0, 190.0, 1.0)
+    assert west_unwrapped.bounds == (-190.0, -1.0, 170.0, 1.0)
+    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
+        gm.intersection(line, east_unwrapped)
+    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
+        gm.intersection(line, west_unwrapped)
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        gm.box(190, -1, -170, 1, crs=4326)
 
 
-def test_geographic_clip_by_rect_rejects_unordered_latitudes_scalar_and_array() -> None:
-    shape = gm.LineString([(-2, 0), (2, 0)], crs=4326)
-    rect = (1, 1, -1, -1)
-    for clipped in (
-        lambda: shape.clip_by_rect(*rect),
-        lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
-    ):
-        with pytest.raises(ValueError, match='geographic rectangle bounds'):
-            clipped()
+def test_geographic_box_rejects_unordered_latitudes() -> None:
+    with pytest.raises(ValueError, match='box miny'):
+        gm.box(-1, 1, 1, -1, crs=4326)
 
 
-def test_grad_clip_by_rect_matches_wrapped_box_in_scalar_mixed_and_packed_paths() -> (
-    None
-):
+def test_grad_seam_box_intersection_matches_scalar_and_array_paths() -> None:
     point = gm.Point(195, 0, crs=4807)
     rect = (190, -1, -190, 1)
-    wrapped = gm.box(*rect, crs=4807, wrap='split')
-    expected = gm.intersection(point, wrapped)
+    window = gm.box(*rect, crs=point.crs, epoch=point.epoch)
 
-    scalar = point.clip_by_rect(*rect)
-    assert scalar.to_wkb() == expected.to_wkb()
+    scalar = gm.intersection(point, window)
+    assert scalar.to_wkb() == point.to_wkb()
     assert gm.equals(scalar, point)
 
     mixed = gm.GeometryArray([
         point,
         gm.LineString([(-199, 0), (199, 0)], crs=4807),
     ])[0:1]
-    mixed_result = mixed.clip_by_rect(*rect)[0]
-    assert mixed_result.to_wkb() == expected.to_wkb()
+    mixed_result = gm.intersection(mixed, box_in_frame(mixed, rect))[0]
+    assert mixed_result.to_wkb() == point.to_wkb()
 
-    packed = gm.GeometryArray([point]).clip_by_rect(*rect)[0]
-    assert packed.to_wkb() == expected.to_wkb()
+    packed_rows = gm.GeometryArray([point])
+    packed = gm.intersection(packed_rows, box_in_frame(packed_rows, rect))[0]
+    assert packed.to_wkb() == point.to_wkb()
 
-    wrapped_rows = gm.boxes([190], [-1], [-190], [1], crs=4807, wrap='split')
-    assert gm.equals(wrapped_rows[0], wrapped)
+    window_rows = gm.boxes([190], [-1], [-190], [1], crs=point.crs, epoch=point.epoch)
+    assert gm.equals(window_rows[0], window)
 
     with pytest.raises(ValueError, match='geographic rectangle bounds'):
-        point.clip_by_rect(201, -1, 190, 1)
+        gm.intersection(point, box_in_frame(point, (201, -1, 190, 1)))
     with pytest.raises(ValueError, match='geographic rectangle bounds'):
-        gm.box(201, -1, 190, 1, crs=4807, wrap='split')
+        gm.box(201, -1, 190, 1, crs=4807)
     with pytest.raises(ValueError, match='geographic rectangle bounds'):
-        point.clip_by_rect(190, -1, -190, 101)
+        gm.intersection(point, box_in_frame(point, (190, -1, -190, 101)))
 
 
-def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> None:
+def test_packed_geographic_intersection_preserves_canonical_rows_and_missingness() -> (
+    None
+):
     canonical_line = gm.LineString([(-2, 0), (0, 0), (2, 0)], crs=4326)
     canonical_expected = gm.LineString([(-1, 0), (0, 0), (1, 0)], crs=4326)
+    first_row = gm.GeometryArray([canonical_line])
     assert gm.equals(
-        gm.GeometryArray([canonical_line]).clip_by_rect(-1, -1, 1, 1)[0],
+        gm.intersection(first_row, box_in_frame(first_row, (-1, -1, 1, 1)))[0],
         canonical_expected,
     )
 
@@ -1759,7 +1777,8 @@ def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> No
         gm.LineString([], crs=4326),
         canonical_line,
     ])
-    rows = rows._with_missing([False, False, True]).clip_by_rect(-1, -1, 1, 1)
+    masked_rows = rows._with_missing([False, False, True])
+    rows = gm.intersection(masked_rows, box_in_frame(masked_rows, (-1, -1, 1, 1)))
     assert gm.equals(rows[0], canonical_expected)
     assert rows[1].to_wkt() == 'LINESTRING EMPTY'
     assert rows[2] is None

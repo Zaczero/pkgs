@@ -162,7 +162,7 @@ def _check_epoch_input_families(
     reveal_type(gm.GeometryArray([POINT], crs=4326, epoch=numpy_index_epoch))
     reveal_type(gm.GeometryArray([POINT, None], crs=4326, epoch=numpy_array_epoch))
     reveal_type(gm.box(0, 0, 1, 1, crs=4326, epoch=float_epoch))
-    reveal_type(gm.box(170, -10, -170, 10, crs=4326, wrap='split', epoch=index_epoch))
+    reveal_type(gm.box(170, -10, -170, 10, crs=4326, epoch=index_epoch))
     reveal_type(gm.boxes(0, 0, [1, 2], [1, 2], crs=4326, epoch=index_epoch))
     reveal_type(
         gm.boxes(
@@ -171,7 +171,6 @@ def _check_epoch_input_families(
             [-170, 10],
             [10, 10],
             crs=4326,
-            wrap='split',
             epoch=numpy_float_epoch,
         )
     )
@@ -590,7 +589,9 @@ def _check_fixed_output_nullability(
         gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
     )
     assert_type(
-        values.clip_by_rect(0.0, 0.0, 1.0, 1.0),
+        gm.intersection(
+            values, gm.box(0.0, 0.0, 1.0, 1.0, crs=values.crs, epoch=values.epoch)
+        ),
         gm.GeometryArray[gm.Geometry | None],
     )
     assert_type(
@@ -716,8 +717,16 @@ def _check_kind_narrowing(
     )
     assert_type(line.line_merge(), gm.LineString)
     assert_type(multiline.line_merge(), gm.LineString | gm.MultiLineString)
-    assert_type(point.clip_by_rect(0, 0, 1, 1), gm.Point)
-    assert_type(multipoint.clip_by_rect(0, 0, 1, 1), gm.MultiPoint | gm.Point)
+    assert_type(
+        gm.intersection(point, gm.box(0, 0, 1, 1, crs=point.crs, epoch=point.epoch)),
+        gm.Point,
+    )
+    assert_type(
+        gm.intersection(
+            multipoint, gm.box(0, 0, 1, 1, crs=multipoint.crs, epoch=multipoint.epoch)
+        ),
+        gm.MultiPoint | gm.Point,
+    )
     assert_type(polygon.unique_points(), gm.MultiPoint)
     assert_type(collection.unique_points(), gm.MultiPoint | gm.GeometryCollection)
     assert_type(line.build_area(), gm.Polygon | gm.MultiPolygon)
@@ -791,7 +800,10 @@ def _check_kind_narrowing(
     )
     assert_type(lines.offset_curve(1.0), gm.GeometryArray[gm.LineString])
     assert_type(nullable_lines.line_merge(), gm.GeometryArray[gm.LineString | None])
-    assert_type(points.clip_by_rect(0, 0, 1, 1), gm.GeometryArray[gm.Point])
+    assert_type(
+        gm.intersection(points, gm.box(0, 0, 1, 1, crs=points.crs, epoch=points.epoch)),
+        gm.GeometryArray[gm.Point],
+    )
     assert_type(polygons.unique_points(), gm.GeometryArray[gm.MultiPoint])
     assert_type(
         nullable_lines.build_area(),
@@ -1676,11 +1688,11 @@ if TYPE_CHECKING:
         gm.Point,
     )
     assert_type(
-        gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split'),
+        gm.box(170.0, -10.0, -170.0, 10.0, crs=4326),
         gm.Polygon | gm.MultiPolygon,
     )
     assert_type(
-        gm.boxes([170.0], [-10.0], [-170.0], [10.0], crs=4326, wrap='split'),
+        gm.boxes([170.0], [-10.0], [-170.0], [10.0], crs=4326),
         gm.GeometryArray[gm.Polygon | gm.MultiPolygon],
     )
     arrow_array: sht.SupportsArrowArray = _ArrowArray()

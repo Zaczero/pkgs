@@ -58,7 +58,6 @@ else:
 
 from gometry._types import (
     ArrowEncoding,
-    BoxWrap,
     BufferSide,
     CapStyle,
     Cell,
@@ -2254,71 +2253,6 @@ class Geometry:
         >>> rect = gm.box(0, 0, 2, 2).minimum_rotated_rectangle()
         >>> gm.equals(rect, gm.box(0, 0, 2, 2))
         True
-        """
-
-    def clip_by_rect(
-        self,
-        minx: _FloatScalarInput,
-        miny: _FloatScalarInput,
-        maxx: _FloatScalarInput,
-        maxy: _FloatScalarInput,
-    ) -> Geometry:
-        """Return the intersection with the closed rectangle
-        ``(minx, miny, maxx, maxy)``. Its WKB is identical to
-        ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
-        same CRS and coordinate epoch. Point-only and edge-only
-        contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
-        closed line or point.
-
-        When the closed rectangle contains the subject's raw bounds, the subject is
-        returned verbatim for Cartesian inputs and canonical seam-free geographic bounds.
-
-        Source ordinates are carried where meaningful; synthesized clip vertices use
-        the operation's natural XY result.
-
-        In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
-        within the CRS frame's native half-period. ``west <= east`` selects the ordinary
-        closed interval; ``west > east`` selects the closed interval crossing the
-        longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
-        longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
-        ``maxy`` are the south/north latitudes and must lie within the frame's poles,
-        with ``south <= north``. To construct a box for that interval, use :func:`box`
-        with ``wrap='split'`` and the same CRS.
-
-        Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
-        and pole vertices follow the CRS topology. Geographic rectangle horizontal
-        edges follow parallels and use the same construction as :func:`box` when that
-        box uses the same CRS and coordinate epoch.
-
-        Parameters
-        ----------
-        minx, miny, maxx, maxy : float
-            The Cartesian bounds, or the geographic west, south, east, and north
-            endpoints respectively.
-
-        Returns
-        -------
-        Geometry
-            The clipped geometry (kind may change; empty when fully outside).
-
-
-        Raises
-        ------
-        GeometryError
-            If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic endpoint is outside its CRS frame.
-        OverflowError
-            If no adjacent binary64 assignment preserves the exact clipped result.
-        ResourceLimitError
-            If the bounded embedding search is exhausted.
-        InvalidGeometryError
-            If the input contains coordinates outside its geographic CRS domain.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.LineString([(0, 0), (10, 0)]).clip_by_rect(2, -1, 5, 1).to_wkt()
-        'LINESTRING (2 0, 5 0)'
         """
 
     def swap_xy(self) -> Self:
@@ -4814,13 +4748,6 @@ class Point(Geometry):
     def split_antimeridian(
         self,
     ) -> Point: ...
-    def clip_by_rect(
-        self,
-        minx: _FloatScalarInput,
-        miny: _FloatScalarInput,
-        maxx: _FloatScalarInput,
-        maxy: _FloatScalarInput,
-    ) -> Point: ...
     def unique_points(
         self,
     ) -> MultiPoint: ...
@@ -5179,13 +5106,6 @@ class MultiPoint(Geometry, Sequence[Point]):
     def split_antimeridian(
         self,
     ) -> MultiPoint: ...
-    def clip_by_rect(
-        self,
-        minx: _FloatScalarInput,
-        miny: _FloatScalarInput,
-        maxx: _FloatScalarInput,
-        maxy: _FloatScalarInput,
-    ) -> MultiPoint | Point: ...
     def unique_points(
         self,
     ) -> MultiPoint: ...
@@ -8824,112 +8744,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> rect = gm.box(0, 0, 2, 2).minimum_rotated_rectangle()
         >>> gm.equals(rect, gm.box(0, 0, 2, 2))
         True
-        """
-
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[Point],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[Point]: ...
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[MultiPoint],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[MultiPoint | Point]: ...
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[Point | None],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[Point | None]: ...
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[MultiPoint | None],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[MultiPoint | Point | None]: ...
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[Geometry],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[Geometry]: ...
-    @overload
-    def clip_by_rect(
-        self: GeometryArray[Geometry | None],
-        minx: float,
-        miny: float,
-        maxx: float,
-        maxy: float,
-    ) -> GeometryArray[Geometry | None]:
-        """Return the intersection with the closed rectangle
-        ``(minx, miny, maxx, maxy)``. Its WKB is identical to
-        ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
-        same CRS and coordinate epoch. Point-only and edge-only
-        contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
-        closed line or point.
-
-        When the closed rectangle contains the subject's raw bounds, the subject is
-        returned verbatim for Cartesian inputs and canonical seam-free geographic bounds.
-
-        Source ordinates are carried where meaningful; synthesized clip vertices use
-        the operation's natural XY result.
-
-        In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
-        within the CRS frame's native half-period. ``west <= east`` selects the ordinary
-        closed interval; ``west > east`` selects the closed interval crossing the
-        longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
-        longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
-        ``maxy`` are the south/north latitudes and must lie within the frame's poles,
-        with ``south <= north``. To construct a box for that interval, use :func:`box`
-        with ``wrap='split'`` and the same CRS.
-
-        Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
-        and pole vertices follow the CRS topology. Geographic rectangle horizontal
-        edges follow parallels and use the same construction as :func:`box` when that
-        box uses the same CRS and coordinate epoch.
-
-        Parameters
-        ----------
-        minx, miny, maxx, maxy : float
-            The Cartesian bounds, or the geographic west, south, east, and north
-            endpoints respectively.
-
-        Returns
-        -------
-        GeometryArray
-            One clipped geometry per row.
-
-
-        Raises
-        ------
-        GeometryError
-            If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic endpoint is outside its CRS frame.
-        OverflowError
-            If no adjacent binary64 assignment preserves the exact clipped result.
-        ResourceLimitError
-            If the bounded embedding search is exhausted.
-        InvalidGeometryError
-            If the input contains coordinates outside its geographic CRS domain.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.LineString([(0, 0), (10, 0)]).clip_by_rect(2, -1, 5, 1).to_wkt()
-        'LINESTRING (2 0, 5 0)'
         """
 
     def swap_xy(self) -> Self:
@@ -16650,8 +16464,7 @@ def box(
     maxx: _FloatScalarInput,
     maxy: _FloatScalarInput,
     *,
-    crs: CrsInput | None = None,
-    wrap: None = None,
+    crs: None = None,
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> Polygon: ...
@@ -16663,37 +16476,35 @@ def box(
     maxy: _FloatScalarInput,
     *,
     crs: CrsInput,
-    wrap: BoxWrap,
+    ccw: bool = True,
+    epoch: _EpochInput | None = None,
+) -> Polygon | MultiPolygon: ...
+@overload
+def box(
+    minx: _FloatScalarInput,
+    miny: _FloatScalarInput,
+    maxx: _FloatScalarInput,
+    maxy: _FloatScalarInput,
+    *,
+    crs: CrsInput | None,
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> Polygon | MultiPolygon:
-    """Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
+    """Create a rectangular geometry from bounds ``(minx, miny, maxx, maxy)``.
 
     Parameters
     ----------
     minx, miny, maxx, maxy : float
-        Finite rectangle bounds; each minimum must not exceed its maximum,
-        except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
-        geographic box across the CRS frame's longitude seam.
+        Finite rectangle bounds. With a geographic CRS, ``minx > maxx`` selects
+        the interval crossing the frame's longitude seam.
 
     crs : CRS-like, optional
         CRS label (EPSG code, authority string, or WKT); attached as metadata,
         coordinates are not transformed.
-        With a geographic CRS, positive-size ``wrap=None`` bounds wholly inside
-        the frame's native longitude and latitude ranges use chart edges along
-        parallels and meridians. Only enough intermediate longitudes are
-        inserted to keep each step below half the period; geographic area and
-        length measure those stored edges. Other ``wrap=None`` bounds use the
-        corner-only, unwrapped construction; the native-range directed-span
-        guarantee does not apply on that path.
-
-    wrap : {'split'}, optional
-        Seam handling for boxes with a geographic CRS. ``'split'`` lets
-        ``minx`` exceed ``maxx`` to cross the frame's longitude seam, returning
-        a `MultiPolygon`. The default (``None``) leaves coordinates unwrapped
-        and requires ``minx <= maxx``. Latitude bounds must lie within the frame's
-        poles. Longitude endpoints must lie within its native half-period unless
-        their eastward span is at least one period, which selects the full band.
+        With a geographic CRS, bounds within the frame's native longitude and
+        latitude ranges use chart edges along parallels and meridians.
+        Seam-crossing bounds are split into two polygons. Ordered bounds outside
+        those ranges retain the corner-only, unwrapped construction.
 
     ccw : bool, default True
         If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
@@ -16704,20 +16515,17 @@ def box(
     Returns
     -------
     Polygon | MultiPolygon
-        A rectangular polygon, or a MultiPolygon when ``wrap='split'`` crosses
-        the frame's longitude seam.
+        A rectangular polygon, or a MultiPolygon for a seam-crossing interval.
 
     Raises
     ------
     InvalidGeometryError
-        If a bound is non-finite or a minimum exceeds its maximum without
-        ``wrap='split'``.
+        If a bound is non-finite or south exceeds north.
     CRSError
-        If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-        without a geographic CRS.
+        If ``epoch`` is set without ``crs``.
     GeometryError
-        If ``epoch`` is not a finite decimal year or wrapped geographic bounds
-        lie outside their CRS frame.
+        If ``epoch`` is invalid, bounds are unordered outside a valid geographic
+        seam crossing, or seam-crossing bounds lie outside their CRS frame.
 
     Examples
     --------
@@ -16726,6 +16534,8 @@ def box(
     'POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))'
     >>> gm.box(0, 0, 2, 1, ccw=False).to_wkt()
     'POLYGON ((0 0, 0 1, 2 1, 2 0, 0 0))'
+    >>> gm.box(170, -10, -170, 10, crs=4326).bounds
+    (170.0, -10.0, -170.0, 10.0)
     """
 
 @overload
@@ -16807,8 +16617,7 @@ def boxes(
     maxx: FloatInput,
     maxy: FloatInput,
     *,
-    crs: CrsInput | None = None,
-    wrap: None = None,
+    crs: None = None,
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon]: ...
@@ -16820,7 +16629,6 @@ def boxes(
     maxy: FloatInput,
     *,
     crs: CrsInput,
-    wrap: BoxWrap,
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon | MultiPolygon]: ...
@@ -16831,12 +16639,11 @@ def boxes(
     maxx: FloatInput,
     maxy: FloatInput,
     *,
-    crs: CrsInput | None = None,
-    wrap: BoxWrap | None = None,
+    crs: CrsInput | None,
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon | MultiPolygon]:
-    """Create a ``GeometryArray`` of rectangular polygons from bound columns.
+    """Create a ``GeometryArray`` of rectangular geometries from bound columns.
 
     Parameters
     ----------
@@ -16846,11 +16653,8 @@ def boxes(
 
     crs : CRS-like, optional
         CRS applied to every box. Geographic rows follow the same native-range
-        chart-edge and corner-only ``wrap=None`` rules as `box`. Geographic area
-        and length measure the stored chart edges when the chart-edge path applies.
-
-    wrap : {'split'}, optional
-        Seam handling for geographic boxes — same as `box`.
+        chart-edge and corner-only unwrapped rules as `box`; west > east selects
+        a seam-crossing interval.
 
     ccw : bool, default True
         If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
@@ -16866,19 +16670,20 @@ def boxes(
     Raises
     ------
     InvalidGeometryError
-        If bounds are non-finite or invalid per row.
+        If a bound is non-finite or south exceeds north in any row.
     CRSError
-        If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-        without a geographic CRS.
+        If ``epoch`` is set without ``crs``.
     GeometryError
-        If ``epoch`` is invalid, or wrapped geographic bounds lie outside their
-        CRS frame.
+        If ``epoch`` is invalid, bounds are unordered outside a valid geographic
+        seam crossing, or seam-crossing bounds lie outside their CRS frame.
 
     Examples
     --------
     >>> import gometry as gm
     >>> gm.boxes(0, 0, [1, 2], [1, 2]).to_wkt()
     ['POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))']
+    >>> gm.boxes([170], [-10], [-170], [10], crs=4326)[0].bounds
+    (170.0, -10.0, -170.0, 10.0)
     """
 
 def line_strings(

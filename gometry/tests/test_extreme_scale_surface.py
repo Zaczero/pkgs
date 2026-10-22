@@ -16,6 +16,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import box_in_frame
+
 # ---------------------------------------------------------------------------
 # Magnitudes (Part 2 eight)
 # ---------------------------------------------------------------------------
@@ -248,10 +250,12 @@ def test_parallel_metrics(scale_label: str, s: float) -> None:
     # Clip diagonal to [s,s,2s,2s] → exact endpoints on the window when the
     # diagonal intersects the rect (true for all positive finite s).
     if math.isfinite(s) and s > 0.0 and math.isfinite(3.0 * s):
-        clipped = diagonal.clip_by_rect(s, s, 2.0 * s, 2.0 * s)
+        clipped = gm.intersection(
+            diagonal, box_in_frame(diagonal, (s, s, 2.0 * s, 2.0 * s))
+        )
         if clipped.is_empty:
             fail(
-                'clip_by_rect',
+                'intersection_with_box',
                 scale_label,
                 'diagonal clip to [s,s,2s,2s] empty',
                 s=s,
@@ -269,7 +273,7 @@ def test_parallel_metrics(scale_label: str, s: float) -> None:
         # Allow either orientation.
         if not ((got0 == exp0 and got1 == exp1) or (got0 == exp1 and got1 == exp0)):
             fail(
-                'clip_by_rect',
+                'intersection_with_box',
                 scale_label,
                 'clipped endpoints != exact window corners',
                 got=(got0, got1),
@@ -635,8 +639,13 @@ def test_extreme_polygon_held_axis_clipping_falls_back_without_nan_or_empty() ->
         assert minx <= bounds[0] <= bounds[2] <= maxx
         assert miny <= bounds[1] <= bounds[3] <= maxy
 
-    assert_clipped(source.clip_by_rect(minx, miny, maxx, maxy))
-    assert_clipped(gm.GeometryArray([source]).clip_by_rect(minx, miny, maxx, maxy)[0])
+    assert_clipped(
+        gm.intersection(source, box_in_frame(source, (minx, miny, maxx, maxy)))
+    )
+    rows = gm.GeometryArray([source])
+    assert_clipped(
+        gm.intersection(rows, box_in_frame(rows, (minx, miny, maxx, maxy)))[0]
+    )
     for left, right in ((source, probe), (probe, source)):
         assert_clipped(gm.intersection(left, right))
 

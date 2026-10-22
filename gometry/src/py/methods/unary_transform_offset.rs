@@ -2,12 +2,11 @@ use crate::dispatch::{MetricOp, kernels};
 use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_transform_methods::{
-    Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
-    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, NavigationPath, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
-    finite_f64_required, parse_grid_size, pymethods, validate_buffer_miter_limit,
-    validate_buffer_quadrant_segments, validate_densify_fraction, validate_max_segment_length,
-    validate_smooth_iterations,
+    Bound, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
+    DistanceUnit, F64Param, GridOrigin, NavigationPath, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod, parse_grid_size,
+    pymethods, validate_buffer_miter_limit, validate_buffer_quadrant_segments,
+    validate_densify_fraction, validate_max_segment_length, validate_smooth_iterations,
 };
 use crate::py::vectors::Groups;
 
@@ -263,43 +262,6 @@ impl PyGeometry {
                 "segmentize requires exactly one of max_length or fraction",
             )),
         }
-    }
-
-    #[doc = doc_clip_by_rect!(scalar)]
-    #[pyo3(
-        signature = (minx, miny, maxx, maxy)
-    )]
-    pub fn clip_by_rect(
-        &self,
-        py: Python<'_>,
-        minx: &Bound<'_, PyAny>,
-        miny: &Bound<'_, PyAny>,
-        maxx: &Bound<'_, PyAny>,
-        maxy: &Bound<'_, PyAny>,
-    ) -> PyResult<crate::Typed> {
-        let minx = finite_f64_required("minx", minx)?;
-        let miny = finite_f64_required("miny", miny)?;
-        let maxx = finite_f64_required("maxx", maxx)?;
-        let maxy = finite_f64_required("maxy", maxy)?;
-        unary_spine_shapes!(
-            scalar,
-            py,
-            self,
-            crate::dispatch::Operation::ClipByRect,
-            None,
-            default,
-            move |data, ctx| {
-                let rect = match ctx.domain {
-                    crate::geometry::TopologyDomain::Geographic(frame) => {
-                        Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
-                    },
-                    crate::geometry::TopologyDomain::Cartesian => {
-                        Bounds::new(minx, miny, maxx, maxy)?
-                    },
-                };
-                kernels::unary_clip_by_rect(data, ctx, rect, false)
-            }
-        )
     }
 
     #[doc = doc_subdivide!(scalar)]
@@ -580,48 +542,6 @@ impl PyGeometryArray {
                 "segmentize requires exactly one of max_length or fraction",
             )),
         }
-    }
-
-    #[doc = doc_clip_by_rect!(array)]
-    #[pyo3(
-        signature = (minx, miny, maxx, maxy)
-    )]
-    pub fn clip_by_rect(
-        &self,
-        py: Python<'_>,
-        minx: &Bound<'_, PyAny>,
-        miny: &Bound<'_, PyAny>,
-        maxx: &Bound<'_, PyAny>,
-        maxy: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        let minx = finite_f64_required("minx", minx)?;
-        let miny = finite_f64_required("miny", miny)?;
-        let maxx = finite_f64_required("maxx", maxx)?;
-        let maxy = finite_f64_required("maxy", maxy)?;
-        unary_spine_shapes_extras!(
-            array,
-            py,
-            self,
-            crate::dispatch::Operation::ClipByRect,
-            None,
-            crate::dispatch::PackedUnary::ClipByRect {
-                minx,
-                miny,
-                maxx,
-                maxy,
-            },
-            move |data, ctx| {
-                let rect = match ctx.domain {
-                    crate::geometry::TopologyDomain::Geographic(frame) => {
-                        Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
-                    },
-                    crate::geometry::TopologyDomain::Cartesian => {
-                        Bounds::new(minx, miny, maxx, maxy)?
-                    },
-                };
-                kernels::unary_clip_by_rect(data, ctx, rect, false)
-            }
-        )
     }
 
     #[doc = doc_subdivide!(array)]

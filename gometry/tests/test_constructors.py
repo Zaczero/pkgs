@@ -59,13 +59,12 @@ def test_box_ccw_controls_ring_orientation() -> None:
     assert gm.equals(gm.box(0, 0, 2, 1), gm.box(0, 0, 2, 1, ccw=False))
 
 
-def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
-    wrapped = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
-    whole_world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
+def test_geographic_box_splits_antimeridian_crossing_bounds() -> None:
+    wrapped = gm.box(170, -10, -170, 10, crs=4326)
+    whole_world = gm.box(-180, -10, 180, 10, crs=4326)
     assert wrapped.geometry_type == 'MultiPolygon'
     assert wrapped.crs == gm.CRS('EPSG:4326')
     assert wrapped.bounds == (170.0, -10.0, -170.0, 10.0)
-    assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert np.array_equal(
         gm.GeometryArray([wrapped, whole_world], crs=4326).crosses_antimeridian,
@@ -75,18 +74,41 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
         'POLYGON ((170 -10, 180 -10, 180 10, 170 10, 170 -10))',
         'POLYGON ((-180 -10, -170 -10, -170 10, -180 10, -180 -10))',
     ]
-    assert whole_world.to_wkb() == gm.box(-180, -10, 180, 10, crs=4326).to_wkb()
+    assert whole_world.bounds == (-180.0, -10.0, 180.0, 10.0)
+    assert whole_world.area > 0.0
     with pytest.raises(ValueError, match='geographic CRS'):
         _ = gm.LineString([(170, 0), (-170, 0)], crs=3857).crosses_antimeridian
     assert gm.LineString([(170, 0), (-170, 0)]).crosses_antimeridian
-    with pytest.raises(ValueError, match="wrap='split'"):
+    with pytest.raises(gm.GeometryError):
         gm.box(170, -10, -170, 10)
-    with pytest.raises(ValueError, match='requires a geographic CRS'):
-        gm.box(170, -10, -170, 10, crs=3857, wrap='split')
-    with pytest.raises(ValueError, match='requires a geographic CRS'):
-        gm.box(170, -10, -170, 10, wrap=cast('Any', 'split'))
-    with pytest.raises(ValueError, match='unknown box wrap'):
-        gm.box(0, 0, 1, 1, wrap=cast('Any', 'clip'))
+    with pytest.raises(gm.GeometryError):
+        gm.box(170, -10, -170, 10, crs=3857)
+    with pytest.raises(TypeError, match='unexpected keyword argument'):
+        gm.box(170, -10, -170, 10, crs=4326, wrap=cast('Any', 'split'))
+    with pytest.raises(TypeError, match='unexpected keyword argument'):
+        gm.boxes([170], [-10], [-170], [10], crs=4326, wrap=cast('Any', 'split'))
+
+
+def test_seam_crossing_box_keeps_wide_and_degenerate_intervals() -> None:
+    wide = gm.box(-10, -5, -170, 5, crs=4326)
+    expected_parts = [
+        gm.box(-10, -5, 180, 5, crs=4326),
+        gm.box(-180, -5, -170, 5, crs=4326),
+    ]
+    assert [part.to_wkb() for part in wide.parts] == [
+        part.to_wkb() for part in expected_parts
+    ]
+    assert wide.bounds == (-10.0, -5.0, -170.0, 5.0)
+    wide_round_trip = gm.box(*wide.bounds, crs=wide.crs, epoch=wide.epoch)
+    assert gm.equals(wide, wide_round_trip)
+    assert wide.area > gm.box(-10, -5, 170, 5, crs=4326).area
+
+    degenerate = gm.box(170, 0, -170, 0, crs=4326)
+    assert degenerate.geometry_type == 'MultiPolygon'
+    assert [part.to_wkb() for part in degenerate.parts] == [
+        gm.box(170, 0, 180, 0, crs=4326).to_wkb(),
+        gm.box(-180, 0, -170, 0, crs=4326).to_wkb(),
+    ]
 
 
 def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
@@ -157,7 +179,7 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
 def test_geographic_box_building_leaves_projected_and_split_boxes_unchanged() -> None:
     projected = gm.box(0.0, 0.0, 1000.0, 1000.0, crs=3857)
     assert projected.to_wkt() == 'POLYGON ((0 0, 1000 0, 1000 1000, 0 1000, 0 0))'
-    split = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')
+    split = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326)
     assert [part.to_wkt() for part in split.parts] == [
         'POLYGON ((170 -10, 180 -10, 180 10, 170 10, 170 -10))',
         'POLYGON ((-180 -10, -170 -10, -170 10, -180 10, -180 -10))',
@@ -169,6 +191,12 @@ def test_geographic_box_building_leaves_projected_and_split_boxes_unchanged() ->
     assert [len(values[index].exterior.coords) for index in range(2)] == [7, 5]
     assert values[0].to_wkb() == gm.box(-100.0, -10.0, 100.0, 10.0, crs=4326).to_wkb()
     assert values[1].to_wkb() == gm.box(20.0, 51.0, 21.0, 52.0, crs=4326).to_wkb()
+    assert gm.box(-200.0, -10.0, 200.0, 10.0, crs=4326).bounds == (
+        -200.0,
+        -10.0,
+        200.0,
+        10.0,
+    )
 
 
 def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topology() -> (

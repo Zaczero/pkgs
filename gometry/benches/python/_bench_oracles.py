@@ -39,8 +39,8 @@ TOLERANCES: dict[str, tuple[float, float]] = {
     'm_ellipsoidal': (2e-12, 1e-6),  # country chart-edge length
 }
 
-# ``clip_by_rect`` already admits this coordinate budget in its public
-# benchmark contract.  It is a distance budget, not an area budget.
+# Rectangle-intersection linework comparisons use a coordinate budget, not an
+# area budget.
 _LINEWORK_COORD_RTOL = 1e-9
 _LINEWORK_COORD_ATOL = 1e-8
 

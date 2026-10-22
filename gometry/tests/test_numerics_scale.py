@@ -14,6 +14,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import box_in_frame
+
 
 def _stored_fraction(value: float) -> Fraction:
     """The reference is the stored IEEE-754 value, never its source literal."""
@@ -1092,7 +1094,7 @@ def test_active_constrained_max_area_is_scaled_from_the_source_metric(
 
 def test_clip_diagonal_through_unit_box() -> None:
     line = gm.LineString([(-(2**53), -(2**53)), (2**53, 2**53)])
-    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    clipped = gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 1.0)))
     assert not clipped.is_empty
     # Exact segment (0,0)→(1,1).
     coords = list(clipped.coords)

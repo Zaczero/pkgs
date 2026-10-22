@@ -13,6 +13,8 @@ from itertools import pairwise
 import gometry as gm
 import pytest
 
+from tests._support import box_in_frame
+
 
 def _stored(value: float) -> Fraction:
     return Fraction(value)
@@ -27,16 +29,16 @@ def _diagonal_ordinate(
 
 
 @pytest.mark.parametrize('reverse', [False, True])
-def test_extreme_clip_carries_zm_from_source_segments(reverse: bool) -> None:
+def test_extreme_rectangle_intersection_carries_zm_from_source_segments(
+    reverse: bool,
+) -> None:
     """A no-vertex-in-window diagonal reaches ordinate segment interpolation."""
     forward = [(-1e308, -1e308, 100.0, 1000.0), (1e308, 1e308, 300.0, 3000.0)]
     source = list(reversed(forward)) if reverse else forward
-    # The XY clip has no source vertex to reuse, so `carry_ordinates` misses
+    # The XY intersection has no source vertex to reuse, so `carry_ordinates` misses
     # the vertex table and must enter `segment_ordinate_at` for both corners.
     line = gm.LineString(source)
-    rectangle = gm.box(0.0, 0.0, 1.0, 1.0)
-    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert clipped.to_wkb() == gm.intersection(line, rectangle).to_wkb()
+    clipped = gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 1.0)))
     expected_xy = [(0.0, 0.0), (1.0, 1.0)]
     got = list(clipped.coords)
     assert [(x, y) for x, y, _, _ in got] == expected_xy
@@ -55,41 +57,32 @@ def test_extreme_clip_carries_zm_from_source_segments(reverse: bool) -> None:
         (1.0e-19, (5.0e-20, 5.0000000000000047e-20)),
     ],
 )
-def test_exact_clip_rounds_thin_crossings(
+def test_exact_intersection_rounds_thin_crossings(
     reverse: bool, y_end: float, expected_y: tuple[float, float]
 ) -> None:
     forward = [(-1.0e15, 0.0), (1.0e15, y_end)]
     source = list(reversed(forward)) if reverse else forward
     line = gm.LineString(source)
-    rectangle = gm.box(0.0, 0.0, 1.0, 1.0)
-    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert clipped.to_wkb() == gm.intersection(line, rectangle).to_wkb()
+    clipped = gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 1.0)))
     expected = [(0.0, expected_y[0]), (1.0, expected_y[1])]
     assert list(clipped.coords) == expected
 
 
-def test_exact_clip_rounds_mixed_exponent_crossings() -> None:
+def test_exact_intersection_rounds_mixed_exponent_crossings() -> None:
     tiny = 2.0**-601
     line = gm.LineString([(2.0**-600, -tiny), (-(2.0**500), 2.0**500)])
-    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 2.0**600)
-    assert (
-        clipped.to_wkb()
-        == gm.intersection(line, gm.box(0.0, 0.0, 1.0, 2.0**600)).to_wkb()
-    )
+    clipped = gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 2.0**600)))
     assert list(clipped.coords) == [(0.0, tiny), (tiny, 0.0)]
 
     line = gm.LineString([(2.0**-1074, 2.0**-500), (-(2.0**500), -(2.0**1023))])
-    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert (
-        clipped.to_wkb() == gm.intersection(line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
-    )
+    clipped = gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 1.0)))
     assert list(clipped.coords) == [
         (0.0, float.fromhex('0x1.ffffffffffffcp-501')),
         (2.0**-1074, 2.0**-500),
     ]
 
 
-def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
+def test_exact_intersection_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
     start = (-1.0e15, 0.0, 100.0, 1000.0)
     end = (1.0e15, 1.0e-20, 300.0, 3000.0)
     line = gm.LineString([start, end])
@@ -109,15 +102,20 @@ def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
             _diagonal_ordinate(start[0], end[0], 1.0, start[3], end[3]),
         ),
     ]
-    assert list(line.clip_by_rect(0.0, 0.0, 1.0, 1.0).coords) == expected
+    assert (
+        list(gm.intersection(line, box_in_frame(line, (0.0, 0.0, 1.0, 1.0))).coords)
+        == expected
+    )
 
     rows = gm.GeometryArray([gm.LineString([(-1.0e15, 0.0), (1.0e15, 1.0e-20)]), None])
-    result = rows.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    result = gm.intersection(rows, box_in_frame(rows, (0.0, 0.0, 1.0, 1.0)))
     assert list(result[0].coords) == [(0.0, 5.0e-21), (1.0, 5.000000000000005e-21)]
     assert result.is_missing.tolist() == [False, True]
 
 
-def test_packed_line_clip_matches_each_geometry_including_emptied_rows() -> None:
+def test_packed_line_intersection_matches_each_geometry_including_emptied_rows() -> (
+    None
+):
     lines = [
         [(0.2, 0.2), (0.8, 0.8)],
         [(2.0, 2.0), (3.0, 3.0)],
@@ -125,42 +123,51 @@ def test_packed_line_clip_matches_each_geometry_including_emptied_rows() -> None
         [(0.5, 1.6), (1.6, 0.5)],
         [(-1.0, 0.5), (0.5, 0.5), (0.5, 2.0), (0.7, 2.0), (0.7, 0.5), (2.0, 0.5)],
     ]
-    expected = [
-        repr(gm.LineString(line).clip_by_rect(0.0, 0.0, 1.0, 1.0)) for line in lines
-    ]
+    expected = []
+    for line in lines:
+        geometry = gm.LineString(line)
+        expected.append(
+            repr(
+                gm.intersection(geometry, box_in_frame(geometry, (0.0, 0.0, 1.0, 1.0)))
+            )
+        )
     assert expected[1] == expected[3] == '<LINESTRING EMPTY>'
     assert expected[4].startswith('<MULTILINESTRING')
     for rows in (lines[:4], lines):
-        clipped = gm.line_strings(rows).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+        geometries = gm.line_strings(rows)
+        clipped = gm.intersection(
+            geometries, box_in_frame(geometries, (0.0, 0.0, 1.0, 1.0))
+        )
         assert [repr(row) for row in clipped] == expected[: len(rows)]
 
 
-def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> (
+def test_exact_intersection_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> (
     None
 ):
     signed_line = gm.LineString([(-2.0, -0.0), (2.0, -0.0)])
-    signed = signed_line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert (
-        signed.to_wkb()
-        == gm.intersection(signed_line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
+    signed = gm.intersection(
+        signed_line, box_in_frame(signed_line, (0.0, 0.0, 1.0, 1.0))
     )
     assert [point[1].hex() for point in signed.coords] == ['0x0.0p+0', '0x0.0p+0']
 
-    collinear = gm.LineString([(-2.0, 0.0), (2.0, 0.0)]).clip_by_rect(
-        0.0, 0.0, 1.0, 1.0
+    collinear_line = gm.LineString([(-2.0, 0.0), (2.0, 0.0)])
+    collinear = gm.intersection(
+        collinear_line, box_in_frame(collinear_line, (0.0, 0.0, 1.0, 1.0))
     )
     assert list(collinear.coords) == [(0.0, 0.0), (1.0, 0.0)]
     corner_line = gm.LineString([(-1.0, 1.0), (0.0, 0.0)])
-    corner_touch = corner_line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert corner_touch.to_wkt() == 'POINT (0 0)'
-    assert (
-        corner_touch.to_wkb()
-        == gm.intersection(corner_line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
+    corner_touch = gm.intersection(
+        corner_line, box_in_frame(corner_line, (0.0, 0.0, 1.0, 1.0))
     )
+    assert corner_touch.to_wkt() == 'POINT (0 0)'
 
-    vertical = gm.LineString([(0.0, -1.0), (0.0, 2.0)]).clip_by_rect(0.0, 0.0, 0.0, 1.0)
-    horizontal = gm.LineString([(-1.0, 0.0), (2.0, 0.0)]).clip_by_rect(
-        0.0, 0.0, 1.0, 0.0
+    vertical_line = gm.LineString([(0.0, -1.0), (0.0, 2.0)])
+    vertical = gm.intersection(
+        vertical_line, box_in_frame(vertical_line, (0.0, 0.0, 0.0, 1.0))
+    )
+    horizontal_line = gm.LineString([(-1.0, 0.0), (2.0, 0.0)])
+    horizontal = gm.intersection(
+        horizontal_line, box_in_frame(horizontal_line, (0.0, 0.0, 1.0, 0.0))
     )
     assert list(vertical.coords) == [(0.0, 0.0), (0.0, 1.0)]
     assert list(horizontal.coords) == [(0.0, 0.0), (1.0, 0.0)]

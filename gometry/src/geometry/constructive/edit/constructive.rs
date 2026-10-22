@@ -1,8 +1,8 @@
 use super::{
     Bounds, CoordSeq, ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative,
     OverlayOp, Polygon, Result, SegmentPlacement, Shape, Strictness,
-    overlay_all_geographic_from_with_output_frame, overlay_intersection_with_rectangle,
-    overlay_view_error, remove_repeated_points, remove_repeated_ring_points, split,
+    overlay_intersection_with_rectangle, remove_repeated_points, remove_repeated_ring_points,
+    split,
 };
 
 impl Shape {
@@ -42,66 +42,11 @@ impl Shape {
         Ok(parts)
     }
 
-    pub fn clip_by_rect(&self, rect: Bounds, drop: bool) -> Result<Self> {
-        self.clip_by_rect_with_bounds(rect, drop, self.bounds())
-    }
-
-    /// Clip a canonical geographic rectangle in a frame, where subject
-    /// longitude aliases and pole vertices require the frame-aware topology
-    /// graph rather than Cartesian windows.
-    pub(crate) fn clip_by_rect_in_geographic_frame<M: crate::geometry::ChartMetric>(
-        &self,
-        rect: Bounds,
-        drop: bool,
-        frame: crate::geographic::GeographicFrame,
-        output_frame: &crate::Frame,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_, M>,
-    ) -> Result<Self> {
-        let subject_plan = crate::geometry::PreparedPlan::transient(self);
-        let subject_cache = crate::geometry::FrameDependentCaches::default();
-        let subject =
-            crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
-
-        let rectangle = if let Some([west, east]) = rect.split_geographic(frame) {
-            Self::geometry_collection(vec![
-                crate::geometry::geographic_bounds_to_shape(west, frame)?,
-                crate::geometry::geographic_bounds_to_shape(east, frame)?,
-            ])?
-        } else {
-            crate::geometry::geographic_bounds_to_shape(rect, frame)?
-        };
-        let originals = crate::geographic::GeographicInputs::try_from_first_and_shapes(
-            subject.view(),
-            std::iter::once(&rectangle),
-        )
-        .map_err(|error| overlay_view_error(&error))?;
-        let clipped = overlay_all_geographic_from_with_output_frame(
-            &originals,
-            OverlayOp::Intersection,
-            Strictness::from(drop),
-            true,
-            &crate::geometry::SourceArcContext::new(
-                crate::geometry::TopologyDomain::Geographic(frame),
-                Some(metric_access),
-            ),
-            output_frame,
-        )?;
-        Ok(clipped)
-    }
-
-    /// [`Self::clip_by_rect`] with the operand's bounds supplied by the
-    /// caller — handle layers pass their MEMOIZED bounds so the per-call
-    /// full-coordinate scan disappears from the hot clip path.
-    pub fn clip_by_rect_with_bounds(
-        &self,
-        rect: Bounds,
-        drop: bool,
-        bounds: Option<Bounds>,
-    ) -> Result<Self> {
+    pub(crate) fn clip_by_rect(&self, rect: Bounds, drop: bool) -> Result<Self> {
         if rect.crosses_antimeridian() {
             return Err(crate::geometry::GeometryErrorKind::InvalidRectangle.into());
         }
-        overlay_intersection_with_rectangle(self, rect, bounds, Strictness::from(drop))
+        overlay_intersection_with_rectangle(self, rect, self.bounds(), Strictness::from(drop))
     }
 }
 

@@ -62,7 +62,7 @@ fn rectangle_partition_uses_its_clip_window_as_embedding_domain() {
         ExactSourceInventory::from_polygon_rect_clip(&[&polygon], &rectangle, bounds, false)
             .unwrap()
             .expect("the rectangle clips the polygon");
-    let mut budget = ExpansionBudget::new("clip_by_rect", "embedding domain test");
+    let mut budget = ExpansionBudget::new("intersection", "embedding domain test");
     let partition = inventory
         .partition_in_window(&intervals, bounds, &mut budget)
         .unwrap();

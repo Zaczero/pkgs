@@ -216,7 +216,6 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::Boundary
         | Operation::BuildArea
         | Operation::Centroid
-        | Operation::ClipByRect
         | Operation::ConvexHull
         | Operation::CrossesAntimeridian
         | Operation::Difference

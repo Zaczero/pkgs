@@ -18,6 +18,7 @@ import pytest
 
 from tests._support import (
     bools,
+    box_in_frame,
     canon,
     floats,
     line_storage_twins,
@@ -387,7 +388,7 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
     (
         'intersection',
         lambda: gm.intersection(
-            _FRAME_POLY(), gm.box(1.0, 1.0, 3.0, 4.0, crs=3857, epoch=2020.0)
+            _FRAME_POLY(), box_in_frame(_FRAME_POLY(), (1.0, 1.0, 3.0, 4.0))
         ),
     ),
     (

@@ -584,13 +584,13 @@ derivable and drop only the axis that cannot be sourced:
   copied hull vertex comes from the first vertex in storage order, including its
   Z/M and signed-zero spelling.
 - Operations whose new vertices are **resolvable against the input** — overlay,
-  [`clip_by_rect`][gometry.Geometry.clip_by_rect], [`split`][gometry.split],
+  [`split`][gometry.split],
   [`snap`][gometry.snap], and linear referencing — interpolate Z/M along source
   segments. They retain active-distinct source vertices even when consecutive
   X/Y positions match; distance-based linear referencing gives zero-length X/Y
   segments no length.
-  If an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
-  corner entering the output), or conflicting source values, that axis is
+  If an axis has a genuinely unsourceable output vertex (such as a box corner
+  entering the output), or conflicting source values, that axis is
   dropped while the other axis may remain.
 - On geographic input, overlays and source-preserving linework — including
   [`boundary`][gometry.Geometry.boundary], [`split`][gometry.split],

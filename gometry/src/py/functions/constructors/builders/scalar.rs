@@ -351,12 +351,31 @@ pub(crate) fn build_polygon(
     geometry_with_crs_epoch(shape, crs, epoch)
 }
 
+fn geographic_box_piece(
+    bounds: Bounds,
+    frame: crate::geographic::GeographicFrame,
+) -> PyResult<Polygon> {
+    // A seam-split piece can still exceed half a turn; insert chart vertices so
+    // its long directed side is not reinterpreted as the opposite short side.
+    if bounds.miny() < bounds.maxy()
+        && bounds.maxx() - bounds.minx() >= frame.longitude().half_period()
+    {
+        let Shape::Polygon(polygon) =
+            geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)?
+        else {
+            unreachable!("a positive-area geographic rectangle is polygonal");
+        };
+        Ok(polygon)
+    } else {
+        box_polygon(bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy())
+    }
+}
+
 pub(in crate::py::functions::constructors) fn build_box_shape(
     minx: f64,
     miny: f64,
     maxx: f64,
     maxy: f64,
-    wrap: Option<&str>,
     crs: Option<&Crs>,
     ccw: bool,
 ) -> PyResult<Shape> {
@@ -365,59 +384,38 @@ pub(in crate::py::functions::constructors) fn build_box_shape(
             "box miny ({miny}) must not exceed maxy ({maxy})"
         )));
     }
-    let shape = match wrap {
-        None => {
-            if minx > maxx {
-                return Err(InvalidGeometryError::new_err(format!(
-                    "box minx ({minx}) must not exceed maxx ({maxx}) unless wrap='split'"
-                )));
-            }
-            if let Some(crs) = crs
-                && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
-                && let Ok(bounds) = Bounds::new_geographic(frame, minx, miny, maxx, maxy)
-                && minx < maxx
-                && miny < maxy
-            {
-                geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)
-            } else {
-                Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
-            }
-        },
-        Some("split") => {
-            let Some(crs) = crs else {
-                return Err(CRSError::new_err(
-                    "box wrap='split' requires a geographic CRS",
-                ));
-            };
-            let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame() else {
-                return Err(CRSError::new_err(
-                    "box wrap='split' requires a geographic CRS",
-                ));
-            };
-            let bounds = if maxx - minx >= frame.longitude().period() {
-                Bounds::full_geographic_longitude(frame, miny, maxy)?
-            } else {
-                Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
-            };
-            if let Some([west, east]) = bounds.split_geographic(frame) {
-                Ok(Shape::multi_polygon(
-                    crate::geometry::CoordinateAxes::XY,
-                    vec![
-                        box_polygon(west.minx(), west.miny(), west.maxx(), west.maxy())?,
-                        box_polygon(east.minx(), east.miny(), east.maxx(), east.maxy())?,
-                    ],
-                ))
-            } else if maxx - minx >= frame.longitude().period() {
-                geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)
-            } else {
-                Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
-            }
-        },
-        Some(value) => Err(parameter_error(
-            crate::tokens::unknown_token_message("box wrap", value, &["split"]),
-            "wrap",
-        )),
-    }?;
+    let shape = if let Some(frame) = crs
+        .map(crs::info)
+        .transpose()
+        .map_err(PyErr::from)?
+        .and_then(|info| info.geographic_frame())
+    {
+        if minx > maxx {
+            let bounds = Bounds::new_geographic(frame, minx, miny, maxx, maxy)?;
+            let [west, east] = bounds
+                .split_geographic(frame)
+                .expect("west greater than east crosses the geographic seam");
+            Shape::multi_polygon(crate::geometry::CoordinateAxes::XY, vec![
+                geographic_box_piece(west, frame)?,
+                geographic_box_piece(east, frame)?,
+            ])
+        } else if minx == -frame.longitude().half_period()
+            && maxx == frame.longitude().half_period()
+            && miny < maxy
+            && let Ok(bounds) = Bounds::full_geographic_longitude(frame, miny, maxy)
+        {
+            geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)?
+        } else if let Ok(bounds) = Bounds::new_geographic(frame, minx, miny, maxx, maxy)
+            && minx < maxx
+            && miny < maxy
+        {
+            geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)?
+        } else {
+            Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?)
+        }
+    } else {
+        Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?)
+    };
     // Box construction already orders its chart sides counterclockwise.
     // Planar orientation after canonical seam publication can reverse a band.
     Ok(if ccw { shape } else { shape.reverse()? })

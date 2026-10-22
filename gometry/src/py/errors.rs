@@ -736,11 +736,11 @@ mod tests {
             let cases = [
                 (
                     GeometryErrorKind::UnrepresentableOutput {
-                        operation: "clip_by_rect",
+                        operation: "intersection",
                         detail: " outside the output domain".into(),
                     },
                     "output_unrepresentable",
-                    "clip_by_rect",
+                    "intersection",
                     "output could not be represented as a contained geometry",
                 ),
                 (

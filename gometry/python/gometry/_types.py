@@ -187,7 +187,6 @@ else:
 
 __all__ = [
     'ArrowEncoding',
-    'BoxWrap',
     'BufferSide',
     'CapStyle',
     'Cell',
@@ -583,8 +582,6 @@ Origin: TypeAlias = Literal['centroid', 'center'] | Iterable[float]
 #: Grid origin for ``snap_to_grid``: only a two-value numeric ``(x, y)``
 #: iterable (not ``'centroid'``/``'center'`` — those are affine-only).
 GridOrigin: TypeAlias = Iterable[float]
-#: Antimeridian handling for ``box``: ``'split'`` emits a multipart geometry.
-BoxWrap: TypeAlias = Literal['split']
 #: Distance/area unit for a CRS-aware metric's ``unit`` keyword. ``None``
 #: follows the CRS: ellipsoidal units for geographic data, native linear units
 #: for projected data, and raw coordinate units when CRS-free. Geographic

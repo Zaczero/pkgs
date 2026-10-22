@@ -566,7 +566,7 @@ def intersects_polygon_and_points():
     return _cached('intersects_polygon_points', build)
 
 
-def clip_linework_10k():
+def rectangle_intersection_linework_10k():
     """Linework crossing, inside, and outside a unit clipping rectangle."""
 
     def build():
@@ -597,7 +597,7 @@ def clip_linework_10k():
             'categories': tuple(categories),
         }
 
-    return _cached('clip_linework_10k', build)
+    return _cached('rectangle_intersection_linework_10k', build)
 
 
 def geohash_encode_inputs():

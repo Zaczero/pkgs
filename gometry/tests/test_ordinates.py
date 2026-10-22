@@ -5,6 +5,8 @@ import math
 import gometry as gm
 import pytest
 
+from tests._support import box_in_frame
+
 
 def _ellipsoid_chart_fraction(
     start: tuple[float, float],
@@ -97,19 +99,19 @@ def test_boundary_array_keeps_original_root_m_through_mixed_nullable_gathers() -
         assert coordinate[2] == pytest.approx(expected_m, abs=2e-10)
 
 
-def test_clip_by_rect_resolves_zm_where_derivable() -> None:
-    """clip_by_rect restores Z/M on kept vertices and interpolates boundary
-    crossings; only a clip-rectangle corner entering the output (underivable)
+def test_intersection_with_box_resolves_zm_where_derivable() -> None:
+    """intersection_with_box restores Z/M on kept vertices and interpolates boundary
+    crossings; only a box corner entering the output (underivable)
     trips the default policy.
     """
     line_z = gm.from_wkt('LINESTRING Z (0 0 1, 1 0.001 2, 2 0 3)')
-    clipped = (line_z).clip_by_rect(0.5, -1.0, 3.0, 1.0)
+    clipped = gm.intersection(line_z, box_in_frame(line_z, (0.5, -1.0, 3.0, 1.0)))
     assert clipped.coordinate_axes == 'XYZ'
     assert next(iter(clipped.coords)) == (0.5, 0.0005, 1.5)
     z_polygon = _z_polygon()
-    dropped = (z_polygon).clip_by_rect(1, 1, 3, 3)
+    dropped = gm.intersection(z_polygon, box_in_frame(z_polygon, (1, 1, 3, 3)))
     assert dropped.coordinate_axes == 'XY'
-    derivable = (z_polygon).clip_by_rect(-1, -1, 2, 5)
+    derivable = gm.intersection(z_polygon, box_in_frame(z_polygon, (-1, -1, 2, 5)))
     assert derivable.coordinate_axes == 'XYZ'
 
 

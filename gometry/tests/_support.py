@@ -46,6 +46,14 @@ def gil_is_disabled() -> bool:
     return callable(probe) and not probe()
 
 
+def box_in_frame(
+    geometry: gm.Geometry | gm.GeometryArray,
+    bounds: tuple[float, float, float, float],
+) -> gm.Polygon | gm.MultiPolygon:
+    """Build a rectangle in the geometry's CRS and coordinate epoch."""
+    return gm.box(*bounds, crs=geometry.crs, epoch=geometry.epoch)
+
+
 def h3_oracle() -> Any:
     if sysconfig.get_config_var('Py_GIL_DISABLED'):
         pytest.skip(

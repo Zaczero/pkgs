@@ -9,6 +9,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import box_in_frame
+
 shapely = pytest.importorskip(
     'shapely', reason='shapely is an optional oracle dependency'
 )
@@ -1076,32 +1078,43 @@ def test_normalize_is_rust_backed() -> None:
     )
 
 
-def test_clip_by_rect_clips_scalar_array_and_preserves_line_axes() -> None:
+def test_intersection_with_box_clips_scalar_array_and_preserves_line_axes() -> None:
     polygon = gm.box(-1, -1, 3, 3, crs=3857)
     line = gm.LineString(
         [(-2, 0), (0, 0), (2, 0)], z=[0, 2, 4], m=[10, 12, 14], crs=3857
     )
     inside = gm.Point(0, 0, crs=3857)
     outside = gm.Point(4, 4, crs=3857)
-    clipped_polygon = polygon.clip_by_rect(0, 0, 2, 2)
-    clipped_line = cast('gm.Geometry', line.clip_by_rect(-1, -1, 1, 1))
+    clipped_polygon = gm.intersection(polygon, box_in_frame(polygon, (0, 0, 2, 2)))
+    clipped_line = cast(
+        'gm.Geometry', gm.intersection(line, box_in_frame(line, (-1, -1, 1, 1)))
+    )
+    polygon_rows = gm.GeometryArray([polygon, outside])
     clipped_array = cast(
         'gm.GeometryArray',
-        gm.GeometryArray([polygon, outside]).clip_by_rect(0, 0, 2, 2),
+        gm.intersection(polygon_rows, box_in_frame(polygon_rows, (0, 0, 2, 2))),
     )
     assert clipped_polygon.area == pytest.approx(4)
     assert clipped_polygon.crs == gm.CRS('EPSG:3857')
     assert clipped_line.to_wkt() == 'LINESTRING ZM (-1 0 1 11, 0 0 2 12, 1 0 3 13)'
-    assert inside.clip_by_rect(0, 0, 2, 2).to_wkt() == 'POINT (0 0)'
-    assert outside.clip_by_rect(0, 0, 2, 2).to_wkt() == 'POINT EMPTY'
+    assert (
+        gm.intersection(inside, box_in_frame(inside, (0, 0, 2, 2))).to_wkt()
+        == 'POINT (0 0)'
+    )
+    assert (
+        gm.intersection(outside, box_in_frame(outside, (0, 0, 2, 2))).to_wkt()
+        == 'POINT EMPTY'
+    )
     assert clipped_array[0].area == pytest.approx(4)
     assert clipped_array[1].to_wkt() == 'POINT EMPTY'
-    with pytest.raises(ValueError, match='clip rectangle bounds'):
-        polygon.clip_by_rect(2, 0, 1, 1)
+    with pytest.raises(ValueError, match='rectangle bounds'):
+        gm.intersection(polygon, box_in_frame(polygon, (2, 0, 1, 1)))
 
 
 @pytest.mark.parametrize('selection', ['all', 'slice', 'gather'])
-def test_clip_by_rect_after_indexing_preserves_logical_rows(selection: str) -> None:
+def test_intersection_with_box_after_indexing_preserves_logical_rows(
+    selection: str,
+) -> None:
     source = gm.GeometryArray([
         None,
         gm.LineString([(2, 0.5), (3, 0.5)]),
@@ -1113,27 +1126,48 @@ def test_clip_by_rect_after_indexing_preserves_logical_rows(selection: str) -> N
         source = source[1:]
     elif selection == 'gather':
         source = source[[3, 0, 2, 4, 1, 2]]
-    expected = source.clip_by_rect(0, 0, 1, 1).to_wkb()
+    expected = {
+        'all': [
+            None,
+            'LINESTRING EMPTY',
+            'LINESTRING (0 0.5, 1 0.5)',
+            'LINESTRING (0.25 0.5, 0.75 0.5)',
+            'LINESTRING EMPTY',
+        ],
+        'slice': [
+            'LINESTRING EMPTY',
+            'LINESTRING (0 0.5, 1 0.5)',
+            'LINESTRING (0.25 0.5, 0.75 0.5)',
+            'LINESTRING EMPTY',
+        ],
+        'gather': [
+            'LINESTRING (0.25 0.5, 0.75 0.5)',
+            None,
+            'LINESTRING (0 0.5, 1 0.5)',
+            'LINESTRING EMPTY',
+            'LINESTRING EMPTY',
+            'LINESTRING (0 0.5, 1 0.5)',
+        ],
+    }[selection]
     index = gm.SpatialIndex(source)
     assert len(index) == sum(row is not None and not row.is_empty for row in source)
-    actual = source.clip_by_rect(0, 0, 1, 1)
-    assert actual.to_wkb() == expected
+    actual = gm.intersection(source, box_in_frame(source, (0, 0, 1, 1)))
+    assert [None if row is None else row.to_wkt() for row in actual] == expected
     assert actual.is_missing.tolist() == source.is_missing.tolist()
 
 
-def test_clip_by_rect_wkb_matches_box_intersection_in_the_same_frame() -> None:
+def test_intersection_with_box_preserves_geographic_frame_and_array_parity() -> None:
     rect = (-10.0, -10.0, 30.0, 50.0)
     subject = gm.box(-20, -15, 40, 55, crs=4326)
-    rectangle = gm.box(*rect, crs=4326)
-    clipped = subject.clip_by_rect(*rect)
-    expected = gm.intersection(subject, rectangle)
-    assert clipped.to_wkb() == expected.to_wkb()
+    rectangle = box_in_frame(subject, rect)
+    clipped = gm.intersection(subject, rectangle)
+    assert clipped.to_wkb() == rectangle.to_wkb()
+    assert (clipped.crs, clipped.epoch) == (subject.crs, subject.epoch)
 
     array = gm.GeometryArray([subject, gm.box(-100, -80, -90, -70, crs=4326)])
-    clipped_array = array.clip_by_rect(*rect)
-    expected_array = gm.intersection(array, rectangle)
+    clipped_array = gm.intersection(array, box_in_frame(array, rect))
     assert [item.to_wkb() for item in clipped_array] == [
-        item.to_wkb() for item in expected_array
+        gm.intersection(item, rectangle).to_wkb() for item in array
     ]
 
     seam_subject = gm.Polygon(
@@ -1141,23 +1175,23 @@ def test_clip_by_rect_wkb_matches_box_intersection_in_the_same_frame() -> None:
         crs=4326,
     )
     seam_rect = (175.0, -5.0, -175.0, 5.0)
-    seam_box = gm.box(*seam_rect, crs=4326, wrap='split')
-    assert (
-        seam_subject.clip_by_rect(*seam_rect).to_wkb()
-        == gm.intersection(seam_subject, seam_box).to_wkb()
-    )
+    seam_box = gm.box(*seam_rect, crs=4326)
+    seam_result = gm.intersection(seam_subject, box_in_frame(seam_subject, seam_rect))
+    assert seam_result.bounds == seam_rect
+    assert gm.equals(seam_result, seam_box)
 
     contained = gm.Polygon(
         [(1, 1), (2, 1), (2, 2), (1, 2), (1, 1)],
         crs=4326,
     )
     contained_bounds = (-10.0, -10.0, 10.0, 10.0)
-    geographic_box = gm.box(*contained_bounds, crs=4326)
-    assert contained.clip_by_rect(*contained_bounds).to_wkb() == contained.to_wkb()
-    assert gm.intersection(contained, geographic_box).to_wkb() == contained.to_wkb()
+    assert (
+        gm.intersection(contained, box_in_frame(contained, contained_bounds)).to_wkb()
+        == contained.to_wkb()
+    )
 
 
-def test_clip_by_rect_contained_polygonal_wkb_matches_intersection() -> None:
+def test_intersection_with_box_contained_polygonal_wkb_matches_intersection() -> None:
     bounds = (-1.0, -1.0, 5.0, 5.0)
     subjects = [
         gm.from_wkt('POLYGON ((0 0, 2 0, 4 0, 4 4, 0 4, 0 0))'),
@@ -1168,22 +1202,25 @@ def test_clip_by_rect_contained_polygonal_wkb_matches_intersection() -> None:
             '((2 1, 3 0, 4 1, 3 2, 2 1)))'
         ),
     ]
-    rectangle = gm.box(*bounds)
-
     for subject in subjects:
         expected_wkb = subject.to_wkb()
-        assert subject.clip_by_rect(*bounds).to_wkb() == expected_wkb
-        assert gm.intersection(subject, rectangle).to_wkb() == expected_wkb
+        assert (
+            gm.intersection(subject, box_in_frame(subject, bounds)).to_wkb()
+            == expected_wkb
+        )
 
     geometries = gm.GeometryArray(subjects)
-    clipped = geometries.clip_by_rect(*bounds)
-    expected = gm.intersection(geometries, rectangle)
-    source_wkb = [geometry.to_wkb() for geometry in geometries]
-    assert [geometry.to_wkb() for geometry in clipped] == source_wkb
-    assert [geometry.to_wkb() for geometry in expected] == source_wkb
+    clipped = gm.intersection(geometries, box_in_frame(geometries, bounds))
+    scalar_wkb = [
+        gm.intersection(subject, box_in_frame(subject, bounds)).to_wkb()
+        for subject in subjects
+    ]
+    assert [geometry.to_wkb() for geometry in clipped] == scalar_wkb
 
 
-def test_clip_by_rect_array_wkb_matches_box_intersection_on_mixed_dimensions() -> None:
+def test_intersection_with_box_array_wkb_matches_box_intersection_on_mixed_dimensions() -> (
+    None
+):
     bounds = (1.0, 1.0, 4.0, 4.0)
     geometries = gm.GeometryArray([
         gm.from_wkt('LINESTRING (5 3, 4 1)'),
@@ -1193,13 +1230,17 @@ def test_clip_by_rect_array_wkb_matches_box_intersection_on_mixed_dimensions() -
             'MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 4, 6 4, 6 6, 4 6, 4 4)))'
         ),
     ])
-    rectangle = gm.box(*bounds)
-    clipped = geometries.clip_by_rect(*bounds)
-    expected = gm.intersection(geometries, rectangle)
-    assert [item.to_wkb() for item in clipped] == [item.to_wkb() for item in expected]
+    clipped = gm.intersection(geometries, box_in_frame(geometries, bounds))
+    scalar_wkb = [
+        gm.intersection(geometry, box_in_frame(geometry, bounds)).to_wkb()
+        for geometry in geometries
+    ]
+    assert [item.to_wkb() for item in clipped] == scalar_wkb
 
 
-def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> None:
+def test_intersection_with_box_line_array_keeps_categories_and_multipart_fallback() -> (
+    None
+):
     crossing = gm.LineString([(-1, 0.5), (0.5, 0.6), (2, 0.5)])
     inside = gm.LineString([(0.1, 0.5), (0.5, 0.6), (0.9, 0.5)])
     outside = gm.LineString([(2, 0.5), (2.5, 0.6), (3, 0.5)])
@@ -1212,27 +1253,38 @@ def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> No
         (-1, 0.8),
     ])
 
-    result = gm.GeometryArray([crossing, inside, outside]).clip_by_rect(0, 0, 1, 1)
+    rows = gm.GeometryArray([crossing, inside, outside])
+    result = gm.intersection(rows, box_in_frame(rows, (0, 0, 1, 1)))
 
     assert len(result) == 3
     assert not result[0].is_empty
     assert result[0].to_wkt() != crossing.to_wkt()
-    assert result[0].to_wkt() == crossing.clip_by_rect(0, 0, 1, 1).to_wkt()
+    assert (
+        result[0].to_wkt()
+        == gm.intersection(crossing, box_in_frame(crossing, (0, 0, 1, 1))).to_wkt()
+    )
     assert all(0 <= x <= 1 and 0 <= y <= 1 for x, y, *_ in result[0].coords)
     assert not result[1].is_empty
     assert result[1].to_wkt() == inside.to_wkt()
     assert result[2].to_wkt() == 'LINESTRING EMPTY'
 
-    multipart_result = gm.GeometryArray([inside, multipart]).clip_by_rect(0, 0, 1, 1)
+    multipart_rows = gm.GeometryArray([inside, multipart])
+    multipart_result = gm.intersection(
+        multipart_rows, box_in_frame(multipart_rows, (0, 0, 1, 1))
+    )
     assert multipart_result[0].to_wkt() == inside.to_wkt()
     assert multipart_result[1].geometry_type == 'MultiLineString'
-    assert multipart_result[1].to_wkt() == multipart.clip_by_rect(0, 0, 1, 1).to_wkt()
+    assert (
+        multipart_result[1].to_wkt()
+        == gm.intersection(multipart, box_in_frame(multipart, (0, 0, 1, 1))).to_wkt()
+    )
 
 
-def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> None:
-    zm = gm.GeometryArray([
-        gm.LineString([(-1, 0.5, 0, 10), (2, 0.5, 3, 13)])
-    ]).clip_by_rect(0, 0, 1, 1)
+def test_intersection_with_box_line_array_preserves_axes_masks_selection_and_frame() -> (
+    None
+):
+    zm_rows = gm.GeometryArray([gm.LineString([(-1, 0.5, 0, 10), (2, 0.5, 3, 13)])])
+    zm = gm.intersection(zm_rows, box_in_frame(zm_rows, (0, 0, 1, 1)))
     assert zm[0].to_wkt() == 'LINESTRING ZM (0 0.5 1 11, 1 0.5 2 12)'
 
     rows = gm.GeometryArray([
@@ -1240,42 +1292,48 @@ def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> N
         gm.LineString([(0.1, 0.5), (0.9, 0.5)]),
         gm.LineString([(2, 0.5), (3, 0.5)]),
     ])
-    masked = rows._with_missing([False, True, False]).clip_by_rect(0, 0, 1, 1)
+    masked_rows = rows._with_missing([False, True, False])
+    masked = gm.intersection(masked_rows, box_in_frame(masked_rows, (0, 0, 1, 1)))
     assert masked.is_missing.tolist() == [False, True, False]
     assert masked[0].to_wkt() == 'LINESTRING (0 0.5, 1 0.5)'
     assert masked[1] is None
     assert masked[2].to_wkt() == 'LINESTRING EMPTY'
 
-    selected = rows[[2, 0]].clip_by_rect(0, 0, 1, 1)
+    selected_rows = rows[[2, 0]]
+    selected = gm.intersection(selected_rows, box_in_frame(selected_rows, (0, 0, 1, 1)))
     assert [item.to_wkt() for item in selected] == [
         'LINESTRING EMPTY',
         'LINESTRING (0 0.5, 1 0.5)',
     ]
 
-    empty_row = gm.GeometryArray([gm.LineString([]), rows[0]]).clip_by_rect(0, 0, 1, 1)
+    empty_rows = gm.GeometryArray([gm.LineString([]), rows[0]])
+    empty_row = gm.intersection(empty_rows, box_in_frame(empty_rows, (0, 0, 1, 1)))
     assert [item.to_wkt() for item in empty_row] == [
         'LINESTRING EMPTY',
         'LINESTRING (0 0.5, 1 0.5)',
     ]
 
-    framed = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0).clip_by_rect(
-        0, 0, 1, 1
-    )
+    framed_rows = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0)
+    framed = gm.intersection(framed_rows, box_in_frame(framed_rows, (0, 0, 1, 1)))
     assert framed.crs == gm.CRS('EPSG:4326')
     assert framed.epoch == 2020.0
 
 
-def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame() -> (
+def test_intersection_with_box_packed_missing_and_gathered_rows_preserve_mask_and_frame() -> (
     None
 ):
     all_missing = gm.GeometryArray([None, None], crs=4326, epoch=2020.0)
-    clipped_missing = all_missing.clip_by_rect(-1, -1, 1, 1)
+    clipped_missing = gm.intersection(
+        all_missing, box_in_frame(all_missing, (-1, -1, 1, 1))
+    )
     assert clipped_missing.is_missing.tolist() == [True, True]
     assert clipped_missing.crs == gm.CRS('EPSG:4326')
     assert clipped_missing.epoch == 2020.0
 
     # A geographic rectangle may cross the longitude seam.
-    crossing = all_missing.clip_by_rect(170, -10, -170, 10)
+    crossing = gm.intersection(
+        all_missing, box_in_frame(all_missing, (170, -10, -170, 10))
+    )
     assert crossing.is_missing.tolist() == [True, True]
 
     mixed = gm.GeometryArray(
@@ -1287,7 +1345,7 @@ def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame()
         crs=4326,
         epoch=2020.0,
     )
-    clipped_mixed = mixed.clip_by_rect(-1, -1, 1, 1)
+    clipped_mixed = gm.intersection(mixed, box_in_frame(mixed, (-1, -1, 1, 1)))
     assert clipped_mixed.is_missing.tolist() == [True, False, True]
     assert clipped_mixed[1].to_wkt(drop_epoch=True) == 'POINT (0.5 0.5)'
     assert clipped_mixed.crs == gm.CRS('EPSG:4326')
@@ -1302,41 +1360,35 @@ def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame()
         crs=4326,
         epoch=2020.0,
     )
-    gathered_missing = mixed_storage[[2, 2]].clip_by_rect(-1, -1, 1, 1)
+    gathered_rows = mixed_storage[[2, 2]]
+    gathered_missing = gm.intersection(
+        gathered_rows, box_in_frame(gathered_rows, (-1, -1, 1, 1))
+    )
     assert gathered_missing.is_missing.tolist() == [True, True]
     assert gathered_missing.crs == gm.CRS('EPSG:4326')
     assert gathered_missing.epoch == 2020.0
 
-    empty = gm.GeometryArray([], crs=4326, epoch=2020.0).clip_by_rect(-1, -1, 1, 1)
+    empty_rows = gm.GeometryArray([], crs=4326, epoch=2020.0)
+    empty = gm.intersection(empty_rows, box_in_frame(empty_rows, (-1, -1, 1, 1)))
     assert len(empty) == 0
     assert empty.crs == gm.CRS('EPSG:4326')
     assert empty.epoch == 2020.0
 
 
-def test_clip_by_rect_validates_bounds_when_arrays_have_no_present_rows() -> None:
-    missing = gm.GeometryArray([None, None])
-    empty = gm.GeometryArray([])
-    for rows in (missing, empty):
-        with pytest.raises(gm.GeometryError, match='clip rectangle bounds'):
-            rows.clip_by_rect(2, 0, 1, 1)
-
-    geographic_missing = gm.GeometryArray([None], crs=4326)
-    with pytest.raises(gm.GeometryError, match='geographic rectangle bounds'):
-        geographic_missing.clip_by_rect(-1, 1, 1, -1)
-
-
-def test_clip_by_rect_line_array_reentry_at_same_boundary_matches_scalar() -> None:
+def test_intersection_with_box_line_array_reentry_at_same_boundary_matches_scalar() -> (
+    None
+):
     coords = [(0.5, 0.5), (0.0, 0.5), (-1.0, 1.5), (0.0, 0.5), (0.75, 0.5)]
     for line in (gm.LineString(coords), gm.LineString(list(reversed(coords)))):
-        scalar = line.clip_by_rect(0, 0, 1, 1)
-        packed = gm.GeometryArray([line]).clip_by_rect(0, 0, 1, 1)[0]
+        scalar = gm.intersection(line, box_in_frame(line, (0, 0, 1, 1)))
+        rows = gm.GeometryArray([line])
+        packed = gm.intersection(rows, box_in_frame(rows, (0, 0, 1, 1)))[0]
         assert packed.geometry_type == scalar.geometry_type == 'LineString'
         assert packed.to_wkt() == scalar.to_wkt()
 
 
-def test_clip_by_rect_empty_matches_intersection_type() -> None:
+def test_intersection_with_box_preserves_typed_empty_results() -> None:
     rect = (0.0, 0.0, 2.0, 2.0)
-    box = gm.box(*rect)
     expected = {
         'MULTIPOINT(9 9,8 8)': 'POINT EMPTY',
         'LINESTRING(5 5,6 6)': 'LINESTRING EMPTY',
@@ -1346,11 +1398,8 @@ def test_clip_by_rect_empty_matches_intersection_type() -> None:
     }
     for wkt, empty in expected.items():
         geom = gm.from_wkt(wkt)
-        clipped = geom.clip_by_rect(*rect)
-        intersection = gm.intersection(geom, box)
-        assert clipped.to_wkt() == empty
-        assert intersection.to_wkt() == empty
-        assert clipped.to_wkb() == intersection.to_wkb()
+        result = gm.intersection(geom, box_in_frame(geom, rect))
+        assert result.to_wkt() == empty
 
 
 @pytest.mark.parametrize(
@@ -1377,7 +1426,7 @@ def test_rectangle_intersection_excludes_shell_covered_by_hole(
     assert gm.relate(subject, rectangle) == 'FFFFFF212'
     assert gm.intersection(subject, rectangle).is_empty
     assert gm.intersection(rectangle, subject).is_empty
-    assert subject.clip_by_rect(*bounds).is_empty
+    assert gm.intersection(subject, box_in_frame(subject, bounds)).is_empty
 
 
 def test_rectangle_shell_ownership_survives_array_nulls_and_gathers() -> None:
@@ -1411,12 +1460,12 @@ def test_rectangle_shell_ownership_survives_array_nulls_and_gathers() -> None:
     assert not gathered_result[0].is_empty
     assert gathered_result[1].is_empty
 
-    clipped = subjects.clip_by_rect(*bounds)
+    clipped = gm.intersection(subjects, box_in_frame(subjects, bounds))
     assert [geometry.is_empty for geometry in clipped] == [True, True, False]
-    nullable_clipped = nullable.clip_by_rect(*bounds)
+    nullable_clipped = gm.intersection(nullable, box_in_frame(nullable, bounds))
     assert nullable_clipped.is_missing.tolist() == [False, True, False]
     assert nullable_clipped[0].is_empty
-    gathered_clipped = gathered.clip_by_rect(*bounds)
+    gathered_clipped = gm.intersection(gathered, box_in_frame(gathered, bounds))
     assert gathered_clipped.is_missing.tolist() == [False, False, True]
     assert gathered_clipped[1].is_empty
 
@@ -1487,7 +1536,7 @@ def test_union_all_preserves_incident_curve_and_unrelated_explicit_point() -> No
 def test_rectangle_clips_positive_collapsed_shell_support() -> None:
     collapsed = gm.from_wkt('POLYGON ((0 0,2 0,4 0,0 0))')
 
-    clipped = collapsed.clip_by_rect(1, -1, 3, 1)
+    clipped = gm.intersection(collapsed, box_in_frame(collapsed, (1, -1, 3, 1)))
 
     assert clipped.to_wkt() == 'LINESTRING (1 0, 3 0)'
 

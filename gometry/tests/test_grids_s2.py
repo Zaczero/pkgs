@@ -710,7 +710,7 @@ def test_s2_pole_ulp_point_owners_match_literal_closed_cell_oracles(
 def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     line = gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326)
     coverage = gm.s2_cover(line, level=6, max_cells=16)
-    world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
+    world = gm.box(-180, -10, 180, 10, crs=4326)
     assert world.is_valid
     world_cells = gm.s2_cover(world, level=6)
     assert gm.S2Cell(0.0, 0.0, level=6) in world_cells
@@ -723,7 +723,7 @@ def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     )
     lons = sorted(cell.center.x for cell in coverage)
     assert lons[0] < -170 and lons[-1] > 170
-    seam = gm.box(179.5, -1.0, -179.5, 1.0, crs=4326, wrap='split')
+    seam = gm.box(179.5, -1.0, -179.5, 1.0, crs=4326)
     seam_lons = [cell.center.x for cell in gm.s2_cover(seam, level=6)]
     assert any(lon > 170 for lon in seam_lons)
     assert any(lon < -170 for lon in seam_lons)
@@ -752,7 +752,7 @@ def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
 
 
 def test_s2_split_antimeridian_box_covers_the_seam_not_the_world() -> None:
-    narrow = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
+    narrow = gm.box(170, -10, -170, 10, crs=4326)
     world = gm.box(-180, -10, 180, 10, crs=4326)
     narrow_cells = gm.s2_cover(narrow, level=4)
     world_cells = gm.s2_cover(world, level=4)
@@ -1244,7 +1244,7 @@ def test_mixed_depth_s2_and_rect_outlines_keep_the_parent_cell() -> None:
     ],
 )
 def test_rectangular_to_polygon_keeps_both_sides_of_the_seam(cover, depth) -> None:
-    source = gm.box(179.0, -2.0, -179.0, 2.0, crs=4326, wrap='split')
+    source = gm.box(179.0, -2.0, -179.0, 2.0, crs=4326)
     cells = cover(source, max_cells=None, **depth)
     outline = cells.to_polygon()
 

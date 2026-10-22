@@ -7,14 +7,12 @@ use crate::broadcast::{
 };
 use crate::crs::MetricModel;
 use crate::dispatch::kernels;
-use crate::dispatch::metric::MetricScratch;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, OriginSpec, Shape, SimplifyMethod,
-    TopologyDomain,
+    CoordSeq, CsrOffsetColumn, MeasureRange, OriginSpec, Shape, SimplifyMethod, TopologyDomain,
 };
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{
@@ -79,12 +77,6 @@ pub(crate) enum PackedUnary {
     },
     Quantize {
         precision: i32,
-    },
-    ClipByRect {
-        minx: f64,
-        miny: f64,
-        maxx: f64,
-        maxy: f64,
     },
 }
 
@@ -292,14 +284,12 @@ pub(crate) fn try_unary_packed_array(
     // packed storage directly stay on the present-row/scatter lane. `Boundary`
     // preserves packed structure without inspecting missing coordinates;
     // `Segmentize` owns a mask-aware fallback so one generated-work budget
-    // spans every present row. `ClipByRect` validates its bounds before its
-    // mask-aware detached map, so missing rows do not suppress argument checks.
-    // Other constructive ops would need different skip-or-scatter logic and
-    // stay bailed here.
+    // spans every present row. Other constructive ops would need different
+    // skip-or-scatter logic and stay bailed here.
     if array.has_missing()
         && !matches!(
             op,
-            Operation::Boundary | Operation::ClipByRect | Operation::Metric(MetricOp::Segmentize)
+            Operation::Boundary | Operation::Metric(MetricOp::Segmentize)
         )
     {
         return None;
@@ -426,48 +416,6 @@ pub(crate) fn try_unary_packed_array(
         },
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))
-        },
-        (
-            Operation::ClipByRect,
-            PackedUnary::ClipByRect {
-                minx,
-                miny,
-                maxx,
-                maxy,
-            },
-        ) => {
-            let mut scratch = MetricScratch::default();
-            let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
-                Ok((domain, metric)) => match domain {
-                    TopologyDomain::Geographic(frame) => {
-                        match Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy) {
-                            Ok(rect) => {
-                                let metric_access = || {
-                                    metric.geographic_chart_metric()?.ok_or_else(|| {
-                                    crate::crs::CrsError::invalid(
-                                        "geographic rectangle clipping requires the operation's CRS metric",
-                                    )
-                                })
-                                };
-                                array.clip_by_rect_unary_packed_geographic(
-                                    py,
-                                    rect,
-                                    frame,
-                                    &metric_access,
-                                )
-                            },
-                            Err(error) => Err(error.into()),
-                        }
-                    },
-                    TopologyDomain::Cartesian => match Bounds::new(*minx, *miny, *maxx, *maxy) {
-                        Ok(rect) => array.clip_by_rect_unary_packed(py, rect),
-                        Err(error) => Err(error.into()),
-                    },
-                },
-                Err(error) => Err(error.into()),
-            };
-            drop(scratch);
-            Some(result)
         },
         _ => None,
     }

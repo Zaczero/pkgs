@@ -43,7 +43,7 @@ from _bench_public_fixtures import (
     webmerc_transform_10k,
     buildings_10k_gometry,
     buildings_10k_shapely,
-    clip_linework_10k,
+    rectangle_intersection_linework_10k,
     destination_inputs_10k,
     dwithin_pairs_10k,
     geodesic_pairs_10k,
@@ -1215,39 +1215,51 @@ def build_repair() -> PublicCase:
     )
 
 
-def _compare_clip_by_rect(
+def _compare_intersection_with_box(
     left: object, right: object | None, context: OracleContext
 ) -> None:
     if right is None:
-        raise OracleMismatch('clip_by_rect requires competitor')
+        raise OracleMismatch('rectangle intersection requires competitor')
     left_rows = _as_geom_rows(left)
     right_rows = _as_geom_rows(right)
     if len(left_rows) != 10_000 or len(right_rows) != 10_000:
         raise OracleMismatch(
-            'clip_by_rect row alignment mismatch',
+            'rectangle intersection row alignment mismatch',
             details=f'{len(left_rows)} vs {len(right_rows)}',
         )
     for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
         if lg is None or rg is None:
-            raise OracleMismatch(f'clip_by_rect unexpected missing row={i}')
+            raise OracleMismatch(f'rectangle intersection unexpected missing row={i}')
     linework_result_equivalent(left_rows, right_rows, context)
 
 
-def build_clip_by_rect() -> PublicCase:
-    data = clip_linework_10k()
+def build_intersection_with_box() -> PublicCase:
+    data = rectangle_intersection_linework_10k()
 
     def gometry_call():
-        return data['gm'].clip_by_rect(0.0, 0.0, 1.0, 1.0)
+        import gometry as gm
+
+        rectangle = gm.box(
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            crs=data['gm'].crs,
+            epoch=data['gm'].epoch,
+        )
+        return gm.intersection(data['gm'], rectangle)
 
     def competitor_call():
         import shapely
 
-        return shapely.clip_by_rect(data['sh'], 0.0, 0.0, 1.0, 1.0)
+        return shapely.intersection(data['sh'], shapely.box(0.0, 0.0, 1.0, 1.0))
 
     def precondition() -> None:
         result = _as_geom_rows(gometry_call())
         if len(result) != 10_000:
-            raise OracleMismatch('clip_by_rect precondition lost row alignment')
+            raise OracleMismatch(
+                'rectangle intersection precondition lost row alignment'
+            )
         categories = data['categories']
         counts = dict.fromkeys(('crossing', 'inside', 'outside'), 0)
         for i, (category, source, clipped) in enumerate(
@@ -1255,7 +1267,7 @@ def build_clip_by_rect() -> PublicCase:
         ):
             counts[category] += 1
             if clipped is None:
-                raise OracleMismatch(f'clip_by_rect returned missing row={i}')
+                raise OracleMismatch(f'rectangle intersection returned missing row={i}')
             source_sh = _as_shapely(source)
             clipped_sh = _as_shapely(clipped)
             import shapely
@@ -1265,29 +1277,32 @@ def build_clip_by_rect() -> PublicCase:
                     shapely.equals(source_sh, clipped_sh)
                 ):
                     raise OracleMismatch(
-                        'clip_by_rect crossing category was not clipped',
+                        'rectangle intersection crossing category was not clipped',
                         details=f'row={i}',
                     )
             elif category == 'inside':
                 if bool(shapely.is_empty(clipped_sh)):
                     raise OracleMismatch(
-                        'clip_by_rect inside category became empty', details=f'row={i}'
+                        'rectangle intersection inside category became empty',
+                        details=f'row={i}',
                     )
             elif not bool(shapely.is_empty(clipped_sh)):
                 raise OracleMismatch(
-                    'clip_by_rect outside category was not empty', details=f'row={i}'
+                    'rectangle intersection outside category was not empty',
+                    details=f'row={i}',
                 )
         if counts != {'crossing': 4_000, 'inside': 4_000, 'outside': 2_000}:
             raise OracleMismatch(
-                'clip_by_rect category distribution drifted', details=repr(counts)
+                'rectangle intersection category distribution drifted',
+                details=repr(counts),
             )
 
-    _reg('gometry.clip_by_rect/10k_realistic_linework_categories', gometry_call)
-    _reg('shapely.clip_by_rect/10k_realistic_linework_categories', competitor_call)
+    _reg('gometry.intersection/10k_realistic_linework_categories', gometry_call)
+    _reg('shapely.intersection/10k_realistic_linework_categories', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
-        _compare_clip_by_rect,
+        _compare_intersection_with_box,
         kind='linework_result',
         preconditions=(precondition,),
     )
@@ -1929,7 +1944,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.coverage_union_all/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,
     'gometry.repair.linework/1k_invalid_polygons': build_repair,
-    'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,
+    'gometry.intersection/10k_realistic_linework_categories': build_intersection_with_box,
     'gometry.point_on_surface/10k_concave_holed_buildings': build_point_on_surface,
     'gometry.to_crs.masked/200k_points_10pct_missing': build_to_crs,
     'gometry.crs_transform/10k_epsg4326_to3857': build_crs_transform,

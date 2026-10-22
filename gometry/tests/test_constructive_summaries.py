@@ -11,6 +11,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import box_in_frame
+
 
 @pytest.mark.parametrize('aspect', [100, 100_000, 1_000_000])
 def test_inscribed_circle_on_high_aspect_ratio_triangle(aspect: int) -> None:
@@ -856,4 +858,8 @@ def test_constructive_outputs_collapse_to_the_narrowest_type() -> None:
     assert split.geometry_type == 'MultiPolygon'
     eroded = gm.box(0, 0, 2, 2).buffer(-10)
     assert eroded.geometry_type == 'Polygon' and eroded.is_empty
-    assert gm.box(0, 0, 4, 4).clip_by_rect(1, 1, 3, 3).geometry_type == 'Polygon'
+    source = gm.box(0, 0, 4, 4)
+    assert (
+        gm.intersection(source, box_in_frame(source, (1, 1, 3, 3))).geometry_type
+        == 'Polygon'
+    )

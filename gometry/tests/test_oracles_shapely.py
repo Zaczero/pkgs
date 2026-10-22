@@ -7,7 +7,7 @@ import gometry as gm
 import numpy as np
 import pytest
 
-from tests._support import h3_oracle
+from tests._support import box_in_frame, h3_oracle
 
 shapely = pytest.importorskip(
     'shapely', reason='shapely is an optional oracle dependency'
@@ -48,7 +48,6 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     )
     from shapely.geometry import Point
     from shapely.ops import (
-        clip_by_rect,
         linemerge,
         nearest_points,
         polygonize,
@@ -79,8 +78,10 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         union(shapely_left, shapely_right).area
     )
     assert lines.line_merge().to_wkt() == linemerge(cast('Any', shapely_lines)).wkt
-    assert left.clip_by_rect(0.5, 0.5, 1.5, 1.5).area == pytest.approx(
-        clip_by_rect(shapely_left, 0.5, 0.5, 1.5, 1.5).area
+    assert gm.intersection(
+        left, box_in_frame(left, (0.5, 0.5, 1.5, 1.5))
+    ).area == pytest.approx(
+        intersection(shapely_left, from_wkt(gm.box(0.5, 0.5, 1.5, 1.5).to_wkt())).area
     )
     assert (
         reference_line.line_interpolate(6).to_wkt()

@@ -193,7 +193,7 @@ cell sets rather than a general spherical boolean-topology engine.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-seam = gm.box(175.0, -5.0, -175.0, 5.0, crs=4326, wrap='split')
+seam = gm.box(175.0, -5.0, -175.0, 5.0, crs=4326)
 covering = gm.s2_cover(seam, max_cells=24)
 positive_lon = sum(1 for cell in covering.polygon if cell.bounds[0] >= 0)
 

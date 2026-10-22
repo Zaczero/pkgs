@@ -40,7 +40,7 @@ pub enum GeometryErrorKind {
     ProjectionDomain(Box<str>),
     #[error("polygon rings require at least three coordinates, got {0}")]
     RingTooShort(usize),
-    #[error("clip rectangle bounds must be finite and ordered min <= max")]
+    #[error("rectangle bounds must be finite and ordered min <= max")]
     InvalidRectangle,
     #[error(
         "geographic rectangle bounds must use finite longitudes and latitudes within the CRS frame, with south <= north"

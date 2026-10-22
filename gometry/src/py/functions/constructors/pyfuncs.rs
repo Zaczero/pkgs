@@ -12,33 +12,22 @@ use crate::py::functions::constructors::{
 };
 use crate::py::numpy;
 
-/// Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
+/// Create a rectangular polygon from bounds ``(minx, miny, maxx, maxy)``.
 ///
 /// Parameters
 /// ----------
 /// minx, miny, maxx, maxy : float
-///     Finite rectangle bounds; each minimum must not exceed its maximum,
-///     except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
-///     geographic box across the CRS frame's longitude seam.
+///     Finite rectangle bounds. With a geographic CRS, ``minx > maxx`` selects
+///     the interval crossing the frame's longitude seam.
 ///
 /// crs : CRS-like, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
-///     With a geographic CRS, positive-size ``wrap=None`` bounds wholly inside
-///     the frame's native longitude and latitude ranges use chart edges along
-///     parallels and meridians. Only enough intermediate longitudes are
-///     inserted to keep each step below half the period; geographic area and
-///     length measure those stored edges. Other ``wrap=None`` bounds use the
-///     corner-only, unwrapped construction; the native-range directed-span
-///     guarantee does not apply on that path.
-///
-/// wrap : {'split'}, optional
-///     Seam handling for boxes with a geographic CRS. ``'split'`` lets
-///     ``minx`` exceed ``maxx`` to cross the frame's longitude seam, returning
-///     a `MultiPolygon`. The default (``None``) leaves coordinates unwrapped
-///     and requires ``minx <= maxx``. Latitude bounds must lie within the frame's
-///     poles. Longitude endpoints must lie within its native half-period unless
-///     their eastward span is at least one period, which selects the full band.
+///     With a geographic CRS, bounds within the frame's native longitude and
+///     latitude ranges use chart edges along parallels and meridians. A
+///     seam-crossing interval returns a `MultiPolygon`; ``(-half_period,
+///     half_period)`` selects the full longitude band. Ordered bounds outside
+///     those ranges retain the corner-only, unwrapped construction.
 ///
 /// ccw : bool, default True
 ///     If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
@@ -49,20 +38,17 @@ use crate::py::numpy;
 /// Returns
 /// -------
 /// Polygon | MultiPolygon
-///     A rectangular polygon, or a MultiPolygon when ``wrap='split'`` crosses
-///     the frame's longitude seam.
+///     A rectangular polygon, or a MultiPolygon for a seam-crossing interval.
 ///
 /// Raises
 /// ------
 /// InvalidGeometryError
-///     If a bound is non-finite or a minimum exceeds its maximum without
-///     ``wrap='split'``.
+///     If a bound is non-finite or south exceeds north.
 /// CRSError
-///     If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-///     without a geographic CRS.
+///     If ``epoch`` is set without ``crs``.
 /// GeometryError
-///     If ``epoch`` is not a finite decimal year or wrapped geographic bounds
-///     lie outside their CRS frame.
+///     If ``epoch`` is invalid, bounds are unordered outside a valid geographic
+///     seam crossing, or seam-crossing bounds lie outside their CRS frame.
 ///
 /// Examples
 /// --------
@@ -71,9 +57,11 @@ use crate::py::numpy;
 /// 'POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))'
 /// >>> gm.box(0, 0, 2, 1, ccw=False).to_wkt()
 /// 'POLYGON ((0 0, 0 1, 2 1, 2 0, 0 0))'
+/// >>> gm.box(170, -10, -170, 10, crs=4326).bounds
+/// (170.0, -10.0, -170.0, 10.0)
 #[pyfunction(name = "box")]
 #[pyo3(
-    signature = (minx, miny, maxx, maxy, *, crs = None, wrap = None, ccw = true, epoch = None)
+    signature = (minx, miny, maxx, maxy, *, crs = None, ccw = true, epoch = None)
 )]
 pub(super) fn box_(
     minx: &Bound<'_, PyAny>,
@@ -81,7 +69,6 @@ pub(super) fn box_(
     maxx: &Bound<'_, PyAny>,
     maxy: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
-    wrap: Option<&str>,
     ccw: bool,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Typed> {
@@ -91,7 +78,7 @@ pub(super) fn box_(
     let maxy = finite_coordinate_required("maxy", maxy)?;
     let crs = parse_crs(crs)?;
     let epoch = coordinate_epoch_option("epoch", epoch)?;
-    let shape = build_box_shape(minx, miny, maxx, maxy, wrap, crs.as_ref(), ccw)?;
+    let shape = build_box_shape(minx, miny, maxx, maxy, crs.as_ref(), ccw)?;
     Ok(Typed(PyGeometry::with_frame(
         shape,
         Frame::new(crs, epoch)?,
@@ -435,11 +422,8 @@ fn try_points_from_arc_columns(
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every box. Geographic rows follow the same native-range
-///     chart-edge and corner-only ``wrap=None`` rules as `box`. Geographic area
-///     and length measure the stored chart edges when the chart-edge path applies.
-///
-/// wrap : {'split'}, optional
-///     Seam handling for geographic boxes — same as `box`.
+///     chart-edge and corner-only unwrapped rules as `box`; west > east selects
+///     a seam-crossing interval.
 ///
 /// ccw : bool, default True
 ///     If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
@@ -455,21 +439,22 @@ fn try_points_from_arc_columns(
 /// Raises
 /// ------
 /// InvalidGeometryError
-///     If bounds are non-finite or invalid per row.
+///     If a bound is non-finite or south exceeds north in any row.
 /// CRSError
-///     If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-///     without a geographic CRS.
+///     If ``epoch`` is set without ``crs``.
 /// GeometryError
-///     If ``epoch`` is invalid, or wrapped geographic bounds lie outside their
-///     CRS frame.
+///     If ``epoch`` is invalid, bounds are unordered outside a valid geographic
+///     seam crossing, or seam-crossing bounds lie outside their CRS frame.
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.boxes(0, 0, [1, 2], [1, 2]).to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))']
+/// >>> gm.boxes([170], [-10], [-170], [10], crs=4326)[0].bounds
+/// (170.0, -10.0, -170.0, 10.0)
 #[pyfunction]
-#[pyo3(signature = (minx, miny, maxx, maxy, *, crs = None, wrap = None, ccw = true, epoch = None))]
+#[pyo3(signature = (minx, miny, maxx, maxy, *, crs = None, ccw = true, epoch = None))]
 pub(super) fn boxes(
     py: Python<'_>,
     minx: &Bound<'_, PyAny>,
@@ -477,7 +462,6 @@ pub(super) fn boxes(
     maxx: &Bound<'_, PyAny>,
     maxy: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
-    wrap: Option<&str>,
     ccw: bool,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
@@ -527,7 +511,7 @@ pub(super) fn boxes(
         .zip(maxx.values.iter())
         .zip(maxy.values.iter())
     {
-        let shape = build_box_shape(*minx, *miny, *maxx, *maxy, wrap, frame.crs_ref(), ccw)?;
+        let shape = build_box_shape(*minx, *miny, *maxx, *maxy, frame.crs_ref(), ccw)?;
         rows.try_push(shape)?;
     }
     Ok(rows.finish(frame)?)

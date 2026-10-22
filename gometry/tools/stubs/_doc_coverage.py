@@ -145,7 +145,6 @@ _OP_EXTRAS: dict[str, frozenset[str]] = {
     'snap': frozenset({'GeometryError'}),
     'segmentize': frozenset({'GeometryError'}),
     'remove_repeated_points': frozenset({'GeometryError'}),
-    'clip_by_rect': frozenset({'GeometryError'}),
     'to_wkt': frozenset({'CRSError', 'GeometryError'}),
     'to_wkb': frozenset({'CRSError'}),
     'contains': frozenset({'InvalidGeometryError'}),

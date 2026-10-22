@@ -5,6 +5,7 @@ import gometry as gm
 import pytest
 
 from tests._support import (
+    box_in_frame,
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
@@ -625,11 +626,14 @@ def test_reverse_and_segmentize_carry_z_like_shapely() -> None:
 
 def test_empty_result_typing_regression() -> None:
     """Vanishing results carry the op's natural typed empty, never an untyped
-    GEOMETRYCOLLECTION EMPTY (overlay/clip/boundary/envelope/MRR/reductions).
+    GEOMETRYCOLLECTION EMPTY (overlay/boundary/envelope/MRR/reductions).
     """
     poly = 'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'
     far = 'POLYGON ((5 5, 6 5, 6 6, 5 6, 5 5))'
     line = 'LINESTRING (0.2 0.2, 0.8 0.8)'
+    far_geometry = gm.from_wkt(far)
+    outside_line = gm.from_wkt('LINESTRING (9 9, 10 10)')
+    outside_point = gm.from_wkt('POINT (9 9)')
     assert (
         gm.intersection(gm.from_wkt(poly), gm.from_wkt(far)).to_wkt() == 'POLYGON EMPTY'
     )
@@ -647,15 +651,23 @@ def test_empty_result_typing_regression() -> None:
         == 'LINESTRING EMPTY'
     )
     assert (
-        gm.intersection(gm.from_wkt('POINT (0 0)'), gm.from_wkt(far)).to_wkt()
+        gm.intersection(gm.from_wkt('POINT (0 0)'), far_geometry).to_wkt()
         == 'POINT EMPTY'
     )
-    assert gm.from_wkt(far).clip_by_rect(0, 0, 2, 2).to_wkt() == 'POLYGON EMPTY'
     assert (
-        gm.from_wkt('LINESTRING (9 9, 10 10)').clip_by_rect(0, 0, 2, 2).to_wkt()
+        gm.intersection(far_geometry, box_in_frame(far_geometry, (0, 0, 2, 2))).to_wkt()
+        == 'POLYGON EMPTY'
+    )
+    assert (
+        gm.intersection(outside_line, box_in_frame(outside_line, (0, 0, 2, 2))).to_wkt()
         == 'LINESTRING EMPTY'
     )
-    assert gm.from_wkt('POINT (9 9)').clip_by_rect(0, 0, 2, 2).to_wkt() == 'POINT EMPTY'
+    assert (
+        gm.intersection(
+            outside_point, box_in_frame(outside_point, (0, 0, 2, 2))
+        ).to_wkt()
+        == 'POINT EMPTY'
+    )
     assert gm.from_wkt('POLYGON EMPTY').boundary().to_wkt() == 'MULTILINESTRING EMPTY'
     assert gm.from_wkt('LINESTRING EMPTY').boundary().to_wkt() == 'MULTIPOINT EMPTY'
     assert gm.from_wkt('POINT EMPTY').boundary().to_wkt() == 'GEOMETRYCOLLECTION EMPTY'

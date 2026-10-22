@@ -9,7 +9,7 @@ from itertools import pairwise
 import gometry as gm
 import pytest
 
-from tests._support import ids, pair_rows
+from tests._support import box_in_frame, ids, pair_rows
 
 
 def test_coverage_signed_zero_shared_edge_valid_and_union() -> None:
@@ -402,10 +402,10 @@ def test_hausdorff_frechet_tiny_parallel_separation() -> None:
     assert gm.frechet_distance(a, a) == 0.0
 
 
-def test_clip_by_rect_extreme_crossing_segment() -> None:
+def test_intersection_with_box_extreme_crossing_segment() -> None:
     """C5: extreme endpoints that cross a unit rect clip to the window edges."""
     ls = gm.LineString([(-1e20, 0.5), (1e20, 0.5)])
-    clipped = ls.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    clipped = gm.intersection(ls, box_in_frame(ls, (0.0, 0.0, 1.0, 1.0)))
     assert not clipped.is_empty
     coords = list(clipped.coords)
     assert len(coords) >= 2
@@ -414,12 +414,14 @@ def test_clip_by_rect_extreme_crossing_segment() -> None:
     assert coords[0][1] == pytest.approx(0.5, rel=0, abs=1e-12)
     assert coords[-1][1] == pytest.approx(0.5, rel=0, abs=1e-12)
     # Milder extreme previously returned a wrong 1.125 endpoint.
-    mid = gm.LineString([(-1e15, 0.5), (1e15, 0.5)]).clip_by_rect(0, 0, 1, 1)
+    mid_line = gm.LineString([(-1e15, 0.5), (1e15, 0.5)])
+    mid = gm.intersection(mid_line, box_in_frame(mid_line, (0, 0, 1, 1)))
     mc = list(mid.coords)
     assert mc[0][0] == pytest.approx(0.0, abs=1e-6)
     assert mc[-1][0] == pytest.approx(1.0, abs=1e-6)
     # Diagonal extreme (parameter t collapses without edge-bisection).
-    diag = gm.LineString([(-1e15, -1e15), (1e15, 1e15)]).clip_by_rect(0, 0, 1, 1)
+    diagonal = gm.LineString([(-1e15, -1e15), (1e15, 1e15)])
+    diag = gm.intersection(diagonal, box_in_frame(diagonal, (0, 0, 1, 1)))
     assert not diag.is_empty
     dc = list(diag.coords)
     assert dc[0][0] == pytest.approx(0.0, abs=1e-6)
@@ -427,7 +429,8 @@ def test_clip_by_rect_extreme_crossing_segment() -> None:
     assert dc[-1][0] == pytest.approx(1.0, abs=1e-6)
     assert dc[-1][1] == pytest.approx(1.0, abs=1e-6)
     # Ordinary mid-range clip unchanged.
-    ordinary = gm.LineString([(-1.0, 0.5), (2.0, 0.5)]).clip_by_rect(0, 0, 1, 1)
+    ordinary_line = gm.LineString([(-1.0, 0.5), (2.0, 0.5)])
+    ordinary = gm.intersection(ordinary_line, box_in_frame(ordinary_line, (0, 0, 1, 1)))
     oc = list(ordinary.coords)
     assert oc[0][0] == pytest.approx(0.0)
     assert oc[-1][0] == pytest.approx(1.0)

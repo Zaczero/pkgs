@@ -27,7 +27,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `MultiLineString(...)` | [`gm.MultiLineString(...)`][gometry.MultiLineString] | |
 | `MultiPolygon(...)` | [`gm.MultiPolygon(...)`][gometry.MultiPolygon] | |
 | `GeometryCollection(...)` | [`gm.GeometryCollection(...)`][gometry.GeometryCollection] | |
-| `box(minx, miny, maxx, maxy)` | [`gm.box(minx, miny, maxx, maxy, crs=..., wrap=...)`][gometry.box] | `wrap="split"` for antimeridian boxes. |
+| `box(minx, miny, maxx, maxy)` | [`gm.box(minx, miny, maxx, maxy, crs=...)`][gometry.box] | In a geographic CRS, `west > east` crosses the longitude seam. |
 | `shape(geojson)` | [`gm.from_geojson(obj)`][gometry.from_geojson] | GeoJSON / `__geo_interface__`. |
 | `shapely.points(...)` | [`gm.points(lons, lats, z=..., m=..., crs=...)`][gometry.points] | Packed array. |
 | mixed array | [`gm.GeometryArray([...])`][gometry.GeometryArray] | Rust-owned container for vectorized ops. |
@@ -93,7 +93,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.buffer(d, single_sided=True)` | `geom.buffer(abs(d), side='left')` for positive `d`; `geom.buffer(abs(d), side='right')` for negative `d` | Sided buffers use flat ends and honor `join_style`, `quadrant_segments`, and `miter_limit`; gometry expresses the side explicitly and requires a non-negative distance. |
 | `geom.simplify(t)` / `shapely.simplify(geom, t)` | [`geom.simplify(t)`][gometry.Geometry.simplify] | |
 | `geom.offset_curve(d)` | [`geom.offset_curve(d)`][gometry.Geometry.offset_curve] | |
-| `clip_by_rect(g, ...)` | `g.clip_by_rect(...)` | |
+| rectangle intersection | [`gm.intersection(g, gm.box(..., crs=g.crs, epoch=g.epoch))`][gometry.intersection] | `west > east` selects a seam-crossing geographic box. |
 | `geom.convex_hull` | [`geom.convex_hull()`][gometry.Geometry.convex_hull] | |
 | `concave_hull(g, ratio=...)` | [`geom.concave_hull(concavity=..., length_threshold=...)`][gometry.Geometry.concave_hull] | Different algorithm and knobs: `concavity` is an edge-length ratio, not Shapely's `ratio`. |
 | `geom.centroid` / `geom.envelope` | `g.centroid()` / `g.envelope()` | |
