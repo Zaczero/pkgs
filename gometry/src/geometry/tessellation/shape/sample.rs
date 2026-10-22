@@ -4,17 +4,16 @@ use crate::geometry::{ChartMetric as _, SampleDraw};
 
 // The common a²(1-e²)*angular-unit factors cancel from the distribution.
 // Pole-referenced cosine retains density on arbitrarily narrow polar slivers.
-fn area_density(metric: &crate::crs::GeodesicMetric, latitude: f64) -> f64 {
-    let frame = metric.frame;
+fn area_density(frame: GeographicFrame, flattening: f64, latitude: f64) -> f64 {
     let cosine = ((frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit()).sin();
     let sine = (latitude * frame.latitude_radians_per_unit()).sin();
-    let axis_ratio = 1.0 - metric.geodesic.f;
+    let axis_ratio = 1.0 - flattening;
     // Keep both positive terms: 1-e² loses the polar denominator when e² rounds to 1.
     let denominator = cosine * cosine + axis_ratio * axis_ratio * sine * sine;
     cosine / (denominator * denominator)
 }
 
-fn area_density_bound(metric: &crate::crs::GeodesicMetric, vertices: &[Point; 3]) -> f64 {
+fn area_density_bound(frame: GeographicFrame, flattening: f64, vertices: &[Point; 3]) -> f64 {
     let south = vertices
         .iter()
         .map(|point| point.y)
@@ -28,10 +27,10 @@ fn area_density_bound(metric: &crate::crs::GeodesicMetric, vertices: &[Point; 3]
     } else {
         south.abs().min(north.abs())
     };
-    let cosine = ((metric.frame.pole() - closest) * metric.frame.latitude_radians_per_unit()).sin();
+    let cosine = ((frame.pole() - closest) * frame.latitude_radians_per_unit()).sin();
     // The denominator ranges between 1 and (1-f)^2. Prolate ellipsoids
     // attain its minimum at the equator, rather than at a pole.
-    let denominator_min = (1.0 - metric.geodesic.f).powi(2).min(1.0);
+    let denominator_min = (1.0 - flattening).powi(2).min(1.0);
     cosine / denominator_min.powi(2) * (1.0 + 16.0 * f64::EPSILON)
 }
 
@@ -392,7 +391,11 @@ impl Shape {
                     let c = frame.frame_point(*c);
                     ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs()
                         * metric.map_or(1.0, |metric| {
-                            area_density_bound(metric, sample_triangle_vertices(support))
+                            area_density_bound(
+                                metric.frame,
+                                metric.geodesic.f,
+                                sample_triangle_vertices(support),
+                            )
                         })
                 },
                 |support, state| {
@@ -410,8 +413,12 @@ impl Shape {
                 |support, point, state| {
                     metric.is_none_or(|metric| {
                         uniform_f64(state)
-                            * area_density_bound(metric, sample_triangle_vertices(support))
-                            < area_density(metric, point.y)
+                            * area_density_bound(
+                                metric.frame,
+                                metric.geodesic.f,
+                                sample_triangle_vertices(support),
+                            )
+                            < area_density(metric.frame, metric.geodesic.f, point.y)
                     })
                 },
             )?;

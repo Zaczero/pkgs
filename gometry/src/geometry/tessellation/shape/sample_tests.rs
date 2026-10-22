@@ -29,21 +29,19 @@ fn polygon(points: &[(f64, f64)]) -> Polygon {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+#[cfg_attr(miri, ignore = "Miri cannot execute native angular-unit conversion")]
 fn prolate_area_sampling_envelope_dominates_equatorial_density() {
-    let model =
-        crate::crs::metric_model(Some("+proj=longlat +a=6371000 +b=6434710 +type=crs")).unwrap();
-    let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+    let frame = GeographicFrame::crs84();
+    let flattening = -0.01;
     let triangle = [
         Point::new(0.0, 0.0).unwrap(),
         Point::new(1.0, 0.0).unwrap(),
         Point::new(0.0, 80.0).unwrap(),
     ];
-    let bound = area_density_bound(&metric, &triangle);
-    assert!(metric.geodesic.f < 0.0);
+    let bound = area_density_bound(frame, flattening, &triangle);
     assert!(bound >= 1.0);
     for latitude in [0.0, 15.0, 45.0, 80.0] {
-        assert!(bound >= area_density(&metric, latitude));
+        assert!(bound >= area_density(frame, flattening, latitude));
     }
 }
 
@@ -51,17 +49,25 @@ fn prolate_area_sampling_envelope_dominates_equatorial_density() {
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
 fn flattened_ellipsoid_sampling_keeps_the_polar_density_bounded() {
     let model =
-        crate::crs::metric_model(Some("+proj=longlat +a=6371000 +b=0.06371 +type=crs")).unwrap();
+        crate::crs::metric_model(Some("+proj=longlat +a=6371000 +rf=50 +type=crs")).unwrap();
     let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+    assert_eq!(metric.geodesic.f, 0.02);
+    let latitude = 90.0_f64.next_down();
     let triangle = [
-        Point::new(0.0, 89.0).unwrap(),
-        Point::new(1.0, 89.0).unwrap(),
+        Point::new(0.0, latitude).unwrap(),
+        Point::new(1.0, latitude).unwrap(),
         Point::new(0.0, 90.0).unwrap(),
     ];
-    let density = area_density(&metric, 90.0_f64.next_down());
+    let density = area_density(metric.frame, metric.geodesic.f, latitude);
     assert!(density.is_finite());
     assert!(density > 0.0);
-    assert!(area_density_bound(&metric, &triangle) >= density);
+    // Reference at colatitude 2^-46 degrees and flattening 1/50.
+    approx::assert_relative_eq!(
+        density,
+        2.689_015_244_225_647e-16,
+        max_relative = 8.0 * f64::EPSILON,
+    );
+    assert!(area_density_bound(metric.frame, metric.geodesic.f, &triangle) >= density);
 }
 
 fn xy_bits(points: &[Point]) -> Vec<(u64, u64)> {

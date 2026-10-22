@@ -2,15 +2,37 @@ use crate::geometry::derived::circle::inscribed_candidate_is_contained;
 
 #[test]
 fn zero_radius_boundary_point_uses_closed_membership() {
-    let shape = degenerate_line_shape();
-    let circle = crate::geometry::CircleSolution::inscribed(&shape, None, 1.0).unwrap();
+    let low = 1.0_f64;
+    let high = low.next_up();
+    let shape = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, low),
+                Point::new_raw_xy(2.0, low),
+                Point::new_raw_xy(2.0, high),
+                Point::new_raw_xy(0.0, high),
+                Point::new_raw_xy(0.0, low),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+        Vec::new(),
+    ));
+    // Positive area, but no binary64 Y coordinate lies strictly between the edges.
+    let circle = crate::geometry::CircleSolution::inscribed(&shape, Some(high - low), 1.0).unwrap();
+    assert!(matches!(
+        &circle,
+        crate::geometry::CircleSolution::Inscribed { squared_radius, .. } if squared_radius.is_zero()
+    ));
     assert_eq!(circle.radius(1.0).unwrap(), 0.0);
-    let result = circle.to_polygon(
-        NonZeroU32::new(16).unwrap(),
-        &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
-    ).unwrap();
+    let result = circle
+        .to_polygon(
+            NonZeroU32::new(16).unwrap(),
+            &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
+        )
+        .unwrap();
     let Shape::Point(point) = result else {
-        panic!("degenerate maximum circle must emit its point center");
+        panic!("zero-radius retained circle must emit its point center");
     };
     assert!(shape.covers_point(point));
     assert!(!shape.contains_point(point));
