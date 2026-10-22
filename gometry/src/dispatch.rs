@@ -22,9 +22,8 @@ pub(crate) use binary_fast::{
     dispatch_frechet_distance, dispatch_hausdorff_distance, dispatch_overlay, dispatch_predicate,
 };
 pub(crate) use linref::{line_interpolate_points_scalar, line_locate_input};
-#[cfg(test)]
-pub(crate) use metric::Lane;
-pub(crate) use metric::{ LinearReferenceRow, MetricCtx, MetricResolver, MetricRowContext, MetricScratch,
+pub(crate) use metric::{
+    Lane, LinearReferenceRow, MetricCtx, MetricResolver, MetricRowContext, MetricScratch,
     UnaryMeasureKernel,
 };
 pub(crate) use operation::{MetricOp, Operation};
