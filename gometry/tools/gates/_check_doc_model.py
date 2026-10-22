@@ -24,6 +24,7 @@ from _gatelib import prepend_tools_import_paths
 prepend_tools_import_paths()
 
 from griffe_expand_aliases import (
+    _PRIVATE_TYPEVAR_RENAMES,
     ExpandTokenAliases,
     PromoteStubOverloads,
     annotation_aliases,
@@ -47,20 +48,6 @@ from pyo3stubs.doc_structure import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-_PUBLIC_TYPEVAR_NAMES = {
-    '_CellT': 'CellT',
-    '_CellT_co': 'CellT_co',
-    '_DefaultT': 'DefaultT',
-    '_ExtremeT': 'ExtremeT',
-    '_GeometryOtherT': 'GeometryOtherT',
-    '_GeometryRowT': 'GeometryRowT',
-    '_GeometryT': 'GeometryT',
-    '_GeometryT_co': 'GeometryT_co',
-    '_GroupKeyT': 'GroupKeyT',
-    '_GroupMissingT_co': 'GroupMissingT_co',
-    '_GroupRowT_co': 'GroupRowT_co',
-}
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
 CallForm = tuple[tuple[ParameterForm, ...], str | None]
@@ -92,7 +79,7 @@ def _is_never(function: griffe.Function) -> bool:
 
 
 def _public_annotation(annotation: str) -> str:
-    for private, public in _PUBLIC_TYPEVAR_NAMES.items():
+    for private, public in _PRIVATE_TYPEVAR_RENAMES.items():
         annotation = annotation.replace(private, public)
     return annotation
 

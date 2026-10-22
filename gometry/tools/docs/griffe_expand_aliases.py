@@ -11,6 +11,7 @@ prose remains untouched.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import copy
 import re
@@ -32,7 +33,7 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
-    '_GroupMissingT_co': 'GroupMissingT_co',
+    '_GroupValuesT': 'GroupValuesT',
     '_GroupRowT_co': 'GroupRowT_co',
 }
 _SEE_ALSO_ENTRY = re.compile(
@@ -1099,6 +1100,17 @@ def expand_annotation(
             return griffe.ExprBinOp(
                 griffe.ExprBinOp(ndarray, '|', geometry_array), '|', cell_array
             )
+        if expr.name == '_CircleArrayCenterProjection':
+            point = griffe.ExprName('Point')
+            present = griffe.ExprSubscript(
+                griffe.ExprName('GeometryArray'),
+                griffe.ExprName('Point'),
+            )
+            nullable = griffe.ExprSubscript(
+                griffe.ExprName('GeometryArray'),
+                griffe.ExprBinOp(point, '|', griffe.ExprName('None')),
+            )
+            return griffe.ExprBinOp(present, '|', nullable)
         private_typevar = expr.name.rsplit('.', maxsplit=1)[-1]
         if private_typevar in _PRIVATE_TYPEVAR_RENAMES:
             return griffe.ExprName(_PRIVATE_TYPEVAR_RENAMES[private_typevar])
@@ -1180,8 +1192,12 @@ def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None
             '_GeometryArrayPartsProjection',
             '_GroupsValuesProjection',
         }
+        is_circle_projection = (
+            isinstance(obj.annotation, griffe.ExprName)
+            and obj.annotation.name == '_CircleArrayCenterProjection'
+        )
         obj.annotation = expand_annotation(obj.annotation, aliases)
-        if is_cell_projection or is_group_projection:
+        if is_cell_projection or is_group_projection or is_circle_projection:
             obj.labels.discard('instance-attribute')
             obj.labels.update({'property', 'readonly'})
     for member in getattr(obj, 'members', {}).values():
@@ -1388,12 +1404,19 @@ def _resolved_parameter_sections(
             None,
         )
         parameter.description = row.description
-        parameter.annotation = (
+        annotation = (
             _copy_expression(binding_parameter.annotation)
             if binding_parameter is not None
             and binding_parameter.annotation is not None
             else row.annotation
         )
+        if isinstance(annotation, str):
+            annotation = griffe.get_expression(
+                ast.parse(annotation, mode='eval').body,
+                binding.parent,
+                parse_strings=True,
+            )
+        parameter.annotation = annotation
         if row.status == 'defaulted':
             parameter.value = (
                 _copy_expression(binding_parameter.default)

@@ -632,6 +632,19 @@ def test_source_form_oracle_matches_real_constructor_and_function_output() -> No
     })
     assert site_contracts._parameter_row_errors(row_contract, tables) == []
 
+    groups = pkg.members['Groups']
+    assert isinstance(groups, griffe.Class)
+    rendered_groups = _render_class_reference(groups)
+    groups_contract = SimpleNamespace(
+        constructor_rows={
+            'gometry.Groups': contracts.constructor_rows['gometry.Groups']
+        }
+    )
+    groups_tables = site_contracts._table_rows({
+        Path('api/geometry/coordinates.html'): rendered_groups,
+    })
+    assert site_contracts._parameter_row_errors(groups_contract, groups_tables) == []
+
 
 def test_built_parameter_table_audit_checks_type_default_and_presence() -> None:
     contracts = load_tool('site_contracts')
@@ -1739,6 +1752,21 @@ def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> N
         assert attribute.docstring is not None
         assert attribute.docstring.value.strip()
         assert '_CellGeometryProjection' not in str(attribute.annotation)
+
+
+def test_griffe_presents_circle_array_center_as_a_readonly_point_property() -> None:
+    pkg = _load_griffe_model()
+    circle_array = pkg.members['CircleArray']
+    assert isinstance(circle_array, griffe.Class)
+
+    center = circle_array.members['center']
+    assert isinstance(center, griffe.Attribute)
+    assert center.canonical_path == 'gometry.CircleArray.center'
+    assert str(center.annotation) == (
+        'GeometryArray[Point] | GeometryArray[Point | None]'
+    )
+    assert {'property', 'readonly'} <= center.labels
+    assert '_CircleArrayCenterProjection' not in str(center.annotation)
 
 
 def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists() -> None:
