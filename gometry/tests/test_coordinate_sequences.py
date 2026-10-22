@@ -163,3 +163,17 @@ def test_sequence_mapping_preserves_callback_exception_and_adds_row_note() -> No
         source.map_coordinate_sequences(fail)
     assert caught.value is failure
     assert any('1' in note for note in caught.value.__notes__)
+
+
+def test_all_missing_sequence_mapping_retains_declared_schema_without_callback() -> (
+    None
+):
+    source = gm.GeometryArray([gm.Point(1, 2, m=3, crs=4326), None])[1:]
+
+    def fail(_coords: np.ndarray) -> np.ndarray:
+        pytest.fail('missing rows must not invoke the callback')
+
+    result = source.map_coordinate_sequences(fail)
+    assert result.to_wkt() == [None]
+    assert result.common_coordinate_axes == source.common_coordinate_axes == 'XYM'
+    assert result.crs == source.crs

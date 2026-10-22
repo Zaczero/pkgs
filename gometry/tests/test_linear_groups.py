@@ -9,10 +9,14 @@ import numpy as np
 import pytest
 
 
-def test_numeric_groups_copy_rows_and_preserve_csr_selection_and_pickle() -> None:
-    row = np.array([0.25, 1.5, 2.75])
-    groups = gm.Groups([row, None, [], [7.25, 8.5]])
-    row[:] = 999
+def test_numeric_groups_copy_values_and_preserve_csr_selection_and_pickle() -> None:
+    values = np.array([0.25, 1.5, 2.75, 7.25, 8.5])
+    groups = gm.Groups(
+        values,
+        [0, 3, 3, 3, 5],
+        missing=[False, True, False, False],
+    )
+    values[:] = 999
     np.testing.assert_array_equal(groups.values, [0.25, 1.5, 2.75, 7.25, 8.5])
     assert not groups.values.flags.writeable
     assert not groups[0].flags.writeable
@@ -30,7 +34,7 @@ def test_array_routes_accept_distinct_explicit_station_groups() -> None:
         gm.LineString([(0, 0), (10, 0)]),
         gm.LineString([(20, 0), (24, 0)]),
     ])
-    result = lines.line_interpolate(gm.Groups([[0, 3, 10], [1.5]]))
+    result = lines.line_interpolate(gm.Groups(np.array([0, 3, 10, 1.5]), [0, 3, 4]))
     assert result[0].to_wkt() == ['POINT (0 0)', 'POINT (3 0)', 'POINT (10 0)']
     assert result[1].to_wkt() == ['POINT (21.5 0)']
 
@@ -43,7 +47,13 @@ def test_ragged_stations_follow_nullable_gathered_routes_and_empty_alignment() -
         gm.LineString([(20, 0), (30, 0)]),
         gm.LineString([(40, 0), (50, 0)]),
     ])[::-1]
-    groups = routes.line_interpolate(gm.Groups([None, [], [1, 3], [2], [0, 10]]))
+    groups = routes.line_interpolate(
+        gm.Groups(
+            np.array([1, 3, 2, 0, 10], dtype=np.int64),
+            [0, 0, 0, 2, 3, 5],
+            missing=[True, False, False, False, False],
+        )
+    )
     np.testing.assert_array_equal(groups.is_missing, [True, False, False, True, False])
     np.testing.assert_array_equal(groups.offsets, [0, 0, 0, 2, 2, 4])
     assert groups[2].to_wkt() == ['POINT EMPTY', 'POINT EMPTY']
@@ -58,7 +68,9 @@ def test_ragged_normalized_stations_preserve_zm_and_frame() -> None:
         ],
         crs=3857,
     )
-    result = routes.line_interpolate(gm.Groups([[0.25, 0.75], [0.5]]), normalized=True)
+    result = routes.line_interpolate(
+        gm.Groups(np.array([0.25, 0.75, 0.5]), [0, 2, 3]), normalized=True
+    )
     assert result.values.crs == routes.crs
     assert result[0].to_wkt() == [
         'POINT ZM (2.5 0 12.5 125)',
@@ -70,7 +82,7 @@ def test_ragged_normalized_stations_preserve_zm_and_frame() -> None:
 def test_ragged_m_stations_share_scalar_interpolation_rules() -> None:
     route = gm.from_wkt('LINESTRING ZM (0 0 10 100, 10 0 20 200)')
     result = gm.GeometryArray([route, route]).line_interpolate(
-        gm.Groups([[125, 175], [150]]), basis='m'
+        gm.Groups(np.array([125, 175, 150], dtype=np.int64), [0, 2, 3]), basis='m'
     )
     assert result[0].to_wkt() == [
         'POINT ZM (2.5 0 12.5 125)',
@@ -88,12 +100,24 @@ def test_explicit_scalar_list_and_row_aligned_numeric_at_keep_their_meaning() ->
     ]
 
 
+def test_empty_station_rank_is_explicit_and_does_not_change_result_types() -> None:
+    routes = gm.GeometryArray([])
+    flat = routes.line_interpolate([])
+    grouped = routes.line_interpolate(gm.Groups(np.array([], dtype=np.float64), [0]))
+    assert isinstance(flat, gm.GeometryArray)
+    assert isinstance(grouped, gm.Groups)
+    assert len(flat) == 0
+    assert len(grouped) == 0
+
+
 def test_ragged_station_validation_names_shape_and_row_errors() -> None:
     routes = gm.GeometryArray([gm.LineString([(0, 0), (10, 0)])])
     with pytest.raises(gm.GeometryError, match='1 groups'):
-        routes.line_interpolate(gm.Groups([[], []]))
+        routes.line_interpolate(gm.Groups(np.array([], dtype=np.float64), [0, 0, 0]))
     with pytest.raises(gm.GeometryError, match='finite') as caught:
-        routes.line_interpolate(gm.Groups([[float('nan')]]))
+        routes.line_interpolate(gm.Groups(np.array([float('nan')]), [0, 1]))
     assert any('0' in note for note in caught.value.__notes__)
     with pytest.raises(gm.GeometryError, match='normalized'):
-        routes.line_interpolate(gm.Groups([[0.5]]), basis='m', normalized=True)
+        routes.line_interpolate(
+            gm.Groups(np.array([0.5]), [0, 1]), basis='m', normalized=True
+        )

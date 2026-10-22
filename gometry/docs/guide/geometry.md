@@ -505,8 +505,11 @@ stored measure for a `Point` or a measure sequence for a `GeometryArray[Point]`;
 an array receiver accepts one measure per line row. An array receiver returns
 row-aligned points for one location per row or [`Groups`][gometry.Groups] when
 each row has its own sample count or explicit station sequence. Construct
-numeric groups with `gm.Groups([[0, 5, 10], [2, 8]])` and pass them as `at`;
+numeric groups from a flat NumPy payload and CSR offsets, for example
+`gm.Groups(np.array([0, 5, 10, 2, 8]), [0, 3, 5])`, and pass them as `at`;
 each route uses its corresponding stations, under either distance or M basis.
+Plain numeric `at` sequences remain flat, including `[]`; use `Groups` to request
+grouped output even for zero routes.
 An empty station row produces an empty group, a missing station row or route
 produces a missing group, and an empty route produces one empty point per
 station. `normalized` and `unit` belong only to the
@@ -587,6 +590,9 @@ at branching junctions. Directed merging also stops wherever a join would
 require reversing a source sequence.
 When joined endpoints share X/Y but differ in Z or M, directed merging retains
 both stored occurrences as consecutive vertices.
+Geographic endpoints also join across seam and pole aliases. Their published
+longitude spellings may change, with vertices inserted where needed to preserve
+an authored full-period edge. Inserted Z/M follow the original source arc.
 
 Use [`map_coordinates`][gometry.Geometry.map_coordinates] for one flattened,
 same-shape coordinate transform. Use
@@ -598,11 +604,14 @@ schema. Return a matrix with any number of rows and the same `D`.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
+import numpy as np
+
 line = gm.LineString([(0, 0), (2, 1), (4, 0)])
 print("segments:", line.segments().to_wkt())
 print("endpoints:", line.map_coordinate_sequences(lambda c: c[[0, -1]]).to_wkt())
 routes = gm.GeometryArray([line, line])
-samples = routes.line_interpolate(gm.Groups([[0, 1], [0.25, 0.75]]), normalized=True)
+stations = gm.Groups(np.array([0, 1, 0.25, 0.75]), [0, 2, 4])
+samples = routes.line_interpolate(stations, normalized=True)
 print("sample counts:", samples.counts.tolist())
 
 ```

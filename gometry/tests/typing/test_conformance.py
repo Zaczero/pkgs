@@ -1042,8 +1042,10 @@ def _check_linework_group_types(
     routes: gm.GeometryArray[gm.LineString],
     nullable_routes: gm.GeometryArray[gm.LineString | None],
 ) -> None:
-    stations = gm.Groups([[0.25, 0.75], [0.5]])
-    nullable_stations = gm.Groups([[0.25], None])
+    stations = gm.Groups(np.array([0.25, 0.75, 0.5], dtype=np.float64), [0, 2, 3])
+    nullable_stations = gm.Groups(
+        np.array([0.25], dtype=np.float64), [0, 1, 1], missing=[False, True]
+    )
     assert_type(stations, gm.Groups[npt.NDArray[np.float64]])
     assert_type(nullable_stations, gm.Groups[npt.NDArray[np.float64] | None])
     assert_type(stations.values, npt.NDArray[np.float64])
@@ -1068,6 +1070,30 @@ def _check_linework_group_types(
     )
     assert_type(
         routes.line_interpolate(stations, basis='m'),
+        gm.Groups[gm.GeometryArray[gm.Point]],
+    )
+
+
+def _check_groups_construction_types(
+    geometries: gm.GeometryArray[gm.Point | None],
+    cells: gm.CellArray[gm.H3Cell | None],
+    numeric: npt.NDArray[np.int64] | npt.NDArray[np.float64],
+    missing: list[bool] | None,
+) -> None:
+    integers = gm.Groups(np.array([2**53 + 1], dtype=np.int64), [0, 1])
+    assert_type(integers, gm.Groups[npt.NDArray[np.int64]])
+    assert_type(integers.values, npt.NDArray[np.int64])
+    assert_type(
+        gm.Groups(geometries, [0, 0], missing=[True]),
+        gm.Groups[gm.GeometryArray[gm.Point | None] | None],
+    )
+    assert_type(gm.Groups(cells, [0, 0]), gm.Groups[gm.CellArray[gm.H3Cell | None]])
+    assert_type(
+        gm.Groups(geometries, [0, 0], missing=missing),
+        gm.Groups[gm.GeometryArray[gm.Point | None] | None],
+    )
+    assert_type(
+        gm.GeometryArray([LINE]).line_interpolate(gm.Groups(numeric, [0, 0])),
         gm.Groups[gm.GeometryArray[gm.Point]],
     )
 

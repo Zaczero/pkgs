@@ -57,3 +57,11 @@ def test_array_segments_preserve_nullable_selected_row_alignment() -> None:
     np.testing.assert_array_equal(groups.is_missing, [False, False, True, False])
     assert groups[2] is None
     assert groups[3].to_wkt() == ['LINESTRING (1 2, 3 4)', 'LINESTRING (3 4, 5 6)']
+
+
+def test_empty_segments_retain_declared_ordinate_layout() -> None:
+    source = gm.from_wkt('LINESTRING ZM EMPTY', crs=4326)
+    assert source.segments().common_coordinate_axes == 'XYZM'
+    groups = gm.GeometryArray([None, source]).segments()
+    assert groups.values.common_coordinate_axes == 'XYZM'
+    assert groups[1].common_coordinate_axes == 'XYZM'

@@ -344,8 +344,21 @@ Some operations return **one variable-length result per input row** — spatial 
 queries against an array of probes, or multi-hit predicate scans. [`Groups`][gometry.Groups]
 stores those results in **CSR form**: a flat [`.values`][gometry.Groups.values]
 payload plus [`.offsets`][gometry.Groups.offsets] that bound each row. The
-payload keeps its actual type: an `int64` ndarray, a
+payload keeps its actual type: an `int64` or `float64` ndarray, a
 [`GeometryArray`][gometry.GeometryArray], or a [`CellArray`][gometry.CellArray].
+
+Construct reusable groups with `Groups(values, offsets)`. The flat values
+array determines the payload kind even when empty, and offsets start at zero
+and end at `len(values)`. Numeric payloads must be one-dimensional int64 or
+float64 ndarrays; integer IDs remain exact. Geometry and cell payloads keep
+their inner missing values. Use `missing=` for missing groups, whose offset
+windows must be empty. This distinguishes a missing group from a present
+group containing missing values.
+
+For example, `gm.Groups(np.array([1.0, 3.0, 5.0]), [0, 2, 2, 3])`
+represents three station groups: `[1.0, 3.0]`, `[]`, and `[5.0]`.
+Passing numeric groups to `GeometryArray.line_interpolate` samples each route
+at its own explicit stations.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

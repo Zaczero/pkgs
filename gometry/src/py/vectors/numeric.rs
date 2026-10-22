@@ -1,6 +1,10 @@
+use numpy::{
+    PyArrayDescrMethods as _, PyReadonlyArray1, PyUntypedArray, PyUntypedArrayMethods as _,
+};
 use pyo3::prelude::*;
 
-use super::{Arc, CsrBuilder, Groups, GroupsValues, ValidityMask};
+use super::{Arc, Groups, GroupsValues};
+use crate::py::numpy::reject_masked_array;
 
 impl Groups {
     pub(super) fn from_float64_csr(
@@ -16,30 +20,50 @@ impl Groups {
         })
     }
 
-    pub(super) fn from_numeric_rows(rows: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let mut builder = CsrBuilder::<f64>::with_capacity(0, 0);
-        let mut missing = Vec::new();
-        for (row, item) in rows.try_iter()?.enumerate() {
-            crate::check_python_signals(rows.py(), row)?;
-            let item = item?;
-            missing.push(item.is_none());
-            if !item.is_none() {
-                for value in item.try_iter()? {
-                    let value = value?;
-                    let value =
-                        crate::f64_scalar_named("Groups value", &value)?.ok_or_else(|| {
-                            pyo3::exceptions::PyTypeError::new_err(
-                                "Groups rows must contain numbers",
-                            )
-                        })?;
-                    builder.values_mut().push(value);
-                }
-            }
-            builder.push_end(builder.len())?;
+    pub(super) fn from_numeric_values(
+        values: &Bound<'_, PyAny>,
+        offsets: Vec<i64>,
+    ) -> PyResult<Self> {
+        reject_masked_array(values)?;
+        let array = values.cast::<PyUntypedArray>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "Groups values must be an int64 or float64 ndarray, GeometryArray, or CellArray",
+            )
+        })?;
+        let dtype = array.dtype();
+        if array.ndim() != 1 || dtype.itemsize() != 8 {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "Groups numeric values must be a one-dimensional int64 or float64 ndarray",
+            ));
         }
-        let mask = ValidityMask::from_missing_iter(missing.len(), missing);
-        let (values, offsets) = builder.finish();
-        Ok(Self::from_float64_csr(values, offsets)?.with_row_missing(mask))
+        let native_values = |name: &str| {
+            if dtype.is_native_byteorder() == Some(false) {
+                values.call_method1("astype", (name,))
+            } else {
+                Ok(values.clone())
+            }
+        };
+        match dtype.kind() {
+            b'i' => {
+                let array = native_values("int64")?;
+                let values = array.extract::<PyReadonlyArray1<'_, i64>>()?;
+                Ok(Self::from_int64_values_csr(
+                    values.as_array().iter().copied().collect(),
+                    offsets,
+                )?)
+            },
+            b'f' => {
+                let array = native_values("float64")?;
+                let values = array.extract::<PyReadonlyArray1<'_, f64>>()?;
+                Ok(Self::from_float64_csr(
+                    values.as_array().iter().copied().collect(),
+                    offsets,
+                )?)
+            },
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "Groups numeric values must have int64 or float64 dtype",
+            )),
+        }
     }
 
     pub(super) fn float64_row_slice(&self, row: usize) -> &[f64] {

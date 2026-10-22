@@ -24,6 +24,7 @@ pub(crate) struct ExpansionBudget {
     operation: &'static str,
     parameter: &'static str,
     used: usize,
+    limit: usize,
 }
 
 impl ExpansionBudget {
@@ -32,6 +33,18 @@ impl ExpansionBudget {
             operation,
             parameter,
             used: 0,
+            limit: GENERATED_ITEM_LIMIT,
+        }
+    }
+
+    /// Input-proportional publication is bounded by representable storage,
+    /// rather than by the small-control-parameter amplification ceiling.
+    pub(crate) const fn for_input(operation: &'static str, parameter: &'static str) -> Self {
+        Self {
+            operation,
+            parameter,
+            used: 0,
+            limit: usize::MAX,
         }
     }
 
@@ -97,11 +110,21 @@ impl ExpansionBudget {
     /// call this for every distinct coordinate, so a preflight cannot spend
     /// billions of iterations before discovering it exceeds the budget.
     pub(crate) fn check_additional(&self, amount: usize) -> Result<usize> {
-        Self::check(
-            self.operation,
-            self.parameter,
-            self.used.saturating_add(amount),
-        )
+        let produced = match self.used.checked_add(amount) {
+            Some(produced) => produced,
+            None if self.limit != usize::MAX => usize::MAX,
+            None => return Err(crate::error::ResourceError::SizeOverflow.into()),
+        };
+        if produced > self.limit {
+            return Err(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: self.operation,
+                parameter: self.parameter,
+                produced,
+                limit: self.limit,
+            }
+            .into());
+        }
+        Ok(produced)
     }
 
     #[cfg(test)]
@@ -147,6 +170,19 @@ mod tests {
                 produced: usize::MAX,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn input_proportional_publication_has_no_parameter_amplification_limit() {
+        let mut budget = ExpansionBudget::for_input("line_merge", "source edges");
+        assert_eq!(
+            budget.add(GENERATED_ITEM_LIMIT.wrapping_add(1)).unwrap(),
+            GENERATED_ITEM_LIMIT.wrapping_add(1),
+        );
+        assert!(matches!(
+            budget.check_additional(usize::MAX).unwrap_err().kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow),
         ));
     }
 

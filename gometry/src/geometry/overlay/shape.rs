@@ -212,10 +212,10 @@ impl Shape {
         directed: bool,
     ) -> Result<Self> {
         let lineal = self.lineal().ok_or(GeometryErrorKind::LinealRequired)?;
-        if !directed && let TopologyDomain::Geographic(frame) = context.domain() {
+        if let TopologyDomain::Geographic(frame) = context.domain() {
             return match lineal {
                 Lineal::MultiLineString(lines) => {
-                    line_merge_geographic(self, lines, frame, context)
+                    line_merge_geographic(self, lines, frame, context, directed)
                 },
                 Lineal::LineString(_) | Lineal::Empty => Ok(self.clone()),
             };
@@ -312,7 +312,11 @@ fn line_merge_geographic(
     lines: &crate::geometry::MultiLineString,
     frame: crate::geographic::GeographicFrame,
     context: &SourceArcContext<'_, '_>,
+    directed: bool,
 ) -> Result<Shape> {
+    if directed {
+        return super::line_merge::directed_geographic_line_merge(input, lines, frame, context);
+    }
     if !input.has_z() && !input.has_m() {
         let chains = merge_chains(lines)?;
         return Ok(if chains.is_empty() {

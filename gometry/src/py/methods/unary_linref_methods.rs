@@ -46,6 +46,8 @@ at : float or sequence of float, optional
     locations per route, for either basis. Group count must match array length.
     Empty station groups produce empty point groups; missing routes or station
     groups produce missing groups. Empty routes yield one empty point per station.
+    A plain numeric sequence stays flat, including an empty sequence; only
+    ``Groups`` selects per-route groups.
 
 ";
     scalar: (r"

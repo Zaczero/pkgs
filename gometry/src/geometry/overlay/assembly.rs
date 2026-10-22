@@ -1,16 +1,16 @@
 use super::ChainOrigins;
-use crate::geometry::{CoordSeq, CoordSeqBuilder, HashMap, PointKey};
+use crate::geometry::{CoordSeq, CoordSeqBuilder, HashMap, Point, PointKey};
 
 fn extend_chain(
     edge: &CoordSeq,
-    from: PointKey,
+    forward: bool,
     skip: usize,
     edge_index: usize,
     chain_index: usize,
     out: &mut CoordSeqBuilder,
     record_origin: &mut impl FnMut(usize, usize, usize),
 ) {
-    if PointKey::new(edge.first().expect("edge has >= 2 vertices")) == from {
+    if forward {
         out.extend_window(edge, skip..edge.len());
         for vertex in skip..edge.len() {
             record_origin(chain_index, edge_index, vertex);
@@ -34,7 +34,7 @@ fn extend_chain(
 /// map lookup per edge end and no per-node allocation, which is what an
 /// overlay of thousands of atomic segments spends its time on otherwise.
 pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Result<Vec<CoordSeq>> {
-    merge_chains_impl(edges, false, &mut |_, _, _| {})
+    merge_chains_impl(edges, false, PointKey::new, &mut |_, _, _| {})
 }
 
 /// Merge chains while retaining the input vertex occurrence that emitted each
@@ -43,8 +43,23 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
 pub(crate) fn merge_chains_with_origins<E: AsRef<CoordSeq>>(
     edges: &[E],
 ) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
+    merge_chains_with_key_and_origins(edges, false, PointKey::new)
+}
+
+pub(in crate::geometry) fn merge_directed_geographic_chains<E: AsRef<CoordSeq>>(
+    edges: &[E],
+    frame: crate::geographic::GeographicFrame,
+) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
+    merge_chains_with_key_and_origins(edges, true, |point| frame.quotient_vertex(point.x, point.y))
+}
+
+fn merge_chains_with_key_and_origins<E: AsRef<CoordSeq>, K: Copy + Eq + std::hash::Hash>(
+    edges: &[E],
+    directed: bool,
+    key_of: impl Fn(Point) -> K,
+) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
     let mut origins = Vec::with_capacity(edges.len());
-    let chains = merge_chains_impl(edges, false, &mut |chain, edge, vertex| {
+    let chains = merge_chains_impl(edges, directed, key_of, &mut |chain, edge, vertex| {
         while origins.len() <= chain {
             origins.push(Vec::new());
         }
@@ -60,37 +75,35 @@ pub(crate) fn merge_line_chains<E: AsRef<CoordSeq>>(
     edges: &[E],
     directed: bool,
 ) -> crate::error::Result<Vec<CoordSeq>> {
-    merge_chains_impl(edges, directed, &mut |_, _, _| {})
+    merge_chains_impl(edges, directed, PointKey::new, &mut |_, _, _| {})
 }
 
 #[expect(
     clippy::indexing_slicing,
     reason = "dense endpoint IDs, aligned live/node columns, checked CSR totals, and CSR-row traversal bound every lookup"
 )]
-fn merge_chains_impl<E: AsRef<CoordSeq>>(
+fn merge_chains_impl<E: AsRef<CoordSeq>, K: Copy + Eq + std::hash::Hash>(
     edges: &[E],
     directed: bool,
+    key_of: impl Fn(Point) -> K,
     record_origin: &mut impl FnMut(usize, usize, usize),
 ) -> crate::error::Result<Vec<CoordSeq>> {
-    let mut ends: Vec<[PointKey; 2]> = Vec::with_capacity(edges.len());
+    let mut ends: Vec<[K; 2]> = Vec::with_capacity(edges.len());
     let mut live: Vec<usize> = Vec::with_capacity(edges.len());
     for (index, edge) in edges.iter().enumerate() {
         let edge = edge.as_ref();
         let mut points = edge.iter();
-        let Some(first) = points.next().map(PointKey::new) else {
+        let Some(first) = points.next().map(&key_of) else {
             continue;
         };
-        if (directed && edge.len() >= 2) || points.any(|point| PointKey::new(point) != first) {
-            ends.push([
-                first,
-                PointKey::new(edge.last().expect("edge has >= 2 vertices")),
-            ]);
+        if (directed && edge.len() >= 2) || points.any(|point| key_of(point) != first) {
+            ends.push([first, key_of(edge.last().expect("edge has >= 2 vertices"))]);
             live.push(index);
         }
     }
     if live.len() <= 1 {
         let mut result = Vec::with_capacity(live.len());
-        for (chain_index, (index, [start, _])) in live.into_iter().zip(ends).enumerate() {
+        for (chain_index, index) in live.into_iter().enumerate() {
             let edge = edges
                 .get(index)
                 .expect("live edge ordinal comes from the input edges")
@@ -98,7 +111,7 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
             let mut coords = CoordSeqBuilder::with_capacity(edge.axes(), edge.len());
             extend_chain(
                 edge,
-                start,
+                true,
                 0,
                 index,
                 chain_index,
@@ -109,7 +122,7 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         }
         return Ok(result);
     }
-    let mut node_of: HashMap<PointKey, u32> =
+    let mut node_of: HashMap<K, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     node_of.reserve(ends.len());
     let mut degree: Vec<u32> = Vec::new();
@@ -136,6 +149,7 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         node_ends.push(ids);
     }
     drop(node_of);
+    drop(ends);
     let offset_capacity = degree.len().wrapping_add(1);
     let mut offsets: Vec<u32> = Vec::with_capacity(offset_capacity);
     offsets.push(0);
@@ -169,8 +183,8 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         &slots[*start as usize..*end as usize]
     };
 
-    let mut used = vec![false; ends.len()];
-    let mut chains: Vec<CoordSeq> = Vec::with_capacity(ends.len());
+    let mut used = vec![false; node_ends.len()];
+    let mut chains: Vec<CoordSeq> = Vec::with_capacity(node_ends.len());
     let mut walk = |seed: usize,
                     mut from: u32,
                     chain_index: usize,
@@ -189,22 +203,12 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         loop {
             used[edge] = true;
             let [a, b] = node_ends[edge];
-            let [start_key, end_key] = ends[edge];
-            let from_key = if a == from { start_key } else { end_key };
             let source = edges[live[edge]].as_ref();
-            let skip = usize::from(
-                coords.len() != 0
-                    && (!directed
-                        || previous_end.is_some_and(|previous| {
-                            crate::geometry::same_active_position(
-                                previous,
-                                source.first().expect("live edge has at least two vertices"),
-                            )
-                        })),
-            );
+            let skip =
+                usize::from(coords.len() != 0 && (!directed || previous_end == source.first()));
             extend_chain(
                 source,
-                from_key,
+                a == from,
                 skip,
                 live[edge],
                 chain_index,

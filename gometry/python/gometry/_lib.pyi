@@ -170,6 +170,13 @@ _GroupPayloadT = TypeVar(
     '_GroupPayloadT',
     bound=np.ndarray[Any, Any] | GeometryArray[Any] | CellArray[Any],
 )
+_GroupValuesT = TypeVar(
+    '_GroupValuesT',
+    bound=npt.NDArray[np.int64]
+    | npt.NDArray[np.float64]
+    | GeometryArray[Any]
+    | CellArray[Any],
+)
 
 __version__: Final[str]
 
@@ -2239,6 +2246,9 @@ class Geometry:
             Join only source ends to source starts without reversing any source
             coordinate sequence. Both modes stop at branching junctions.
             Distinct Z/M values at a join retain both source endpoint occurrences.
+            Geographic seam and pole aliases join by frame identity. Publication
+            retains source full-period edges and carries inserted Z/M by source
+            arclength, even when longitude spellings change.
 
         Returns
         -------
@@ -8758,6 +8768,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Join only source ends to source starts without reversing any source
             coordinate sequence. Both modes stop at branching junctions.
             Distinct Z/M values at a join retain both source endpoint occurrences.
+            Geographic seam and pole aliases join by frame identity. Publication
+            retains source full-period edges and carries inserted Z/M by source
+            arclength, even when longitude spellings change.
 
         Returns
         -------
@@ -9582,7 +9595,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry],
-        at: Groups[npt.NDArray[np.float64]] | Groups[npt.NDArray[np.int64]],
+        at: Groups[npt.NDArray[np.float64] | npt.NDArray[np.int64]],
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -9592,8 +9605,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry | None],
-        at: Groups[npt.NDArray[np.float64] | None]
-        | Groups[npt.NDArray[np.int64] | None],
+        at: Groups[npt.NDArray[np.float64] | npt.NDArray[np.int64] | None],
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -9603,7 +9615,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry],
-        at: Groups[npt.NDArray[np.float64]] | Groups[npt.NDArray[np.int64]],
+        at: Groups[npt.NDArray[np.float64] | npt.NDArray[np.int64]],
         *,
         basis: Literal['m'],
         count: None = None,
@@ -9613,8 +9625,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry | None],
-        at: Groups[npt.NDArray[np.float64] | None]
-        | Groups[npt.NDArray[np.int64] | None],
+        at: Groups[npt.NDArray[np.float64] | npt.NDArray[np.int64] | None],
         *,
         basis: Literal['m'],
         count: None = None,
@@ -11752,14 +11763,26 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
     @overload
     def __new__(
         cls,
-        rows: Iterable[_FloatColumn1D],
-    ) -> Groups[npt.NDArray[np.float64]]: ...
+        values: _GroupValuesT,
+        offsets: _IntArray1D | Iterable[_IntScalar],
+        *,
+        missing: None = None,
+    ) -> Groups[_GroupValuesT]: ...
     @overload
     def __new__(
         cls,
-        rows: Iterable[_FloatColumn1D | None],
-    ) -> Groups[npt.NDArray[np.float64] | None]:
-        """Build numeric groups from iterable rows; empty and missing stay distinct."""
+        values: _GroupValuesT,
+        offsets: _IntArray1D | Iterable[_IntScalar],
+        *,
+        missing: _BoolArray1D | _BoolLane | None,
+    ) -> Groups[_GroupValuesT | None]:
+        """Group a flat typed payload using CSR offsets and optional missing rows.
+
+        Numeric values must be one-dimensional int64 or float64 ndarrays.
+        GeometryArray and CellArray retain their types and inner validity.
+        Offsets start at zero and end at len(values). Missing groups have empty
+        values windows. Integer payloads remain exact integers.
+        """
     values: _GroupsValuesProjection
     """The logical flat payload window (numeric ndarray, `GeometryArray`, or
     `CellArray`), with values in group order. A contiguous source window

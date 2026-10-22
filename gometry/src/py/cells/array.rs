@@ -235,7 +235,7 @@ impl PyCellArray {
         }
     }
 
-    fn select_logical_rows(&self, rows: impl IntoIterator<Item = usize>) -> Self {
+    pub(crate) fn select_logical_rows(&self, rows: impl IntoIterator<Item = usize>) -> Self {
         self.with_selection(row_selection_from_logical_rows(
             self.selection_ref(),
             self.storage.ids.len(),

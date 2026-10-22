@@ -165,7 +165,7 @@ enum GroupsNeedle {
 
 enum GroupsPicklePayload {
     Int64(Vec<i64>),
-    Float64(Vec<Option<Vec<f64>>>),
+    Float64(Vec<f64>),
     Geometry(PyGeometryArray),
     Cells(PyCellArray),
 }
@@ -310,34 +310,24 @@ impl Groups {
                 })
             },
             GroupsValues::Geometry(values) => {
-                debug_assert!(
-                    !values.has_missing(),
-                    "Groups geometry values are compact present rows, never masked"
-                );
-                let mut builder = CsrBuilder::<Shape>::with_capacity(value_count, count);
+                let mut builder = CsrBuilder::<usize>::with_capacity(value_count, count);
                 for row in rows {
-                    let row_values = values
-                        .gather_logical_row_range(Self::row_values_window_at(offsets, row))?;
-                    for shape in row_values.storage().iter_shapes() {
-                        builder.values_mut().push(shape?.into_owned());
-                    }
-                    let end = builder.len();
-                    builder.push_end(end)?;
+                    builder.push_row(Self::row_values_window_at(offsets, row))?;
                 }
-                let (shapes, offsets) = builder.finish();
-                let flat = PyGeometryArray::from_shapes(shapes, values.frame.clone())?;
+                let (indices, offsets) = builder.finish();
+                let flat = values.gather_logical_rows(&indices)?;
                 Ok(Self::from_geometry_csr(flat, offsets)?.with_row_missing(missing))
             },
             GroupsValues::Cells(values) => {
-                let kind = values.kind();
-                let mut builder = CsrBuilder::<u64>::with_capacity(value_count, count);
+                let mut builder = CsrBuilder::<usize>::with_capacity(value_count, count);
                 for row in rows {
-                    let row_values =
-                        values.logical_row_range(Self::row_values_window_at(offsets, row));
-                    builder.push_row(row_values.logical_ids())?;
+                    builder.push_row(Self::row_values_window_at(offsets, row))?;
                 }
-                let (ids, offsets) = builder.finish();
-                Self::from_cell_flat(kind, ids, offsets, missing)
+                let (indices, offsets) = builder.finish();
+                Ok(
+                    Self::from_cell_csr(values.select_logical_rows(indices), offsets)?
+                        .with_row_missing(missing),
+                )
             },
         }
     }
@@ -648,18 +638,36 @@ pub(crate) use iter::GroupsIter;
 
 #[pymethods]
 impl Groups {
-    /// Build numeric groups from an iterable of numeric rows or ``None``.
+    /// Group a flat typed values array using CSR row boundaries.
     ///
-    /// Values are stored as float64; empty rows and missing rows stay distinct.
-    /// Grouping operations also return integer, geometry, and cell groups.
+    /// The values kind is explicit even when empty. Numeric values are copied,
+    /// retaining int64 versus float64; geometry and cell arrays share immutable
+    /// storage. Integer values remain exact int64 values.
     ///
     /// Parameters
     /// ----------
-    /// rows : iterable of iterable of float or None
-    ///     Numeric rows, copied into immutable shared CSR storage.
+    /// values : numpy.ndarray, GeometryArray, or CellArray
+    ///     Flat payload. Numeric arrays must be one-dimensional int64 or float64.
+    /// offsets : iterable of int
+    ///     Nondecreasing boundaries, starting at zero and ending at len(values).
+    /// missing : iterable of bool, optional
+    ///     One flag per group. Missing groups must have empty values windows.
     #[new]
-    fn new(rows: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Self::from_numeric_rows(rows)
+    #[pyo3(signature = (values, offsets, *, missing = None))]
+    fn new(
+        values: &Bound<'_, PyAny>,
+        offsets: &Bound<'_, PyAny>,
+        missing: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let offsets = crate::collect_i64_sequence(offsets, "Groups offsets")?;
+        let groups = if let Ok(values) = values.cast::<PyGeometryArray>() {
+            Self::from_geometry_csr(values.get().clone(), offsets)?
+        } else if let Ok(values) = values.cast::<PyCellArray>() {
+            Self::from_cell_csr(values.get().clone(), offsets)?
+        } else {
+            Self::from_numeric_values(values, offsets)?
+        };
+        restore_group_missing(groups, missing)
     }
 
     // Sequences compare by value; like lists, they do not hash.
@@ -1331,7 +1339,12 @@ impl Groups {
                     .collect::<Vec<_>>()
             });
             let payload = match &self.values {
-                GroupsValues::Float64(_) => GroupsPicklePayload::Float64(self.numeric_rows()),
+                GroupsValues::Float64(values) => GroupsPicklePayload::Float64(
+                    values
+                        .get(start..end)
+                        .expect("admitted float Groups window")
+                        .to_vec(),
+                ),
                 GroupsValues::Int64(values) => GroupsPicklePayload::Int64(
                     values
                         .get(start..end)
@@ -1358,9 +1371,11 @@ impl Groups {
             Ok::<_, crate::error::Error>((payload, rebased, missing))
         })?;
         match payload {
-            GroupsPicklePayload::Float64(rows) => Ok((
-                module.getattr(pyo3::intern!(py, "Groups"))?.unbind(),
-                (rows,).into_py_any(py)?,
+            GroupsPicklePayload::Float64(values) => Ok((
+                module
+                    .getattr(pyo3::intern!(py, "_unpickle_float64_groups_v1"))?
+                    .unbind(),
+                (values, rebased, missing).into_py_any(py)?,
             )),
             GroupsPicklePayload::Int64(values) => {
                 let args = (values, rebased, missing).into_py_any(py)?;
@@ -1408,6 +1423,21 @@ pub(crate) fn _unpickle_int64_groups_v1(
     let offsets = crate::collect_i64_sequence(offsets, "Groups pickle offsets")?;
     let groups = Groups::from_int64_values_csr(ids, offsets)?;
     restore_group_missing(groups, missing)
+}
+
+#[expect(
+    clippy::used_underscore_items,
+    reason = "pickle stores this module-private entry point as its first public wire revision"
+)]
+#[pyfunction]
+#[pyo3(signature = (values, offsets, missing = None))]
+pub(crate) fn _unpickle_float64_groups_v1(
+    values: Vec<f64>,
+    offsets: &Bound<'_, PyAny>,
+    missing: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Groups> {
+    let offsets = crate::collect_i64_sequence(offsets, "Groups pickle offsets")?;
+    restore_group_missing(Groups::from_float64_csr(values, offsets)?, missing)
 }
 
 #[expect(
@@ -1463,6 +1493,15 @@ fn restore_group_missing(groups: Groups, missing: Option<&Bound<'_, PyAny>>) -> 
     }
     let len = groups.rows.len();
     let mask = crate::collect_bool_mask(missing, len)?;
+    if mask
+        .iter()
+        .enumerate()
+        .any(|(row, &missing)| missing && !groups.row_values_window(row).is_empty())
+    {
+        return Err(PyValueError::new_err(
+            "missing Groups rows must have empty values windows",
+        ));
+    }
     Ok(groups.with_row_missing(ValidityMask::from_vec(len, mask)))
 }
 
@@ -1576,6 +1615,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Groups>()?;
     module.add_class::<GroupsIter>()?;
     module.add_function(wrap_pyfunction!(_unpickle_int64_groups_v1, module)?)?;
+    module.add_function(wrap_pyfunction!(_unpickle_float64_groups_v1, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_geometry_groups_v1, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_cell_groups_v1, module)?)?;
     Ok(())

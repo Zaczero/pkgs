@@ -1,5 +1,6 @@
 use crate::Shape;
 use crate::dispatch::kernels;
+use crate::geometry::{CoordSeq, CoordinateAxes, CsrOffsetColumn};
 use crate::py::classes::coordinate_methods::map_coordinate_sequence_callback;
 use crate::py::methods::unary_constructive_methods::{
     Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
@@ -48,6 +49,13 @@ impl PyGeometry {
     /// GeometryArray[LineString]
     pub fn segments(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let segments = py.detach(|| self.shape.segments())?;
+        if segments.is_empty() {
+            return Ok(PyGeometryArray::packed_lines(
+                CoordSeq::empty(self.shape.axes()),
+                CsrOffsetColumn::try_new(vec![0], 0)?,
+                self.frame.clone(),
+            )?);
+        }
         Ok(PyGeometryArray::from_shapes(segments, self.frame.clone())?)
     }
 
@@ -135,6 +143,16 @@ impl PyGeometryArray {
             }
             Ok(builder)
         })?;
+        if builder.len() == 0 {
+            let (_, offsets) = builder.finish();
+            return Ok(Groups::from_packed_line_groups(
+                self.frame.clone(),
+                CoordSeq::empty(self.uniform_axes().unwrap_or(CoordinateAxes::XY)),
+                CsrOffsetColumn::try_new(vec![0], 0)?,
+                offsets,
+                self.missing().cloned(),
+            )?);
+        }
         Ok(Groups::from_geometry_builder(
             self.frame.clone(),
             builder,
@@ -163,6 +181,9 @@ impl PyGeometryArray {
         py: Python<'_>,
         func: &pyo3::Bound<'_, PyAny>,
     ) -> PyResult<Self> {
+        if self.len() == 0 || self.missing().is_some_and(|mask| mask.present_count() == 0) {
+            return Ok(self.clone());
+        }
         self.map_shapes_attached(|shape, row| {
             crate::check_python_signals(py, row)?;
             shape.try_map_coordinate_sequences(&mut |coords| {

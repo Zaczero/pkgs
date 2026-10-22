@@ -349,6 +349,9 @@ With ``directed=True``, join only a source end to a source start: no component's
 coordinate order is reversed.
 Directed merging keeps active-distinct endpoint occurrences at a join, so
 different Z/M values at the same X/Y are retained as consecutive vertices.
+Geographic endpoints use seam and pole identity. Joining source aliases may
+canonicalize their longitude spelling and insert vertices to retain authored
+full-period edges; inserted Z/M follow original-source arclength.
 
 Parameters
 ----------
