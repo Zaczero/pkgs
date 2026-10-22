@@ -100,7 +100,9 @@ WRONG_LENGTH_CASES: list[WrongLength] = [
     ),
     (
         'maximum_inscribed_circle',
-        lambda: _three_boxes().maximum_inscribed_circle(tolerance=[0.1, 0.2]),
+        lambda: (
+            _three_boxes().maximum_inscribed_circle(tolerance=[0.1, 0.2]).to_polygon()
+        ),
         'tolerance must be a float or a length-3',
     ),
 ]
@@ -222,15 +224,25 @@ NON_FINITE_CASES: list[NonFinite] = [
     ),
     (
         'maximum_inscribed_circle_nan',
-        lambda: _three_boxes()[0].maximum_inscribed_circle(tolerance=NAN),
-        lambda: _three_boxes().maximum_inscribed_circle(tolerance=[0.1, NAN, 0.2]),
+        lambda: _three_boxes()[0].maximum_inscribed_circle(tolerance=NAN).to_polygon(),
+        lambda: (
+            _three_boxes()
+            .maximum_inscribed_circle(tolerance=[0.1, NAN, 0.2])
+            .to_polygon()
+        ),
         'tolerance must be a positive finite number, got NaN',
         gm.GeometryError,
     ),
     (
         'maximum_inscribed_circle_inf',
-        lambda: _three_boxes()[0].maximum_inscribed_circle(tolerance=POS_INF),
-        lambda: _three_boxes().maximum_inscribed_circle(tolerance=[0.1, POS_INF, 0.2]),
+        lambda: (
+            _three_boxes()[0].maximum_inscribed_circle(tolerance=POS_INF).to_polygon()
+        ),
+        lambda: (
+            _three_boxes()
+            .maximum_inscribed_circle(tolerance=[0.1, POS_INF, 0.2])
+            .to_polygon()
+        ),
         'tolerance must be a positive finite number, got inf',
         gm.GeometryError,
     ),
@@ -311,8 +323,12 @@ NEGATIVE_CASES: list[NegativeInvalid] = [
     ),
     (
         'maximum_inscribed_circle',
-        lambda: _three_boxes()[0].maximum_inscribed_circle(tolerance=-0.1),
-        lambda: _three_boxes().maximum_inscribed_circle(tolerance=[-0.1, 0.1, 0.1]),
+        lambda: _three_boxes()[0].maximum_inscribed_circle(tolerance=-0.1).to_polygon(),
+        lambda: (
+            _three_boxes()
+            .maximum_inscribed_circle(tolerance=[-0.1, 0.1, 0.1])
+            .to_polygon()
+        ),
         'tolerance must be a positive finite number',
     ),
     (
@@ -383,7 +399,7 @@ def test_boundary_valid_values_still_work() -> None:
     assert len(mps.concave_hull(concavity=0.0, length_threshold=0.0)) == 3
     # polylabel/mic require positive tolerance
     assert len(boxes.polylabel(tolerance=1e-3)) == 3
-    assert len(boxes.maximum_inscribed_circle(tolerance=1e-3)) == 3
+    assert len(boxes.maximum_inscribed_circle(tolerance=1e-3).to_polygon()) == 3
     assert len(lines.line_interpolate(count=1)) == 3
     # ndarray path for a representative vector param
     out = lines.offset_curve(np.array([1.0, 2.0, 3.0]))

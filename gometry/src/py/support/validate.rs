@@ -23,24 +23,24 @@ pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
     }
 }
 
-pub(crate) fn validate_buffer_quadrant_segments(quadrant_segments: i64) -> PyResult<NonZeroU32> {
+pub(crate) fn validate_quadrant_segments(quadrant_segments: i64) -> PyResult<NonZeroU32> {
     if quadrant_segments <= 0 {
         return Err(integer_parameter_error(
-            "buffer quadrant_segments must be at least 1",
+            "quadrant_segments must be at least 1",
             "quadrant_segments",
             quadrant_segments,
         ));
     }
     let n = u32::try_from(quadrant_segments).map_err(|_| {
         integer_parameter_error(
-            "buffer quadrant_segments is too large",
+            "quadrant_segments is too large",
             "quadrant_segments",
             quadrant_segments,
         )
     })?;
     NonZeroU32::new(n).ok_or_else(|| {
         integer_parameter_error(
-            "buffer quadrant_segments must be at least 1",
+            "quadrant_segments must be at least 1",
             "quadrant_segments",
             quadrant_segments,
         )

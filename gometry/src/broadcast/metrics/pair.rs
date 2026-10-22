@@ -21,9 +21,7 @@ mod points;
 mod resolve;
 mod similarity;
 
-pub(crate) use clearance::{
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-};
+pub(crate) use clearance::{metric_minimum_clearance, metric_minimum_clearance_line};
 pub(crate) use distance::{
     metric_nearest_points_resolved, metric_shortest_line_resolved, pair_distance_geodesic,
     pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,

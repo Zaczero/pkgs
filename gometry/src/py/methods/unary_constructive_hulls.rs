@@ -41,17 +41,10 @@ unary_shape_method!(
     tolerance_unit
 );
 unary_shape_method!(
-    maximum_inscribed_circle,
-    (Metric MaximumInscribedCircle),
-    doc_maximum_inscribed_circle,
-    kernels::unary_maximum_inscribed_circle,
-    tolerance_unit
-);
-unary_shape_method!(
-    minimum_bounding_radius,
-    (Metric MinimumBoundingRadius),
-    doc_minimum_bounding_radius,
-    kernels::unary_minimum_bounding_radius,
+    minimum_width,
+    (Metric MinimumWidth),
+    doc_minimum_width,
+    kernels::unary_minimum_width,
     f64_unit
 );
 unary_shape_method!(
@@ -107,28 +100,29 @@ impl PyGeometry {
             move |data, ctx| kernels::unary_concave_hull(data, ctx, &concavity, &length_threshold)
         )
     }
-    #[doc = doc_maximum_inscribed_radius!(scalar)]
+    #[doc = doc_maximum_inscribed_circle!(scalar)]
     #[pyo3(
         signature = (*, tolerance = None, unit = None),
         text_signature = "($self, *, tolerance=None, unit=None)"
     )]
-    pub fn maximum_inscribed_radius(
+    pub fn maximum_inscribed_circle(
         &self,
         py: Python<'_>,
         tolerance: Option<&Bound<'_, PyAny>>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<f64> {
+    ) -> PyResult<Py<PyAny>> {
         let tolerance = tolerance
             .map(|value| F64Param::parse(value, "tolerance", unary_len!(scalar)))
             .transpose()?;
-        unary_spine_f64!(
+        let circle = unary_spine_f64!(
             scalar,
             py,
             self,
-            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
+            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedCircle),
             unit,
-            move |data, ctx| kernels::unary_maximum_inscribed_radius(data, ctx, tolerance.as_ref())
-        )
+            move |data, ctx| kernels::unary_circle(data, ctx, tolerance.as_ref(), true, unit)
+        )?;
+        crate::broadcast::BulkElement::into_py(circle, py, &self.frame)
     }
     #[doc = doc_minimum_bounding_circle!(scalar)]
     #[pyo3(signature = (*, unit = None))]
@@ -136,16 +130,16 @@ impl PyGeometry {
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<crate::Typed> {
-        unary_spine_shapes!(
+    ) -> PyResult<Py<PyAny>> {
+        let circle = unary_spine_f64!(
             scalar,
             py,
             self,
             crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
-            default,
-            kernels::unary_minimum_bounding_circle
-        )
+            move |data, ctx| kernels::unary_circle(data, ctx, None, false, unit)
+        )?;
+        crate::broadcast::BulkElement::into_py(circle, py, &self.frame)
     }
     #[doc = doc_minimum_rotated_rectangle!(scalar)]
     pub fn minimum_rotated_rectangle(&self, py: Python<'_>) -> PyResult<crate::Typed> {
@@ -190,12 +184,12 @@ impl PyGeometryArray {
             move |data, ctx| kernels::unary_concave_hull(data, ctx, &concavity, &length_threshold)
         )
     }
-    #[doc = doc_maximum_inscribed_radius!(array)]
+    #[doc = doc_maximum_inscribed_circle!(array)]
     #[pyo3(
         signature = (*, tolerance = None, unit = None),
         text_signature = "($self, *, tolerance=None, unit=None)"
     )]
-    pub fn maximum_inscribed_radius(
+    pub fn maximum_inscribed_circle(
         &self,
         py: Python<'_>,
         tolerance: Option<&Bound<'_, PyAny>>,
@@ -208,9 +202,9 @@ impl PyGeometryArray {
             array,
             py,
             self,
-            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
+            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedCircle),
             unit,
-            move |data, ctx| kernels::unary_maximum_inscribed_radius(data, ctx, tolerance.as_ref())
+            move |data, ctx| kernels::unary_circle(data, ctx, tolerance.as_ref(), true, unit)
         )
     }
     #[doc = doc_minimum_bounding_circle!(array)]
@@ -219,15 +213,14 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
-        unary_spine_shapes!(
+    ) -> PyResult<Py<PyAny>> {
+        unary_spine_f64!(
             array,
             py,
             self,
             crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
-            default,
-            kernels::unary_minimum_bounding_circle
+            move |data, ctx| kernels::unary_circle(data, ctx, None, false, unit)
         )
     }
     #[doc = doc_minimum_rotated_rectangle!(array)]

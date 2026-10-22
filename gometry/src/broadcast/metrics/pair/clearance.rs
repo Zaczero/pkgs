@@ -118,45 +118,6 @@ pub(crate) fn metric_minimum_clearance(
     )
 }
 
-/// CRS-aware maximum inscribed radius — the maximum-clearance
-/// center-to-boundary distance, measured in the geometry's best local
-/// projection on a geographic CRS (a near-isometric frame) or in the active
-/// planar unit on a projected/planar one. The metric twin of the (metric)
-/// `maximum_inscribed_circle`, so the radius matches the disk.
-pub(crate) fn metric_maximum_inscribed_radius(
-    model: &crs::MetricModel,
-    crs: Option<&str>,
-    shape: &Shape,
-    tolerance: Option<f64>,
-) -> crate::error::Result<f64> {
-    dispatch_metric_model(
-        model,
-        |to_metre| shape.maximum_inscribed_radius_in_scale(tolerance, to_metre),
-        |_, _, state| {
-            let source = crs.unwrap_or("EPSG:4326");
-            let mut budget = crate::geometry::ExpansionBudget::new(
-                "maximum_inscribed_radius",
-                "input_refinement",
-            );
-            let Some(prepared) = PreparedLocalInput::prepare(
-                shape,
-                &[shape],
-                source,
-                None,
-                LocalInputPurpose::BoundarySupport,
-                state,
-                &mut budget,
-            )?
-            else {
-                return Ok(f64::NAN);
-            };
-            prepared
-                .projected_working()
-                .maximum_inscribed_radius_in_frame(tolerance)
-        },
-    )
-}
-
 #[cfg(test)]
 mod minimum_clearance_computed_edge_tests {
     use geographiclib_rs::InverseGeodesic as _;

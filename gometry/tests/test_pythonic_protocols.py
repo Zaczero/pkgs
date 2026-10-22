@@ -1588,7 +1588,9 @@ def test_untested_accessors_report_their_values() -> None:
     index = gm.SpatialIndex(gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)]))
     assert repr(index) == '<SpatialIndex len=2>'
     assert list(index) == [0, 1]
-    radii = gm.GeometryArray([gm.box(0, 0, 2, 2), None]).maximum_inscribed_radius()
+    radii = (
+        gm.GeometryArray([gm.box(0, 0, 2, 2), None]).maximum_inscribed_circle().radius
+    )
     assert radii[0] == 1.0
     assert math.isnan(radii[1])
     assert repr(gm.CRS(4326)) == 'CRS("EPSG:4326")'

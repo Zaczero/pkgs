@@ -25,8 +25,8 @@ use crate::geometry::ShapeCountQuery;
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
 const LOCAL_CRS_DISPLAY_NAME: &str = "Local conformal CRS";
 
-#[derive(Debug)]
-pub(super) struct LocalCrsDefinition {
+#[derive(Clone, Debug)]
+pub(crate) struct LocalCrsDefinition {
     pub(super) definition: String,
     pub(super) display_name: Option<&'static str>,
     pub(super) projected_pole: Option<(f64, f64)>,

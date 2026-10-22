@@ -196,6 +196,7 @@ pub(super) fn inradius_carrier_enclosure(
     Ok(best)
 }
 
+#[cfg(test)]
 impl DirectedOptimizationResult {
     pub(in crate::geometry) const fn center(&self) -> Point {
         self.center
@@ -498,15 +499,16 @@ pub(crate) fn directed_inradius_scaled(
     }
     let target = source.boundary_clone()?;
     // Boundary incidence is only needed while constructing the independent
-    // boundary view. The directed result keeps the source support for final
-    // containment, but that path reads its spans/faces/index, not these flags.
+    // boundary view, not during the directed search.
     source.boundary_spans = None;
     source.boundary_points = None;
     let candidate = run_directed(&source, &target, &mut context)?;
     Ok(Some(DirectedOptimizationResult {
         center: candidate.center,
         center_squared: candidate.center_squared,
+        #[cfg(test)]
         source,
+        #[cfg(test)]
         boundary: target,
     }))
 }

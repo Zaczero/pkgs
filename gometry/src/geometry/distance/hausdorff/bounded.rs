@@ -227,10 +227,11 @@ struct DirectedCandidateProof {
 pub(crate) struct DirectedOptimizationResult {
     pub(in crate::geometry) center: Point,
     pub(in crate::geometry) center_squared: Rational,
-    // The directed search owns both prepared views so the rounded-center
-    // recomputation and certified polygon emission cannot rebuild a different
-    // partition or boundary.
+    // Native certificate tests also exercise source-based polygon publication.
+    // Production results retain only the center and its exact clearance disk.
+    #[cfg(test)]
     source: PreparedSupport,
+    #[cfg(test)]
     boundary: PreparedSupport,
 }
 

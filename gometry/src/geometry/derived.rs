@@ -3,10 +3,12 @@
 //! inaccessibility.
 
 mod centroid;
+mod circle;
 mod concave;
 mod hull;
 mod minimum_circle;
 mod minimum_rectangle;
+mod minimum_width;
 mod polylabel;
 mod shape;
 mod surface;
@@ -17,6 +19,7 @@ pub(crate) use centroid::{
     centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, lineal_centroid,
     point_centroid, point_set_center_summary,
 };
+pub(crate) use circle::CircleSolution;
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
 pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_chart_hull, monotone_chain_hull, shape_from_open_hull,
@@ -24,6 +27,7 @@ pub(crate) use hull::{
 };
 pub(crate) use minimum_circle::{emit_minimum_bounding_circle, smallest_enclosing_circle};
 pub(crate) use minimum_rectangle::{minimum_area_rectangle, minimum_area_rectangle_chart};
+pub(crate) use minimum_width::minimum_width;
 pub(crate) use polylabel::{
     build_inscribed_circle_budgeted, degenerate_polygon_center, emit_zero_radius_point,
     polylabel_point, scale_aware_default_tolerance,

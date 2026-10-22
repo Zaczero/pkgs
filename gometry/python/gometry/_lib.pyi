@@ -1883,8 +1883,9 @@ class Geometry:
         unit: DistanceUnit | None = None,
     ) -> Point:
         """Pole of inaccessibility: an approximate most-distant interior point
-        for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
-        of the global inradius for planar/projected input.
+        for label placement. Uses a floating-point cell search with ``tolerance`` as
+        its absolute stopping target. For a certified planar global-inradius gap,
+        use ``maximum_inscribed_circle(...).center`` instead.
         Geographic line and ring boundaries may be refined in the local projection
         before the search; ``tolerance`` controls the search, not the separate
         input-refinement budget.
@@ -1895,15 +1896,15 @@ class Geometry:
 
         See Also
         --------
-        maximum_inscribed_circle : Certified filled disk from its own center search.
+        maximum_inscribed_circle : Certified circle solution with direct center access.
         centroid : Area/length-weighted center (may fall outside).
         point_on_surface : A representative point guaranteed on the geometry.
 
         Parameters
         ----------
         tolerance : float, optional
-            Positive absolute bound on the planar global-inradius gap, interpreted
-            for the CRS (see ``unit``).
+            Positive absolute stopping target for the approximate label search,
+            interpreted for the CRS (see ``unit``).
             Omitted selects a scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
@@ -3006,27 +3007,24 @@ class Geometry:
         *,
         tolerance: _FloatScalarInput | None = None,
         unit: DistanceUnit | None = None,
-    ) -> Point | Polygon:
-        """Largest circle inscribed in a polygonal geometry. Unlike Shapely's
-        same-named operation, which returns a two-point ``LineString`` from center to
-        boundary, gometry returns a contained filled polygonal approximation (or a
-        ``Point`` for a degenerate radius). The returned polygon's centroid gives the
-        circle center; ``maximum_inscribed_radius`` gives its numerical radius.
-        Planar/projected input uses one deterministic representable center and
-        certifies the global inradius against the requested absolute tolerance.
-        Geographic input retains the documented local-projection approximation.
-        Empty geometries return ``POLYGON EMPTY``.
-        A nonempty polygon with no filled interior returns the midpoint of its stored
-        bounds with radius zero, including when its rings cancel the entire support.
-        Geographic line and ring inputs may be refined in the source chart to bound
-        projected input-edge deviation; this does not change round-arc resolution.
-        Mirrors minimum_bounding_circle.
+    ) -> Circle:
+        """Solve the largest circle inscribed in a polygonal geometry.
+        The returned Circle retains its center and radius independently of polygon
+        resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
+        ``circle.to_polygon(quadrant_segments=16)`` for a contained polygonal realization.
+        Planar/projected input certifies the global inradius gap against ``tolerance``;
+        the radius is the downward-rounded clearance at the retained representable center.
+        Geographic metric input solves in one retained local projection: the guarantee
+        applies there, rather than to the ellipsoid or restored source-coordinate polygon.
+        The center is returned in the source CRS and retains the source coordinate epoch.
+        Empty input has an empty center and NaN radius. A nonempty polygon with no
+        filled interior has its stored-bounds midpoint and radius zero.
 
         Parameters
         ----------
         tolerance : float, optional
-            Positive absolute bound on the planar global-inradius gap. Omitted
-            selects the existing scale-aware tolerance from the geometry's extent.
+            Positive absolute bound on the planar global-inradius gap, in the selected
+            units. Omitted selects a scale-aware tolerance from the working geometry.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -3040,109 +3038,62 @@ class Geometry:
 
         Returns
         -------
-        Point or Polygon
-            The fixed-resolution filled polygonal approximation of the inscribed
-            circle, or the stored-bounds midpoint for a nonempty polygon with no
-            filled interior.
-            A certified subnormal-radius result returns its center ``Point``.
+        Circle
+            Retained circle solution; polygon construction is deferred until requested.
 
-        See Also
-        --------
-        polylabel : Approximate pole-of-inaccessibility label point.
-        maximum_inscribed_radius : The radius alone.
-        point_on_surface : A representative point guaranteed on the geometry.
-        centroid : Area/length-weighted center (may fall outside).
 
         Raises
         ------
+        GeometryTypeError
+            If the input is not polygonal.
         GeometryError
-            If ``tolerance`` is not positive and finite.
+            If tolerance is not positive and finite, or meters are requested without a CRS.
         OverflowError
-            If a finite planar/projected result cannot be certified and represented
-            as a contained polygon.
-        InvalidGeometryError
-            If invalid polygonal structure prevents the operation from completing.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> disk = gm.box(0, 0, 2, 2).maximum_inscribed_circle()
-        >>> (disk.geometry_type, round(disk.area, 2))
-        ('Polygon', 3.14)
-        """
-    def maximum_inscribed_radius(
-        self,
-        *,
-        tolerance: _FloatScalarInput | None = None,
-        unit: DistanceUnit | None = None,
-    ) -> float:
-        """Radius of the largest inscribed circle. For planar/projected input,
-        one deterministic representable center is retained and the returned
-        downward-rounded boundary clearance of that underlying circle certifies
-        the global inradius against the requested absolute tolerance. Geographic
-        input uses the documented local-projection approximation. The numeric twin
-        of minimum_bounding_radius; the polygonal approximation is
-        maximum_inscribed_circle.
-        Geographic boundary edges may be refined before the planar search; ``tolerance``
-        controls the inradius search, not that input-refinement budget.
-
-        Parameters
-        ----------
-        tolerance : float, optional
-            Positive absolute bound on the planar global-inradius gap. Omitted
-            selects the existing scale-aware tolerance from the geometry's extent.
-        unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic shape area and length
-            use ellipsoidal chart-edge measures while point distances use geodesics;
-            projected measurements use native linear units, and CRS-free measurements
-            use raw coordinate units (area results square the corresponding unit).
-            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
-            in their native angular units. ``'meters'`` uses the CRS-aware metric and
-            requires a CRS.
-
-
-
-        Returns
-        -------
-        float
-            The inscribed radius in the requested/CRS metric units (see ``unit``);
-            ``NaN`` for empty input and zero for a polygon with no filled interior.
-
-
-        Raises
-        ------
-        GeometryError
-            If ``tolerance`` is not positive and finite, or ``unit='meters'`` is
-            requested for a CRS-free geometry.
+            If the requested inradius accuracy has no representable center/radius result.
         CRSError
-            If the CRS lacks linear axis units for a metric result.
+            If a geographic working frame cannot be prepared.
 
         See Also
         --------
-        maximum_inscribed_circle : The contained polygonal approximation.
+        minimum_bounding_circle : Smallest enclosing circle solution.
+        polylabel : Approximate label anchor from a distinct floating-point search.
 
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).maximum_inscribed_radius()
-        1.0
+        >>> circle = gm.box(0, 0, 2, 2).maximum_inscribed_circle()
+        >>> (circle.center.to_wkt(), circle.radius)
+        ('POINT (1 1)', 1.0)
+        >>> circle.to_polygon().geometry_type
+        'Polygon'
         """
 
     def minimum_bounding_circle(
         self,
         *,
         unit: DistanceUnit | None = None,
-    ) -> Point | Polygon:
-        """Smallest circle enclosing the geometry, as a polygon. The standard shape:
-        for planar/projected input, ``minimum_bounding_radius`` is the correctly rounded
-        mathematical minimum radius and this method realizes that disk as a certified
-        circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
-        it. A single distinct vertex returns itself; empty input returns
-        ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
-        geographic CRS; projected CRS distances default to the CRS's native linear units
-        and scale through the CRS linear unit only with ``unit='meters'``. Geographic
-        line and ring inputs use certified source-chart edge refinement in that local
-        projection before their enclosing support circle is computed.
+    ) -> Circle:
+        """Solve the smallest circle enclosing the geometry.
+        Read ``circle.center`` and ``circle.radius`` without constructing a polygon.
+        ``circle.to_polygon(quadrant_segments=16)`` creates a circumscribed polygon
+        whose edges enclose the exact working-frame disk; a zero-radius disk yields
+        a Point and empty input yields POLYGON EMPTY.
+
+        For planar/projected input, the exact support disk is retained. Its center and
+        radius are rounded independently for numerical access; projected unit conversion
+        is applied before rounding. The polygon is certified against the exact disk,
+        not a reconstruction from those rounded values.
+
+        Geographic point sets with two distinct sites retain the midpoint of a shortest
+        ellipsoidal geodesic and half its inverse distance; a single site has radius zero.
+        This numerical solution remains available across global extents. Its polygon
+        uses the geographic Point.buffer local-projection approximation and may raise
+        CRSError when that realization exceeds the projection's accuracy domain.
+        Other geographic input uses one retained local-projection disk, an approximation
+        rather than an ellipsoidal optimum. Source-chart edges may be refined before
+        the projected support calculation. Geographic radii are in meters; centers and
+        polygons are in the source CRS.
+        The center retains the source coordinate epoch.
 
         Parameters
         ----------
@@ -3159,39 +3110,42 @@ class Geometry:
 
         Returns
         -------
-        Point or Polygon
-            The smallest enclosing circle, or the source point for a zero-radius result.
+        Circle
+            Retained circle solution. Empty input has an empty center and NaN radius.
 
 
         Raises
         ------
+        GeometryError
+            If meters are requested without a CRS.
+        CRSError
+            If a geographic local-projection solution cannot fit its accuracy domain.
+            One-/two-point ellipsoidal solutions do not require a local frame.
         OverflowError
-            If the correctly rounded circle cannot be emitted as a finite, valid,
-            source-enclosing polygon without changing its mathematical center or scalar
-            radius.
-        InvalidGeometryError
-            If the bounding circle cannot be computed.
+            If input coordinates cannot support a finite-coordinate circle calculation.
 
         Examples
         --------
         >>> import gometry as gm
-        >>> pts = gm.MultiPoint([(0, 0), (4, 0)])
-        >>> (pts.minimum_bounding_circle().geometry_type, pts.minimum_bounding_radius())
-        ('Polygon', 2.0)
+        >>> circle = gm.MultiPoint([(0, 0), (4, 0)]).minimum_bounding_circle()
+        >>> (circle.center.to_wkt(), circle.radius)
+        ('POINT (2 0)', 2.0)
         """
-    def minimum_bounding_radius(self, *, unit: DistanceUnit | None = None) -> float:
-        """Radius of the smallest circle enclosing the geometry. For planar/projected
-        input it is rounded from the exact source minimum; this is the numeric twin of
-        minimum_bounding_circle, and both use the same exact support kernel. Empty
-        input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
-        sets with three or more distinct vertices use the planar center and
-        ellipsoidal support measurement (an approximation); two-point geographic
-        inputs are the exact geodesic half-distance. For a projected
-        ``unit='meters'`` result, the exact squared radius is scaled before the one
-        binary64 rounding. Geographic line and ring inputs instead use the same
-        local-projection support calculation as ``minimum_bounding_circle`` after
-        chart-edge refinement. A two-coordinate line is edge-bearing and does not use
-        the point-set two-point geodesic case.
+    def minimum_width(
+        self,
+        *,
+        unit: DistanceUnit | None = None,
+    ) -> float:
+        """Width of the narrowest parallel strip enclosing the geometry.
+        Uses the complete convex hull, including all disconnected components. Holes
+        do not reduce the width. This is distinct from minimum clearance and from
+        the shorter side of the minimum-area rotated rectangle. A point or collinear
+        support has width zero; empty input has width NaN.
+
+        Planar/projected input selects antipodal hull supports using exact squared-width
+        comparisons and rounds the final measurement after unit conversion. Geographic
+        metric input uses the prepared geometry in one local projection, an approximation
+        on the ellipsoid. Source-chart edge refinement precedes the hull calculation.
 
         Parameters
         ----------
@@ -3209,12 +3163,22 @@ class Geometry:
         Returns
         -------
         float
-            The enclosing circle radius.
+            Minimum strip width in the selected units.
+
+
+        Raises
+        ------
+        GeometryError
+            If meters are requested without a CRS.
+        CRSError
+            If a geographic working frame cannot fit its accuracy domain.
+        OverflowError
+            If non-finite coordinates prevent the support calculation.
 
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.MultiPoint([(0, 0), (4, 0)]).minimum_bounding_radius()
+        >>> gm.box(0, 0, 4, 2).minimum_width()
         2.0
         """
 
@@ -8320,8 +8284,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | None]:
         """Pole of inaccessibility: an approximate most-distant interior point
-        for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
-        of the global inradius for planar/projected input.
+        for label placement. Uses a floating-point cell search with ``tolerance`` as
+        its absolute stopping target. For a certified planar global-inradius gap,
+        use ``maximum_inscribed_circle(...).center`` instead.
         Geographic line and ring boundaries may be refined in the local projection
         before the search; ``tolerance`` controls the search, not the separate
         input-refinement budget.
@@ -8332,15 +8297,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         See Also
         --------
-        maximum_inscribed_circle : Certified filled disk from its own center search.
+        maximum_inscribed_circle : Certified circle solution with direct center access.
         centroid : Area/length-weighted center (may fall outside).
         point_on_surface : A representative point guaranteed on the geometry.
 
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Positive absolute bound on the planar global-inradius gap, interpreted
-            for the CRS (see ``unit``) — a scalar applies to every geometry, or pass
+            Positive absolute stopping target for the approximate label search,
+            interpreted for the CRS (see ``unit``) — a scalar applies to every geometry, or pass
             one value per geometry.
             Omitted selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
@@ -9714,41 +9679,29 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'MULTIPOINT ((0 0), (1 1))'
         """
 
-    @overload
     def maximum_inscribed_circle(
-        self: GeometryArray[Geometry],
+        self,
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon]: ...
-    @overload
-    def maximum_inscribed_circle(
-        self: GeometryArray[Geometry | None],
-        *,
-        tolerance: FloatInput | None = None,
-        unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon | None]:
-        """Largest circle inscribed in a polygonal geometry. Unlike Shapely's
-        same-named operation, which returns a two-point ``LineString`` from center to
-        boundary, gometry returns a contained filled polygonal approximation (or a
-        ``Point`` for a degenerate radius). The returned polygon's centroid gives the
-        circle center; ``maximum_inscribed_radius`` gives its numerical radius.
-        Planar/projected input uses one deterministic representable center and
-        certifies the global inradius against the requested absolute tolerance.
-        Geographic input retains the documented local-projection approximation.
-        Empty geometries return ``POLYGON EMPTY``.
-        A nonempty polygon with no filled interior returns the midpoint of its stored
-        bounds with radius zero, including when its rings cancel the entire support.
-        Geographic line and ring inputs may be refined in the source chart to bound
-        projected input-edge deviation; this does not change round-arc resolution.
-        Mirrors minimum_bounding_circle.
+    ) -> CircleArray:
+        """Solve the largest circle inscribed in a polygonal geometry.
+        The returned Circle retains its center and radius independently of polygon
+        resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
+        ``circle.to_polygon(quadrant_segments=16)`` for a contained polygonal realization.
+        Planar/projected input certifies the global inradius gap against ``tolerance``;
+        the radius is the downward-rounded clearance at the retained representable center.
+        Geographic metric input solves in one retained local projection: the guarantee
+        applies there, rather than to the ellipsoid or restored source-coordinate polygon.
+        The center is returned in the source CRS and retains the source coordinate epoch.
+        Empty input has an empty center and NaN radius. A nonempty polygon with no
+        filled interior has its stored-bounds midpoint and radius zero.
 
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Positive absolute bound on the planar global-inradius gap — a scalar
-            applies to every geometry, or pass one value per geometry. Omitted
-            selects a scale-aware tolerance independently for each geometry.
+            Positive absolute bound on the planar global-inradius gap, either shared
+            or one value per row. Omitted selects a scale-aware tolerance per row.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -9762,53 +9715,119 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Returns
         -------
-        GeometryArray
-            The fixed-resolution filled polygonal approximation (or center `Point`
-            when degenerate) per row.
+        CircleArray
+            Retained circle solutions with vectorized center and radius projections.
+            Missing rows remain missing; empty and missing radii are NaN.
 
-        See Also
-        --------
-        polylabel : Approximate pole-of-inaccessibility label point.
-        maximum_inscribed_radius : The radius alone.
-        point_on_surface : A representative point guaranteed on the geometry.
-        centroid : Area/length-weighted center (may fall outside).
 
         Raises
         ------
+        GeometryTypeError
+            If the input is not polygonal.
         GeometryError
-            If ``tolerance`` is not positive and finite.
+            If tolerance is not positive and finite, or meters are requested without a CRS.
         OverflowError
-            If a finite planar/projected result cannot be certified and represented
-            as a contained polygon.
-        InvalidGeometryError
-            If invalid polygonal structure prevents the operation from completing.
+            If the requested inradius accuracy has no representable center/radius result.
+        CRSError
+            If a geographic working frame cannot be prepared.
+
+        See Also
+        --------
+        minimum_bounding_circle : Smallest enclosing circle solution.
+        polylabel : Approximate label anchor from a distinct floating-point search.
 
         Examples
         --------
         >>> import gometry as gm
-        >>> disk = gm.box(0, 0, 2, 2).maximum_inscribed_circle()
-        >>> (disk.geometry_type, round(disk.area, 2))
-        ('Polygon', 3.14)
+        >>> circle = gm.box(0, 0, 2, 2).maximum_inscribed_circle()
+        >>> (circle.center.to_wkt(), circle.radius)
+        ('POINT (1 1)', 1.0)
+        >>> circle.to_polygon().geometry_type
+        'Polygon'
         """
-    def maximum_inscribed_radius(
-        self, *, tolerance: FloatInput | None = None, unit: DistanceUnit | None = None
-    ) -> npt.NDArray[np.float64]:
-        """Radius of the largest inscribed circle. For planar/projected input,
-        one deterministic representable center is retained and the returned
-        downward-rounded boundary clearance of that underlying circle certifies
-        the global inradius against the requested absolute tolerance. Geographic
-        input uses the documented local-projection approximation. The numeric twin
-        of minimum_bounding_radius; the polygonal approximation is
-        maximum_inscribed_circle.
-        Geographic boundary edges may be refined before the planar search; ``tolerance``
-        controls the inradius search, not that input-refinement budget.
+
+    def minimum_bounding_circle(
+        self,
+        *,
+        unit: DistanceUnit | None = None,
+    ) -> CircleArray:
+        """Solve the smallest circle enclosing the geometry.
+        Read ``circle.center`` and ``circle.radius`` without constructing a polygon.
+        ``circle.to_polygon(quadrant_segments=16)`` creates a circumscribed polygon
+        whose edges enclose the exact working-frame disk; a zero-radius disk yields
+        a Point and empty input yields POLYGON EMPTY.
+
+        For planar/projected input, the exact support disk is retained. Its center and
+        radius are rounded independently for numerical access; projected unit conversion
+        is applied before rounding. The polygon is certified against the exact disk,
+        not a reconstruction from those rounded values.
+
+        Geographic point sets with two distinct sites retain the midpoint of a shortest
+        ellipsoidal geodesic and half its inverse distance; a single site has radius zero.
+        This numerical solution remains available across global extents. Its polygon
+        uses the geographic Point.buffer local-projection approximation and may raise
+        CRSError when that realization exceeds the projection's accuracy domain.
+        Other geographic input uses one retained local-projection disk, an approximation
+        rather than an ellipsoidal optimum. Source-chart edges may be refined before
+        the projected support calculation. Geographic radii are in meters; centers and
+        polygons are in the source CRS.
+        The center retains the source coordinate epoch.
 
         Parameters
         ----------
-        tolerance : float or sequence of float, optional
-            Positive absolute bound on the planar global-inradius gap — a scalar
-            applies to every geometry, or pass one value per geometry. Omitted
-            selects a scale-aware tolerance independently for each geometry.
+        unit : {'planar', 'meters'}, default None
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
+
+
+
+        Returns
+        -------
+        CircleArray
+            Retained circle solutions. Missing rows remain missing; numeric projections
+            use NaN for empty and missing rows.
+
+
+        Raises
+        ------
+        GeometryError
+            If meters are requested without a CRS.
+        CRSError
+            If a geographic local-projection solution cannot fit its accuracy domain.
+            One-/two-point ellipsoidal solutions do not require a local frame.
+        OverflowError
+            If input coordinates cannot support a finite-coordinate circle calculation.
+
+        Examples
+        --------
+        >>> import gometry as gm
+        >>> circle = gm.MultiPoint([(0, 0), (4, 0)]).minimum_bounding_circle()
+        >>> (circle.center.to_wkt(), circle.radius)
+        ('POINT (2 0)', 2.0)
+        """
+    def minimum_width(
+        self,
+        *,
+        unit: DistanceUnit | None = None,
+    ) -> npt.NDArray[np.float64]:
+        """Width of the narrowest parallel strip enclosing the geometry.
+        Uses the complete convex hull, including all disconnected components. Holes
+        do not reduce the width. This is distinct from minimum clearance and from
+        the shorter side of the minimum-area rotated rectangle. A point or collinear
+        support has width zero; empty input has width NaN.
+
+        Planar/projected input selects antipodal hull supports using exact squared-width
+        comparisons and rounds the final measurement after unit conversion. Geographic
+        metric input uses the prepared geometry in one local projection, an approximation
+        on the ellipsoid. Source-chart edge refinement precedes the hull calculation.
+
+        Parameters
+        ----------
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -9823,124 +9842,22 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         numpy.ndarray of float
-            The inscribed radius per row; ``NaN`` where empty.
+            Minimum strip widths; NaN for empty and missing rows.
 
 
         Raises
         ------
         GeometryError
-            If ``tolerance`` is not positive and finite, or ``unit='meters'`` is
-            requested for a CRS-free geometry.
+            If meters are requested without a CRS.
         CRSError
-            If the CRS lacks linear axis units for a metric result.
-
-        See Also
-        --------
-        maximum_inscribed_circle : The contained polygonal approximation.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.box(0, 0, 2, 2).maximum_inscribed_radius()
-        1.0
-        """
-
-    @overload
-    def minimum_bounding_circle(
-        self: GeometryArray[Geometry],
-        *,
-        unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon]: ...
-    @overload
-    def minimum_bounding_circle(
-        self: GeometryArray[Geometry | None],
-        *,
-        unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon | None]:
-        """Smallest circle enclosing the geometry, as a polygon. The standard shape:
-        for planar/projected input, ``minimum_bounding_radius`` is the correctly rounded
-        mathematical minimum radius and this method realizes that disk as a certified
-        circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
-        it. A single distinct vertex returns itself; empty input returns
-        ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
-        geographic CRS; projected CRS distances default to the CRS's native linear units
-        and scale through the CRS linear unit only with ``unit='meters'``. Geographic
-        line and ring inputs use certified source-chart edge refinement in that local
-        projection before their enclosing support circle is computed.
-
-        Parameters
-        ----------
-        unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic shape area and length
-            use ellipsoidal chart-edge measures while point distances use geodesics;
-            projected measurements use native linear units, and CRS-free measurements
-            use raw coordinate units (area results square the corresponding unit).
-            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
-            in their native angular units. ``'meters'`` uses the CRS-aware metric and
-            requires a CRS.
-
-
-
-        Returns
-        -------
-        GeometryArray
-            The smallest enclosing circle per row.
-
-
-        Raises
-        ------
+            If a geographic working frame cannot fit its accuracy domain.
         OverflowError
-            If the correctly rounded circle cannot be emitted as a finite, valid,
-            source-enclosing polygon without changing its mathematical center or scalar
-            radius.
-        InvalidGeometryError
-            If the bounding circle cannot be computed.
+            If non-finite coordinates prevent the support calculation.
 
         Examples
         --------
         >>> import gometry as gm
-        >>> pts = gm.MultiPoint([(0, 0), (4, 0)])
-        >>> (pts.minimum_bounding_circle().geometry_type, pts.minimum_bounding_radius())
-        ('Polygon', 2.0)
-        """
-    def minimum_bounding_radius(
-        self, *, unit: DistanceUnit | None = None
-    ) -> npt.NDArray[np.float64]:
-        """Radius of the smallest circle enclosing the geometry. For planar/projected
-        input it is rounded from the exact source minimum; this is the numeric twin of
-        minimum_bounding_circle, and both use the same exact support kernel. Empty
-        input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
-        sets with three or more distinct vertices use the planar center and
-        ellipsoidal support measurement (an approximation); two-point geographic
-        inputs are the exact geodesic half-distance. For a projected
-        ``unit='meters'`` result, the exact squared radius is scaled before the one
-        binary64 rounding. Geographic line and ring inputs instead use the same
-        local-projection support calculation as ``minimum_bounding_circle`` after
-        chart-edge refinement. A two-coordinate line is edge-bearing and does not use
-        the point-set two-point geodesic case.
-
-        Parameters
-        ----------
-        unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic shape area and length
-            use ellipsoidal chart-edge measures while point distances use geodesics;
-            projected measurements use native linear units, and CRS-free measurements
-            use raw coordinate units (area results square the corresponding unit).
-            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
-            in their native angular units. ``'meters'`` uses the CRS-aware metric and
-            requires a CRS.
-
-
-
-        Returns
-        -------
-        numpy.ndarray
-            One enclosing circle radius per row.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.MultiPoint([(0, 0), (4, 0)]).minimum_bounding_radius()
+        >>> gm.box(0, 0, 4, 2).minimum_width()
         2.0
         """
 
@@ -11517,6 +11434,159 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> gm.Point(0, 2).skew(x_angle=45, origin=(0, 0)).to_wkt(precision=6)
         'POINT (2 2)'
         """
+
+@final
+class Circle:
+    """A solved circle with a source-CRS center and a radius in ``unit``.
+
+    ``working_crs`` identifies the Cartesian frame in which the disk is solved.
+    Geographic metric results with one or two distinct point sites retain an
+    ellipsoidal solution; other geographic circles use a local projection.
+    ``to_polygon`` realizes the retained disk without repeating its optimization;
+    polygon resolution does not change its center or radius.
+    """
+    def __new__(cls, _nonconstructible: Never, /) -> Self: ...
+    @property
+    def center(self) -> Point:
+        """Circle center in the input CRS, retaining its coordinate epoch."""
+    @property
+    def radius(self) -> float:
+        """Radius in the selected metric units; NaN for an empty circle."""
+    @property
+    def unit(self) -> Literal['meters', 'planar']:
+        """``meters`` for SI radii, or ``planar`` for native coordinate units."""
+    @property
+    def working_crs(self) -> str | None:
+        """Cartesian working CRS, or None for ellipsoidal, CRS-free, or empty disks."""
+    def to_polygon(self, *, quadrant_segments: int = 16) -> Polygon | Point:
+        """Realize the retained disk as a polygon, or a Point for a degenerate disk.
+
+        In a Cartesian working frame, inscribed polygons lie inside their
+        certified disk and bounding polygons enclose their exact disk.
+        Ellipsoidal one-/two-point disks use the same local-projection
+        approximation as geographic Point.buffer. Geographic output is in the source CRS.
+        Empty circles return POLYGON EMPTY. Finite numeric solutions can exist
+        even when polygon coordinates cannot be represented, in which case this
+        method raises OverflowError without invalidating the numerical solution.
+
+        Parameters
+        ----------
+        quadrant_segments : int, default 16
+            Positive number of straight segments per quarter-circle.
+
+        Returns
+        -------
+        Polygon or Point
+            Polygonal realization in the source CRS and epoch; a Point for a
+            degenerate disk and POLYGON EMPTY for an empty disk.
+
+        Raises
+        ------
+        GeometryError
+            If the segment count is not positive or cannot be represented.
+        OverflowError
+            If the certified polygon cannot be represented with finite coordinates.
+        CRSError
+            If a geographic polygon cannot fit the local projection's accuracy domain.
+            Ellipsoidal center and radius remain available for widely separated sites.
+        """
+    def __repr__(self) -> str: ...
+    def __copy__(self) -> Self: ...
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self: ...
+    def __eq__(self, other: object, /) -> bool: ...
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+
+@final
+class CircleArray(Sequence[Circle | None]):
+    """An immutable sequence of solved circles with null-aware vector projections.
+
+    ``center`` returns a point GeometryArray; ``radius`` returns a read-only
+    NumPy array with NaN for empty or missing rows. ``is_missing`` distinguishes
+    missing rows from empty circles. Indexing returns Circle or None; slicing
+    retains the circle solutions without repeating their optimization.
+    """
+    def __new__(cls, _nonconstructible: Never, /) -> Self: ...
+    @property
+    def center(self) -> GeometryArray[Point | None]:
+        """Circle centers as a point GeometryArray in the source CRS and epoch.
+        Empty circles have empty Points; missing rows remain missing.
+        """
+    @property
+    def radius(self) -> npt.NDArray[np.float64]:
+        """Read-only float64 radii in each circle's selected units.
+        Empty and missing rows are NaN.
+        """
+    @property
+    def is_missing(self) -> npt.NDArray[np.bool_]:
+        """Read-only boolean mask distinguishing missing rows from empty circles."""
+    @property
+    def unit(self) -> list[Literal['meters', 'planar'] | None]:
+        """Effective radius units per row: meters or planar native coordinate units.
+        Missing rows are None.
+        """
+    @property
+    def working_crs(self) -> list[str | None]:
+        """Working CRS definitions per row, or None where absent."""
+    def to_polygon(
+        self, *, quadrant_segments: int = 16
+    ) -> GeometryArray[Polygon | Point | None]:
+        """Realize each retained disk without repeating its optimization.
+
+        Parameters
+        ----------
+        quadrant_segments : int, default 16
+            Positive number of straight segments per quarter-circle, shared by
+            every row. Resolution does not change the solved centers or radii.
+
+        Returns
+        -------
+        GeometryArray
+            Polygon or degenerate Point per row, in the source CRS and epoch.
+            Empty disks yield empty polygons; missing rows remain missing.
+
+        Raises
+        ------
+        GeometryError
+            If the segment count is not positive or cannot be represented.
+        OverflowError
+            If a certified polygon cannot be represented with finite coordinates.
+        CRSError
+            If a geographic realization exceeds the local-projection accuracy domain.
+        """
+    def __len__(self) -> int: ...
+    def __contains__(self, value: object, /) -> bool: ...
+    def count(self, value: object) -> int:
+        """Number of rows equal to a Circle, or missing rows when value is None."""
+    def index(
+        self,
+        value: object,
+        start: SupportsIndex = 0,
+        stop: SupportsIndex | None = None,
+    ) -> int:
+        """First matching row within start:stop, with normal negative-index bounds.
+
+        Raises
+        ------
+        ValueError
+        If the selected window contains no equal Circle or missing row.
+        """
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> Circle | None: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> CircleArray: ...
+    def __iter__(self) -> CircleArrayIterator: ...
+    def __reversed__(self) -> CircleArrayIterator: ...
+    def __repr__(self) -> str: ...
+    def __copy__(self) -> Self: ...
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self: ...
+    def __eq__(self, other: object, /) -> bool: ...
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+
+@final
+class CircleArrayIterator(Iterator[Circle | None]):
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> Circle | None: ...
+    def __length_hint__(self) -> int: ...
 
 @final
 class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):

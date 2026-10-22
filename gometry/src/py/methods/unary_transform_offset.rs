@@ -5,8 +5,8 @@ use crate::py::methods::unary_transform_methods::{
     Bound, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
     DistanceUnit, F64Param, GridOrigin, NavigationPath, PyAny, PyGeometry, PyGeometryArray,
     PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod, parse_grid_size,
-    pymethods, validate_buffer_miter_limit, validate_buffer_quadrant_segments,
-    validate_densify_fraction, validate_max_segment_length, validate_smooth_iterations,
+    pymethods, validate_buffer_miter_limit,
+    validate_densify_fraction, validate_max_segment_length, validate_quadrant_segments, validate_smooth_iterations,
 };
 use crate::py::vectors::Groups;
 
@@ -49,7 +49,7 @@ impl PyGeometry {
     ) -> PyResult<crate::Typed> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(scalar))?;
         distance.ensure_finite("distance")?;
-        let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
+        let quadrant_segments = validate_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         unary_spine_shapes!(
             scalar,
@@ -89,7 +89,7 @@ impl PyGeometry {
     ) -> PyResult<crate::Typed> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(scalar))?;
         distance.ensure_finite("distance")?;
-        let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
+        let quadrant_segments = validate_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         unary_spine_shapes!(
             scalar,
@@ -296,7 +296,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
         distance.ensure_finite("distance")?;
-        let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
+        let quadrant_segments = validate_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         if let Some(result) =
             self.buffer_points_unary_packed(py, &distance, quadrant_segments, side, unit)?
@@ -341,7 +341,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
         distance.ensure_finite("distance")?;
-        let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
+        let quadrant_segments = validate_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         crate::dispatch::unary_array_shapes_budgeted(
             py,

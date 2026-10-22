@@ -748,7 +748,8 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     distance- or area-returning metric — including
     [`hausdorff_distance`][gometry.hausdorff_distance],
     [`frechet_distance`][gometry.frechet_distance],
-    [`minimum_bounding_radius`][gometry.Geometry.minimum_bounding_radius],
+    [`minimum_bounding_circle(...).radius`][gometry.Geometry.minimum_bounding_circle],
+    [`minimum_width`][gometry.Geometry.minimum_width],
     [`minimum_clearance`][gometry.Geometry.minimum_clearance], and
     [`nearest_points`][gometry.nearest_points] — is CRS-aware with a
     `unit='planar'` escape (and `unit='meters'` for forced SI).

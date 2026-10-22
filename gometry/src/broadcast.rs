@@ -35,10 +35,10 @@ mod metrics;
 pub(crate) use metrics::{
     DistanceUnit, LonLatPointsError, SimilarityOp, array_crs_distances, array_crs_dwithin,
     array_crs_dwithin_per_element, array_crs_frechet_metric_per_densify, array_crs_metric_float,
-    lonlat_points, lonlat_shape, metric_maximum_inscribed_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved,
-    pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    resolve_metric, resolve_metric_3d, resolve_metric_at, with_source_arc_context,
+    lonlat_points, lonlat_shape, metric_minimum_clearance, metric_minimum_clearance_line,
+    metric_nearest_points_resolved, metric_shortest_line_resolved, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, resolve_metric,
+    resolve_metric_3d, resolve_metric_at, with_source_arc_context,
 };
 mod predicates;
 pub(crate) use predicates::{

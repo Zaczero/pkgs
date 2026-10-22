@@ -254,8 +254,8 @@ def test_witness_lines_keep_only_shared_ordinates() -> None:
     assert (gm.shortest_line(zline, zpoint)).to_wkt() == 'LINESTRING Z (1 0 2, 1 3 7)'
     poly = gm.from_wkt('POLYGON Z ((0 0 1, 4 0 1, 4 4 1, 0 4 1, 0 0 1))')
     for witness in (
-        (poly).minimum_bounding_circle(),
-        (poly).maximum_inscribed_circle(),
+        (poly).minimum_bounding_circle().to_polygon(),
+        (poly).maximum_inscribed_circle().to_polygon(),
     ):
         assert not witness.has_z
         assert not witness.has_m

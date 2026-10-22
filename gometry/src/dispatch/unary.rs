@@ -264,11 +264,10 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
             | MetricOp::Length3d
             | MetricOp::LineLocate
             | MetricOp::MaximumInscribedCircle
-            | MetricOp::MaximumInscribedRadius
             | MetricOp::MinimumBoundingCircle
-            | MetricOp::MinimumBoundingRadius
             | MetricOp::MinimumClearance
             | MetricOp::MinimumClearanceLine
+            | MetricOp::MinimumWidth
             | MetricOp::Nearest
             | MetricOp::NearestPoints
             | MetricOp::OffsetCurve

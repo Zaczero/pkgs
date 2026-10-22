@@ -368,8 +368,8 @@ def test_polylabel_accepts_per_element_tolerance() -> None:
 def test_maximum_inscribed_circle_accepts_per_element_tolerance() -> None:
     """``maximum_inscribed_circle`` takes a per-row search tolerance."""
     polys = gm.GeometryArray([gm.box(0, 0, 10, 10), gm.box(0, 0, 10, 10)])
-    scalar = polys.maximum_inscribed_circle(tolerance=1.0)
-    per_element = polys.maximum_inscribed_circle(tolerance=[1.0, 1.0])
+    scalar = polys.maximum_inscribed_circle(tolerance=1.0).to_polygon()
+    per_element = polys.maximum_inscribed_circle(tolerance=[1.0, 1.0]).to_polygon()
     assert [g.to_wkt() for g in scalar] == [g.to_wkt() for g in per_element]
 
 

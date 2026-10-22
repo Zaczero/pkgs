@@ -375,8 +375,8 @@ def test_array_detached_map_and_metric_lanes_match_scalar_results() -> None:
     assert polygon_array.convex_hull().to_wkt() == [
         geom.convex_hull().to_wkt() for geom in polygons
     ]
-    assert polygon_array.minimum_bounding_circle().to_wkt() == [
-        geom.minimum_bounding_circle().to_wkt() for geom in polygons
+    assert polygon_array.minimum_bounding_circle().to_polygon().to_wkt() == [
+        geom.minimum_bounding_circle().to_polygon().to_wkt() for geom in polygons
     ]
     assert polygon_array.minimum_rotated_rectangle().to_wkt() == [
         geom.minimum_rotated_rectangle().to_wkt() for geom in polygons

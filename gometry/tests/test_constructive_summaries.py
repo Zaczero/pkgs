@@ -17,8 +17,8 @@ from tests._support import box_in_frame
 @pytest.mark.parametrize('aspect', [100, 100_000, 1_000_000])
 def test_inscribed_circle_on_high_aspect_ratio_triangle(aspect: int) -> None:
     polygon = gm.Polygon([(0, 0), (aspect, 1), (2 * aspect, 0), (0, 0)])
-    disk = polygon.maximum_inscribed_circle()
-    radius = polygon.maximum_inscribed_radius()
+    disk = polygon.maximum_inscribed_circle().to_polygon()
+    radius = polygon.maximum_inscribed_circle().radius
     assert disk.geometry_type == 'Polygon'
     assert gm.covers(polygon, disk)
     # The isosceles triangle's inradius is area / semiperimeter. The omitted
@@ -33,7 +33,9 @@ def test_inscribed_triangle_radius_matches_shapely() -> None:
     polygon = gm.Polygon([(0, 0), (100, 1), (200, 0), (0, 0)])
     reference = shapely.Polygon([(0, 0), (100, 1), (200, 0), (0, 0)])
     expected = shapely.maximum_inscribed_circle(reference, tolerance=0.002).length
-    assert polygon.maximum_inscribed_radius() == pytest.approx(expected, abs=0.002)
+    assert polygon.maximum_inscribed_circle().radius == pytest.approx(
+        expected, abs=0.002
+    )
 
 
 @pytest.mark.parametrize(
@@ -54,8 +56,8 @@ def test_pole_searches_meet_their_tolerance_on_thin_nonrectangular_support(
         expected = 0.5
     polygon = gm.Polygon(points)
     label = polygon.polylabel(tolerance=0.001)
-    disk = polygon.maximum_inscribed_circle(tolerance=0.001)
-    radius = polygon.maximum_inscribed_radius(tolerance=0.001)
+    disk = polygon.maximum_inscribed_circle(tolerance=0.001).to_polygon()
+    radius = polygon.maximum_inscribed_circle(tolerance=0.001).radius
     assert gm.contains(polygon, label)
     assert gm.covers(polygon, disk)
     assert expected - 0.001 <= radius <= expected + 1e-15
@@ -79,15 +81,15 @@ def test_inscribed_degenerate_polygon_uses_polylabel_representative(
     wkt: str, center: tuple[int, int]
 ) -> None:
     polygon = gm.from_wkt(wkt)
-    circle = polygon.maximum_inscribed_circle()
+    circle = polygon.maximum_inscribed_circle().to_polygon()
     label = polygon.polylabel()
     assert circle.geometry_type == 'Point'
     assert (circle.x, circle.y) == center
     assert gm.equals_exact(circle, label)
-    assert polygon.maximum_inscribed_radius() == 0
+    assert polygon.maximum_inscribed_circle().radius == 0
     array = gm.GeometryArray([polygon])
-    assert gm.equals_exact(array.maximum_inscribed_circle()[0], circle)
-    assert array.maximum_inscribed_radius()[0] == 0
+    assert gm.equals_exact(array.maximum_inscribed_circle().to_polygon()[0], circle)
+    assert array.maximum_inscribed_circle().radius[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -98,16 +100,16 @@ def test_empty_polygon_pole_operations_keep_their_typed_empty_contract(
 ) -> None:
     polygon = gm.from_wkt(wkt)
     label = polygon.polylabel()
-    circle = polygon.maximum_inscribed_circle()
+    circle = polygon.maximum_inscribed_circle().to_polygon()
     assert label.geometry_type == 'Point'
     assert label.is_empty
     assert circle.geometry_type == 'Polygon'
     assert circle.is_empty
-    assert np.isnan(polygon.maximum_inscribed_radius())
+    assert np.isnan(polygon.maximum_inscribed_circle().radius)
     array = gm.GeometryArray([polygon])
     assert array.polylabel()[0].is_empty
-    assert array.maximum_inscribed_circle()[0].is_empty
-    assert np.isnan(array.maximum_inscribed_radius()[0])
+    assert array.maximum_inscribed_circle().to_polygon()[0].is_empty
+    assert np.isnan(array.maximum_inscribed_circle().radius[0])
 
 
 @pytest.mark.parametrize(
@@ -139,7 +141,7 @@ def test_country_pole_clearance_reaches_an_attained_inscribed_radius(
     clearance = gm.distance(label, polygon.boundary())
     assert gm.contains(polygon, label)
     assert clearance >= attained_radius - tolerance
-    assert polygon.maximum_inscribed_radius() >= attained_radius - tolerance
+    assert polygon.maximum_inscribed_circle().radius >= attained_radius - tolerance
 
 
 def test_pole_search_covers_parts_beyond_a_unit_normalized_start_cell() -> None:
@@ -157,7 +159,7 @@ def test_pole_search_covers_parts_beyond_a_unit_normalized_start_cell() -> None:
     # selects the thinner rectangle, while a unit power-of-two start cell
     # misses all three parts.
     assert 2 - tolerance <= clearance <= 2
-    assert polygon.maximum_inscribed_radius(tolerance=tolerance) == 2
+    assert polygon.maximum_inscribed_circle(tolerance=tolerance).radius == 2
 
 
 def test_constructive_summary_geometries_are_rust_backed() -> None:
@@ -263,12 +265,12 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
         line.polylabel()
     tall = gm.Polygon([(0, 60), (10, 60), (10, 61), (0, 61)], crs=4326)
     pole = tall.polylabel(tolerance=100)
-    circle = tall.maximum_inscribed_circle(tolerance=100)
+    circle = tall.maximum_inscribed_circle(tolerance=100).to_polygon()
     # The inscribed disk is a filled Polygon centered on the pole of
     # inaccessibility, so it covers that pole; the radius is its metric twin.
     assert circle.geometry_type == 'Polygon'
     assert gm.covers(circle, pole)
-    assert tall.maximum_inscribed_radius(tolerance=100) > 0.0
+    assert tall.maximum_inscribed_circle(tolerance=100).radius > 0.0
     planar_pole = tall.polylabel(tolerance=0.001, unit='planar')
     assert (planar_pole.x, planar_pole.y) == pytest.approx((5.0, 60.5))
     assert len(triangles) == 2

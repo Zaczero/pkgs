@@ -9,14 +9,17 @@ import pytest
 
 def test_maximum_inscribed_circle_covers_axis_aligned_boxes_scalar_and_array() -> None:
     sources = [gm.box(0, 0, 2, 2), gm.box(0, 0, 4, 2)]
-    outputs = [source.maximum_inscribed_circle(tolerance=1e-12) for source in sources]
+    outputs = [
+        source.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
+        for source in sources
+    ]
     assert [
         gm.covers(source, output)
         for source, output in zip(sources, outputs, strict=True)
     ] == [True, True]
 
     rows = gm.GeometryArray(sources)
-    batch = rows.maximum_inscribed_circle(tolerance=[1e-12, 1e-12])
+    batch = rows.maximum_inscribed_circle(tolerance=[1e-12, 1e-12]).to_polygon()
     assert [
         gm.covers(source, output) for source, output in zip(rows, batch, strict=True)
     ] == [True, True]
@@ -31,11 +34,15 @@ def test_maximum_inscribed_circle_covers_axis_aligned_boxes_scalar_and_array() -
 def test_maximum_inscribed_radius_uses_the_stored_coordinate_clearance() -> None:
     square = gm.box(0.1, 0.1, 0.3, 0.3)
     center = square.polylabel(tolerance=1e-12)
-    assert square.maximum_inscribed_radius(tolerance=1e-12) == 0.09999999999999998
-    assert square.maximum_inscribed_radius(tolerance=1e-12) == gm.distance(
+    assert (
+        square.maximum_inscribed_circle(tolerance=1e-12).radius == 0.09999999999999998
+    )
+    assert square.maximum_inscribed_circle(tolerance=1e-12).radius == gm.distance(
         center, square.boundary()
     )
-    assert gm.covers(square, square.maximum_inscribed_circle(tolerance=1e-12))
+    assert gm.covers(
+        square, square.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
+    )
 
 
 def test_maximum_inscribed_circle_respects_an_enclosed_hole() -> None:
@@ -43,23 +50,23 @@ def test_maximum_inscribed_circle_respects_an_enclosed_hole() -> None:
         [(0, 0), (10, 0), (10, 10), (0, 10)],
         holes=[[(4.5, 4.5), (5.5, 4.5), (5.5, 5.5), (4.5, 5.5)]],
     )
-    circle = source.maximum_inscribed_circle(tolerance=1e-12)
+    circle = source.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
     assert gm.covers(source, circle)
     assert not gm.covers(circle, gm.Point(5, 5))
 
 
 def test_maximum_inscribed_circle_emits_boundary_point_for_degenerate_ring() -> None:
     source = gm.from_wkt('POLYGON ((0 0, 1 0, 0 0, 1 0, 0 0))')
-    result = source.maximum_inscribed_circle(tolerance=1e-12)
+    result = source.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
     assert result.geometry_type == 'Point'
     assert gm.covers(source, result)
 
 
 def test_maximum_inscribed_circle_repairs_diamond_vertex_rounding() -> None:
     diamond = gm.Polygon([(0, 1), (-1, 0), (0, -1), (1, 0)])
-    circle = diamond.maximum_inscribed_circle(tolerance=1e-12)
+    circle = diamond.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
     assert gm.covers(diamond, circle)
-    assert diamond.maximum_inscribed_radius(tolerance=1e-12) == pytest.approx(
+    assert diamond.maximum_inscribed_circle(tolerance=1e-12).radius == pytest.approx(
         2**-0.5, abs=1e-12
     )
 
@@ -71,14 +78,14 @@ def test_maximum_inscribed_circle_repairs_rotated_vertex_rounding() -> None:
         (-0.000000000000000259786816870648, -1.4142135623730951),
         (1.4142135623730951, -0.00000000000000034638242249419736),
     ])
-    circle = rotated.maximum_inscribed_circle(tolerance=1e-12)
+    circle = rotated.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
     assert gm.covers(rotated, circle)
 
 
 def test_maximum_inscribed_radius_certifies_the_square_inradius() -> None:
     source = gm.box(0, 0, 4, 4)
     tolerance = 1e-12
-    radius = Fraction(source.maximum_inscribed_radius(tolerance=tolerance))
+    radius = Fraction(source.maximum_inscribed_circle(tolerance=tolerance).radius)
     error = Fraction(tolerance)
     assert Fraction(2) - error <= radius <= Fraction(2)
 
@@ -89,23 +96,25 @@ def test_maximum_inscribed_circle_keeps_a_deterministic_parallel_plateau_center(
     source = gm.box(0, 0, 8, 4)
     first = source.maximum_inscribed_circle(tolerance=1e-12)
     second = source.maximum_inscribed_circle(tolerance=1e-12)
-    assert first.to_wkt() == second.to_wkt()
-    assert source.maximum_inscribed_radius(tolerance=1e-12) == 2.0
-    assert first.centroid().x == pytest.approx(4.0)
-    assert first.centroid().y == pytest.approx(2.0)
+    assert first.to_polygon().to_wkt() == second.to_polygon().to_wkt()
+    assert first.radius == 2.0
+    assert first.center.x == 4.0
+    assert first.center.y == 2.0
 
 
 def test_maximum_inscribed_radius_certifies_the_reflex_l_shape_analytically() -> None:
     source = gm.Polygon([(0, 0), (5, 0), (5, 2), (2, 2), (2, 5), (0, 5)])
     tolerance = 1e-9
-    radius = Fraction(source.maximum_inscribed_radius(tolerance=tolerance))
+    radius = Fraction(source.maximum_inscribed_circle(tolerance=tolerance).radius)
     error = Fraction(tolerance)
     # The two outer sides meet the reflex corner at 45 degrees:
     # r = 4 - 2 * sqrt(2). These squared inequalities
     # avoid importing a geometric oracle or rounding the irrational answer.
     assert (4 - radius) ** 2 >= 8
     assert (4 - radius - error) ** 2 <= 8
-    assert gm.covers(source, source.maximum_inscribed_circle(tolerance=tolerance))
+    assert gm.covers(
+        source, source.maximum_inscribed_circle(tolerance=tolerance).to_polygon()
+    )
 
 
 def test_maximum_inscribed_circle_selects_the_first_equal_multipart_winner() -> None:
@@ -114,19 +123,21 @@ def test_maximum_inscribed_circle_selects_the_first_equal_multipart_winner() -> 
     )
     first = source.maximum_inscribed_circle(tolerance=1e-9)
     second = source.maximum_inscribed_circle(tolerance=1e-9)
-    assert first.to_wkt() == second.to_wkt()
-    assert first.centroid().x < 4.0
-    assert source.maximum_inscribed_radius(tolerance=1e-9) <= 2.0
+    assert first.to_polygon().to_wkt() == second.to_polygon().to_wkt()
+    assert first.center.x < 4.0
+    assert first.radius <= 2.0
 
 
 def test_maximum_inscribed_circle_handles_reciprocal_coordinate_scales() -> None:
     source = gm.box(-1e150, -1e-150, 1e150, 1e-150)
     tolerance = 1e-153
-    radius = Fraction(source.maximum_inscribed_radius(tolerance=tolerance))
+    radius = Fraction(source.maximum_inscribed_circle(tolerance=tolerance).radius)
     expected = Fraction(1e-150)
     error = Fraction(tolerance)
     assert expected - error <= radius <= expected
-    assert gm.covers(source, source.maximum_inscribed_circle(tolerance=tolerance))
+    assert gm.covers(
+        source, source.maximum_inscribed_circle(tolerance=tolerance).to_polygon()
+    )
 
 
 def test_maximum_inscribed_radius_refines_a_tiny_reflex_corner() -> None:
@@ -140,9 +151,9 @@ def test_maximum_inscribed_radius_refines_a_tiny_reflex_corner() -> None:
         (0, 5 * scale),
     ])
     tolerance = 1e-303
-    radius = Fraction(source.maximum_inscribed_radius(tolerance=tolerance)) / Fraction(
-        scale
-    )
+    radius = Fraction(
+        source.maximum_inscribed_circle(tolerance=tolerance).radius
+    ) / Fraction(scale)
     error = Fraction(tolerance) / Fraction(scale)
     assert (4 - radius) ** 2 >= 8
     assert (4 - radius - error) ** 2 <= 8
@@ -158,27 +169,27 @@ def test_maximum_inscribed_circle_reports_unrepresentable_tight_translated_accur
         2e-300,
     )
     with pytest.raises(OverflowError):
-        source.maximum_inscribed_radius(tolerance=1e-301)
-    assert source.maximum_inscribed_radius(tolerance=1e-300) == 0.0
-    point = source.maximum_inscribed_circle(tolerance=1e-300)
+        _ = source.maximum_inscribed_circle(tolerance=1e-301).radius
+    assert source.maximum_inscribed_circle(tolerance=1e-300).radius == 0.0
+    point = source.maximum_inscribed_circle(tolerance=1e-300).to_polygon()
     assert point.geometry_type == 'Point'
     assert gm.covers(source, point)
 
 
 def test_maximum_inscribed_circle_radius_matches_the_emitted_polygon() -> None:
     source = gm.box(0, 0, 8, 4)
-    circle = source.maximum_inscribed_circle(tolerance=1e-12)
-    radius = source.maximum_inscribed_radius(tolerance=1e-12)
+    circle = source.maximum_inscribed_circle(tolerance=1e-12).to_polygon()
+    radius = source.maximum_inscribed_circle(tolerance=1e-12).radius
     inferred = math.sqrt(2.0 * circle.area / (64.0 * math.sin(2.0 * math.pi / 64.0)))
     assert inferred == pytest.approx(radius, abs=1e-12)
 
 
-def test_maximum_inscribed_circle_centroid_and_radius_recover_the_disk() -> None:
+def test_maximum_inscribed_circle_center_and_radius_describe_one_disk() -> None:
     source = gm.Polygon([(0, 0), (5, 0), (5, 2), (2, 2), (2, 5), (0, 5)])
     tolerance = 1e-12
     disk = source.maximum_inscribed_circle(tolerance=tolerance)
-    center = disk.centroid()
-    radius = source.maximum_inscribed_radius(tolerance=tolerance)
+    center = disk.center
+    radius = disk.radius
 
     assert gm.covers(source, center)
     assert gm.distance(center, source.boundary()) == pytest.approx(
@@ -190,8 +201,8 @@ def test_maximum_inscribed_circle_omitted_and_explicit_tolerances_are_certified(
     None
 ):
     source = gm.Polygon([(0, 0), (5, 0), (5, 2), (2, 2), (2, 5), (0, 5)])
-    omitted = source.maximum_inscribed_radius()
-    explicit = source.maximum_inscribed_radius(tolerance=1e-3)
+    omitted = source.maximum_inscribed_circle().radius
+    explicit = source.maximum_inscribed_circle(tolerance=1e-3).radius
     expected = 4.0 - 2.0 * math.sqrt(2.0)
     assert expected - 1e-3 <= explicit <= expected
     assert expected - 0.01 <= omitted <= expected
@@ -204,4 +215,4 @@ def test_maximum_inscribed_circle_rejects_a_disk_below_the_coordinate_spacing() 
     base = 2.0**60
     source = gm.Polygon([(base, base), (base + 2.0**20, base), (base, base + 2.0**12)])
     with pytest.raises(OverflowError, match='contained geometry'):
-        source.maximum_inscribed_circle()
+        source.maximum_inscribed_circle().to_polygon()

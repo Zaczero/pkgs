@@ -192,7 +192,7 @@ def test_planar_radius_matches_independent_exact_support_oracle(name: str) -> No
     assert expected is not None
     expected_radius = round_sqrt(expected.radius_squared)
     for order in permutations_for(points):
-        actual = gm.MultiPoint(order).minimum_bounding_radius(unit='planar')
+        actual = gm.MultiPoint(order).minimum_bounding_circle(unit='planar').radius
         assert actual.hex() == expected_radius.hex(), (
             name,
             order,
@@ -217,7 +217,7 @@ def test_planar_circle_is_valid_and_exactly_source_enclosing(name: str) -> None:
     points = CASES[name]
     expected = exhaustive(points)
     assert expected is not None and expected.radius_squared > 0
-    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar')
+    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar').to_polygon()
     assert circle.geometry_type == 'Polygon'
     assert circle.is_valid
     vertices = [q((x, y)) for x, y in list(circle.coords)[:-1]]
@@ -239,7 +239,9 @@ def test_planar_circle_is_valid_and_exactly_source_enclosing(name: str) -> None:
 @pytest.mark.parametrize('name', ['one', 'duplicates-signedzero'])
 def test_zero_exact_radius_returns_the_source_point(name: str) -> None:
     source = CASES[name][0]
-    result = gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')
+    result = (
+        gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar').to_polygon()
+    )
     assert result.geometry_type == 'Point'
     assert (result.x, result.y) == (float(source[0]), float(source[1]))
 
@@ -260,6 +262,21 @@ def assert_circumscribes(circle: gm.Geometry, expected: OracleCircle) -> None:
     )
 
 
+def test_retained_disk_does_not_reconstruct_its_proof_from_the_rounded_center() -> None:
+    points = CASES['adjacent-at-one']
+    expected = exhaustive(points)
+    assert expected is not None
+    circle = gm.MultiPoint(points).minimum_bounding_circle()
+    assert circle.center.x == 1.0
+    assert circle.radius == 2.0**-53
+    # The exact midpoint is halfway between adjacent floats. Its rounded center
+    # and rounded radius do not enclose the right support, but the retained disk does.
+    assert gm.distance(circle.center, gm.Point(*points[1])) > circle.radius
+    assert_circumscribes(circle.to_polygon(), expected)
+    assert circle.center.x == 1.0
+    assert circle.radius == 2.0**-53
+
+
 @pytest.mark.parametrize(
     'name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute']
 )
@@ -269,13 +286,17 @@ def test_planar_circle_inflates_a_disk_below_the_coordinate_spacing(name: str) -
     # the rounded ring certifies, which a one-ulp search never reached.
     expected = exhaustive(CASES[name])
     assert expected is not None
-    circle = gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')
+    circle = (
+        gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar').to_polygon()
+    )
     assert_circumscribes(circle, expected)
 
 
 def test_planar_circle_rejects_a_positive_radius_below_the_minimum_subnormal() -> None:
     with pytest.raises(OverflowError, match='contained geometry') as caught:
-        gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(unit='planar')
+        gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(
+            unit='planar'
+        ).to_polygon()
     assert caught.value.operation == 'minimum_bounding_circle'
 
 
@@ -284,22 +305,23 @@ def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
     expected = exhaustive(points)
     assert expected is not None
     assert_circumscribes(
-        gm.MultiPoint(points).minimum_bounding_circle(unit='planar'), expected
+        gm.MultiPoint(points).minimum_bounding_circle(unit='planar').to_polygon(),
+        expected,
     )
 
 
 def test_planar_circle_rejects_overflowed_output_without_changing_radius() -> None:
     points = gm.MultiPoint(CASES['max-diagonal-overflow'])
-    assert math.isinf(points.minimum_bounding_radius(unit='planar'))
+    assert math.isinf(points.minimum_bounding_circle(unit='planar').radius)
     with pytest.raises(OverflowError, match='contained geometry'):
-        points.minimum_bounding_circle(unit='planar')
+        points.minimum_bounding_circle(unit='planar').to_polygon()
 
 
 def test_planar_circle_emits_a_full_range_finite_diameter() -> None:
     points = CASES['max-diameter']
     expected = exhaustive(points)
     assert expected is not None
-    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar')
+    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar').to_polygon()
     assert circle.geometry_type == 'Polygon'
     vertices = [q((x, y)) for x, y in list(circle.coords)[:-1]]
     assert len(vertices) == 64
@@ -319,12 +341,12 @@ def test_planar_circle_emits_a_full_range_finite_diameter() -> None:
 def test_planar_radius_array_matches_scalar_and_preserves_missing_rows() -> None:
     points = gm.MultiPoint(CASES['acute'])
     array = gm.GeometryArray([points, None, gm.LineString([])])
-    values = array.minimum_bounding_radius(unit='planar')
+    values = array.minimum_bounding_circle(unit='planar').radius
     np.testing.assert_array_equal(
         values.view(np.uint64),
         np.array(
             [
-                np.float64(points.minimum_bounding_radius(unit='planar')).view(
+                np.float64(points.minimum_bounding_circle(unit='planar').radius).view(
                     np.uint64
                 ),
                 np.float64(np.nan).view(np.uint64),
@@ -345,5 +367,7 @@ def test_planar_radius_matches_every_permutation_of_small_grid_subsets() -> None
             )
             expected_radius = round_sqrt(expected.radius_squared)
             for order in permutations(subset):
-                actual = gm.MultiPoint(order).minimum_bounding_radius(unit='planar')
+                actual = (
+                    gm.MultiPoint(order).minimum_bounding_circle(unit='planar').radius
+                )
                 assert actual.hex() == expected_radius.hex(), (subset, order)

@@ -201,7 +201,7 @@ assert shape.topological_dimension == 0
 assert shape.has_z and shape.has_m and not shape.is_empty
 assert shape.min_z == 7.0
 assert shape.max_m == 29.0
-assert shape.minimum_bounding_circle().geometry_type == 'Point'
+assert shape.minimum_bounding_circle().to_polygon().geometry_type == 'Point'
 bounds = shape.bounds
 assert all(math.copysign(1.0, bounds[i]) == 1.0 for i in (0, 2))
 assert all(math.copysign(1.0, bounds[i]) == -1.0 for i in (1, 3))
@@ -226,11 +226,10 @@ print(sys.argv[1])
         'offset_curve',
         'polylabel',
         'maximum_inscribed_circle',
-        'maximum_inscribed_radius',
         'minimum_clearance',
         'minimum_clearance_line',
         'minimum_bounding_circle',
-        'minimum_bounding_radius',
+        'minimum_width',
         'concave_hull',
         'estimate_local_crs',
     ],
@@ -258,14 +257,18 @@ def run(value):
     method = getattr(value, operation)
     if operation in ('buffer', 'offset_curve'):
         return method(100.0)
-    if operation in ('polylabel', 'maximum_inscribed_circle', 'maximum_inscribed_radius'):
+    if operation == 'maximum_inscribed_circle':
+        return method(tolerance=1.0).to_polygon()
+    if operation == 'polylabel':
         return method(tolerance=1.0)
+    if operation == 'minimum_bounding_circle':
+        return method().to_polygon()
     if operation == 'concave_hull':
         return method(concavity=10.0)
     return method()
 
 expected = run(source)
-if operation in ('polylabel', 'maximum_inscribed_circle', 'maximum_inscribed_radius'):
+if operation in ('polylabel', 'maximum_inscribed_circle'):
     # These operations admit Polygon/MultiPolygon, not collections; shared
     # preparation must reach the type error without occurrence expansion.
     with pytest.raises(gm.GeometryTypeError, match='a Polygon or MultiPolygon is required'):

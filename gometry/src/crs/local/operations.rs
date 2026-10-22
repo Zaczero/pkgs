@@ -1,11 +1,9 @@
-use std::ops::ControlFlow;
-
 use super::frame::LOCAL_SCALE_ERROR_LIMIT;
 use super::input::{LocalInputPurpose, PreparedLocalInput};
 use crate::error::Result;
 use crate::geometry::{
-    GeodesicMetric as _, Point, PointKey, Shape, ShapeCountQuery, VertexProvenance,
-    emit_from_original, geometric_xy_cmp, shape_from_selected_hull, smallest_enclosing_circle,
+    Point, PointKey, Shape, ShapeCountQuery, VertexProvenance, emit_from_original,
+    geometric_xy_cmp, shape_from_selected_hull,
 };
 
 /// CRS-aware constructive operation with one generated-work budget threaded
@@ -53,37 +51,6 @@ pub(crate) fn metric_optional_constructive_shape(
             geodesic_local_shape(shape, crs, true, None, state, &mut budget, |shape, _| {
                 kernel(shape, tolerance)
             })
-        },
-    }
-}
-
-/// CRS-aware maximum-inscribed-circle construction. Geographic results run
-/// the planar kernel in a local projection and retain that operation's
-/// approximation contract rather than asserting source-frame containment.
-pub(crate) fn metric_maximum_inscribed_circle(
-    model: &crate::crs::MetricModel,
-    crs: Option<&str>,
-    shape: &Shape,
-    tolerance: Option<f64>,
-) -> Result<Shape> {
-    match model {
-        crate::crs::MetricModel::Planar { to_metre } => {
-            shape.maximum_inscribed_circle(tolerance.map(|value| value / to_metre.get()))
-        },
-        crate::crs::MetricModel::Geodesic { state, .. } => {
-            let mut budget = crate::geometry::ExpansionBudget::new(
-                "maximum_inscribed_circle",
-                "quadrant_segments",
-            );
-            geodesic_local_shape(
-                shape,
-                crs,
-                true,
-                None,
-                state,
-                &mut budget,
-                |shape, budget| shape.maximum_inscribed_circle_in_frame(tolerance, false, budget),
-            )
         },
     }
 }
@@ -264,130 +231,22 @@ pub(crate) fn geodesic_by_identity(
     )
 }
 
-/// CRS-aware minimum enclosing circle. Planar/projected frames build the circle
-/// in the receiver coordinates after scaling the requested metric; geographic
-/// frames use the same local-projection approximation as metric constructive
-/// geometry, so the returned shape is tagged in the source CRS.
-pub(crate) fn metric_minimum_bounding_circle(
+#[cfg(test)]
+fn metric_minimum_bounding_circle(
     model: &crate::crs::MetricModel,
     crs: Option<&str>,
     shape: &Shape,
 ) -> Result<Shape> {
-    match model {
-        crate::crs::MetricModel::Planar { .. } => shape.minimum_bounding_circle(),
-        // The bounding circle is an approximate bounding primitive, not a
-        // distance-accurate metric op, so it uses the local projection WITHOUT
-        // the scale-error fit check (`checked = false`) and stays usable at
-        // city-to-continental extent — unlike buffer/offset above.
-        crate::crs::MetricModel::Geodesic { state, .. } => {
-            if matches!(shape, Shape::Point(_)) {
-                return crate::crs::with_ellipsoid_metric_at(
-                    crs.unwrap_or("EPSG:4326"),
-                    &[shape],
-                    state,
-                    |_| Ok(shape.clone()),
-                );
-            }
-            let mut budget =
-                crate::geometry::ExpansionBudget::new("minimum_bounding_circle", "realization");
-            geodesic_local_shape(
-                shape,
-                crs,
-                false,
-                None,
-                state,
-                &mut budget,
-                crate::geometry::Shape::minimum_bounding_circle_budgeted,
-            )
-        },
-    }
-}
-
-/// CRS-aware minimum enclosing radius. Planar/projected results follow the
-/// metric model (native linear units by default; SI meters under
-/// ``unit='meters'``). Geographic point sets retain the exact ellipsoidal
-/// midpoint radius for two distinct sites and the ellipsoidal support-distance
-/// calculation for larger sets. Line and ring inputs use the shared prepared
-/// local projection, including certified chart-edge refinement, so their
-/// radius matches the corresponding local-projection circle construction.
-pub(crate) fn metric_minimum_bounding_radius(
-    model: &crate::crs::MetricModel,
-    shape: &Shape,
-) -> Result<f64> {
-    match model {
-        crate::crs::MetricModel::Planar { to_metre } => {
-            let points = shape.try_unique_xy_points()?;
-            if points.is_empty() {
-                return Ok(f64::NAN);
-            }
-            let circle = smallest_enclosing_circle(&points)?;
-            circle
-                .certified_disk(&points)?
-                .radius_in_scale(to_metre.get())
-        },
-        crate::crs::MetricModel::Geodesic {
-            crs: geodesic_crs,
-            state,
-            ..
-        } => geodesic_minimum_bounding_radius(shape, geodesic_crs, state),
-    }
-}
-
-fn geodesic_minimum_bounding_radius(
-    shape: &Shape,
-    crs: &str,
-    state: &crate::crs::RuntimeState,
-) -> Result<f64> {
-    let has_edges = matches!(
-        shape.for_each_first_segment_chain(crate::geometry::RunIdentity::XY, |chain| {
-            if chain.len() >= 2 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        }),
-        ControlFlow::Break(())
-    );
-    if has_edges {
-        let mut budget =
-            crate::geometry::ExpansionBudget::new("minimum_bounding_radius", "input_refinement");
-        let prepared = PreparedLocalInput::prepare(
-            shape,
-            &[shape],
-            crs,
-            None,
-            LocalInputPurpose::BoundarySupport,
-            state,
-            &mut budget,
-        )?
-        .expect("edge-bearing input prepares a local frame");
-        let points = prepared.projected_working().try_unique_xy_points()?;
-        if points.is_empty() {
-            return Ok(f64::NAN);
-        }
-        let circle = smallest_enclosing_circle(&points)?;
-        return circle.certified_disk(&points)?.radius();
-    }
-
-    let points = shape.try_unique_xy_points()?;
-    match points.as_slice() {
-        [] => Ok(f64::NAN),
-        [_] => Ok(0.0),
-        [left, right] => crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
-            Ok(metric.segment_length(*left, *right) / 2.0)
-        }),
-        _ => {
-            let circle = smallest_enclosing_circle(&points)?;
-            let center = circle.certified_disk(&points)?.center()?;
-            crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
-                let mut radius: f64 = 0.0;
-                for point in points {
-                    radius = radius.max(metric.segment_length(center, point));
-                }
-                Ok(radius)
-            })
-        },
-    }
+    super::FramedCircle::solve(
+        model,
+        crs,
+        shape,
+        None,
+        false,
+        None,
+        crate::geometry::TopologyDomain::Cartesian,
+    )?
+    .to_polygon(std::num::NonZeroU32::new(16).unwrap())
 }
 
 /// Run a meter-based planar operation in the shape's best local projection,
@@ -500,7 +359,9 @@ fn run_local_projected_operation(
 mod tests {
     use super::*;
     use crate::crs::runtime_state_snapshot;
-    use crate::geometry::{BufferCapStyle, BufferJoinStyle, CoordSeq, LineSeq, XY};
+    use crate::geometry::{
+        BufferCapStyle, BufferJoinStyle, CoordSeq, GeodesicMetric as _, LineSeq, XY,
+    };
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
@@ -640,7 +501,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-    fn minimum_bounding_radius_keeps_point_sets_geodesic_and_lines_local() {
+    fn bounding_circle_points_keep_the_ellipsoidal_two_point_solution() {
         let coordinates = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.0, 1.0)]).unwrap();
         let point_set = Shape::MultiPoint(
             crate::geometry::MultiPoint::from_coordseq(coordinates.clone()).unwrap(),
@@ -648,26 +509,47 @@ mod tests {
         let line = Shape::LineString(LineSeq::try_new(coordinates).unwrap());
         let state = runtime_state_snapshot().unwrap();
 
-        let exact_point_radius =
-            super::geodesic_minimum_bounding_radius(&point_set, "EPSG:4326", &state).unwrap();
-        let edge_radius =
-            super::geodesic_minimum_bounding_radius(&line, "EPSG:4326", &state).unwrap();
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let point_radius = super::super::FramedCircle::solve(
+            &model,
+            Some("EPSG:4326"),
+            &point_set,
+            None,
+            false,
+            None,
+            crate::geometry::TopologyDomain::Cartesian,
+        )
+        .unwrap()
+        .radius()
+        .unwrap();
+        let edge_radius = super::super::FramedCircle::solve(
+            &model,
+            Some("EPSG:4326"),
+            &line,
+            None,
+            false,
+            None,
+            crate::geometry::TopologyDomain::Cartesian,
+        )
+        .unwrap()
+        .radius()
+        .unwrap();
         let local = PreparedLocalInput::select_local_frame(&[&line], "EPSG:4326", &state).unwrap();
         let projected =
             crate::crs::transform_at(&line, "EPSG:4326", &local.definition, &state).unwrap();
         let expected_edge_radius = projected.minimum_bounding_radius().unwrap();
 
-        let exact_geodesic_distance =
+        let expected_point_radius =
             crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&point_set], &state, |metric| {
-                Ok(metric.segment_length(
-                    crate::geometry::Point::new_raw_xy(0.0, 0.0),
-                    crate::geometry::Point::new_raw_xy(0.0, 1.0),
-                ))
+                Ok(
+                    metric.segment_length(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(0.0, 1.0))
+                        / 2.0,
+                )
             })
             .unwrap();
-        assert_eq!(exact_point_radius, exact_geodesic_distance / 2.0);
+        assert_eq!(point_radius, expected_point_radius);
         assert_eq!(edge_radius, expected_edge_radius);
-        assert!((edge_radius - exact_point_radius).abs() > 1.0);
+        assert!((point_radius - edge_radius).abs() > 1.0);
     }
 
     #[test]

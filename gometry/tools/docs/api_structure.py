@@ -318,7 +318,17 @@ PAGES: tuple[Page, ...] = (
         'results',
         'Result types',
         'Named result values and aligned feature records returned by multi-output operations.',
-        (section('ValidationReport', 'Extremes', 'Features', 'PolygonizeResult'),),
+        (
+            section(
+                'Circle',
+                'CircleArray',
+                'ValidationReport',
+                'Extremes',
+                'Features',
+                'PolygonizeResult',
+            ),
+        ),
+        (('Constructive operations', '../guide/constructive.md'),),
     ),
     Page(
         'errors',

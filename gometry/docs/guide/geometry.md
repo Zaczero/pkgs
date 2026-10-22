@@ -627,8 +627,12 @@ derivable and drop only the axis that cannot be sourced:
   follows its first operand, while the other set operations use the union of
   their operands' axes.
 - Operations that **compute brand-new points** — [`centroid`][gometry.Geometry.centroid], [`point_on_surface`][gometry.Geometry.point_on_surface], [`envelope`][gometry.Geometry.envelope],
-  [`buffer`][gometry.Geometry.buffer], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
+  [`buffer`][gometry.Geometry.buffer], `voronoi_*`,
   [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.
+- Circle solutions from [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle]
+  and [`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] have
+  XY centers and XY polygon realizations. They preserve the source CRS and
+  coordinate epoch, but do not invent Z/M values.
 
 ```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm

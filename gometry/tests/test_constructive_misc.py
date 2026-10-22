@@ -44,12 +44,12 @@ def test_ecosystem_parity_ops() -> None:
     assert line.geometry_type == 'LineString'
     assert line.length == pytest.approx(2.0)
     assert gm.equals(gm.shortest_line(gm.box(0, 0, 1, 1), gm.box(3, 0, 4, 1)), line)
-    mic = gm.box(0, 0, 4, 2).maximum_inscribed_circle(tolerance=0.01)
+    mic = gm.box(0, 0, 4, 2).maximum_inscribed_circle(tolerance=0.01).to_polygon()
     assert mic.geometry_type == 'Polygon'
-    assert gm.box(0, 0, 4, 2).maximum_inscribed_radius(tolerance=0.01) == pytest.approx(
-        1.0, abs=0.02
-    )
-    assert gm.box(0, 0, 4, 2).maximum_inscribed_radius() == pytest.approx(
+    assert gm.box(0, 0, 4, 2).maximum_inscribed_circle(
+        tolerance=0.01
+    ).radius == pytest.approx(1.0, abs=0.02)
+    assert gm.box(0, 0, 4, 2).maximum_inscribed_circle().radius == pytest.approx(
         1.0, abs=1e-06
     )
 
@@ -64,15 +64,17 @@ def test_polylabel_family_on_empty_polygonal_input() -> None:
     for wkt in ('POLYGON EMPTY', 'MULTIPOLYGON EMPTY', 'MULTIPOLYGON Z EMPTY'):
         empty = gm.from_wkt(wkt)
         assert empty.polylabel().to_wkt() == 'POINT EMPTY', wkt
-        assert empty.maximum_inscribed_circle().to_wkt() == 'POLYGON EMPTY', wkt
-        assert math.isnan(empty.maximum_inscribed_radius()), wkt
+        assert (
+            empty.maximum_inscribed_circle().to_polygon().to_wkt() == 'POLYGON EMPTY'
+        ), wkt
+        assert math.isnan(empty.maximum_inscribed_circle().radius), wkt
 
 
 def test_polylabel_handles_extreme_aspect_ratio_with_scale_aware_default() -> None:
     ribbon = gm.box(0.0, 0.0, 1.0e12, 1.0)
     pole = ribbon.polylabel()
     assert (pole.x, pole.y) == pytest.approx((5.0e11, 0.5))
-    assert ribbon.maximum_inscribed_radius() == pytest.approx(0.5)
+    assert ribbon.maximum_inscribed_circle().radius == pytest.approx(0.5)
 
 
 def test_polylabel_refines_a_right_triangle_to_its_analytic_inradius() -> None:
@@ -102,7 +104,7 @@ def test_minimum_bounding_circle_polygon_contains_support_points() -> None:
         (math.cos(2.111), math.sin(2.111)),
         (math.cos(4.205), math.sin(4.205)),
     ])
-    circle = points.minimum_bounding_circle()
+    circle = points.minimum_bounding_circle().to_polygon()
     assert all(gm.covers(circle, point) for point in points.parts)
 
 
@@ -475,7 +477,7 @@ def _circle_center_radius(circle):
     """Recover the (cx, cy, radius) of a bounding-circle Polygon from its
     64-gon vertices (centroid + maximum polygon-vertex distance). The polygon
     is circumscribed, so this is intentionally larger than the exact radius
-    returned by ``minimum_bounding_radius``.
+    exposed by ``minimum_bounding_circle().radius``.
     """
     verts = list(circle.coords)[:-1]
     cx = sum((x for x, _ in verts)) / len(verts)
@@ -485,70 +487,89 @@ def _circle_center_radius(circle):
 
 
 def test_minimum_bounding_circle_is_smallest_enclosing() -> None:
-    circle = gm.box(0, 0, 2, 2).minimum_bounding_circle()
+    circle = gm.box(0, 0, 2, 2).minimum_bounding_circle().to_polygon()
     assert circle.geometry_type == 'Polygon'
     cx, cy, radius = _circle_center_radius(circle)
     assert (round(cx, 9), round(cy, 9)) == (1.0, 1.0)
-    assert gm.box(0, 0, 2, 2).minimum_bounding_radius() == pytest.approx(math.sqrt(2))
+    assert gm.box(0, 0, 2, 2).minimum_bounding_circle().radius == pytest.approx(
+        math.sqrt(2)
+    )
     assert radius == pytest.approx(math.sqrt(2) / math.cos(math.pi / 64.0))
     points = gm.MultiPoint([(0, 0), (5, 1), (2, 4), (1, 1), (3, 3)])
-    cx, cy, radius = _circle_center_radius(points.minimum_bounding_circle())
+    cx, cy, radius = _circle_center_radius(
+        points.minimum_bounding_circle().to_polygon()
+    )
     for x, y in [(0, 0), (5, 1), (2, 4), (1, 1), (3, 3)]:
         assert math.hypot(x - cx, y - cy) <= radius * (1 + 1e-09)
-    assert gm.Point(3, 4).minimum_bounding_circle().to_wkt() == 'POINT (3 4)'
     assert (
-        gm.from_wkt('MULTIPOINT ((1 1), (1 1))').minimum_bounding_circle().to_wkt()
+        gm.Point(3, 4).minimum_bounding_circle().to_polygon().to_wkt() == 'POINT (3 4)'
+    )
+    assert (
+        gm
+        .from_wkt('MULTIPOINT ((1 1), (1 1))')
+        .minimum_bounding_circle()
+        .to_polygon()
+        .to_wkt()
         == 'POINT (1 1)'
     )
-    assert gm.LineString([]).minimum_bounding_circle().to_wkt() == 'POLYGON EMPTY'
+    assert (
+        gm.LineString([]).minimum_bounding_circle().to_polygon().to_wkt()
+        == 'POLYGON EMPTY'
+    )
     _, _, r_col = _circle_center_radius(
-        gm.LineString([(0, 0), (1, 0), (4, 0)]).minimum_bounding_circle()
+        gm.LineString([(0, 0), (1, 0), (4, 0)]).minimum_bounding_circle().to_polygon()
     )
     assert r_col == pytest.approx(2.0 / math.cos(math.pi / 64.0))
     assert gm.LineString([
         (0, 0),
         (1, 0),
         (4, 0),
-    ]).minimum_bounding_radius() == pytest.approx(2.0)
-    assert math.isnan(gm.LineString([]).minimum_bounding_radius())
+    ]).minimum_bounding_circle().radius == pytest.approx(2.0)
+    assert math.isnan(gm.LineString([]).minimum_bounding_circle().radius)
     shapely = pytest.importorskip('shapely')
     array = gm.GeometryArray([points], crs=3857)
-    assert array.minimum_bounding_circle().crs == gm.CRS('EPSG:3857')
-    assert array.minimum_bounding_circle()[0].geometry_type == 'Polygon'
+    assert array.minimum_bounding_circle().to_polygon().crs == gm.CRS('EPSG:3857')
+    assert array.minimum_bounding_circle().to_polygon()[0].geometry_type == 'Polygon'
     np.testing.assert_allclose(
-        array.minimum_bounding_radius(), [points.minimum_bounding_radius()]
+        array.minimum_bounding_circle().radius,
+        [points.minimum_bounding_circle().radius],
     )
-    free = cast('gm.Geometry', points.minimum_bounding_circle())
+    free = cast('gm.Geometry', points.minimum_bounding_circle().to_polygon())
     assert free.area == pytest.approx(
         shapely.minimum_bounding_circle(shapely.from_wkt(points.to_wkt())).area,
         rel=0.02,
     )
     lifted = gm.Point(0, 0, z=1)
-    assert lifted.minimum_bounding_circle().to_wkt() == 'POINT (0 0)'
+    assert lifted.minimum_bounding_circle().to_polygon().to_wkt() == 'POINT (0 0)'
     _, _, r_huge = _circle_center_radius(
-        gm.MultiPoint([(1e155, 0), (0, 1e155), (-1e155, 0)]).minimum_bounding_circle()
+        gm
+        .MultiPoint([(1e155, 0), (0, 1e155), (-1e155, 0)])
+        .minimum_bounding_circle()
+        .to_polygon()
     )
     assert r_huge == pytest.approx(1e155 / math.cos(math.pi / 64.0), rel=1e-10)
 
 
 def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
     # The bounding circle is an approximate bounding primitive, usable at
-    # city-to-continental extent: a 1° span builds a valid geodesic circle
+    # city-to-continental extent: a 1° span builds a local-projection circle
     # (it does NOT go through buffer/offset's scale-error fit check).
     points = gm.MultiPoint([(0, 0), (0, 1)], crs=4326)
-    radius = points.minimum_bounding_radius()
+    radius = points.minimum_bounding_circle().radius
     assert radius == pytest.approx(
         gm.distance(gm.Point(0, 0, crs=4326), gm.Point(0, 1, crs=4326)) / 2.0
     )
-    assert points.minimum_bounding_radius(unit='planar') == pytest.approx(0.5)
+    assert points.minimum_bounding_circle(unit='planar').radius == pytest.approx(0.5)
     np.testing.assert_allclose(
-        gm.GeometryArray([points]).minimum_bounding_radius(),
+        gm.GeometryArray([points]).minimum_bounding_circle().radius,
         [radius],
     )
-    circle = points.minimum_bounding_circle()
+    circle = points.minimum_bounding_circle().to_polygon()
     assert circle.crs == gm.CRS('EPSG:4326')
     assert circle.geometry_type == 'Polygon'
-    assert points.minimum_bounding_circle(unit='planar').bounds == pytest.approx((
+    assert points.minimum_bounding_circle(
+        unit='planar'
+    ).to_polygon().bounds == pytest.approx((
         -0.5,
         0.0,
         0.5,
@@ -557,9 +578,9 @@ def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
 
     edge = gm.LineString([(0.0, 0.0), (0.0, 1.0)], crs=4326)
     edge_local = edge.to_crs(edge.estimate_local_crs())
-    edge_radius = edge.minimum_bounding_radius()
+    edge_radius = edge.minimum_bounding_circle().radius
     assert edge_radius == pytest.approx(
-        edge_local.minimum_bounding_radius(unit='planar'),
+        edge_local.minimum_bounding_circle(unit='planar').radius,
         rel=1e-12,
     )
     assert abs(edge_radius - radius) > 1.0
@@ -575,7 +596,7 @@ def test_minimum_bounding_radius_does_not_accept_relative_containment_slack() ->
     # sqrt(1 + y**2), which rounds to 1.0 in binary64. A relative containment
     # tolerance of 1e-12 instead accepts the third point inside the diameter
     # and reports its distance from the diameter midpoint, 1 + delta.
-    assert points.minimum_bounding_radius() == 1.0
+    assert points.minimum_bounding_circle().radius == 1.0
 
 
 def test_minimum_bounding_radius_preserves_subnormal_extrema_scale() -> None:
@@ -587,7 +608,7 @@ def test_minimum_bounding_radius_preserves_subnormal_extrema_scale() -> None:
         ([(-1e-160, 0.0), (0.0, 0.0), (1e-160, 0.0)], 1e-160),
     )
     for coordinates, expected in cases:
-        assert gm.MultiPoint(coordinates).minimum_bounding_radius() == expected
+        assert gm.MultiPoint(coordinates).minimum_bounding_circle().radius == expected
 
 
 def test_geographic_concave_hull_preserves_selected_input_vertices_exactly() -> None:

@@ -96,9 +96,9 @@ use broadcast::{
     DistanceUnit, GeometryInput, LonLatPointsError, broadcast2, broadcast2_geometry,
     classify_input, classify_required, coerce_geometry, ensure_same_len, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, lonlat_points, lonlat_shape,
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points_resolved, metric_shortest_line_resolved, pair_distance_geodesic,
-    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, parse_wkb_geometry, py_bool,
+    metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points_resolved,
+    metric_shortest_line_resolved, pair_distance_geodesic, pair_distance_planar,
+    pair_dwithin_geodesic, pair_dwithin_planar, parse_wkb_geometry, py_bool,
     relate_pattern_broadcast, relate_string_broadcast, resolve_metric, rows_err,
     splitter_points_from_array, xy_predicate,
 };
@@ -161,11 +161,11 @@ use py::support::{
     owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
     parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision,
     parse_spatial_index_handle, point_from_bounds, point_xy, py_polygonize_full, py_text_borrow,
-    py_to_json_value, require_geojson_crs, validate_buffer_miter_limit,
-    validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
-    validate_dwithin_distance, validate_dwithin_distance_arg, validate_equals_exact_tolerance,
-    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations,
-    voronoi_edge_lines_flatten, voronoi_flatten,
+    py_to_json_value, require_geojson_crs, validate_buffer_miter_limit, validate_densify_fraction,
+    validate_distance, validate_dwithin_distance, validate_dwithin_distance_arg,
+    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
+    validate_quadrant_segments, validate_smooth_iterations, voronoi_edge_lines_flatten,
+    voronoi_flatten,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};

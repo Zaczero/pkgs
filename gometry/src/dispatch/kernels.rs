@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::local::{
-    metric_concave_hull, metric_constructive_shape_budgeted, metric_maximum_inscribed_circle,
-    metric_minimum_bounding_circle, metric_minimum_bounding_radius,
-    metric_optional_constructive_shape,
+    metric_concave_hull, metric_constructive_shape_budgeted, metric_optional_constructive_shape,
 };
 use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
@@ -27,8 +25,7 @@ use crate::geometry::{
 use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
-    line_substring_shape_m, metric_maximum_inscribed_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line,
+    line_substring_shape_m, metric_minimum_clearance, metric_minimum_clearance_line,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -451,57 +448,56 @@ pub(crate) fn unary_polylabel(
     publish_planar_geographic_constructive(output, model, ctx.domain, "polylabel")
 }
 
-/// Maximum-inscribed-circle kernel shared by the spine-routed free function.
-pub(crate) fn unary_maximum_inscribed_circle(
+pub(crate) fn unary_circle(
     data: &PreparedPlan,
     ctx: &MetricRowContext<'_>,
     tolerance: Option<&F64Param>,
-) -> Result<Shape> {
-    let model = ctx.metric.require_model(MetricOp::MaximumInscribedCircle)?;
-    let output = metric_maximum_inscribed_circle(
-        model,
+    inscribed: bool,
+    unit: Option<crate::DistanceUnit>,
+) -> Result<crate::py::circles::CircleOutput> {
+    let operation = if inscribed {
+        MetricOp::MaximumInscribedCircle
+    } else {
+        MetricOp::MinimumBoundingCircle
+    };
+    let tolerance = tolerance.map(|value| value.get(ctx.lane.row()));
+    if let Some(value) = tolerance {
+        Positive::try_new("tolerance", value)?;
+    }
+    let disk = crate::crs::local::FramedCircle::solve(
+        ctx.metric.require_model(operation)?,
         ctx.frame.crs_str(),
         data.shape(),
-        tolerance.map(|value| value.get(ctx.lane.row())),
+        tolerance,
+        inscribed,
+        unit,
+        ctx.domain,
     )?;
-    publish_planar_geographic_constructive(output, model, ctx.domain, "maximum_inscribed_circle")
+    Ok(crate::py::circles::CircleOutput(Some(Arc::new(disk))))
 }
 
-/// Maximum-inscribed-radius kernel — CRS-aware, the metric twin of the
-/// inscribed circle (so both calls retain the same certified planar center and
-/// radius contract).
-pub(crate) fn unary_maximum_inscribed_radius(
-    data: &PreparedPlan,
-    ctx: &MetricRowContext<'_>,
-    tolerance: Option<&F64Param>,
-) -> Result<f64> {
-    // geometry — there are no output vertices onto which Z/M could be carried,
-    let model = ctx.metric.require_model(MetricOp::MaximumInscribedRadius)?;
-    metric_maximum_inscribed_radius(
-        model,
-        ctx.frame.crs_str(),
-        data.shape(),
-        tolerance.map(|value| value.get(ctx.lane.row())),
-    )
-}
-
-/// Minimum-bounding-circle kernel shared by the spine-routed free function.
-pub(crate) fn unary_minimum_bounding_circle(
-    data: &PreparedPlan,
-    ctx: &MetricRowContext<'_>,
-) -> Result<Shape> {
-    let model = ctx.metric.require_model(MetricOp::MinimumBoundingCircle)?;
-    let output = metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())?;
-    publish_planar_geographic_edges_with_context(output, model, ctx, "minimum_bounding_circle")
-}
-
-/// Minimum-bounding-circle radius kernel shared by scalar and array methods.
-pub(crate) fn unary_minimum_bounding_radius(
-    data: &PreparedPlan,
-    ctx: &MetricRowContext<'_>,
-) -> Result<f64> {
-    let model = ctx.metric.require_model(MetricOp::MinimumBoundingRadius)?;
-    metric_minimum_bounding_radius(model, data.shape())
+pub(crate) fn unary_minimum_width(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -> Result<f64> {
+    match ctx.metric.require_model(MetricOp::MinimumWidth)? {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            crate::geometry::minimum_width(data.shape(), to_metre.get())
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("minimum_width", "input_refinement");
+            let prepared = crate::crs::local::PreparedLocalInput::prepare(
+                data.shape(),
+                &[data.shape()],
+                ctx.frame.crs_str().unwrap_or("EPSG:4326"),
+                None,
+                crate::crs::local::LocalInputPurpose::BoundarySupport,
+                state,
+                &mut budget,
+            )?;
+            prepared.map_or(Ok(f64::NAN), |prepared| {
+                crate::geometry::minimum_width(prepared.projected_working(), 1.0)
+            })
+        },
+    }
 }
 
 /// Minimum-rotated-rectangle kernel shared by the spine-routed free function.

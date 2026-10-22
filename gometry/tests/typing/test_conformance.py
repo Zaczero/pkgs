@@ -617,11 +617,11 @@ def _check_fixed_output_nullability(
     assert_type(values.repair(), gm.GeometryArray[gm.Geometry | None])
     assert_type(values.line_interpolate(distances), gm.GeometryArray[gm.Point | None])
     assert_type(
-        values.maximum_inscribed_circle(tolerance=distances),
+        values.maximum_inscribed_circle(tolerance=distances).to_polygon(),
         gm.GeometryArray[gm.Point | gm.Polygon | None],
     )
     assert_type(
-        values.minimum_bounding_circle(),
+        values.minimum_bounding_circle().to_polygon(),
         gm.GeometryArray[gm.Point | gm.Polygon | None],
     )
     assert_type(
@@ -1090,8 +1090,18 @@ assert_type(gm.require(POINT), gm.Point)
 assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
 assert_type(gm.require('POINT (1 1)'), gm.Geometry)
 assert_type(POLY.polylabel(), gm.Point)
-assert_type(POLY.minimum_bounding_radius(), float)
-assert_type(POINTS.minimum_bounding_radius(), npt.NDArray[np.float64])
+assert_type(POLY.minimum_bounding_circle().radius, float)
+assert_type(POINTS.minimum_bounding_circle().radius, npt.NDArray[np.float64])
+assert_type(POLY.minimum_bounding_circle(), gm.Circle)
+assert_type(POLY.maximum_inscribed_circle(), gm.Circle)
+assert_type(POLY.minimum_bounding_circle().center, gm.Point)
+assert_type(POLY.minimum_bounding_circle().to_polygon(), gm.Polygon | gm.Point)
+assert_type(POINTS.minimum_bounding_circle(), gm.CircleArray)
+assert_type(POINTS.minimum_bounding_circle().center, gm.GeometryArray[gm.Point | None])
+assert_type(POINTS.minimum_bounding_circle()[0], gm.Circle | None)
+assert_type(POINTS.minimum_bounding_circle()[1:], gm.CircleArray)
+assert_type(POLY.minimum_width(), float)
+assert_type(POINTS.minimum_width(), npt.NDArray[np.float64])
 assert_type(
     gm.hausdorff_distance(LINES, LINE, max_error=1e-12),
     npt.NDArray[np.float64],

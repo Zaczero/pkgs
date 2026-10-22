@@ -1174,26 +1174,26 @@ def test_geographic_interior_searches_use_refined_boundary_support() -> None:
     reference_clearance = independent_radius_line.length
     assert abs(actual_clearance - reference_clearance) <= clearance_bound
 
-    actual_radius = source.maximum_inscribed_radius(tolerance=1.0)
-    reference_radius = fine_input.maximum_inscribed_radius(tolerance=1.0)
+    actual_radius = source.maximum_inscribed_circle(tolerance=1.0).radius
+    reference_radius = fine_input.maximum_inscribed_circle(tolerance=1.0).radius
     assert abs(actual_radius - reference_clearance) <= clearance_bound
     assert abs(actual_radius - reference_radius) <= clearance_bound
 
-    actual_circle = source.maximum_inscribed_circle(tolerance=1.0)
+    actual_circle = source.maximum_inscribed_circle(tolerance=1.0).to_polygon()
     actual_circle_local = _projected_chart_outline(actual_circle, local)
     assert shapely.covers(
         shapely.buffer(fine_polygon_local, input_budget),
         actual_circle_local,
     )
 
-    actual_enclosing_radius = source.minimum_bounding_radius()
-    reference_enclosing_radius = fine_input.to_crs(local).minimum_bounding_radius(
-        unit='planar'
+    actual_enclosing_radius = source.minimum_bounding_circle().radius
+    reference_enclosing_radius = (
+        fine_input.to_crs(local).minimum_bounding_circle(unit='planar').radius
     )
     assert (
         abs(actual_enclosing_radius - reference_enclosing_radius) <= 4.0 * input_budget
     )
-    enclosing_circle_local = source.minimum_bounding_circle().to_crs(local)
+    enclosing_circle_local = source.minimum_bounding_circle().to_polygon().to_crs(local)
     circle_vertices = list(enclosing_circle_local.exterior.coords)[:-1]
     center_x = sum(point[0] for point in circle_vertices) / len(circle_vertices)
     center_y = sum(point[1] for point in circle_vertices) / len(circle_vertices)

@@ -163,6 +163,24 @@ impl MinimumCircle {
 }
 
 impl CertifiedDisk {
+    pub(super) fn exact_values(
+        &self,
+    ) -> Result<(
+        crate::geometry::ExactRational,
+        crate::geometry::ExactRational,
+        crate::geometry::ExactRational,
+    )> {
+        use crate::geometry::ExactRational;
+        Ok((
+            ExactRational::new(self.center_x.clone(), self.center_w.clone())?,
+            ExactRational::new(self.center_y.clone(), self.center_w.clone())?,
+            ExactRational::new(
+                self.radius_squared_numerator.clone(),
+                self.radius_squared_denominator.clone(),
+            )?,
+        ))
+    }
+
     fn enclosure(&self) -> Result<Option<DiskEnclosure>> {
         // A finite disk need not have a finite squared-radius enclosure.
         let largest_squared =

@@ -713,20 +713,28 @@ def test_minimum_bounding_circle_polygon_regression() -> None:
     """minimum_bounding_circle returns a circle POLYGON with consistent
     handling for empty and coincident inputs.
     """
-    circle = gm.from_wkt(
-        'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))'
-    ).minimum_bounding_circle()
+    circle = (
+        gm
+        .from_wkt('POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))')
+        .minimum_bounding_circle()
+        .to_polygon()
+    )
     assert circle.geometry_type == 'Polygon' and circle.is_valid
     assert circle.area == pytest.approx(math.pi * 8, rel=0.01)
     assert (
-        gm.from_wkt('POINT (3 4)').minimum_bounding_circle().to_wkt() == 'POINT (3 4)'
+        gm.from_wkt('POINT (3 4)').minimum_bounding_circle().to_polygon().to_wkt()
+        == 'POINT (3 4)'
     )
     assert (
-        gm.from_wkt('MULTIPOINT ((1 1), (1 1))').minimum_bounding_circle().to_wkt()
+        gm
+        .from_wkt('MULTIPOINT ((1 1), (1 1))')
+        .minimum_bounding_circle()
+        .to_polygon()
+        .to_wkt()
         == 'POINT (1 1)'
     )
     assert (
-        gm.from_wkt('POLYGON EMPTY').minimum_bounding_circle().to_wkt()
+        gm.from_wkt('POLYGON EMPTY').minimum_bounding_circle().to_polygon().to_wkt()
         == 'POLYGON EMPTY'
     )
 

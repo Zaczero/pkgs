@@ -49,11 +49,12 @@ LOCAL_OPS = sorted({
     'concave_hull',
     'polylabel',
     'maximum_inscribed_circle',
-    'maximum_inscribed_radius',
+    'maximum_inscribed_circle.radius',
     'minimum_bounding_circle',
-    'minimum_bounding_radius',
+    'minimum_bounding_circle.radius',
     'minimum_clearance',
     'minimum_clearance_line',
+    'minimum_width',
 })
 
 
@@ -393,14 +394,30 @@ def _local_cases() -> list[LocalCase]:
         ('polylabel', lambda: box.polylabel(tolerance=0.1), 0.0, 10.0),  # point in box
         (
             'maximum_inscribed_circle',
-            lambda: box.maximum_inscribed_circle(tolerance=0.01),
+            lambda: box.maximum_inscribed_circle(tolerance=0.01).to_polygon(),
             4.0,
             6.0,
         ),
-        ('maximum_inscribed_radius', box.maximum_inscribed_radius, 4.0, 6.0),
-        ('minimum_bounding_circle', box.minimum_bounding_circle, 0.0, 50.0),
-        ('minimum_bounding_radius', box.minimum_bounding_radius, 5.0, 10.0),
+        (
+            'maximum_inscribed_circle.radius',
+            lambda: box.maximum_inscribed_circle().radius,
+            4.0,
+            6.0,
+        ),
+        (
+            'minimum_bounding_circle',
+            lambda: box.minimum_bounding_circle().to_polygon(),
+            0.0,
+            50.0,
+        ),
+        (
+            'minimum_bounding_circle.radius',
+            lambda: box.minimum_bounding_circle().radius,
+            5.0,
+            10.0,
+        ),
         ('minimum_clearance', box.minimum_clearance, 5.0, 15.0),
+        ('minimum_width', box.minimum_width, 5.0, 15.0),
         (
             'minimum_clearance_line',
             lambda: box.minimum_clearance_line().length,
@@ -443,8 +460,8 @@ def test_local_projection_metric_accepts_foot_inputs(op: str) -> None:
 def test_minimum_bounding_radius_scales_exact_squared_radius_before_rounding() -> None:
     """Meter conversion must not round the native radius before scaling."""
     points = gm.MultiPoint([(0.0, 0.0), (1.0, 5.0)], crs=FOOT_CRS)
-    native = points.minimum_bounding_radius()
-    meters = points.minimum_bounding_radius(unit='meters')
+    native = points.minimum_bounding_circle().radius
+    meters = points.minimum_bounding_circle(unit='meters').radius
 
     # The exact value is sqrt(26) / 2 * the represented EPSG:2263
     # foot-to-metre factor. Its correctly rounded binary64 spelling was
@@ -469,17 +486,18 @@ def test_local_projection_metric_crs_free_rejects_unit_meters(op: str) -> None:
         'polylabel': lambda: free_box.polylabel(tolerance=0.1, unit='meters'),
         'maximum_inscribed_circle': lambda: free_box.maximum_inscribed_circle(
             tolerance=0.01, unit='meters'
-        ),
-        'maximum_inscribed_radius': lambda: free_box.maximum_inscribed_radius(
-            unit='meters'
+        ).to_polygon(),
+        'maximum_inscribed_circle.radius': lambda: (
+            free_box.maximum_inscribed_circle(unit='meters').radius
         ),
         'minimum_bounding_circle': lambda: free_box.minimum_bounding_circle(
             unit='meters'
-        ),
-        'minimum_bounding_radius': lambda: free_box.minimum_bounding_radius(
-            unit='meters'
+        ).to_polygon(),
+        'minimum_bounding_circle.radius': lambda: (
+            free_box.minimum_bounding_circle(unit='meters').radius
         ),
         'minimum_clearance': lambda: free_box.minimum_clearance(unit='meters'),
+        'minimum_width': lambda: free_box.minimum_width(unit='meters'),
         'minimum_clearance_line': lambda: free_box.minimum_clearance_line(
             unit='meters'
         ),

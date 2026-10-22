@@ -1,14 +1,18 @@
+#[cfg(test)]
 use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::derived::{
-    areal_centroid, areal_centroid_with_bounds, build_inscribed_circle_budgeted,
-    canonicalize_concave_hull_points, centroid_is_empty, collection_surface_point,
-    degenerate_polygon_center, emit_minimum_bounding_circle, emit_zero_radius_point,
-    lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
-    multipoint_surface_point, native_concave_hull, point_centroid, point_on_surface_line_columns,
-    polygonal_surface_point, polylabel_point, scale_aware_default_tolerance, shape_from_open_hull,
-    shape_from_selected_hull, smallest_enclosing_circle,
+    areal_centroid, areal_centroid_with_bounds, canonicalize_concave_hull_points,
+    centroid_is_empty, collection_surface_point, lineal_centroid, lineal_surface_point,
+    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
+    point_centroid, point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
+    scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
+};
+#[cfg(test)]
+use crate::geometry::derived::{
+    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_minimum_bounding_circle,
+    emit_zero_radius_point, smallest_enclosing_circle,
 };
 use crate::geometry::{
     Bounds, DirectedOptimizationResult, ExpansionBudget, GeometryErrorKind, LineSeq, Point,
@@ -16,6 +20,7 @@ use crate::geometry::{
 };
 use crate::{NonNegative, Positive};
 
+#[cfg(test)]
 const CIRCLE_QUADRANT_SEGMENTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is non-zero");
 
 impl Shape {
@@ -295,11 +300,13 @@ impl Shape {
     /// correctly rounded mathematical source minimum. The geometry is a
     /// certified circumscribed 64-gon whose edges enclose that minimum disk and
     /// whose vertices lie outside it.
+    #[cfg(test)]
     pub fn minimum_bounding_circle(&self) -> Result<Self> {
         let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
         self.minimum_bounding_circle_budgeted(&mut budget)
     }
 
+    #[cfg(test)]
     pub(crate) fn minimum_bounding_circle_budgeted(
         &self,
         budget: &mut ExpansionBudget,
@@ -353,6 +360,7 @@ impl Shape {
     ///
     /// Geographic callers use the documented local-projection approximation
     /// through the CRS-aware wrapper.
+    #[cfg(test)]
     pub fn maximum_inscribed_circle(&self, tolerance: Option<f64>) -> Result<Self> {
         let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
         self.maximum_inscribed_circle_in_frame(tolerance, true, &mut budget)
@@ -361,6 +369,7 @@ impl Shape {
     /// Run the planar maximum-circle kernel in a local projected frame. The
     /// geographic caller opts out of source-frame containment because that
     /// frame is an explicitly approximate local-projection operation.
+    #[cfg(test)]
     pub(crate) fn maximum_inscribed_circle_in_frame(
         &self,
         tolerance: Option<f64>,
@@ -400,27 +409,7 @@ impl Shape {
         )
     }
 
-    pub(crate) fn maximum_inscribed_radius_in_frame(&self, tolerance: Option<f64>) -> Result<f64> {
-        self.maximum_inscribed_radius_in_scale(tolerance, 1.0)
-    }
-
-    pub(crate) fn maximum_inscribed_radius_in_scale(
-        &self,
-        tolerance: Option<f64>,
-        scale: f64,
-    ) -> Result<f64> {
-        let tolerance = tolerance
-            .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
-            .transpose()?;
-        self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
-        if self.is_empty() {
-            return Ok(f64::NAN);
-        }
-        self.certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
-            .map_or(Ok(0.0), |result| result.radius_in_scale(scale))
-    }
-
-    fn certified_inradius(
+    pub(crate) fn certified_inradius(
         &self,
         tolerance: Option<f64>,
         operation: &'static str,
