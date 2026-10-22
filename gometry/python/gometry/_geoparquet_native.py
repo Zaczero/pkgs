@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from typing import Any
 
@@ -76,16 +78,44 @@ def _extension_frame(
                 f'native Parquet GEOMETRY conflicts with Arrow extension {name!r}; '
                 'expected geoarrow.wkb'
             )
+    declarations = []
     if hasattr(arrow_type, '__arrow_ext_serialize__'):
-        serialized = arrow_type.__arrow_ext_serialize__()
-    else:
-        serialized = (field.metadata or {}).get(b'ARROW:extension:metadata', b'{}')
+        declarations.append(arrow_type.__arrow_ext_serialize__())
+    raw_metadata = (field.metadata or {}).get(b'ARROW:extension:metadata')
+    if raw_metadata is not None:
+        declarations.append(raw_metadata)
+    frame: tuple[str | None, float | None] = (None, None)
+    for serialized in declarations:
+        declared = _extension_metadata_frame(serialized, crs, schema)
+        if _embedded_frame_conflicts(
+            *declared,
+            frame[0] if frame[0] is not None else declared[0],
+            frame[1] if frame[1] is not None else declared[1],
+        ):
+            raise _metadata_error('native Parquet Arrow frame declarations conflict')
+        frame = (
+            declared[0] if declared[0] is not None else frame[0],
+            declared[1] if declared[1] is not None else frame[1],
+        )
+    return frame
+
+
+def _extension_metadata_frame(
+    serialized: bytes, crs: str | None, schema: Any
+) -> tuple[str | None, float | None]:
     try:
         metadata = json.loads(serialized or b'{}')
     except (ValueError, UnicodeDecodeError) as error:
         raise _metadata_error(
             'Arrow extension metadata is not valid UTF-8 JSON'
         ) from error
+    if (
+        isinstance(metadata, dict)
+        and 'crs' in metadata
+        and metadata['crs'] is None
+        and crs is not None
+    ):
+        raise _metadata_error('Arrow unknown CRS conflicts with native Parquet CRS')
     if isinstance(metadata, dict) and (
         (
             metadata.get('crs') == 'srid:0'
@@ -100,10 +130,10 @@ def _extension_frame(
         serialized = json.dumps(metadata).encode()
     elif (
         isinstance(metadata, dict)
-        and isinstance(metadata.get('crs'), str)
-        and (metadata['crs'].startswith('projjson:'))
+        and isinstance(reference := metadata.get('crs'), str)
+        and reference.startswith('projjson:')
     ):
-        referenced_crs = _logical_crs({'crs': metadata['crs']}, schema)
+        referenced_crs = _logical_crs({'crs': reference}, schema)
         assert referenced_crs is not None
         metadata['crs'] = _crs_projjson(referenced_crs)
         metadata['crs_type'] = 'projjson'
@@ -115,7 +145,7 @@ def _extension_frame(
             'to linear edges before reading'
         )
     try:
-        return _metadata_frame(serialized)
+        return _metadata_frame(serialized or b'{}')
     except GeometryError as error:
         raise _metadata_error(f'invalid native Parquet Arrow frame: {error}') from error
 
@@ -126,8 +156,17 @@ def admit_native_columns(
     logical: dict[str, dict[str, Any]],
     metadata: Any,
     geometry: str | None,
+    *,
+    stored_arrow_schema: bytes | None,
 ) -> tuple[Any, Any]:
     """Reconcile native, stored Arrow and optional GeoParquet declarations."""
+    stored_schema = None
+    if stored_arrow_schema is not None:
+        try:
+            serialized = base64.b64decode(stored_arrow_schema, validate=True)
+            stored_schema = pa.ipc.read_schema(pa.BufferReader(serialized))
+        except (binascii.Error, pa.ArrowException, ValueError) as error:
+            raise _metadata_error('stored Arrow schema is invalid') from error
     if metadata is None:
         if geometry is None:
             if len(logical) != 1:
@@ -189,7 +228,28 @@ def admit_native_columns(
                 f'native geometry column {name!r} must occur exactly once'
             )
         field = schema.field(index)
-        embedded_crs, embedded_epoch = _extension_frame(field, crs, schema)
+        declarations = [field]
+        if stored_schema is not None:
+            stored_index = stored_schema.get_field_index(name)
+            if stored_index < 0:
+                raise _metadata_error(
+                    f'native geometry column {name!r} must occur exactly once in stored Arrow schema'
+                )
+            declarations.append(stored_schema.field(stored_index))
+        embedded_crs, embedded_epoch = None, None
+        for declaration_field in declarations:
+            next_crs, next_epoch = _extension_frame(declaration_field, crs, schema)
+            if _embedded_frame_conflicts(
+                next_crs,
+                next_epoch,
+                embedded_crs if embedded_crs is not None else next_crs,
+                embedded_epoch if embedded_epoch is not None else next_epoch,
+            ):
+                raise _metadata_error(
+                    f'column {name!r} stored Arrow frame conflicts with native Parquet Arrow frame'
+                )
+            embedded_crs = next_crs if next_crs is not None else embedded_crs
+            embedded_epoch = next_epoch if next_epoch is not None else embedded_epoch
         if _embedded_frame_conflicts(
             embedded_crs,
             embedded_epoch,

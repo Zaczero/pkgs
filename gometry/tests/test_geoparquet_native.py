@@ -198,8 +198,12 @@ def test_native_and_geo_crs_must_agree(tmp_path: Path) -> None:
             b'ARROW:extension:name': b'geoarrow.wkb',
             b'ARROW:extension:metadata': b'{"crs":"EPSG:3395"}',
         },
+        {
+            b'ARROW:extension:name': b'geoarrow.wkb',
+            b'ARROW:extension:metadata': b'{"crs":null}',
+        },
     ],
-    ids=['extension-name', 'crs'],
+    ids=['extension-name', 'crs', 'unknown-crs'],
 )
 def test_native_stored_arrow_schema_must_agree(
     tmp_path: Path, field_metadata: dict[bytes, bytes]
@@ -216,6 +220,24 @@ def test_native_stored_arrow_schema_must_agree(
         })
     with pytest.raises(gm.ParseError, match='Arrow'):
         gm.from_geoparquet(path)
+
+
+def test_native_crs_survives_a_stored_schema_without_frame_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'stored-schema.parquet'
+    table = pa.table({'geometry': _foreign_geometry({'crs': 'EPSG:3857'})})
+    stored = pa.schema([pa.field('geometry', pa.binary())])
+    with pq.ParquetWriter(path, table.schema) as writer:
+        writer.write_table(table)
+        writer.add_key_value_metadata({
+            'ARROW:schema': base64.b64encode(stored.serialize()).decode(),
+        })
+    restored, attributes = gm.from_geoparquet(path)
+    assert restored.crs is not None
+    assert restored.crs.to_epsg() == 3857
+    assert restored.to_wkt() == ['POINT (7 13)']
+    assert attributes.num_rows == 1
 
 
 def test_geography_requires_explicit_curve_conversion(tmp_path: Path) -> None:

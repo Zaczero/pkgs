@@ -326,7 +326,9 @@ def to_geoparquet(
         if encoding == 'geometry':
             from gometry._arrow import _serialized_extension_type
 
-            extension_metadata = json.loads(arrow.type.__arrow_ext_serialize__())
+            extension_metadata = json.loads(
+                arrow.type.__arrow_ext_serialize__() or b'{}'
+            )
             if arr.crs is None:
                 # Missing GeoArrow CRS would become Parquet's default CRS84.
                 extension_metadata['crs'] = 'srid:0'
@@ -855,7 +857,14 @@ def from_geoparquet(
         geo_metadata is not None and geo_metadata['version'] == '2.0.0'
     ):
         schema, geo_metadata = admit_native_columns(
-            pa, schema, native_columns, geo_metadata, geometry
+            pa,
+            schema,
+            native_columns,
+            geo_metadata,
+            geometry,
+            stored_arrow_schema=(parquet_file.metadata.metadata or {}).get(
+                b'ARROW:schema'
+            ),
         )
     assert geo_metadata is not None
     primary = geo_metadata.get('primary_column')
@@ -981,11 +990,11 @@ def from_geoparquet(
         layout=layout,
         allow_m=geo_metadata['version'] == '2.0.0',
     )
-    attributes = _attribute_result(table.select(attribute_columns))
     if rectangle is not None:
         from gometry import intersects
 
         mask = intersects(geometry_array, rectangle)
         geometry_array = geometry_array[mask]
-        attributes = attributes.filter(pa.array(mask))
+        table = table.filter(pa.array(mask))
+    attributes = _attribute_result(table).select(attribute_columns)
     return geometry_array, attributes
