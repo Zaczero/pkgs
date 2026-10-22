@@ -156,8 +156,7 @@ pub(crate) use exact_partition::{
 pub(in crate::geometry) use nary::{
     binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_chart_with_sources,
-    overlay_all_geographic_from_with_metric, overlay_all_geographic_from_with_output_frame,
-    overlay_view_error,
+    overlay_all_geographic_from_with_metric, overlay_view_error,
 };
 pub(crate) use nary::{
     overlay_all, overlay_all_geographic_chart, overlay_all_geographic_output_with_metric_and_frame,

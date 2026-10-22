@@ -1,6 +1,6 @@
 use crate::array::{
-    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, OriginSpec, PyGeometryArray, PyResult, Python,
-    Result, Shape, StorageLayout, geometry, validate_densify_fraction, validate_max_segment_length,
+    Arc, ComputedCaches, CoordSeq, F64Param, OriginSpec, PyGeometryArray, PyResult, Python, Result,
+    Shape, StorageLayout, geometry, validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geometry::storage::kernels::{subdivide_line_columns, subdivide_polygon_columns};
 use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, PolygonColumns};

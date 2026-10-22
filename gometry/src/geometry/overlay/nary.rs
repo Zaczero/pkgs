@@ -19,10 +19,8 @@ use crate::geometry::{
 };
 
 mod publication;
+pub(in crate::geometry) use publication::overlay_all_geographic_from_with_metric;
 pub(crate) use publication::overlay_all_geographic_output_with_metric_and_frame;
-pub(in crate::geometry) use publication::{
-    overlay_all_geographic_from_with_metric, overlay_all_geographic_from_with_output_frame,
-};
 
 #[cfg(test)]
 thread_local! {
@@ -409,7 +407,7 @@ pub(crate) fn overlay_all_geographic_with_metric_and_frame<
     let originals = GeographicInputs::try_from_shapes(frame, geometries.iter().map(Borrow::borrow))
         .map_err(|error| overlay_view_error(&error))?;
     let context = SourceArcContext::new(TopologyDomain::Geographic(frame), Some(metric_access));
-    overlay_all_geographic_from_with_output_frame(
+    publication::overlay_all_geographic_from_with_output_frame(
         &originals,
         op,
         strictness,

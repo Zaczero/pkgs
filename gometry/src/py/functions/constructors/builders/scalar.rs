@@ -367,7 +367,12 @@ fn geographic_box_piece(
         };
         Ok(polygon)
     } else {
-        box_polygon(bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy())
+        Ok(box_polygon(
+            bounds.minx(),
+            bounds.miny(),
+            bounds.maxx(),
+            bounds.maxy(),
+        )?)
     }
 }
 
@@ -384,12 +389,12 @@ pub(in crate::py::functions::constructors) fn build_box_shape(
             "box miny ({miny}) must not exceed maxy ({maxy})"
         )));
     }
-    let shape = if let Some(frame) = crs
-        .map(crs::info)
+    let frame = crs
+        .map(|crs| crs::info(crs))
         .transpose()
         .map_err(PyErr::from)?
-        .and_then(|info| info.geographic_frame())
-    {
+        .and_then(|info| info.geographic_frame());
+    let shape = if let Some(frame) = frame {
         if minx > maxx {
             let bounds = Bounds::new_geographic(frame, minx, miny, maxx, maxy)?;
             let [west, east] = bounds

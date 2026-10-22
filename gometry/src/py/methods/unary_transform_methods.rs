@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
+    BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
     DistanceUnit, F64Param, GeometryArrayStorage, GridOrigin, NavigationPath, OriginSpec,
     PyGeometry, PyGeometryArray, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
     angle_radians, finite_f64_required, parse_affine_matrix, parse_grid_size, parse_precision,

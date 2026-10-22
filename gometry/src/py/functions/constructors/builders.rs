@@ -3,11 +3,11 @@ use crate::geometry::{
     Bounds, CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint,
     MultiPolygon, ZOrdinate, geographic_bounds_to_shape,
 };
-use crate::py::errors::{geometry_type_err, parameter_error};
+use crate::py::errors::geometry_type_err;
 use crate::py::functions::constructors::{
-    Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind,
-    InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
-    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, box_polygon, coordinate_column_values,
+    Bound, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind, InvalidGeometryError,
+    LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
+    PyResult, PyTypeError, Ring, Shape, box_polygon, coordinate_column_values,
     coordinate_column_values_exact, coordinate_epoch_option, coordinate_sequence_len_hint, crs,
     ensure_homogeneous_axes, exact_geometry, extract_coordinate, extract_coordinate_or_empty,
     extract_points, finite_coordinate_required, optional_coordinate_column_values,
