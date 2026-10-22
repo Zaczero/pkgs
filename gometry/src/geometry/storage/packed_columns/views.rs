@@ -27,6 +27,7 @@ pub(crate) struct PointRowCursor<'a> {
     present: usize,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct PointColumns<'a> {
     pub(super) coords: &'a CoordSeq,
     pub(super) row_map: RowSelectionRef<'a>,
@@ -38,6 +39,7 @@ pub(crate) struct XyColumns<'a> {
     pub ys: &'a [f64],
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct LineColumns<'a> {
     pub(super) coords: &'a CoordSeq,
     pub(super) offsets: &'a CsrOffsetColumn,
@@ -45,6 +47,7 @@ pub(crate) struct LineColumns<'a> {
     pub(super) missing: Option<&'a ValidityMask>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct PolygonColumns<'a> {
     pub(super) coords: &'a CoordSeq,
     pub(super) ring_offsets: &'a CsrOffsetColumn<RingLevel>,
@@ -73,6 +76,7 @@ pub(crate) struct SegmentedRuns<'a> {
     pub row_map: RowSelectionRef<'a>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum PackedColumns<'a> {
     Points(PointColumns<'a>),
     Lines(LineColumns<'a>),

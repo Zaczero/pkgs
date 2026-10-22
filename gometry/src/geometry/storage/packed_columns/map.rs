@@ -16,60 +16,91 @@ fn finish_pointwise_coords(builder: CoordSeqBuilder, has_missing: bool) -> Batch
     }
 }
 
-/// Contiguous dense points and complete identity CSR payloads use the column
-/// kernel. Other selections and nullable layouts keep the present-row cursor:
-/// backing columns may include missing placeholders or unselected coordinates.
-/// Identity CSR selectors also need complete child-column coverage, since
-/// admitted offsets may leave an unreferenced coordinate or ring tail.
+/// Every layout rounds through the column kernel. Contiguous dense points and
+/// complete identity CSR payloads quantize their backing columns directly.
+/// Other selections and nullable layouts first gather present coordinates with
+/// the shared row traversal: backing columns may include missing placeholders,
+/// unselected coordinates, or an unreferenced coordinate or ring tail.
+///
+/// Rounding fails only on overflow; that path reruns the per-point traversal so
+/// the error names its logical row.
 pub(crate) fn quantize_selected_columns(
     columns: PackedColumns<'_>,
     precision: i32,
 ) -> BatchResult<PackedColumnOutput> {
-    let axes = match &columns {
-        PackedColumns::Points(points) => {
-            if let Some(coords) = points.contiguous_coords() {
-                return Ok(PackedColumnOutput::Points(
-                    coords.quantize(precision).map_err(batch_err)?,
-                ));
-            }
-            points.coords().axes()
-        },
-        PackedColumns::Lines(lines) => {
-            if lines.missing.is_none()
-                && matches!(lines.row_map, RowSelectionRef::Identity)
-                && lines
-                    .offsets()
-                    .last()
-                    .is_some_and(|&end| end as usize == lines.coords().len())
-            {
-                return Ok(PackedColumnOutput::Lines {
-                    coords: lines.coords().quantize(precision).map_err(batch_err)?,
-                    offsets: lines.offsets.clone(),
-                });
-            }
-            lines.coords().axes()
-        },
-        PackedColumns::Polygons(polygons) => {
-            if polygons.missing.is_none()
-                && matches!(polygons.row_map, RowSelectionRef::Identity)
-                && polygons.polygon_offsets().last().is_some_and(|&end| {
-                    end as usize == polygons.ring_offsets().len().saturating_sub(1)
-                })
-                && polygons
-                    .ring_offsets()
-                    .last()
-                    .is_some_and(|&end| end as usize == polygons.coords().len())
-            {
-                return Ok(PackedColumnOutput::Polygons {
-                    coords: polygons.coords().quantize(precision).map_err(batch_err)?,
-                    ring_offsets: polygons.ring_offsets.clone(),
-                    polygon_offsets: polygons.polygon_offsets.clone(),
-                });
-            }
-            polygons.coords().axes()
-        },
+    let gathered = match whole_selected_columns(columns) {
+        Some(output) => output,
+        None => map_selected_points(columns, columns_axes(columns), Ok)?,
     };
-    map_selected_points(columns, axes, |point| point.quantize(precision))
+    quantize_output(gathered, precision).or_else(|_| {
+        map_selected_points(columns, columns_axes(columns), |point| {
+            point.quantize(precision)
+        })
+    })
+}
+
+fn columns_axes(columns: PackedColumns<'_>) -> CoordinateAxes {
+    match columns {
+        PackedColumns::Points(points) => points.coords().axes(),
+        PackedColumns::Lines(lines) => lines.coords().axes(),
+        PackedColumns::Polygons(polygons) => polygons.coords().axes(),
+    }
+}
+
+/// The selected coordinates as the backing columns themselves, when the
+/// selection covers them exactly.
+fn whole_selected_columns(columns: PackedColumns<'_>) -> Option<PackedColumnOutput> {
+    match columns {
+        PackedColumns::Points(points) => points.contiguous_coords().map(PackedColumnOutput::Points),
+        PackedColumns::Lines(lines) => (lines.missing.is_none()
+            && matches!(lines.row_map, RowSelectionRef::Identity)
+            && lines
+                .offsets()
+                .last()
+                .is_some_and(|&end| end as usize == lines.coords().len()))
+        .then(|| PackedColumnOutput::Lines {
+            coords: lines.coords().clone(),
+            offsets: lines.offsets.clone(),
+        }),
+        PackedColumns::Polygons(polygons) => (polygons.missing.is_none()
+            && matches!(polygons.row_map, RowSelectionRef::Identity)
+            && polygons.polygon_offsets().last().is_some_and(|&end| {
+                end as usize == polygons.ring_offsets().len().saturating_sub(1)
+            })
+            && polygons
+                .ring_offsets()
+                .last()
+                .is_some_and(|&end| end as usize == polygons.coords().len()))
+        .then(|| PackedColumnOutput::Polygons {
+            coords: polygons.coords().clone(),
+            ring_offsets: polygons.ring_offsets.clone(),
+            polygon_offsets: polygons.polygon_offsets.clone(),
+        }),
+    }
+}
+
+fn quantize_output(
+    output: PackedColumnOutput,
+    precision: i32,
+) -> crate::error::Result<PackedColumnOutput> {
+    Ok(match output {
+        PackedColumnOutput::Points(coords) => {
+            PackedColumnOutput::Points(coords.quantize(precision)?)
+        },
+        PackedColumnOutput::Lines { coords, offsets } => PackedColumnOutput::Lines {
+            coords: coords.quantize(precision)?,
+            offsets,
+        },
+        PackedColumnOutput::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+        } => PackedColumnOutput::Polygons {
+            coords: coords.quantize(precision)?,
+            ring_offsets,
+            polygon_offsets,
+        },
+    })
 }
 
 pub(super) fn canonicalize_transformed_points(

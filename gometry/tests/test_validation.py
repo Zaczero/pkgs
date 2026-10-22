@@ -343,20 +343,20 @@ def test_quantize_packed_kinds_keep_selected_missing_and_empty_rows(
     precision: int,
 ) -> None:
     shape = {
-        'point': gm.Point(2.675, 9.87654, z=3.45678, m=4.56789),
+        'point': gm.Point(2.675, -0.0001, z=-0.0, m=4.56789),
         'line': gm.LineString(
-            [(2.675, 9.87654), (12.34567, 8.76543), (23.45678, 7.65432)],
-            z=[3.45678, 4.56789, 5.67891],
+            [(2.675, 9.87654), (-0.0001, 8.76543), (23.45678, -0.0)],
+            z=[3.45678, -0.0, 5.67891],
             m=[6.78912, 7.89123, 8.91234],
         ),
         'polygon': gm.Polygon(
             [
                 (2.675, 9.87654),
-                (12.34567, 8.76543),
+                (-0.0001, 8.76543),
                 (23.45678, 17.65432),
                 (2.675, 9.87654),
             ],
-            z=[3.45678, 4.56789, 5.67891, 3.45678],
+            z=[3.45678, -0.0, 5.67891, 3.45678],
             m=[6.78912, 7.89123, 8.91234, 6.78912],
         ),
     }[kind]
@@ -380,10 +380,11 @@ def test_quantize_packed_kinds_keep_selected_missing_and_empty_rows(
         with_empty,
         with_empty[[3, 2, 1, 0, 4]],
     ):
+        # WKB keeps every ordinate's bits, including the sign of zero.
         expected = [
-            None if row is None else row.quantize(precision).to_wkt() for row in rows
+            None if row is None else row.quantize(precision).to_wkb() for row in rows
         ]
-        assert rows.quantize(precision).to_wkt() == expected
+        assert rows.quantize(precision).to_wkb() == expected
 
 
 @pytest.mark.parametrize('kind', ['point', 'line', 'polygon'])
@@ -401,8 +402,12 @@ def test_quantize_does_not_visit_excluded_overflowing_coordinates(kind: str) -> 
         ),
     }[kind]
     rows = gm.GeometryArray([bad, good])
-    with pytest.raises(gm.GeometryError, match='finite coordinate range'):
+    with pytest.raises(gm.GeometryError, match='finite coordinate range') as caught:
         rows.quantize(-308)
+    assert caught.value.__notes__ == ['while processing array element 0']
+    with pytest.raises(gm.GeometryError, match='finite coordinate range') as caught:
+        rows[[1, 0]].quantize(-308)
+    assert caught.value.__notes__ == ['while processing array element 1']
     expected = good.quantize(-308).to_wkt()
     assert rows[1:].quantize(-308).to_wkt() == [expected]
     assert rows[[1, 1]].quantize(-308).to_wkt() == [expected, expected]
