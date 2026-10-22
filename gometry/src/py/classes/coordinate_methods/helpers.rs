@@ -201,7 +201,17 @@ pub(crate) fn column_axis_to_py(
 ) -> PyResult<Py<PyAny>> {
     let owner = (*slf).clone().into_any();
     let this = slf.borrow();
-    match this.view.try_column(py, axis)? {
+    let excluded = this.layout.is_some_and(|axes| match axis {
+        CoordinateAxis::X | CoordinateAxis::Y => false,
+        CoordinateAxis::Z => !axes.has_z(),
+        CoordinateAxis::M => !axes.has_m(),
+    });
+    let column = if excluded {
+        coordinates::CoordinateColumnRef::Missing
+    } else {
+        this.view.try_column(py, axis)?
+    };
+    match column {
         coordinates::CoordinateColumnRef::Missing => {
             let count = this.view.len_for_python(py)?;
             let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate column")?;

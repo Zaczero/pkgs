@@ -749,9 +749,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
         of coordinate tuples, nested output, matrices, dictionaries, and equality.
         Tuple/nested output uses ``None`` where a coordinate lacks the requested
-        Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
-        accessors such as ``.z`` continue to read the source view, regardless of
-        the selected layout. Selection does not change the geometry.
+        Z/M; matrices and dictionary columns use ``NaN`` there. Axis accessors
+        use the selected layout too: excluded Z/M columns contain ``NaN``.
+        Selection does not change the geometry.
 
         Parameters
         ----------
@@ -830,10 +830,10 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     def to_nested(self) -> NestedCoordinates:
         """Return the coordinates as a nested structure mirroring the geometry's topology
         (point → ``[x, y]``, line → list of tuples, polygon → list of rings;
-        arrays → one entry per present geometry) — the ``__geo_interface__``-style
+        arrays → one entry per geometry row) — the ``__geo_interface__``-style
         nesting, as Python lists. A selected view layout determines each
         coordinate's ordinates; absent selected Z/M values are ``None``. Missing
-        array rows are skipped. The flat columns do not preserve this shape.
+        array rows remain ``None``. The flat columns do not preserve this shape.
 
         Returns
         -------
@@ -2411,8 +2411,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to an
-            empty result instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If locations are non-finite or out of order, or a distance-only option is
             used with ``basis='m'``.
@@ -2774,8 +2774,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to
-            ``nan`` instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If a distance-only option is used with ``basis='m'``.
 
@@ -3008,8 +3008,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to an
-            empty result instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.
@@ -9042,8 +9042,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to an
-            empty result instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If locations are non-finite or out of order, or a distance-only option is
             used with ``basis='m'``.
@@ -9556,8 +9556,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to
-            ``nan`` instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If a distance-only option is used with ``basis='m'``.
 
@@ -9809,8 +9809,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If M values are missing or non-monotonic; an array row degrades to an
-            empty result instead.
+            If M values are missing or non-monotonic. Array failures identify the
+            original input row.
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.

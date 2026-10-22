@@ -2,14 +2,13 @@ use pyo3::exceptions::{PyIndexError, PyOverflowError, PyValueError};
 use pyo3::types::PyInt;
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
+use crate::array::ArrayRow;
 use crate::boundary::reserve::py_iter_or_none;
-use crate::geometry::storage;
-use crate::geometry::storage::PackedStorage;
 use crate::py::classes::coordinate_methods::{
-    Bound, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, Py, PyAny,
-    PyAnyMethods as _, PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef,
-    PyResult, Python, RowIndexOrSlice, Shape, column_axis_to_py, coordinates, coordinates_object,
-    parse_row_index_or_slice, py_bool, pymethods,
+    Bound, CoordinateAxes, CoordinateAxis, GeometryError, Py, PyAny, PyAnyMethods as _,
+    PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef, PyResult, Python,
+    RowIndexOrSlice, column_axis_to_py, coordinates, coordinates_object, parse_row_index_or_slice,
+    py_bool, pymethods,
 };
 use crate::py::numpy::{astype_readonly, int64_array, numpy_module};
 use crate::py::row::normalize_row;
@@ -199,9 +198,9 @@ impl PyCoordinates {
     /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
     /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
     /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
-    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
-    /// accessors such as ``.z`` continue to read the source view, regardless of
-    /// the selected layout. Selection does not change the geometry.
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Axis accessors
+    /// use the selected layout too: excluded Z/M columns contain ``NaN``.
+    /// Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -404,10 +403,10 @@ impl PyCoordinates {
 
     /// Return the coordinates as a nested structure mirroring the geometry's topology
     /// (point → ``[x, y]``, line → list of tuples, polygon → list of rings;
-    /// arrays → one entry per present geometry) — the ``__geo_interface__``-style
+    /// arrays → one entry per geometry row) — the ``__geo_interface__``-style
     /// nesting, as Python lists. A selected view layout determines each
     /// coordinate's ordinates; absent selected Z/M values are ``None``. Missing
-    /// array rows are skipped. The flat columns do not preserve this shape.
+    /// array rows remain ``None``. The flat columns do not preserve this shape.
     ///
     /// Returns
     /// -------
@@ -425,64 +424,16 @@ impl PyCoordinates {
                 coordinates_object(py, shape, self.layout)
             },
             coordinates::CoordinateSource::Array(rows) => {
-                let nested = match rows.storage() {
-                    GeometryArrayStorage::Mixed(shapes) => shapes
-                        .iter()
-                        .enumerate()
-                        .filter(|(row, _)| {
-                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
-                        })
-                        .map(|(_, shape)| coordinates_object(py, shape, self.layout))
-                        .collect::<PyResult<Vec<_>>>()?,
-                    GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                        let map = row_map.as_deref();
-                        if rows.is_compact_nullable() {
-                            let mask = rows
-                                .missing()
-                                .expect("compact nullable rows carry validity");
-                            let nested = mask
-                                .cursor()
-                                .filter_map(|(_, present)| present)
-                                .map(|present| {
-                                    coordinates_object(
-                                        py,
-                                        &Shape::Point(
-                                            coords.point_at(storage::physical_row(map, present)),
-                                        ),
-                                        self.layout,
-                                    )
-                                })
-                                .collect::<PyResult<Vec<_>>>()?;
-                            return Ok(PyList::new(py, nested)?.unbind().into());
-                        }
-                        (0..storage::point_logical_len(coords, map))
-                            .map(|index| {
-                                coordinates_object(
-                                    py,
-                                    &Shape::Point(
-                                        coords.point_at(storage::physical_row(map, index)),
-                                    ),
-                                    self.layout,
-                                )
-                            })
-                            .collect::<PyResult<Vec<_>>>()?
-                    },
-                    GeometryArrayStorage::Packed(
-                        PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => rows
-                        .storage()
-                        .iter_shapes()
-                        .enumerate()
-                        .filter(|(row, _)| {
-                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
-                        })
-                        .map(|(_, shape)| {
-                            shape
-                                .map_err(PyErr::from)
-                                .and_then(|shape| coordinates_object(py, &shape, self.layout))
-                        })
-                        .collect::<PyResult<Vec<_>>>()?,
-                };
+                let nested = rows
+                    .row_operation()
+                    .rows_with_missing(|| ())
+                    .map(|row| match row {
+                        ArrayRow::Missing { .. } => Ok(py.None()),
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .try_with_shape(|shape| coordinates_object(py, shape, self.layout)),
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
                 Ok(PyList::new(py, nested)?.unbind().into())
             },
         }

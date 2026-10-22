@@ -20,13 +20,12 @@ mod csr_offset_tests {
 }
 
 #[cfg(test)]
-mod linref_array_degrade_tests {
+mod linref_result_tests {
     use crate::broadcast::{
         CollectRows as _, degrade_linref_float, degrade_linref_linestring, degrade_linref_point,
         linref_error_degrades,
     };
     use crate::crs::MetricModel;
-    use crate::dispatch::Lane;
     use crate::error::ErrorKind;
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, MeasureRange, Point,
@@ -75,28 +74,23 @@ mod linref_array_degrade_tests {
     }
 
     #[test]
-    fn empty_linework_degrades_everywhere_measure_defects_only_in_arrays() {
+    fn only_empty_linework_has_an_empty_result() {
         let empty = GeometryErrorKind::EmptyLinework.into();
-        assert!(linref_error_degrades(&empty, Lane::Scalar));
-        assert!(linref_error_degrades(&empty, Lane::Array(0)));
+        assert!(linref_error_degrades(&empty));
         for kind in [
             GeometryErrorKind::MissingMeasure,
             GeometryErrorKind::NonMonotonicMeasure,
         ] {
             let error = kind.into();
-            assert!(!linref_error_degrades(&error, Lane::Scalar));
-            assert!(linref_error_degrades(&error, Lane::Array(0)));
+            assert!(!linref_error_degrades(&error));
         }
-        for lane in [Lane::Scalar, Lane::Array(0)] {
-            assert!(!linref_error_degrades(
-                &GeometryErrorKind::LineStringRequired.into(),
-                lane
-            ));
-            assert!(!linref_error_degrades(
-                &GeometryErrorKind::finite("distance", f64::NAN),
-                lane
-            ));
-        }
+        assert!(!linref_error_degrades(
+            &GeometryErrorKind::LineStringRequired.into()
+        ));
+        assert!(!linref_error_degrades(&GeometryErrorKind::finite(
+            "distance",
+            f64::NAN
+        )));
     }
 
     #[test]
@@ -109,12 +103,7 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| {
-                degrade_linref_float(
-                    line_locate_coordseq(&model, line, query, false),
-                    Lane::Array(0),
-                )
-            })
+            .map(|line| degrade_linref_float(line_locate_coordseq(&model, line, query, false)))
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!((results[0] - 5.0).abs() < 1e-12);
@@ -122,7 +111,7 @@ mod linref_array_degrade_tests {
     }
 
     #[test]
-    fn line_locate_point_m_degrades_empty_missing_and_non_monotonic_rows() {
+    fn line_locate_point_m_keeps_empty_results_and_measure_errors_distinct() {
         let query = query_point();
         let lines = [
             line_with_m(&[(0.0, 0.0, 0.0), (10.0, 0.0, 100.0)]),
@@ -132,15 +121,18 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| {
-                degrade_linref_float(line.line_locate_point_m_streaming(query), Lane::Array(0))
-            })
-            .collect_rows()
-            .expect("degradable rows must not abort");
-        assert!((results[0] - 50.0).abs() < 1e-12);
-        assert!(results[1].is_nan());
-        assert!(results[2].is_nan());
-        assert!(results[3].is_nan());
+            .map(|line| degrade_linref_float(line.line_locate_point_m_streaming(query)))
+            .collect::<Vec<_>>();
+        assert!((results[0].as_ref().unwrap() - 50.0).abs() < 1e-12);
+        assert!(results[1].as_ref().unwrap().is_nan());
+        assert!(matches!(
+            results[2].as_ref().unwrap_err().kind(),
+            ErrorKind::Geometry(GeometryErrorKind::MissingMeasure)
+        ));
+        assert!(matches!(
+            results[3].as_ref().unwrap_err().kind(),
+            ErrorKind::Geometry(GeometryErrorKind::NonMonotonicMeasure)
+        ));
     }
 
     #[test]
@@ -155,7 +147,6 @@ mod linref_array_degrade_tests {
             .map(|line| {
                 degrade_linref_point(
                     line_interpolate_coordseq(&model, line, 4.0, false).map(Shape::Point),
-                    Lane::Array(0),
                 )
             })
             .collect_rows()
@@ -165,7 +156,7 @@ mod linref_array_degrade_tests {
     }
 
     #[test]
-    fn line_interpolate_point_m_degrades_measured_data_failures() {
+    fn line_interpolate_point_m_propagates_measure_errors() {
         let lines = [
             line_with_m(&[(0.0, 0.0, 0.0), (10.0, 0.0, 100.0)]),
             empty_line(),
@@ -174,13 +165,15 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_point(line.line_interpolate_point_m(50.0), Lane::Array(0)))
-            .collect_rows()
-            .expect("degradable rows must not abort");
-        assert!(matches!(results[0], Shape::Point(p) if (p.x - 5.0).abs() < 1e-12));
-        for bad in &results[1..] {
-            assert!(matches!(bad, Shape::Empty(GeometryKind::Point, _)));
-        }
+            .map(|line| degrade_linref_point(line.line_interpolate_point_m(50.0)))
+            .collect::<Vec<_>>();
+        assert!(matches!(results[0], Ok(Shape::Point(p)) if (p.x - 5.0).abs() < 1e-12));
+        assert!(matches!(
+            results[1],
+            Ok(Shape::Empty(GeometryKind::Point, _))
+        ));
+        assert!(results[2].is_err());
+        assert!(results[3].is_err());
     }
 
     #[test]
@@ -194,10 +187,7 @@ mod linref_array_degrade_tests {
         let results = lines
             .iter()
             .map(|line| {
-                degrade_linref_linestring(
-                    line_substring_coordseq(&model, line, range, false),
-                    Lane::Array(0),
-                )
+                degrade_linref_linestring(line_substring_coordseq(&model, line, range, false))
             })
             .collect_rows()
             .expect("degradable rows must not abort");
@@ -209,7 +199,7 @@ mod linref_array_degrade_tests {
     }
 
     #[test]
-    fn line_substring_m_degrades_measured_data_failures() {
+    fn line_substring_m_propagates_measure_errors() {
         let range = MeasureRange::substring_measure(25.0, 75.0).expect("ordered measures");
         let lines = [
             line_with_m(&[(0.0, 0.0, 0.0), (10.0, 0.0, 100.0)]),
@@ -218,16 +208,14 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_linestring(line.line_substring_m(range), Lane::Array(0)))
-            .collect_rows()
-            .expect("degradable rows must not abort");
-        assert!(matches!(&results[0], Shape::LineString(seq) if !seq.is_empty()));
-        for bad in &results[1..] {
-            assert!(matches!(
-                bad,
-                Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY)
-            ));
-        }
+            .map(|line| degrade_linref_linestring(line.line_substring_m(range)))
+            .collect::<Vec<_>>();
+        assert!(matches!(&results[0], Ok(Shape::LineString(seq)) if !seq.is_empty()));
+        assert!(matches!(
+            results[1],
+            Ok(Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY))
+        ));
+        assert!(results[2].is_err());
     }
 
     #[test]
@@ -250,20 +238,15 @@ mod linref_array_degrade_tests {
             wrong_kind.kind(),
             ErrorKind::Geometry(GeometryErrorKind::LineStringRequired)
         ));
-        assert!(!linref_error_degrades(&wrong_kind, Lane::Array(0)));
+        assert!(!linref_error_degrades(&wrong_kind));
 
         let out_of_order = MeasureRange::substring_measure(6.0, 2.0).expect_err("ordered");
-        assert!(!linref_error_degrades(&out_of_order, Lane::Array(0)));
+        assert!(!linref_error_degrades(&out_of_order));
 
         let lines = [line_xy(&[(0.0, 0.0), (10.0, 0.0)]), polygon];
         let batch = lines
             .iter()
-            .map(|line| {
-                degrade_linref_float(
-                    line.line_locate_point_streaming(query, false),
-                    Lane::Array(0),
-                )
-            })
+            .map(|line| degrade_linref_float(line.line_locate_point_streaming(query, false)))
             .collect_rows();
         assert!(batch.is_err(), "wrong-kind rows must abort the batch");
     }

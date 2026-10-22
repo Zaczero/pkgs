@@ -309,7 +309,6 @@ pub(crate) fn line_interpolate_points_shape(
     shape: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     plan: &InterpolatePlan,
-    lane: crate::dispatch::Lane,
 ) -> Result<Vec<Shape>, crate::error::Error> {
     let mut shapes = Vec::with_capacity(plan.sample_count());
     if plan.sample_count() == 0 {
@@ -320,7 +319,7 @@ pub(crate) fn line_interpolate_points_shape(
             let index = match shape.line_index() {
                 Ok(index) => index,
                 Err(error) => {
-                    shapes.push(crate::broadcast::degrade_linref_point(Err(error), lane)?);
+                    shapes.push(crate::broadcast::degrade_linref_point(Err(error))?);
                     shapes.resize(plan.sample_count(), Shape::empty_point());
                     return Ok(shapes);
                 },
@@ -336,7 +335,6 @@ pub(crate) fn line_interpolate_points_shape(
                                     &PlanarMetric,
                                 )
                                 .map(Shape::Point),
-                            lane,
                         )?);
                     }
                 },
@@ -350,7 +348,6 @@ pub(crate) fn line_interpolate_points_shape(
                                     &PlanarMetric,
                                 )
                                 .map(Shape::Point),
-                            lane,
                         )?);
                     }
                 },
@@ -363,7 +360,7 @@ pub(crate) fn line_interpolate_points_shape(
             {
                 Ok(index) => index,
                 Err(error) => {
-                    shapes.push(crate::broadcast::degrade_linref_point(Err(error), lane)?);
+                    shapes.push(crate::broadcast::degrade_linref_point(Err(error))?);
                     shapes.resize(plan.sample_count(), Shape::empty_point());
                     return Ok(shapes);
                 },
@@ -379,7 +376,6 @@ pub(crate) fn line_interpolate_points_shape(
                                     metric,
                                 )
                                 .map(Shape::Point),
-                            lane,
                         )?);
                     }
                 },
@@ -389,7 +385,6 @@ pub(crate) fn line_interpolate_points_shape(
                             index
                                 .interpolate_route_position(distance, mode.is_normalized(), metric)
                                 .map(Shape::Point),
-                            lane,
                         )?);
                     }
                 },
@@ -560,7 +555,6 @@ mod tests {
         InterpolatePlan, PreparedPlan, line_interpolate_points_shape, linear_reference_counters,
     };
     use crate::crs::{MetricModel, ResolvedMetric};
-    use crate::dispatch::Lane;
     use crate::geometry::{ChartLineIndex, CoordSeq, FrameDependentCaches, LineSeq, Point, Shape};
 
     fn line(z: bool, m: bool) -> PreparedPlan {
@@ -597,8 +591,7 @@ mod tests {
             let plan = InterpolatePlan::Count(5);
             linear_reference_counters::reset();
             let metric = ResolvedMetric::from_model(model).unwrap();
-            let many =
-                line_interpolate_points_shape(&metric, &line, &cache, &plan, Lane::Scalar).unwrap();
+            let many = line_interpolate_points_shape(&metric, &line, &cache, &plan).unwrap();
             let counts = linear_reference_counters::snapshot();
             assert_eq!(counts.resolved_metrics, 1);
             if matches!(&metric, ResolvedMetric::Geodesic(_)) {

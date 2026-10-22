@@ -80,7 +80,7 @@ pub(crate) fn line_locate_point_on_lines(
                                     normalized,
                                     metric,
                                 );
-                                degrade_linref_float(located, crate::dispatch::Lane::Array(row))
+                                degrade_linref_float(located)
                             })
                             .collect_rows();
                         Ok(rows)
@@ -101,10 +101,12 @@ pub(crate) fn line_locate_point_on_lines(
                             return Ok(f64::NAN);
                         }
                         let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                        degrade_linref_float(
-                            line_locate_coordseq(&model, &line, queries.get(row), normalized),
-                            crate::dispatch::Lane::Array(row),
-                        )
+                        degrade_linref_float(line_locate_coordseq(
+                            &model,
+                            &line,
+                            queries.get(row),
+                            normalized,
+                        ))
                     })
                     .collect_rows()
             },
@@ -250,7 +252,6 @@ fn interpolate_mixed_row_groups(
                             &line,
                             &cache,
                             plan,
-                            crate::dispatch::Lane::Array(logical),
                         )
                     })
                     .map_err(|error| (logical, error))?;

@@ -8,7 +8,6 @@ use crate::broadcast::{
     validate_paired_arrays,
 };
 use crate::crs::frame::Frame;
-use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::storage::PackedStorage;
 use crate::geometry::storage::validity::union_many;
@@ -76,8 +75,8 @@ fn append_scalar_query_rows<'a>(
                     .with_shape(locate_query)
                     .map_err(|error| (row_index, error))?
                     .map_err(|error| (row_index, error))?;
-                let value = degrade_linref_float(locate(query), Lane::Scalar)
-                    .map_err(|error| (row_index, error))?;
+                let value =
+                    degrade_linref_float(locate(query)).map_err(|error| (row_index, error))?;
                 values.push(value);
             },
         }
@@ -133,7 +132,7 @@ pub(crate) fn line_locate_input(
                     .prepare(&metric, &plan, &cache, query)
                     .map(|(_, located)| located)
             });
-            let located = degrade_linref_float(result, Lane::Scalar)?;
+            let located = degrade_linref_float(result)?;
             Ok(located.into_pyobject(py)?.unbind().into())
         },
         (GeometryInput::One(line), GeometryInput::Many(points)) => {
@@ -155,7 +154,7 @@ pub(crate) fn line_locate_input(
                                 .map_err(|error| (row_index, error))?
                                 .map_err(|error| (row_index, error))?;
                             if let Err(error) = locate.admit_query(&plan, &cache, query) {
-                                let value = degrade_linref_float(Err(error), Lane::Scalar)
+                                let value = degrade_linref_float(Err(error))
                                     .map_err(|error| (row_index, error))?;
                                 values.push(value);
                                 append_scalar_query_rows(queries, &mut values, |query| {
@@ -173,7 +172,7 @@ pub(crate) fn line_locate_input(
                                     })?;
                                 },
                                 Err(error) => {
-                                    let value = degrade_linref_float(Err(error), Lane::Scalar)
+                                    let value = degrade_linref_float(Err(error))
                                         .map_err(|error| (row_index, error))?;
                                     values.push(value);
                                     append_scalar_query_rows(queries, &mut values, |query| {
@@ -214,7 +213,7 @@ pub(crate) fn line_locate_input(
                                     .prepare(metric, &line, &cache, query)
                                     .map(|(_, located)| located)
                             })();
-                            degrade_linref_float(result, Lane::Array(row))
+                            degrade_linref_float(result)
                         },
                     })
                     .collect_rows()
@@ -272,7 +271,7 @@ pub(crate) fn line_locate_input(
                                 .prepare(metric, &line, &cache, query)
                                 .map(|(_, located)| located)
                         })();
-                        degrade_linref_float(result, Lane::Array(row))
+                        degrade_linref_float(result)
                     })
                     .collect_rows()
             })
@@ -291,8 +290,7 @@ pub(crate) fn line_interpolate_points_scalar(
         .resolve_ctx(&geometry.frame, &mut scratch)?;
     let metric = context.require_resolved(MetricOp::LineInterpolate)?;
     let line = geometry.prepared_plan();
-    let shapes =
-        line_interpolate_points_shape(metric, &line, &geometry.frame_cache(), plan, Lane::Scalar)?;
+    let shapes = line_interpolate_points_shape(metric, &line, &geometry.frame_cache(), plan)?;
     Ok(PyGeometryArray::from_shapes(
         shapes,
         geometry.frame.clone(),

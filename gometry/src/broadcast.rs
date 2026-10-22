@@ -142,56 +142,36 @@ pub(crate) fn detach_collect_f64(
     float64_array(py, py.detach(f).map_err(rows_err)?)
 }
 
-/// Whether a linear-referencing error is instead answered with an empty point,
-/// an empty line, or NaN. Empty linework has no positions to reference, so
-/// every lane answers it. Missing or non-monotonic M is the caller's error for
-/// one geometry, but one row's data in an array, which must not abort the batch.
-/// Wrong-kind and parameter errors always raise.
-pub(crate) fn linref_error_degrades(
-    error: &crate::error::Error,
-    lane: crate::dispatch::Lane,
-) -> bool {
-    use crate::geometry::GeometryErrorKind as G;
+/// Empty linework has no positions to reference. Malformed routes, wrong kinds,
+/// and invalid parameters remain errors for both scalars and array rows.
+pub(crate) fn linref_error_degrades(error: &crate::error::Error) -> bool {
     matches!(
         error.kind(),
-        crate::error::ErrorKind::Geometry(G::EmptyLinework)
-    ) || (lane.is_array()
-        && matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(G::MissingMeasure | G::NonMonotonicMeasure)
-        ))
+        crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::EmptyLinework)
+    )
 }
 
-fn degrade_linref<T>(
-    result: Result<T>,
-    lane: crate::dispatch::Lane,
-    empty: impl FnOnce() -> T,
-) -> Result<T> {
+fn degrade_linref<T>(result: Result<T>, empty: impl FnOnce() -> T) -> Result<T> {
     match result {
-        Err(error) if linref_error_degrades(&error, lane) => Ok(empty()),
+        Err(error) if linref_error_degrades(&error) => Ok(empty()),
         result => result,
     }
 }
 
-pub(crate) fn degrade_linref_float(
-    result: Result<f64>,
-    lane: crate::dispatch::Lane,
-) -> Result<f64> {
-    degrade_linref(result, lane, || f64::NAN)
+pub(crate) fn degrade_linref_float(result: Result<f64>) -> Result<f64> {
+    degrade_linref(result, || f64::NAN)
 }
 
 pub(crate) fn degrade_linref_point(
     result: Result<crate::geometry::Shape>,
-    lane: crate::dispatch::Lane,
 ) -> Result<crate::geometry::Shape> {
-    degrade_linref(result, lane, crate::geometry::Shape::empty_point)
+    degrade_linref(result, crate::geometry::Shape::empty_point)
 }
 
 pub(crate) fn degrade_linref_linestring(
     result: Result<crate::geometry::Shape>,
-    lane: crate::dispatch::Lane,
 ) -> Result<crate::geometry::Shape> {
-    degrade_linref(result, lane, || {
+    degrade_linref(result, || {
         crate::geometry::Shape::typed_empty(
             crate::geometry::GeometryKind::LineString,
             crate::geometry::CoordinateAxes::XY,

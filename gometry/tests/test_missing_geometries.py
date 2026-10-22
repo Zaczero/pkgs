@@ -1350,7 +1350,7 @@ def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     np.testing.assert_array_equal(indexes, [0, 2])
     np.testing.assert_array_equal(coords, [[0.0, 0.0], [2.0, 2.0]])
     assert masked.coords.x.tolist() == [0.0, 2.0]
-    assert masked.coords.to_nested() == [[0.0, 0.0], [2.0, 2.0]]
+    assert masked.coords.to_nested() == [[0.0, 0.0], None, [2.0, 2.0]]
 
 
 def test_masked_nearest_geometry_outputs_propagate_missing_rows() -> None:

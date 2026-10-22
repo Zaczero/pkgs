@@ -488,9 +488,11 @@ class Cell(Protocol):
 #: Topology-preserving nested coordinate payload from ``Coordinates.to_nested``.
 #: A point is a flat ``list[float]``; lines/multipoints are lists of ordinate
 #: tuples; polygons nest rings; multiparts and arrays nest further. ``None``
-#: appears only when a forced layout inserts a missing Z/M.
+#: represents missing geometry rows and absent Z/M in a selected layout.
 NestedCoordinates: TypeAlias = (
-    list[float | None] | list[tuple[float | None, ...]] | list['NestedCoordinates']
+    list[float | None]
+    | list[tuple[float | None, ...]]
+    | list['NestedCoordinates | None']
 )
 
 #: Canonical CRS kind token returned by ``CRS.kind`` / ``CrsInfo['kind']``

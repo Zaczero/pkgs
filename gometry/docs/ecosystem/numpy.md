@@ -79,8 +79,10 @@ Pandas/Polars construction. It omits Z/M when the view does not carry those
 axes; mixed views include their union and use `NaN` where a row lacks an axis.
 Use `coords.select('XY')`, `coords.select('XYZ')`, `coords.select('XYM')`, or
 `coords.select('XYZM')` to choose a fixed coordinate-view layout. The selected
-layout changes nested output, iteration, ndarray/dict exports, and equality
-without changing the geometry. For a flattened `GeometryArray.coords` view, use
+layout governs iteration, nested output, column access, ndarray/dict exports,
+and equality without changing the geometry. Excluded Z/M columns contain `NaN`.
+Nested output preserves missing geometry rows as `None`.
+For a flattened `GeometryArray.coords` view, use
 [`.row_index`][gometry.Coordinates.row_index] to map each coordinate back to
 its source geometry row. The matrix includes every carried axis; use
 `coords.select('XY')` before conversion when a fixed layout is needed. For a

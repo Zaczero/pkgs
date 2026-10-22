@@ -6,9 +6,9 @@ use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point, rows_err,
 };
 use crate::crs::MetricModel;
+use crate::dispatch::kernels;
 use crate::dispatch::metric::MetricScratch;
 use crate::dispatch::operation::{MetricOp, Operation};
-use crate::dispatch::{Lane, kernels};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
@@ -591,7 +591,7 @@ fn linref_point_between_packed_inner(
                         normalized,
                         metric,
                     );
-                    degrade_linref_point(point.map(Shape::Point), Lane::Array(row))
+                    degrade_linref_point(point.map(Shape::Point))
                 })
                 .collect_rows();
             Ok(rows)
@@ -604,7 +604,6 @@ fn linref_point_between_packed_inner(
                 degrade_linref_point(
                     line_interpolate_coordseq(model, &line, distance.get(row), normalized)
                         .map(Shape::Point),
-                    Lane::Array(row),
                 )
             })
             .collect_rows()
@@ -667,7 +666,7 @@ fn linref_substring_packed_inner(
                     let substring = crate::crs::chart_line_substring_coordseq_admitted(
                         &line, range, normalized, metric,
                     );
-                    degrade_linref_linestring(substring, Lane::Array(row))
+                    degrade_linref_linestring(substring)
                 })
                 .collect_rows();
             Ok(rows)
@@ -681,10 +680,7 @@ fn linref_substring_packed_inner(
                     start_distance.get(row),
                     end_distance.get(row),
                 )?;
-                degrade_linref_linestring(
-                    line_substring_coordseq(model, &line, range, normalized),
-                    Lane::Array(row),
-                )
+                degrade_linref_linestring(line_substring_coordseq(model, &line, range, normalized))
             })
             .collect_rows()
     }

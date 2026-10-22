@@ -1636,7 +1636,7 @@ def test_to_nested_preserves_scalar_and_dense_line_axes(
     assert dense.coords.to_nested() == [expected, expected]
 
 
-def test_to_nested_preserves_gather_order_and_skips_nullable_line_rows() -> None:
+def test_to_nested_preserves_gather_order_and_nullable_line_alignment() -> None:
     lines = [
         gm.from_wkt('LINESTRING ZM (1 11 21 31, 2 12 22 32)'),
         gm.from_wkt('LINESTRING ZM (3 13 23 33, 4 14 24 34)'),
@@ -1659,4 +1659,53 @@ def test_to_nested_preserves_gather_order_and_skips_nullable_line_rows() -> None
     ]
 
     nullable = gm.GeometryArray([None, lines[1], None, lines[0], lines[3], None])
-    assert nullable.coords.to_nested() == [expected[1], expected[0], expected[3]]
+    assert nullable.coords.to_nested() == [
+        None,
+        expected[1],
+        None,
+        expected[0],
+        expected[3],
+        None,
+    ]
+    assert nullable[[5, 3, 1, 3, 0]].coords.to_nested() == [
+        None,
+        expected[0],
+        expected[1],
+        expected[0],
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    'wkt, nested',
+    [
+        ('POINT ZM (3 5 7 11)', [3.0, 5.0, 7.0, 11.0]),
+        (
+            'POLYGON ((1 2, 4 2, 4 6, 1 2))',
+            [[(1.0, 2.0), (4.0, 2.0), (4.0, 6.0), (1.0, 2.0)]],
+        ),
+        (
+            'GEOMETRYCOLLECTION (POINT (3 5), LINESTRING (7 11, 13 17))',
+            [[3.0, 5.0], [(7.0, 11.0), (13.0, 17.0)]],
+        ),
+    ],
+)
+def test_to_nested_preserves_missing_rows_across_storage_kinds(
+    wkt: str, nested: object
+) -> None:
+    geometry = gm.from_wkt(wkt)
+    rows = gm.GeometryArray([None, geometry, None, geometry])
+    assert rows.coords.to_nested() == [None, nested, None, nested]
+    assert rows[[2, 3, 1, 0]].coords.to_nested() == [None, nested, nested, None]
+
+
+def test_selected_coordinate_axes_apply_to_individual_columns() -> None:
+    source = gm.LineString([(1, 2), (3, 4)], z=[5, 6], m=[7, 8]).coords
+    xy = source.select('XY')
+    np.testing.assert_array_equal(xy.z, [np.nan, np.nan])
+    np.testing.assert_array_equal(xy.m, [np.nan, np.nan])
+    np.testing.assert_array_equal(source.z, [5, 6])
+    np.testing.assert_array_equal(source.m, [7, 8])
+    xyz = xy.select('XYZ')
+    np.testing.assert_array_equal(xyz.z, [5, 6])
+    np.testing.assert_array_equal(xyz.m, [np.nan, np.nan])

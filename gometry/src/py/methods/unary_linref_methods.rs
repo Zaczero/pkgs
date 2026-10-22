@@ -94,8 +94,8 @@ Raises
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If M values are missing or non-monotonic; an array row degrades to an
-    empty result instead.
+    If M values are missing or non-monotonic. Array failures identify the
+    original input row.
 GeometryError
     If input forms conflict, a value is non-finite, or a distance-only option
     is used with ``basis='m'``.
@@ -171,8 +171,8 @@ Raises
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If M values are missing or non-monotonic; an array row degrades to an
-    empty result instead.
+    If M values are missing or non-monotonic. Array failures identify the
+    original input row.
 GeometryError
     If locations are non-finite or out of order, or a distance-only option is
     used with ``basis='m'``.
@@ -321,8 +321,8 @@ CRSMismatchError
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If M values are missing or non-monotonic; an array row degrades to
-    ``nan`` instead.
+    If M values are missing or non-monotonic. Array failures identify the
+    original input row.
 GeometryError
     If a distance-only option is used with ``basis='m'``.
 

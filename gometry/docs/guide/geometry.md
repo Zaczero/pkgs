@@ -381,8 +381,9 @@ for x, y, z, m in coords:
 ```
 
 [`coords.select(...)`][gometry.Coordinates.select] chooses a fixed coordinate-view
-layout for nested output, iteration, ndarray/dict exports, and equality without
-changing the geometry.
+layout for nested output, iteration, column access, ndarray/dict exports, and
+equality without changing the geometry. Nested coordinate export preserves
+missing geometry rows as `None`; flattened columns omit their coordinates.
 
 ### Explicit constructors identify ambiguous tuples
 
@@ -550,10 +551,11 @@ form answers it instead of raising: `line_locate` returns `nan`,
 `line_interpolate` returns `POINT EMPTY`, `line_substring` returns
 `LINESTRING EMPTY`, and `interpolate_m` returns the empty geometry with an M
 axis. A `POINT EMPTY` query locates to `nan`. Missing or non-monotonic M is
-different: a scalar call raises [`InvalidGeometryError`][gometry.InvalidGeometryError], because it asked for
-measures the geometry does not have, while a `GeometryArray` degrades that row
-the same way as an empty one rather than aborting the batch. Wrong-kind and
-parameter errors raise on both.
+different: both scalar and array calls raise
+[`InvalidGeometryError`][gometry.InvalidGeometryError], because they asked for
+measures the geometry does not have. Array failures identify the original input
+row; an invalid route is never converted into a successful empty result.
+Wrong-kind and parameter errors also raise on both.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

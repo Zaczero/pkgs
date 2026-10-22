@@ -419,16 +419,32 @@ def test_empty_linework_rows_match_the_scalar_answers() -> None:
     ]
 
 
-def test_measure_defects_raise_for_a_scalar_and_degrade_an_array_row() -> None:
-    unmeasured = gm.LineString([(0, 0), (4, 0)])
+@pytest.mark.parametrize(
+    'bad, message',
+    [
+        ('LINESTRING (0 0, 4 0)', 'M ordinate'),
+        ('LINESTRING M (0 0 0, 4 0 10, 8 0 5)', 'monotonic'),
+    ],
+)
+@pytest.mark.parametrize(
+    'operation', ['line_locate', 'line_interpolate', 'line_substring']
+)
+def test_measure_defects_raise_for_scalars_and_array_rows(
+    bad: str, message: str, operation: str
+) -> None:
+    invalid = gm.from_wkt(bad)
     measured = gm.LineString([(0, 0), (4, 0)], m=[0, 10])
-    with pytest.raises(gm.InvalidGeometryError, match='M ordinate'):
-        unmeasured.line_locate(gm.Point(1, 0), basis='m')
-    located = gm.GeometryArray([measured, unmeasured]).line_locate(
-        gm.Point(1, 0), basis='m'
-    )
-    assert located[0] == pytest.approx(2.5)
-    assert math.isnan(located[1])
+    args = {
+        'line_locate': (gm.Point(1, 0),),
+        'line_interpolate': (2.5,),
+        'line_substring': (2.5, 7.5),
+    }[operation]
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        getattr(invalid, operation)(*args, basis='m')
+    rows = gm.GeometryArray([None, measured, invalid])
+    with pytest.raises(gm.InvalidGeometryError, match=message) as error:
+        getattr(rows, operation)(*args, basis='m')
+    assert 'while processing array element 2' in error.value.__notes__
 
 
 def test_an_empty_query_point_locates_nowhere() -> None:
