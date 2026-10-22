@@ -652,6 +652,11 @@ impl Groups {
     ///     Nondecreasing boundaries, starting at zero and ending at len(values).
     /// missing : iterable of bool, optional
     ///     One flag per group. Missing groups must have empty values windows.
+    ///
+    /// Returns
+    /// -------
+    /// Groups
+    ///     A row-grouped view over the supplied values and offsets.
     #[new]
     #[pyo3(signature = (values, offsets, *, missing = None))]
     fn new(

@@ -63,6 +63,7 @@ RAISES_VALUEERROR_EXEMPT: dict[str, str] = {
     'GeometryArray.fill_missing': 'pandas fillna row-alignment convention: length mismatch is a plain ValueError',
     'GeometryCollection.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'CellArray.index': 'list.index convention: a missing element is a plain ValueError',
+    'CircleArray.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'Groups.index': 'list.index convention: a missing element is a plain ValueError',
     'Coordinates.index': 'list.index convention: a missing element is a plain ValueError',
     'GeometryParts.index': 'list.index convention: a missing element is a plain ValueError',

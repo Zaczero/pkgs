@@ -187,6 +187,9 @@ __all__ = [
     'CRSMismatchError',
     'CellArray',
     'CellArrayIterator',
+    'Circle',
+    'CircleArray',
+    'CircleArrayIterator',
     'Coordinates',
     'CoordinatesIterator',
     'GeohashCell',
@@ -3121,6 +3124,8 @@ class Geometry:
         ------
         GeometryTypeError
             If the input is not polygonal.
+        InvalidGeometryError
+            If invalid polygonal topology prevents the circle calculation.
         GeometryError
             If tolerance is not positive and finite, or meters are requested without a CRS.
         OverflowError
@@ -9925,6 +9930,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryTypeError
             If the input is not polygonal.
+        InvalidGeometryError
+            If invalid polygonal topology prevents the circle calculation.
         GeometryError
             If tolerance is not positive and finite, or meters are requested without a CRS.
         OverflowError
@@ -11660,16 +11667,39 @@ class Circle:
     def center(self) -> Point:
         """Circle center in the input CRS, retaining its coordinate epoch.
         Computed centers are XY; selected zero-radius source points retain Z/M.
+
+        Returns
+        -------
+        Point
+            Center in the source CRS and epoch. Empty circles return POINT EMPTY.
         """
     @property
     def radius(self) -> float:
-        """Radius in the selected metric units; NaN for an empty circle."""
+        """Radius in the selected metric units; NaN for an empty circle.
+
+        Returns
+        -------
+        float
+            Radius in the selected units; NaN for an empty circle.
+        """
     @property
     def unit(self) -> Literal['meters', 'planar']:
-        """``meters`` for SI radii, or ``planar`` for native coordinate units."""
+        """``meters`` for SI radii, or ``planar`` for native coordinate units.
+
+        Returns
+        -------
+        str
+            Effective radius units.
+        """
     @property
     def working_crs(self) -> str | None:
-        """Working CRS, or None when no CRS-based working frame is used."""
+        """Working CRS, or None when no CRS-based working frame is used.
+
+        Returns
+        -------
+        str or None
+            Working CRS, or None when no CRS-based working frame is used.
+        """
     def to_polygon(self, *, quadrant_segments: int = 16) -> Polygon | Point:
         """Realize the retained disk as a polygon, or a Point for a degenerate disk.
 
@@ -11721,23 +11751,50 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
     center: _CircleArrayCenterProjection
     """Circle centers as a point GeometryArray in the source CRS and epoch.
     Empty circles have empty Points; missing rows remain missing.
+
+    Returns
+    -------
+    GeometryArray of Point
+        One center per row, in the source CRS and epoch.
     """
     @property
     def radius(self) -> npt.NDArray[np.float64]:
         """Read-only float64 radii in each circle's selected units.
         Empty and missing rows are NaN.
+
+        Returns
+        -------
+        numpy.ndarray of float
+            Read-only radius per row; NaN for empty and missing rows.
         """
     @property
     def is_missing(self) -> npt.NDArray[np.bool_]:
-        """Read-only boolean mask distinguishing missing rows from empty circles."""
+        """Read-only boolean mask distinguishing missing rows from empty circles.
+
+        Returns
+        -------
+        numpy.ndarray of bool
+            True for missing rows; false for present rows, including empty circles.
+        """
     @property
     def unit(self) -> list[Literal['meters', 'planar'] | None]:
         """Effective radius units per row: meters or planar native coordinate units.
         Missing rows are None.
+
+        Returns
+        -------
+        list of str or None
+            Effective units per row.
         """
     @property
     def working_crs(self) -> list[str | None]:
-        """Working CRS definitions per row, or None where absent."""
+        """Working CRS definitions per row, or None where absent.
+
+        Returns
+        -------
+        list of str or None
+            Working CRS per row, or None where absent.
+        """
     @overload
     def to_polygon(
         self: CircleArray[Circle], *, quadrant_segments: int = 16
@@ -11772,7 +11829,18 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
     def __len__(self) -> int: ...
     def __contains__(self, value: object, /) -> bool: ...
     def count(self, value: object) -> int:
-        """Number of rows equal to a Circle, or missing rows when value is None."""
+        """Number of rows equal to a Circle, or missing rows when value is None.
+
+        Parameters
+        ----------
+        value : Circle or None
+            Circle value to count; None counts missing rows.
+
+        Returns
+        -------
+        int
+            Number of matching rows.
+        """
     def index(
         self,
         value: object,
@@ -11780,6 +11848,20 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
         stop: SupportsIndex | None = None,
     ) -> int:
         """First matching row within start:stop, with normal negative-index bounds.
+
+        Parameters
+        ----------
+        value : Circle or None
+            Circle value to find; None finds a missing row.
+        start : int, default 0
+            Start of the search window; negative indices count from the end.
+        stop : int or None, default None
+            End of the search window; None searches through the end.
+
+        Returns
+        -------
+        int
+            Index of the first matching row.
 
         Raises
         ------
@@ -11865,6 +11947,11 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
             Nondecreasing boundaries, starting at zero and ending at len(values).
         missing : iterable of bool, optional
             One flag per group. Missing groups must have empty values windows.
+
+        Returns
+        -------
+        Groups
+            A row-grouped view over the supplied values and offsets.
         """
     values: _GroupsValuesProjection
     """The logical flat payload window (numeric ndarray, `GeometryArray`, or

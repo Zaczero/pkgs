@@ -77,6 +77,11 @@ impl PyCircle {
 
     /// Circle center in the input CRS, retaining its coordinate epoch.
     /// Computed centers are XY; selected zero-radius source points retain Z/M.
+    ///
+    /// Returns
+    /// -------
+    /// Point
+    ///     Center in the source CRS and epoch. Empty circles return POINT EMPTY.
     #[getter]
     fn center(&self, py: Python<'_>) -> PyResult<Typed> {
         Ok(Typed(PyGeometry::with_frame(
@@ -86,18 +91,33 @@ impl PyCircle {
     }
 
     /// Radius in the selected metric units; NaN for an empty circle.
+    ///
+    /// Returns
+    /// -------
+    /// float
+    ///     Radius in the selected units; NaN for an empty circle.
     #[getter]
     fn radius(&self, py: Python<'_>) -> PyResult<f64> {
         Ok(py.detach(|| self.disk.radius())?)
     }
 
     /// ``meters`` for SI radii, or ``planar`` for native coordinate units.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     Effective radius units.
     #[getter]
     fn unit(&self) -> &'static str {
         self.disk.unit()
     }
 
     /// Working CRS, or None when no CRS-based working frame is used.
+    ///
+    /// Returns
+    /// -------
+    /// str or None
+    ///     Working CRS, or None when no CRS-based working frame is used.
     #[getter]
     fn working_crs(&self) -> Option<&str> {
         self.disk.working_crs()
@@ -257,6 +277,16 @@ impl PyCircleArray {
     }
 
     /// Number of rows equal to a Circle, or missing rows when value is None.
+    ///
+    /// Parameters
+    /// ----------
+    /// value : Circle or None
+    ///     Circle value to count; None counts missing rows.
+    ///
+    /// Returns
+    /// -------
+    /// int
+    ///     Number of matching rows.
     fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
         let needle = if value.is_none() {
             None
@@ -277,6 +307,20 @@ impl PyCircleArray {
     }
 
     /// First matching row within start:stop, with normal negative-index bounds.
+    ///
+    /// Parameters
+    /// ----------
+    /// value : Circle or None
+    ///     Circle value to find; None finds a missing row.
+    /// start : int, default 0
+    ///     Start of the search window; negative indices count from the end.
+    /// stop : int or None, default None
+    ///     End of the search window; None searches through the end.
+    ///
+    /// Returns
+    /// -------
+    /// int
+    ///     Index of the first matching row.
     ///
     /// Raises
     /// ------
@@ -341,6 +385,11 @@ impl PyCircleArray {
 
     /// Circle centers as a point GeometryArray in the source CRS and epoch.
     /// Empty circles have empty Points; missing rows remain missing.
+    ///
+    /// Returns
+    /// -------
+    /// GeometryArray of Point
+    ///     One center per row, in the source CRS and epoch.
     #[getter]
     fn center(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.shapes(py, FramedCircle::center)
@@ -348,6 +397,11 @@ impl PyCircleArray {
 
     /// Read-only float64 radii in each circle's selected units.
     /// Empty and missing rows are NaN.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray of float
+    ///     Read-only radius per row; NaN for empty and missing rows.
     #[getter]
     fn radius(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let values = py.detach(|| {
@@ -367,6 +421,11 @@ impl PyCircleArray {
     }
 
     /// Read-only boolean mask distinguishing missing rows from empty circles.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray of bool
+    ///     True for missing rows; false for present rows, including empty circles.
     #[getter]
     fn is_missing(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         bool_array(
@@ -380,6 +439,11 @@ impl PyCircleArray {
 
     /// Effective radius units per row: meters or planar native coordinate units.
     /// Missing rows are None.
+    ///
+    /// Returns
+    /// -------
+    /// list of str or None
+    ///     Effective units per row.
     #[getter]
     fn unit(&self) -> Vec<Option<&'static str>> {
         self.values()
@@ -389,6 +453,11 @@ impl PyCircleArray {
     }
 
     /// Working CRS definitions per row, or None where absent.
+    ///
+    /// Returns
+    /// -------
+    /// list of str or None
+    ///     Working CRS per row, or None where absent.
     #[getter]
     fn working_crs(&self) -> Vec<Option<&str>> {
         self.values()

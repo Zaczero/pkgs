@@ -434,6 +434,8 @@ Raises
 ------
 GeometryTypeError
     If the input is not polygonal.
+InvalidGeometryError
+    If invalid polygonal topology prevents the circle calculation.
 GeometryError
     If tolerance is not positive and finite, or meters are requested without a CRS.
 OverflowError
