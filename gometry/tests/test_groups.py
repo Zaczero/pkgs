@@ -63,6 +63,22 @@ def test_numeric_groups_admit_unaligned_numpy_storage(dtype, layout: str) -> Non
 
 
 @pytest.mark.parametrize('dtype', [np.int64, np.float64], ids=['int64', 'float64'])
+def test_numeric_groups_normalize_subclasses_before_snapshotting(dtype) -> None:
+    class SharedCopy(np.ndarray):
+        def copy(self, order='C'):
+            return self
+
+    source = np.ndarray(
+        (3,), dtype=dtype, buffer=bytearray(27), offset=1, strides=(9,)
+    ).view(SharedCopy)
+    source[:] = [7, 11, 13]
+    groups = gm.Groups(source, [0, 3])
+    source[:] = 0
+    assert groups.to_list() == [[7, 11, 13]]
+    assert groups.values.dtype == dtype
+
+
+@pytest.mark.parametrize('dtype', [np.int64, np.float64], ids=['int64', 'float64'])
 def test_empty_unaligned_numeric_groups_skip_typed_views(dtype) -> None:
     source = np.ndarray((0,), dtype=dtype, buffer=bytearray(9), offset=1)
     groups = gm.Groups(source, [0, 0])

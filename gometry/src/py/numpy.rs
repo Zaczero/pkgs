@@ -23,13 +23,14 @@ pub(crate) fn numpy_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
 /// element storage before creating a typed Rust view. Empty arrays are not
 /// sufficient evidence of pointer alignment; callers must handle them before
 /// extracting a typed array.
-pub(crate) fn require_aligned_numpy<T: Element>(
-    value: &Bound<'_, PyAny>,
-) -> PyResult<Bound<'_, PyAny>> {
+pub(crate) fn require_aligned_numpy<'py, T: Element>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
     let py = value.py();
     let kwargs = pyo3::types::PyDict::new(py);
     kwargs.set_item("dtype", T::get_dtype(py))?;
-    kwargs.set_item("requirements", ["A"])?;
+    // A subclass's copy hook may return its original unaligned storage.
+    kwargs.set_item("requirements", ["A", "E"])?;
     numpy_module(py)?
         .getattr("require")?
         .call((value,), Some(&kwargs))
