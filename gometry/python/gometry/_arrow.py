@@ -136,7 +136,7 @@ def _extension_type(
     return _extension_type_from_storage(pa, extension_name, storage_type, crs, epoch)
 
 
-def _restore_extension_type(
+def _restore_extension_type_v1(
     extension_name: str,
     storage_type: Any,
     serialized: bytes,
@@ -229,7 +229,7 @@ def _extension_type_class(pa: Any, extension_name: str) -> type[Any]:
         def __reduce__(
             self,
         ) -> tuple[Any, tuple[str, Any, bytes]]:
-            return _restore_extension_type, (
+            return _restore_extension_type_v1, (
                 extension_name,
                 self.storage_type,
                 self._serialized,
