@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from gometry._lib import (
     Geometry,
@@ -60,7 +60,7 @@ def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
     if isinstance(series.dtype, pd.ArrowDtype):
         from gometry import from_arrow
 
-        return from_arrow(data.__arrow_array__())
+        return from_arrow(cast('pd.arrays.ArrowExtensionArray', data).__arrow_array__())
     missing = series.isna().tolist()
     return GeometryArray(
         None if is_missing else value
