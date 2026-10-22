@@ -46,7 +46,7 @@ impl BulkElement for CircleOutput {
 
 /// A solved circle with a source-CRS center and a radius in ``unit``.
 ///
-/// ``working_crs`` identifies the Cartesian frame in which the disk is solved.
+/// ``working_crs`` identifies the coordinate frame in which the disk is solved.
 /// Geographic metric results with one or two distinct point sites retain an
 /// ellipsoidal solution; other geographic circles use a local projection.
 /// ``to_polygon`` realizes the retained disk without repeating its optimization;
@@ -93,7 +93,7 @@ impl PyCircle {
         self.disk.unit()
     }
 
-    /// Cartesian working CRS, or None for ellipsoidal, CRS-free, or empty disks.
+    /// Working CRS, or None when no CRS-based working frame is used.
     #[getter]
     fn working_crs(&self) -> Option<&str> {
         self.disk.working_crs()

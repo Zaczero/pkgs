@@ -11581,7 +11581,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 class Circle:
     """A solved circle with a source-CRS center and a radius in ``unit``.
 
-    ``working_crs`` identifies the Cartesian frame in which the disk is solved.
+    ``working_crs`` identifies the coordinate frame in which the disk is solved.
     Geographic metric results with one or two distinct point sites retain an
     ellipsoidal solution; other geographic circles use a local projection.
     ``to_polygon`` realizes the retained disk without repeating its optimization;
@@ -11601,7 +11601,7 @@ class Circle:
         """``meters`` for SI radii, or ``planar`` for native coordinate units."""
     @property
     def working_crs(self) -> str | None:
-        """Cartesian working CRS, or None for ellipsoidal, CRS-free, or empty disks."""
+        """Working CRS, or None when no CRS-based working frame is used."""
     def to_polygon(self, *, quadrant_segments: int = 16) -> Polygon | Point:
         """Realize the retained disk as a polygon, or a Point for a degenerate disk.
 
