@@ -101,8 +101,8 @@ def test_cell_groups_keep_inner_missing_values_after_gather_and_pickle() -> None
         resolution=3,
     )
     groups = gm.Groups(cells, [0, 2, 3])[::-1]
-    assert groups[0].to_list() == cells[2:].to_list()
-    assert groups[1].to_list() == cells[:2].to_list()
+    assert list(groups[0]) == list(cells[2:])
+    assert list(groups[1]) == list(cells[:2])
     assert pickle.loads(pickle.dumps(groups)) == groups
 
 

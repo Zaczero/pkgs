@@ -681,23 +681,51 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     assert substrings_m[1] is None
     assert substrings_m.to_arrow().type.extension_name == 'geoarrow.linestring'
 
-    invalid_m = gm.GeometryArray([
-        measured,
-        gm.from_wkt('LINESTRING M (0 0 0, 5 0 50, 2 0 20)'),
-        gm.LineString([(0.0, 0.0), (10.0, 0.0)]),
-    ])
-    invalid_points = invalid_m.line_interpolate(25.0, basis='m')
-    assert invalid_points[0].to_wkt() == 'POINT M (2.5 0 25)'
-    assert invalid_points[1].is_empty
-    assert invalid_points[2].is_empty
-    invalid_locations = invalid_m.line_locate(gm.Point(2.5, 0.0), basis='m')
-    assert invalid_locations[0] == pytest.approx(25.0)
-    assert math.isnan(invalid_locations[1])
-    assert math.isnan(invalid_locations[2])
-    invalid_substrings = invalid_m.line_substring(25.0, 75.0, basis='m')
-    assert invalid_substrings[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
-    assert invalid_substrings[1].is_empty
-    assert invalid_substrings[2].is_empty
+
+def test_measured_empty_linework_degrades_but_missing_rows_stay_missing() -> None:
+    rows = gm.GeometryArray([None, gm.from_wkt('LINESTRING M EMPTY')])
+    np.testing.assert_array_equal(
+        rows.line_locate(gm.Point(2.5, 0), basis='m'), [np.nan, np.nan]
+    )
+    points = rows.line_interpolate(25, basis='m')
+    assert points[0] is None
+    assert isinstance(points[1], gm.Point)
+    assert points[1].is_empty
+    substrings = rows.line_substring(25, 75, basis='m')
+    assert substrings[0] is None
+    assert isinstance(substrings[1], gm.LineString)
+    assert substrings[1].is_empty
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'message'),
+    [
+        ('LINESTRING (0 0, 10 0)', 'every vertex to carry an M ordinate'),
+        ('LINESTRING M (0 0 0, 5 0 50, 2 0 20)', 'monotonic non-decreasing M'),
+    ],
+    ids=['missing-measures', 'nonmonotonic-measures'],
+)
+@pytest.mark.parametrize(
+    'operation', ['interpolate', 'locate', 'substring', 'grouped-interpolate']
+)
+def test_malformed_m_array_rows_raise_with_original_row_notes(
+    wkt: str,
+    message: str,
+    operation: str,
+) -> None:
+    measured = gm.LineString([(0, 0), (10, 0)], m=[0, 100])
+    rows = gm.GeometryArray([None, measured, gm.from_wkt(wkt)])
+    call = {
+        'interpolate': lambda: rows.line_interpolate(25, basis='m'),
+        'locate': lambda: rows.line_locate(gm.Point(2.5, 0), basis='m'),
+        'substring': lambda: rows.line_substring(25, 75, basis='m'),
+        'grouped-interpolate': lambda: rows.line_interpolate(
+            gm.Groups(np.array([25, 25, 25], dtype=np.int64), [0, 1, 2, 3]), basis='m'
+        ),
+    }[operation]
+    with pytest.raises(gm.InvalidGeometryError, match=message) as caught:
+        call()
+    assert caught.value.__notes__ == ['while processing array element 2']
 
 
 def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
@@ -710,8 +738,9 @@ def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
     with pytest.raises(
         gm.InvalidGeometryError,
         match='measured linear referencing requires every vertex to carry an M ordinate',
-    ):
+    ) as scalar_error:
         invalid.line_locate(queries, basis='m')
+    assert scalar_error.value.__notes__ == ['while processing array element 0']
 
     measured = gm.LineString(
         [(0.0, 0.0), (10.0, 0.0)],
@@ -723,9 +752,12 @@ def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
         [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
         crs=4326,
     )
-    located = line_rows.line_locate(query_rows, basis='m')
-    assert math.isnan(located[0])
-    assert located[1] == pytest.approx(50.0)
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='measured linear referencing requires every vertex to carry an M ordinate',
+    ) as caught:
+        line_rows.line_locate(query_rows, basis='m')
+    assert caught.value.__notes__ == ['while processing array element 0']
 
 
 def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:

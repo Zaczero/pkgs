@@ -19,7 +19,7 @@ def test_directed_merge_joins_forward_seam_aliases(crs: int, seam: float) -> Non
     result = source.line_merge(directed=True)
     assert isinstance(result, gm.LineString)
     assert result.crs == source.crs
-    assert result.equals(source)
+    assert gm.equals(result, source)
     assert result.length == pytest.approx(source.length, rel=1e-10)
 
 
@@ -57,7 +57,12 @@ def test_directed_seam_join_keeps_distinct_ordinate_occurrences_and_nullable_row
     )
     assert result.length == pytest.approx(source.length, rel=1e-10)
     rows = gm.GeometryArray([None, source, source])[::-1].line_merge(directed=True)
-    assert rows.to_wkt() == [result.to_wkt(), result.to_wkt(), None]
+    assert rows.epoch == result.epoch
+    assert rows.to_wkt(drop_epoch=True) == [
+        result.to_wkt(drop_epoch=True),
+        result.to_wkt(drop_epoch=True),
+        None,
+    ]
 
 
 @pytest.mark.parametrize('crs', [None, 4326])
@@ -78,25 +83,25 @@ def test_directed_join_keeps_distinct_signed_zero_ordinates(crs) -> None:
 def test_directed_join_preserves_authored_full_period_edges(sign: int) -> None:
     source = gm.MultiLineString(
         [
-            [(sign * 170, -10), (sign * 180, -10)],
-            [(-sign * 180, -10), (sign * 180, 10)],
-            [(-sign * 180, 10), (-sign * 170, 10)],
+            [(0, -10), (sign * 10, -10)],
+            [(sign * 370, -10), (sign * 730, 10)],
+            [(sign * 10, 10), (sign * 20, 10)],
         ],
         crs=4326,
     )
     result = source.line_merge(directed=True)
     assert isinstance(result, gm.LineString)
-    assert result.equals(source)
+    assert gm.equals(result, source)
     assert result.length == pytest.approx(source.length, rel=1e-10)
     assert result.length > 35_000_000
 
 
-def test_full_period_seam_loop_remains_a_branch_barrier() -> None:
+def test_full_period_loop_remains_a_branch_barrier() -> None:
     source = gm.MultiLineString(
         [
-            [(170, 0), (180, 0)],
-            [(-180, 0), (180, 0)],
-            [(-180, 0), (-170, 0)],
+            [(0, 0), (10, 0)],
+            [(10, 0), (370, 0)],
+            [(10, 0), (20, 0)],
         ],
         crs=4326,
     )
@@ -109,9 +114,9 @@ def test_full_period_seam_loop_remains_a_branch_barrier() -> None:
 def test_full_period_join_samples_inserted_zm_from_its_own_source_arc() -> None:
     source = gm.from_wkt(
         'MULTILINESTRING ZM ('
-        '(170 -10 1 10, 180 -10 2 20), '
-        '(-180 -10 3 30, 180 10 5 50), '
-        '(-180 10 6 60, -170 10 7 70))',
+        '(0 -10 1 10, 10 -10 2 20), '
+        '(370 -10 3 30, 730 10 5 50), '
+        '(10 10 6 60, 20 10 7 70))',
         crs=4326,
     )
     result = source.line_merge(directed=True)
@@ -122,6 +127,38 @@ def test_full_period_join_samples_inserted_zm_from_its_own_source_arc() -> None:
     midpoint = coords[coords[:, 1] == 0]
     assert len(midpoint) == 1
     np.testing.assert_allclose(midpoint[:, 2:], [[4, 40]], rtol=1e-12)
+    # The first quarter is farther from the equator than the middle quarters,
+    # so its arclength fraction is below its chart fraction of one quarter.
+    first_quarter = coords[coords[:, 1] == -5]
+    assert len(first_quarter) == 1
+    assert 30 < first_quarter[0, 3] < 35
+    assert gm.equals(result, source)
+    assert result.length == pytest.approx(source.length, rel=1e-10)
+
+
+def test_seam_alias_edge_is_a_meridian_not_an_authored_full_period() -> None:
+    source = gm.from_wkt(
+        'MULTILINESTRING ZM ('
+        '(170 -10 1 10, 180 -10 2 20), '
+        '(-180 -10 3 30, 180 10 5 50), '
+        '(-180 10 6 60, -170 10 7 70))',
+        crs=4326,
+    )
+    meridian = gm.LineString([(-180, -10), (-180, 10)], crs=4326)
+    result = source.line_merge(directed=True)
+    assert gm.equals(source.parts[1], meridian)
+    assert gm.equals(result, source)
+    np.testing.assert_array_equal(
+        np.asarray(result.coords)[:, 2:],
+        [
+            [1, 10],
+            [2, 20],
+            [3, 30],
+            [5, 50],
+            [6, 60],
+            [7, 70],
+        ],
+    )
     assert result.length == pytest.approx(source.length, rel=1e-10)
 
 
@@ -138,7 +175,7 @@ def test_directed_merge_joins_pole_aliases_without_changing_source_meridians(
     )
     result = source.line_merge(directed=True)
     assert isinstance(result, gm.LineString)
-    assert result.equals(source)
+    assert gm.equals(result, source)
     assert result.length == pytest.approx(source.length, rel=1e-10)
     np.testing.assert_array_equal(
         np.asarray(result.coords),
@@ -149,6 +186,34 @@ def test_directed_merge_joins_pole_aliases_without_changing_source_meridians(
             [120, pole - 10],
         ],
     )
+
+
+@pytest.mark.parametrize(
+    ('crs', 'pole', 'half'), [(4326, 90.0, 180.0), (4807, 100.0, 200.0)]
+)
+@pytest.mark.parametrize('sign', [1, -1], ids=['north', 'south'])
+def test_pole_only_half_period_has_zero_metric_length(
+    crs: int,
+    pole: float,
+    half: float,
+    sign: int,
+) -> None:
+    line = gm.LineString([(0, sign * pole), (half, sign * pole)], crs=crs)
+    assert line.length == 0
+
+
+@pytest.mark.parametrize(
+    ('crs', 'pole', 'half'), [(4326, 90.0, 180.0), (4807, 100.0, 200.0)]
+)
+def test_non_degenerate_near_pole_half_period_still_requires_disambiguation(
+    crs: int,
+    pole: float,
+    half: float,
+) -> None:
+    latitude = np.nextafter(pole, 0.0)
+    line = gm.LineString([(0, latitude), (half, latitude)], crs=crs)
+    with pytest.raises(gm.GeometryError, match='edge spans exactly half'):
+        _ = line.length
 
 
 @pytest.mark.parametrize(
@@ -165,7 +230,7 @@ def test_alias_join_does_not_sample_ambiguous_ordinates_on_a_pole_only_edge(
     )
     result = source.line_merge(directed=True)
     assert isinstance(result, gm.LineString)
-    assert result.equals(source)
+    assert gm.equals(result, source)
     np.testing.assert_array_equal(
         np.asarray(result.coords)[:, 2:],
         [

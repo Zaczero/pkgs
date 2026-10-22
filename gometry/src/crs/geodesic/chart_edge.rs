@@ -85,19 +85,18 @@ impl ChartEdge {
         let connection = axis
             .chart_connection(start.x, end.x)
             .expect("chart-edge coordinates were admitted before measurement");
-        if let ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) = connection.step {
+        let edge = Self::from_retained_admitted(start, end, frame, connection.retained());
+        // Longitude aliases at one pole have point support, not an ambiguous arc.
+        if let ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) = connection.step
+            && !edge.is_degenerate()
+        {
             return Err(GeometryErrorKind::parameter(
                 "longitude",
                 EdgeDirection::HalfTurn(direction).delta(axis),
                 "edge spans exactly half the longitude period; add a vertex",
             ));
         }
-        Ok(Self::from_retained_admitted(
-            start,
-            end,
-            frame,
-            connection.retained(),
-        ))
+        Ok(edge)
     }
 
     /// Build a metric edge from an already selected source or producer branch.

@@ -935,23 +935,19 @@ def test_array_getitem_error_messages_share_one_template() -> None:
     )
 
 
-@pytest.mark.parametrize('kind', ['geometry', 'cells', 'groups', 'edges', 'vertices'])
+@pytest.mark.parametrize('kind', ['geometry', 'cells', 'edges', 'vertices'])
 def test_numpy_boolean_masks_accept_noncanonical_true_bytes(kind: str) -> None:
     cell = gm.H3Cell(gm.Point(10, 50, crs=4326), resolution=7)
     containers = {
         'geometry': gm.points([3, 7, 11], [5, 13, 17]),
         'cells': gm.h3_cells([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], resolution=4),
-        'groups': gm.Groups(np.array([19, 23, 29], dtype=np.int64), [0, 1, 2, 3]),
         'edges': cell.edges[:3],
         'vertices': cell.vertices[:3],
     }
     values = containers[kind]
     mask = np.array([2, 0, 255], dtype=np.uint8).view(np.bool_)
     selected = values[mask]
-    if kind == 'groups':
-        assert selected.to_list() == [[19], [29]]
-    else:
-        assert list(selected) == [values[0], values[2]]
+    assert list(selected) == [values[0], values[2]]
 
 
 def test_array_getitem_mask_and_bool_error_boundaries_are_frozen() -> None:

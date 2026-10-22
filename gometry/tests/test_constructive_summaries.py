@@ -837,6 +837,7 @@ def test_line_merge_array_multiline_rows_preserve_nullable_gather_order() -> Non
     nullable = gm.GeometryArray([None, reversed_parts, forward_parts])
     merged = nullable.line_merge()
     assert merged.coords.to_nested() == [
+        None,
         [(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
         [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
     ]
@@ -846,6 +847,7 @@ def test_line_merge_array_multiline_rows_preserve_nullable_gather_order() -> Non
     gathered_merged = gathered.line_merge()
     assert gathered_merged.coords.to_nested() == [
         [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
+        None,
         [(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
         [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
     ]
