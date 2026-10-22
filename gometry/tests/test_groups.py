@@ -32,6 +32,36 @@ def test_numeric_groups_copy_non_native_strided_values() -> None:
     assert groups.to_list() == [[2**53 + 5], [2**53 + 3, 2**53 + 1]]
 
 
+@pytest.mark.parametrize('dtype', [np.int64, np.float64], ids=['int64', 'float64'])
+@pytest.mark.parametrize(
+    'layout',
+    ['misaligned_contiguous', 'odd_stride', 'reversed_odd_stride'],
+    ids=['offset_one', 'stride_nine', 'reversed_stride_nine'],
+)
+def test_numeric_groups_admit_unaligned_numpy_storage(dtype, layout: str) -> None:
+    expected = (
+        np.array([2**53 + 1, -(2**53 + 3), 2**63 - 1], dtype=np.int64)
+        if dtype is np.int64
+        else np.array([1.25, -3.5, 9.75], dtype=np.float64)
+    )
+    stride = 9 if layout != 'misaligned_contiguous' else 8
+    offset = 1 + (2 * stride if layout == 'reversed_odd_stride' else 0)
+    backing = bytearray(1 + 2 * 9 + 8)
+    source = np.ndarray(
+        shape=(3,),
+        dtype=dtype,
+        buffer=backing,
+        offset=offset,
+        strides=(-stride if layout == 'reversed_odd_stride' else stride,),
+    )
+    source[:] = expected
+
+    groups = gm.Groups(source, [0, 3])
+    source[:] = 0
+    assert groups.to_list() == [expected.tolist()]
+    assert groups.values.dtype == dtype
+
+
 def test_geometry_groups_keep_inner_missing_values_after_gather_and_pickle() -> None:
     values = gm.GeometryArray([gm.Point(3, 4), None, gm.LineString([(5, 6), (7, 8)])])
     groups = gm.Groups(values, [0, 2, 2, 3], missing=[False, True, False])[::-1]

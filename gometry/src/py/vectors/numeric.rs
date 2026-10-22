@@ -2,9 +2,10 @@ use numpy::{
     PyArrayDescrMethods as _, PyReadonlyArray1, PyUntypedArray, PyUntypedArrayMethods as _,
 };
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use super::{Arc, Groups, GroupsValues};
-use crate::py::numpy::reject_masked_array;
+use crate::py::numpy::{numpy_module, reject_masked_array};
 
 impl Groups {
     pub(super) fn from_float64_csr(
@@ -36,33 +37,44 @@ impl Groups {
                 "Groups numeric values must be a one-dimensional int64 or float64 ndarray",
             ));
         }
-        let native_values = |name: &str| {
-            if dtype.is_native_byteorder() == Some(false) {
-                values.call_method1("astype", (name,))
-            } else {
-                Ok(values.clone())
-            }
+        let py = values.py();
+        let (kind, name) = match dtype.kind() {
+            b'i' => (b'i', "int64"),
+            b'f' => (b'f', "float64"),
+            _ => {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "Groups numeric values must have int64 or float64 dtype",
+                ));
+            },
         };
-        match dtype.kind() {
+        // NumPy's ALIGNED requirement normalizes byte order and element alignment
+        // in one owner. It preserves ordinary aligned views, including negative
+        // and zero strides, while repairing unaligned exporters before Rust reads.
+        let numpy = numpy_module(py)?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", name)?;
+        kwargs.set_item("requirements", ["A"])?;
+        let values = numpy.getattr("require")?.call((values,), Some(&kwargs))?;
+        let aligned = values.cast::<PyUntypedArray>()?;
+        debug_assert_eq!(aligned.ndim(), 1);
+        debug_assert_eq!(aligned.dtype().kind(), kind);
+        debug_assert_eq!(aligned.dtype().itemsize(), 8);
+        match kind {
             b'i' => {
-                let array = native_values("int64")?;
-                let values = array.extract::<PyReadonlyArray1<'_, i64>>()?;
+                let values = aligned.extract::<PyReadonlyArray1<'_, i64>>()?;
                 Ok(Self::from_int64_values_csr(
                     values.as_array().iter().copied().collect(),
                     offsets,
                 )?)
             },
             b'f' => {
-                let array = native_values("float64")?;
-                let values = array.extract::<PyReadonlyArray1<'_, f64>>()?;
+                let values = aligned.extract::<PyReadonlyArray1<'_, f64>>()?;
                 Ok(Self::from_float64_csr(
                     values.as_array().iter().copied().collect(),
                     offsets,
                 )?)
             },
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(
-                "Groups numeric values must have int64 or float64 dtype",
-            )),
+            _ => unreachable!("numeric kind was admitted above"),
         }
     }
 
