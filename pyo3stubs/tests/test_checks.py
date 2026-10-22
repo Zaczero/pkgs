@@ -417,6 +417,43 @@ def test_gen_docs_writes_the_stub_even_when_its_contract_fails(
     assert '    def narrowed(self) -> int: ...' in rendered
 
 
+@pytest.mark.usefixtures('rust_parser', 'libcst_provider')
+def test_gen_docs_reports_incomplete_generated_prose(
+    tmp_path, pristine_stub, monkeypatch, capsys
+):
+    from pyo3stubs.cli import main
+
+    runtime = importlib.import_module('fakepkg._lib')
+    monkeypatch.setattr(
+        runtime.documented, '__doc__', 'Repeat text without documenting its arguments.'
+    )
+    cfg = make_config(tmp_path, stub_text=pristine_stub)
+    shim = _write_config_shim(tmp_path, cfg)
+
+    assert main(['gen-docs', '--config', str(shim)]) == 1
+    report = capsys.readouterr()
+    assert "parameter 'a' is not documented" in report.err
+    assert 'no Returns section' in report.err
+    assert 'Repeat text without documenting its arguments.' in cfg.stub_path.read_text()
+
+
+@pytest.mark.usefixtures('rust_parser', 'libcst_provider')
+def test_gen_docs_validates_the_repaired_document_not_the_stale_input(
+    tmp_path, pristine_stub, capsys
+):
+    from pyo3stubs.cli import main
+
+    cfg = make_config(
+        tmp_path,
+        stub_text=seeded(pristine_stub, 'a : int', 'removed_parameter : int'),
+    )
+    shim = _write_config_shim(tmp_path, cfg)
+
+    assert main(['gen-docs', '--config', str(shim)]) == 0
+    assert 'doc-structure' in capsys.readouterr().out
+    assert 'removed_parameter : int' not in cfg.stub_path.read_text()
+
+
 def test_an_empty_optional_config_deactivates_its_gate(tmp_path):
     """A config that checks nothing must not report that its rule held.
 
@@ -1194,6 +1231,35 @@ def test_text_signature_requires_exact_source_owned_default_presentations(
     assert len(errors) == 1, errors
     assert "source-owned public default 'x'" in errors[0]
     assert 'effective default' in errors[0]
+
+
+@pytest.mark.usefixtures('rust_parser')
+@pytest.mark.parametrize(
+    'value', ['auto', Ellipsis], ids=['public-token', 'ellipsis-sentinel']
+)
+def test_text_signature_requires_declared_default_without_an_override(
+    tmp_path, pristine_src, value
+):
+    source = seeded(
+        pristine_src, 'signature = (a, b = "x")', 'signature = (a, b = Mode::Auto)'
+    )
+    source = seeded(source, ', text_signature = "(a, b=\'x\')"', '')
+    cfg = make_config(
+        tmp_path,
+        src_text=source,
+        text_signature_default_aliases={
+            'Mode::Auto': TextSignatureDefault(
+                value=value, reason='The explicit public presentation of Mode'
+            ),
+        },
+    )
+    errors = text_signature(cfg)
+    if value is Ellipsis:
+        assert errors == []
+        return
+    assert len(errors) == 1
+    assert 'no text_signature exposes it' in errors[0]
+    assert "'auto'" in errors[0]
 
 
 @pytest.mark.usefixtures('rust_parser')

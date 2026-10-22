@@ -175,6 +175,8 @@ class TextSignatureDefault:
 
     Use this only where an exposed effective default or sentinel deliberately
     differs from the Rust expression; the expression itself is never evaluated.
+    Uses of a declared expression must provide a ``text_signature`` exposing
+    this value, unless the intended presentation is already ``...``.
 
     Parameters
     ----------

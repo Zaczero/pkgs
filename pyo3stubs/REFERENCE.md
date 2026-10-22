@@ -279,7 +279,7 @@ Overload hygiene, finality, signature coverage, __match_args__.
 
 ### `text-signature`
 
-A manual text_signature agrees with the Rust signature attribute.
+Text_signature agrees with Rust and exposes declared defaults.
 
 - Requires: `Rust source`, `tree-sitter-rust`.
 - On failure: correct the Rust attribute that documents the wrong shape.

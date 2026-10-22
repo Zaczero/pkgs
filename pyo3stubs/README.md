@@ -121,9 +121,10 @@ uv run pyo3stubs check-all --config tools/stubconfig.py
 # Or run: uv run pytest tests/test_stubs.py
 ```
 
-`gen-docs` writes the rendered stub even when `doc-contract` reports a
-violation, then returns status 1. Review and repair the generated stub before
-rerunning the checks.
+`gen-docs` writes the rendered stub, then checks both documentation presence and
+structure. Missing parameters, return descriptions, or other documentation
+violations return status 1 while leaving the generated output available.
+Repair the owning Rust docstrings and regenerate the stub.
 
 <a id="how-the-rust-source-is-read"></a>
 

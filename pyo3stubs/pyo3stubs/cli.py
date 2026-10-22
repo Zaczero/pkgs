@@ -71,9 +71,11 @@ def _gen_docs(cfg: StubConfig, config_path: str) -> int:
     """
     from pyo3stubs.gen import render_stub_with_docs  # libcst only needed here
 
-    status = _report(gate('doc-contract').run(cfg), config_path)
     cfg.stub_path.write_text(render_stub_with_docs(cfg), encoding='utf-8')
     print(f'wrote {cfg.stub_path}')
+    status = 0
+    for name in ('doc-contract', 'doc-structure'):
+        status |= _report(gate(name).run(cfg), config_path)
     return status
 
 

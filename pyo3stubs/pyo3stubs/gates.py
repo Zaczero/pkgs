@@ -227,7 +227,7 @@ GATES: tuple[Gate, ...] = (
     Gate(
         name='text-signature',
         collect=_collector('pyo3stubs.text_signature'),
-        summary='a manual text_signature agrees with the Rust signature attribute',
+        summary='text_signature agrees with Rust and exposes declared defaults',
         success='text_signature OK: matches signature attributes',
         remedy='correct the Rust attribute that documents the wrong shape',
         requirements=('Rust source', 'tree-sitter-rust'),

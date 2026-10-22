@@ -1,4 +1,4 @@
-"""Always-on gate: a manual ``text_signature`` must not contradict ``signature``.
+"""Check signature overrides and require declared default presentations.
 
 PyO3 writes ``signature`` into the real call contract and ``text_signature``
 into ``__doc__``/``__text_signature__``, and nothing checks that they agree —
@@ -140,10 +140,21 @@ def _compare(
     default_aliases: Mapping[str, TextSignatureDefault],
 ) -> list[str]:
     signature, text_signature, line = _declared(item)
-    if signature is None or text_signature is None:
+    if signature is None:
         return []
     rust = _rust_params(signature)
     location = f'{source.label}:{line}'
+    if text_signature is None:
+        return [
+            f'{location}: {token}: Rust default {default!r} has a declared public '
+            f'value {default_aliases[default].value!r}, but no text_signature '
+            'exposes it; add a text_signature with that default'
+            for token, default in rust
+            if default is not None
+            and default in default_aliases
+            and default_aliases[default].value is not Ellipsis
+            and _value(default) is INCOMPARABLE
+        ]
     try:
         text = _python_params(unquote(text_signature))
     except SyntaxError as exc:
@@ -208,16 +219,19 @@ def collect_errors(cfg: StubConfig) -> Findings:
     for source in iter_sources(cfg):
         for item in source.walk():
             signature, text_signature, _ = _declared(item)
-            if signature is None or text_signature is None:
+            if signature is None:
                 continue
-            examined += 1
-            used_aliases.update(
+            aliases = {
                 default
                 for _, default in _rust_params(signature)
                 if default is not None
                 and default in cfg.text_signature_default_aliases
                 and _value(default) is INCOMPARABLE
-            )
+            }
+            if text_signature is None and not aliases:
+                continue
+            examined += 1
+            used_aliases.update(aliases)
             errors.extend(_compare(item, source, cfg.text_signature_default_aliases))
     errors.extend(
         f'text_signature_default_aliases: unused Rust default expression {expression!r}'
