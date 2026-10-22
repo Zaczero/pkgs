@@ -1096,10 +1096,36 @@ assert_type(POLY.minimum_bounding_circle(), gm.Circle)
 assert_type(POLY.maximum_inscribed_circle(), gm.Circle)
 assert_type(POLY.minimum_bounding_circle().center, gm.Point)
 assert_type(POLY.minimum_bounding_circle().to_polygon(), gm.Polygon | gm.Point)
-assert_type(POINTS.minimum_bounding_circle(), gm.CircleArray)
-assert_type(POINTS.minimum_bounding_circle().center, gm.GeometryArray[gm.Point | None])
-assert_type(POINTS.minimum_bounding_circle()[0], gm.Circle | None)
-assert_type(POINTS.minimum_bounding_circle()[1:], gm.CircleArray)
+assert_type(POINTS.minimum_bounding_circle(), gm.CircleArray[gm.Circle])
+assert_type(POINTS.minimum_bounding_circle().center, gm.GeometryArray[gm.Point])
+assert_type(POINTS.minimum_bounding_circle()[0], gm.Circle)
+assert_type(POINTS.minimum_bounding_circle()[1:], gm.CircleArray[gm.Circle])
+assert_type(NULLABLE_POINTS.minimum_bounding_circle(), gm.CircleArray[gm.Circle | None])
+assert_type(NULLABLE_POINTS.minimum_bounding_circle()[0], gm.Circle | None)
+assert_type(
+    NULLABLE_POINTS.minimum_bounding_circle().center, gm.GeometryArray[gm.Point | None]
+)
+assert_type(next(iter(POINTS.minimum_bounding_circle())), gm.Circle)
+assert_type(next(reversed(NULLABLE_POINTS.minimum_bounding_circle())), gm.Circle | None)
+assert_type(
+    POINTS.minimum_bounding_circle().to_polygon(),
+    gm.GeometryArray[gm.Polygon | gm.Point],
+)
+assert_type(
+    NULLABLE_POINTS.minimum_bounding_circle().to_polygon(),
+    gm.GeometryArray[gm.Polygon | gm.Point | None],
+)
+assert_type(POLYS.maximum_inscribed_circle(), gm.CircleArray[gm.Circle])
+assert_type(
+    NULLABLE_POLYGONS.maximum_inscribed_circle(), gm.CircleArray[gm.Circle | None]
+)
+assert_type(POLYS.maximum_inscribed_circle()[0], gm.Circle)
+assert_type(NULLABLE_POLYGONS.maximum_inscribed_circle()[0], gm.Circle | None)
+assert_type(POLYS.maximum_inscribed_circle().center, gm.GeometryArray[gm.Point])
+assert_type(
+    NULLABLE_POLYGONS.maximum_inscribed_circle().center,
+    gm.GeometryArray[gm.Point | None],
+)
 assert_type(POLY.minimum_width(), float)
 assert_type(POINTS.minimum_width(), npt.NDArray[np.float64])
 assert_type(

@@ -675,6 +675,9 @@ Array circle operations return [`CircleArray`][gometry.CircleArray].
 column, and `.is_missing` distinguishes missing rows from empty results.
 Both have `NaN` radii. Indexing returns a `Circle` or `None`; slicing and
 `.to_polygon()` preserve row order and missingness.
+Type hints preserve the input array's nullability: dense inputs return
+`CircleArray[Circle]`, while nullable inputs return `CircleArray[Circle | None]`.
+Indexing, iteration, and geometry projections retain that distinction.
 
 [`minimum_width`][gometry.Geometry.minimum_width] measures the narrowest strip
 enclosing the complete convex hull. It is not minimum clearance, and it is not

@@ -2,12 +2,23 @@
 
 import copy
 import math
+import types
 from collections.abc import Sequence
 
 import gometry as gm
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
+
+
+def test_circle_array_generic_alias_is_a_native_runtime_contract() -> None:
+    dense = gm.CircleArray[gm.Circle]
+    nullable = gm.CircleArray[gm.Circle | None]
+    assert isinstance(dense, types.GenericAlias)
+    assert dense.__origin__ is gm.CircleArray
+    assert dense.__args__ == (gm.Circle,)
+    assert nullable.__origin__ is gm.CircleArray
+    assert nullable.__args__ == (gm.Circle | None,)
 
 
 @pytest.mark.parametrize(

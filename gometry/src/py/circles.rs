@@ -165,7 +165,7 @@ impl PyCircle {
 /// NumPy array with NaN for empty or missing rows. ``is_missing`` distinguishes
 /// missing rows from empty circles. Indexing returns Circle or None; slicing
 /// retains the circle solutions without repeating their optimization.
-#[pyclass(name = "CircleArray", module = "gometry", frozen, sequence)]
+#[pyclass(name = "CircleArray", module = "gometry", frozen, sequence, generic)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone)]
 pub(crate) struct PyCircleArray {
@@ -492,7 +492,8 @@ impl PyCircleArray {
     name = "CircleArrayIterator",
     module = "gometry",
     frozen,
-    immutable_type
+    immutable_type,
+    generic
 )]
 pub(crate) struct PyCircleArrayIter {
     array: PyCircleArray,

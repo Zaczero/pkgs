@@ -157,6 +157,9 @@ _DefaultT = TypeVar('_DefaultT')
 _GeometryT_co = TypeVar(
     '_GeometryT_co', bound=Geometry | None, covariant=True, default=Geometry
 )
+_CircleT_co = TypeVar(
+    '_CircleT_co', bound=Circle | None, covariant=True, default=Circle
+)
 # One row of a `Groups` sequence may be a flat payload or a missing source row.
 _GroupRowT_co = TypeVar(
     '_GroupRowT_co',
@@ -9679,12 +9682,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'MULTIPOINT ((0 0), (1 1))'
         """
 
+    @overload
     def maximum_inscribed_circle(
-        self,
+        self: GeometryArray[Geometry],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
-    ) -> CircleArray:
+    ) -> CircleArray[Circle]: ...
+    @overload
+    def maximum_inscribed_circle(
+        self: GeometryArray[Geometry | None],
+        *,
+        tolerance: FloatInput | None = None,
+        unit: DistanceUnit | None = None,
+    ) -> CircleArray[Circle | None]:
         """Solve the largest circle inscribed in a polygonal geometry.
         The returned Circle retains its center and radius independently of polygon
         resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
@@ -9746,11 +9757,18 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'Polygon'
         """
 
+    @overload
     def minimum_bounding_circle(
-        self,
+        self: GeometryArray[Geometry],
         *,
         unit: DistanceUnit | None = None,
-    ) -> CircleArray:
+    ) -> CircleArray[Circle]: ...
+    @overload
+    def minimum_bounding_circle(
+        self: GeometryArray[Geometry | None],
+        *,
+        unit: DistanceUnit | None = None,
+    ) -> CircleArray[Circle | None]:
         """Solve the smallest circle enclosing the geometry.
         Read ``circle.center`` and ``circle.radius`` without constructing a polygon.
         ``circle.to_polygon(quadrant_segments=16)`` creates a circumscribed polygon
@@ -11497,7 +11515,7 @@ class Circle:
     __hash__: ClassVar[None]  # type: ignore[assignment]
 
 @final
-class CircleArray(Sequence[Circle | None]):
+class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
     """An immutable sequence of solved circles with null-aware vector projections.
 
     ``center`` returns a point GeometryArray; ``radius`` returns a read-only
@@ -11506,11 +11524,10 @@ class CircleArray(Sequence[Circle | None]):
     retains the circle solutions without repeating their optimization.
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self: ...
-    @property
-    def center(self) -> GeometryArray[Point | None]:
-        """Circle centers as a point GeometryArray in the source CRS and epoch.
-        Empty circles have empty Points; missing rows remain missing.
-        """
+    center: _CircleArrayCenterProjection
+    """Circle centers as a point GeometryArray in the source CRS and epoch.
+    Empty circles have empty Points; missing rows remain missing.
+    """
     @property
     def radius(self) -> npt.NDArray[np.float64]:
         """Read-only float64 radii in each circle's selected units.
@@ -11527,8 +11544,13 @@ class CircleArray(Sequence[Circle | None]):
     @property
     def working_crs(self) -> list[str | None]:
         """Working CRS definitions per row, or None where absent."""
+    @overload
     def to_polygon(
-        self, *, quadrant_segments: int = 16
+        self: CircleArray[Circle], *, quadrant_segments: int = 16
+    ) -> GeometryArray[Polygon | Point]: ...
+    @overload
+    def to_polygon(
+        self: CircleArray[Circle | None], *, quadrant_segments: int = 16
     ) -> GeometryArray[Polygon | Point | None]:
         """Realize each retained disk without repeating its optimization.
 
@@ -11571,11 +11593,12 @@ class CircleArray(Sequence[Circle | None]):
         If the selected window contains no equal Circle or missing row.
         """
     @overload
-    def __getitem__(self, index: SupportsIndex, /) -> Circle | None: ...
+    def __getitem__(self, index: SupportsIndex, /) -> _CircleT_co: ...
     @overload
-    def __getitem__(self, index: slice, /) -> CircleArray: ...
-    def __iter__(self) -> CircleArrayIterator: ...
-    def __reversed__(self) -> CircleArrayIterator: ...
+    def __getitem__(self, index: slice, /) -> Self: ...
+    def __iter__(self) -> CircleArrayIterator[_CircleT_co]: ...
+    def __reversed__(self) -> CircleArrayIterator[_CircleT_co]: ...
+    def __class_getitem__(cls, key: Any) -> types.GenericAlias: ...
     def __repr__(self) -> str: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: dict[int, Any]) -> Self: ...
@@ -11583,10 +11606,32 @@ class CircleArray(Sequence[Circle | None]):
     __hash__: ClassVar[None]  # type: ignore[assignment]
 
 @final
-class CircleArrayIterator(Iterator[Circle | None]):
+class CircleArrayIterator(Iterator[_CircleT_co], Generic[_CircleT_co]):
     def __iter__(self) -> Self: ...
-    def __next__(self) -> Circle | None: ...
+    def __next__(self) -> _CircleT_co: ...
     def __length_hint__(self) -> int: ...
+    def __class_getitem__(cls, key: Any) -> types.GenericAlias: ...
+
+class _CircleArrayCenterProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: CircleArray[Circle],
+        owner: type[CircleArray[Circle | None]] | None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __get__(
+        self,
+        instance: CircleArray[Circle | None],
+        owner: type[CircleArray[Circle | None]] | None = None,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[CircleArray[Circle | None]] | None = None,
+    ) -> Self: ...
+    def __set__(self, instance: CircleArray[Circle | None], value: Never) -> None: ...
 
 @final
 class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
