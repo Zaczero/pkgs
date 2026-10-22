@@ -33,6 +33,7 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
+    '_GroupMissingT_co': 'GroupMissingT_co',
     '_GroupValuesT': 'GroupValuesT',
     '_GroupRowT_co': 'GroupRowT_co',
 }
