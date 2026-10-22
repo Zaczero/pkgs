@@ -791,19 +791,19 @@ def run_controlled_process(
         os.set_blocking(descriptor, False)
         selector.register(descriptor, selectors.EVENT_READ)
     buffers = {stdout_fd: bytearray(), stderr_fd: bytearray()}
-    stdout_lines: list[bytes] = []
+    stdout_lines: list[bytes | bytearray] = []
     stderr_bytes = bytearray()
     ready: dict[str, Any] | None = None
     measurement_done: dict[str, Any] | None = None
     done: dict[str, Any] | None = None
-    result_line: bytes | None = None
+    result_line: bytes | bytearray | None = None
     started_ns: int | None = None
     measurement_done_ns: int | None = None
     measurement_acknowledged = False
     ended_ns: int | None = None
     deadline = time.monotonic() + timeout
 
-    def consume_stdout(line: bytes) -> None:
+    def consume_stdout(line: bytes | bytearray) -> None:
         nonlocal ready, measurement_done, done, result_line
         try:
             payload = json.loads(line)

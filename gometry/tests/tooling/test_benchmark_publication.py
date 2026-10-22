@@ -668,6 +668,27 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         'package_root_for_subject',
         lambda _subject, _explicit=None: Path('/checkout/site-packages'),
     )
+
+    def admit_run(subject: dict[str, object], _package_root: Path, path: Path) -> None:
+        payload = {'kind': 'gometry-benchmark-admission'}
+        encoded = json.dumps(payload).encode()
+        path.write_bytes(encoded)
+        subject['run_admission'] = {
+            'path': str(path),
+            'sha256': hashlib.sha256(encoded).hexdigest(),
+            'seconds': 0.0,
+        }
+
+    monkeypatch.setattr(
+        bench_driver.benchmark_runtime,
+        'prepare_run_admission',
+        admit_run,
+    )
+    monkeypatch.setattr(
+        bench_driver.benchmark_runtime,
+        'complete_run_admission',
+        lambda _subject: {'completion': 0.0},
+    )
     monkeypatch.setattr(bench_driver, '_benchmark_plans', fake_plans)
     monkeypatch.setattr(bench_driver, '_resource_plans', lambda **_: [])
     monkeypatch.setattr(
