@@ -218,7 +218,7 @@ for i, station in enumerate(list(stations)):
 
 ```
 
-The top-level function [`gm.nearest(values, geometry, k=..., unit=...)`][gometry.nearest] builds an
+The top-level function [`gm.nearest(geometry, values, k=..., unit=...)`][gometry.nearest] builds an
 index for one-shot queries.
 
 ## Measure candidate selectivity

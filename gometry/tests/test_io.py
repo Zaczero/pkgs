@@ -1033,7 +1033,7 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
         inserted.insert([wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)]),
         [0, 1, 2],
     )
-    np.testing.assert_array_equal(gm.nearest(list(mixed), gm.Point(5, 6)), [2])
+    np.testing.assert_array_equal(gm.nearest(gm.Point(5, 6), list(mixed)), [2])
     left, right = gm.join(
         [wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)],
         [gm.Point(1, 2)],

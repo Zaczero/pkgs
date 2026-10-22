@@ -8,18 +8,18 @@ use crate::py::index::{
 use crate::py::numpy::int64_array;
 #[pyfunction]
 #[pyo3(
-    signature = (values, geom, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
-    text_signature = "(values, geom, *, k=1, max_distance=None, return_distance=False, unit=None, exclusive=False, ties=False)"
+    signature = (geom, values, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
+    text_signature = "(geom, values, *, k=1, max_distance=None, return_distance=False, unit=None, exclusive=False, ties=False)"
 )]
 /// Find the nearest of `values` to each query geometry (builds an index).
 ///
 /// Parameters
 /// ----------
-/// values : Geometry, GeometryArray, or iterable of geometry-like values or None
-///     Candidate geometries to index and search.
 /// geom : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Query geometry or one query per sequence row. Missing rows produce
-///     empty result groups and retain their logical positions.
+///     missing result groups and retain their logical positions.
+/// values : Geometry, GeometryArray, or iterable of geometry-like values or None
+///     Candidate geometries to index and search.
 /// k : int, default 1
 ///     Number of nearest neighbors to return per query; ``0`` returns no
 ///     neighbors.
@@ -61,12 +61,12 @@ use crate::py::numpy::int64_array;
 /// --------
 /// >>> import gometry as gm
 /// >>> sites = [gm.Point(0, 0), gm.Point(5, 5)]
-/// >>> gm.nearest(sites, gm.Point(4, 4))
+/// >>> gm.nearest(gm.Point(4, 4), sites)
 /// array([1])
 pub(crate) fn nearest(
     py: Python<'_>,
-    values: &Bound<'_, PyAny>,
     geom: &Bound<'_, PyAny>,
+    values: &Bound<'_, PyAny>,
     #[pyo3(from_py_with = crate::strict_i64)] k: i64,
     max_distance: Option<f64>,
     return_distance: bool,

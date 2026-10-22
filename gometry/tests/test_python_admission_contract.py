@@ -271,7 +271,7 @@ def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> N
     'operation',
     [
         pytest.param(
-            lambda: gm.nearest([gm.Point(0, 0)], gm.Point(0, 0), k=True), id='k'
+            lambda: gm.nearest(gm.Point(0, 0), [gm.Point(0, 0)], k=True), id='k'
         ),
         pytest.param(lambda: gm.s2_cover(gm.Point(0, 0), level=True), id='level'),
         pytest.param(
@@ -363,7 +363,7 @@ def test_s2_cover_integer_index_providers_and_overflow() -> None:
 def test_boolean_options_remain_boolean_options() -> None:
     assert gm.CRS(4326).to_proj(pretty=True).startswith('+')
     indices, distances = gm.nearest(
-        [gm.Point(0, 0)], gm.Point(0, 0), return_distance=True
+        gm.Point(0, 0), [gm.Point(0, 0)], return_distance=True
     )
     assert indices.tolist() == [0]
     assert distances.tolist() == [0.0]

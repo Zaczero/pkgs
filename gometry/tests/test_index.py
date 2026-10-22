@@ -77,7 +77,7 @@ def test_index_queries_and_joins_normalize_nullable_iterable_rows() -> None:
         [2],
     ]
     assert gm.nearest(
-        values, [gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)]
+        [gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)], values
     ).to_list() == [
         [0],
         None,
@@ -1088,8 +1088,8 @@ def test_spatial_index_nearest_refines_exact_planar_distance() -> None:
     assert gm.distance(values[1], query) == 2
     assert ids(idx.nearest(query, k=2)) == [1, 0]
     assert ids(idx.nearest(gm.points([0, 0], [0, 20]), k=1)) == [[1], [2]]
-    assert ids(gm.nearest(values, query, k=2)) == [1, 0]
-    assert ids(gm.nearest(values, gm.points([0, 0], [0, 20]), k=1)) == [[1], [2]]
+    assert ids(gm.nearest(query, values, k=2)) == [1, 0]
+    assert ids(gm.nearest(gm.points([0, 0], [0, 20]), values, k=1)) == [[1], [2]]
     assert ids(idx.nearest(query, k=0)) == []
 
 
@@ -1097,17 +1097,17 @@ def test_nearest_can_use_geodesic_meter_units_for_points() -> None:
     values = gm.points([0, 10], [82, 80], crs=4326)
     query = gm.Point(0, 80, crs=4326)
     queries = gm.points([0, 0], [80, 82], crs=4326)
-    assert ids(gm.nearest(values, query, unit='planar')) == [0]
-    assert ids(gm.nearest(values, query, unit='meters')) == [1]
+    assert ids(gm.nearest(query, values, unit='planar')) == [0]
+    assert ids(gm.nearest(query, values, unit='meters')) == [1]
     assert ids(gm.SpatialIndex(values).nearest(query, unit='meters')) == [1]
-    assert ids(gm.nearest(values, queries, unit='meters')) == [[1], [0]]
-    assert ids(gm.nearest(values, query)) == [1]
+    assert ids(gm.nearest(queries, values, unit='meters')) == [[1], [0]]
+    assert ids(gm.nearest(query, values)) == [1]
     assert ids(gm.SpatialIndex(values).nearest(query)) == [1]
     assert ids(
-        gm.nearest([geodesic_box_boundary((0, 0, 1, 1))], query, unit='meters')
+        gm.nearest(query, [geodesic_box_boundary((0, 0, 1, 1))], unit='meters')
     ) == [0]
     with pytest.raises(ValueError, match="expected 'planar' or 'meters'"):
-        gm.nearest(values, query, unit=cast('Any', 'km'))
+        gm.nearest(query, values, unit=cast('Any', 'km'))
 
 
 def test_spatial_index_mutable_insert_and_remove() -> None:
@@ -1646,7 +1646,7 @@ def test_nearest_exclusive_skips_structurally_equal_geometries() -> None:
     assert ids(idx.nearest(probe, k=3)) == [0, 1, 2]
     assert ids(idx.nearest(probe, k=3, exclusive=True)) == [2, 3]
     assert ids(idx.nearest(probe, k=2, exclusive=True)) == [2, 3]
-    assert ids(gm.nearest(pts, probe, k=2, exclusive=True)) == [2, 3]
+    assert ids(gm.nearest(probe, pts, k=2, exclusive=True)) == [2, 3]
     plain = gm.SpatialIndex(gm.points([0.0, 1.0], [0.0, 0.0]))
     assert ids(plain.nearest(gm.Point(0, 0), k=1, exclusive=True)) == [1]
 
@@ -2523,7 +2523,7 @@ def test_nearest_ties_returns_all_kth_distance_matches() -> None:
     assert sorted(ids(matches[0])) == [0, 1]
     assert ids(matches[1]) == [3]
     assert sorted(
-        ids(gm.nearest([gm.Point(1, 0), gm.Point(-1, 0)], query, ties=True))
+        ids(gm.nearest(query, [gm.Point(1, 0), gm.Point(-1, 0)], ties=True))
     ) == [0, 1]
 
 

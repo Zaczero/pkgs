@@ -19634,8 +19634,8 @@ def dwithin(
 
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19646,8 +19646,8 @@ def nearest(
 ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19658,8 +19658,8 @@ def nearest(
 ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19670,8 +19670,8 @@ def nearest(
 ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19682,8 +19682,8 @@ def nearest(
 ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19697,8 +19697,8 @@ def nearest(
 ]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19712,8 +19712,8 @@ def nearest(
 ]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19724,8 +19724,8 @@ def nearest(
 ) -> npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19742,8 +19742,8 @@ def nearest(
 ): ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19757,8 +19757,8 @@ def nearest(
 ): ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry | _GeometryBatch[Geometry | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19779,11 +19779,11 @@ def nearest(
 
     Parameters
     ----------
-    values : Geometry, GeometryArray, or iterable of geometry-like values or None
-        Candidate geometries to index and search.
     geom : Geometry, GeometryArray, or iterable of Geometry or None
         Query geometry or one query per sequence row. Missing rows produce
-        empty result groups and retain their logical positions.
+        missing result groups and retain their logical positions.
+    values : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Candidate geometries to index and search.
     k : int, default 1
         Number of nearest neighbors to return per query; ``0`` returns no
         neighbors.
@@ -19834,7 +19834,7 @@ def nearest(
     --------
     >>> import gometry as gm
     >>> sites = [gm.Point(0, 0), gm.Point(5, 5)]
-    >>> gm.nearest(sites, gm.Point(4, 4))
+    >>> gm.nearest(gm.Point(4, 4), sites)
     array([1])
     """
 

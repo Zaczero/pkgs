@@ -1436,7 +1436,7 @@ if TYPE_CHECKING:
         mixed_index.join(present_geometry_like_rows),
         tuple[_Int64Array1D, _Int64Array1D],
     )
-    assert_type(gm.nearest(geometry_like_rows, POINT), _Int64Array1D)
+    assert_type(gm.nearest(POINT, geometry_like_rows), _Int64Array1D)
     assert_type(
         gm.join(present_geometry_like_rows, geometry_like_rows),
         tuple[_Int64Array1D, _Int64Array1D],
@@ -1984,11 +1984,11 @@ assert_type(
     gm.Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
 )
 assert_type(
-    gm.nearest(POINTS, NULLABLE_POINTS),
+    gm.nearest(NULLABLE_POINTS, POINTS),
     gm.Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
 )
 assert_type(
-    gm.nearest(POINTS, NULLABLE_POINTS, return_distance=True),
+    gm.nearest(NULLABLE_POINTS, POINTS, return_distance=True),
     tuple[
         gm.Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
         npt.NDArray[np.float64],
@@ -2224,12 +2224,12 @@ if TYPE_CHECKING:
     reveal_type(INDEX.remove(np.int64(0)))
     reveal_type(INDEX == {0: POINT})
     reveal_type(INDEX.__hash__)
-    reveal_type(gm.nearest(POINTS, POINT, return_distance=True))
-    reveal_type(gm.nearest(POINTS, POINT, return_distance=False))
-    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=False))
-    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=True))
+    reveal_type(gm.nearest(POINT, POINTS, return_distance=True))
+    reveal_type(gm.nearest(POINT, POINTS, return_distance=False))
+    reveal_type(gm.nearest(NULLABLE_POINTS, POINTS, return_distance=False))
+    reveal_type(gm.nearest(NULLABLE_POINTS, POINTS, return_distance=True))
     reveal_type(gm.nearest(POINTS, POINTS, return_distance=False))
-    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=False))
+    reveal_type(gm.nearest(NULLABLE_POINTS, POINTS, return_distance=False))
     reveal_type(gm.h3_cover(gm.GeometryArray([POLY]), resolution=2))
     reveal_type(gm.h3_cover(gm.GeometryArray([POLY, None]), resolution=2))
     reveal_type(gm.s2_cover(gm.GeometryArray([POLY]), level=2))
@@ -2254,7 +2254,7 @@ if TYPE_CHECKING:
     def _reveal_dynamic_nearest_flag(flag: bool) -> None:
         reveal_type(INDEX.nearest(POINT, return_distance=flag))
         reveal_type(INDEX.nearest(POINTS, return_distance=flag))
-        reveal_type(gm.nearest(POINTS, POINT, return_distance=flag))
+        reveal_type(gm.nearest(POINT, POINTS, return_distance=flag))
 
     assert_type(
         INDEX.query(POINTS),
@@ -2274,7 +2274,7 @@ if TYPE_CHECKING:
     )
 assert_type(gm.join(POINTS, POINTS), tuple[_Int64Array1D, _Int64Array1D])
 assert_type(
-    gm.nearest(POINTS, POINT, return_distance=True),
+    gm.nearest(POINT, POINTS, return_distance=True),
     tuple[_Int64Array1D, npt.NDArray[np.float64]],
 )
 if TYPE_CHECKING:

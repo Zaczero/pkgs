@@ -635,7 +635,7 @@ def test_spatial_index_point_fast_paths_skip_missing_query_rows() -> None:
     nearest, distances = idx.nearest(queries, return_distance=True)
     assert nearest.to_list() == [[0], None, [1]]
     assert len(distances) == 2
-    pooled_nearest, pooled_distances = gm.nearest(values, queries, return_distance=True)
+    pooled_nearest, pooled_distances = gm.nearest(queries, values, return_distance=True)
     assert pooled_nearest.to_list() == [[0], None, [1]]
     assert len(pooled_distances) == 2
 
