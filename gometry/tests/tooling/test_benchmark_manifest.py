@@ -160,8 +160,10 @@ def test_benchmark_entrypoints_prefer_the_workspace_benchroom_source() -> None:
     scripts = (
         _DRIVERS / 'bench.py',
         _PYTHON / EXPECTED_PAIR_WORKER,
+        _PYTHON / 'bench_oracle.py',
         _DRIVERS / 'bench_ab.py',
         _BENCHES / 'support' / 'summarize_bench.py',
+        GOMETRY_ROOT / 'tools' / 'docs' / 'benchmark_charts.py',
     )
     environment = os.environ.copy()
     environment.pop('PYTHONPATH', None)
