@@ -47,7 +47,11 @@ pub(crate) fn numpy_fancy_index(
                 "boolean scalar is not a {type_label} index; use an integer index or a boolean mask"
             )));
         }
-        let owned = owned_numpy_values::<bool>(index)?;
+        // NumPy bool storage can contain any nonzero byte; Rust bool requires 0 or 1.
+        let owned = owned_numpy_values::<u8>(index)?
+            .into_iter()
+            .map(|value| value != 0)
+            .collect();
         return Ok(Some(NumpyFancyIndex::Mask(owned)));
     }
     match (dtype.kind(), dtype.itemsize()) {
