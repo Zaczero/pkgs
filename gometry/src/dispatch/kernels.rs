@@ -215,13 +215,14 @@ fn geographic_simplify_chart_tolerance(
         .div(ratio)
         .upper()
         .max(ratio.mul(ratio).upper());
+    // Interval division widens indeterminate products instead of emitting NaN
+    // endpoints; clamping its lower bound keeps zero as the conservative limit.
     Interval::exact(tolerance)
         .div(Interval::exact(semi_major))
         .div(Interval::exact(radius_ratio))
         .div(Interval::exact(angular.next_up()))
         .lower()
-        .max(0.0)
-        .min(f64::MAX)
+        .clamp(0.0, f64::MAX)
 }
 
 #[test]

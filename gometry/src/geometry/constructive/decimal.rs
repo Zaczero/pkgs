@@ -18,6 +18,9 @@ const INTEGER_FILTER_LIMIT: f64 = 2_251_799_813_685_248.0;
 /// Incrementing positive encodings rounds that enclosure and its sum outward.
 /// A margin below 1/2 proves the exact scaled value rounds to this exact integer.
 /// Multiplying/dividing that integer by the exact scale rounds the result once.
+/// Here error <= 1/2 and abs(product - integer) <= 1/2. Each increment's
+/// input encodes a positive value <= 1, with bits at most 1.0_f64.to_bits(),
+/// far below u64::MAX.
 macro_rules! decimal_integer_certificate {
     ($product:expr, $epsilon:expr, $tiny:expr, $one:expr, $float:ty) => {{
         let product = $product;
@@ -37,6 +40,10 @@ fn exact_scale(precision: i32) -> Option<f64> {
 
 /// Round the represented binary64 value to a decimal quantum, ties to even,
 /// then round that decimal result once to binary64.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the product guard limits each increment's positive input to <= 1, whose encoding is far below u64::MAX; u64 + 1 cannot overflow"
+)]
 pub(crate) fn quantize_decimal(value: f64, precision: i32) -> Result<f64> {
     if precision >= 324 || (precision >= 0 && same_topological_coordinate(value, value.trunc())) {
         return Ok(value);
@@ -65,6 +72,10 @@ pub(crate) fn quantize_decimal(value: f64, precision: i32) -> Result<f64> {
     quantize_decimal_fallback(value, precision)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "callers bound precision to -308..=323; in the negative branch exponent is -324..=308, places is -632..=307, and -precision is 1..=308"
+)]
 fn quantize_decimal_fallback(value: f64, precision: i32) -> Result<f64> {
     let rounded = if precision >= 0 {
         format!("{value:.places$}", places = precision as usize)
@@ -108,6 +119,10 @@ fn quantize_decimal_fallback(value: f64, precision: i32) -> Result<f64> {
     Ok(result)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "SIMD uses nontrapping IEEE arithmetic; nonfinite products are masked before bounded encoding increments, and rescaling integers of magnitude <= 2^51 by scales in 1..=1e22 stays finite"
+)]
 pub(crate) fn quantize_column(column: &[f64], precision: i32) -> Result<Vec<f64>> {
     let Some(scale) = exact_scale(precision) else {
         return column
@@ -121,9 +136,9 @@ pub(crate) fn quantize_column(column: &[f64], precision: i32) -> Result<Vec<f64>
     let tiny = ReduceSimd::splat(f64::from_bits(1));
     let one = Simd::<u64, REDUCE_LANES>::splat(1);
     let half = ReduceSimd::splat(0.5);
-    let mut chunks = column.chunks_exact(REDUCE_LANES);
-    for chunk in &mut chunks {
-        let values = ReduceSimd::from_slice(chunk);
+    let (chunks, remainder) = column.as_chunks::<REDUCE_LANES>();
+    for chunk in chunks {
+        let values = ReduceSimd::from_array(*chunk);
         let product = if precision >= 0 {
             values * scale
         } else {
@@ -161,7 +176,7 @@ pub(crate) fn quantize_column(column: &[f64], precision: i32) -> Result<Vec<f64>
             }
         }
     }
-    for &value in chunks.remainder() {
+    for &value in remainder {
         output.push(quantize_decimal(value, precision)?);
     }
     Ok(output)
