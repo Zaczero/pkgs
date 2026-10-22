@@ -33,10 +33,10 @@ def test_simplify_projected_metre_override_converts_native_feet() -> None:
 
 def test_physical_simplification_admits_geographic_coordinates_in_both_lanes() -> None:
     line = gm.LineString([(0, 100), (1, 101), (2, 100)], crs=4326)
-    with pytest.raises(gm.CRSError, match='latitude'):
+    with pytest.raises(gm.InvalidGeometryError, match='latitude'):
         line.simplify(1.0)
     rows = gm.GeometryArray([line, line])
-    with pytest.raises(gm.CRSError, match='latitude'):
+    with pytest.raises(gm.InvalidGeometryError, match='latitude'):
         rows.simplify(1.0, preserve_topology=False)
     assert len(line.simplify(1.0, unit='planar').coords) >= 2
 
