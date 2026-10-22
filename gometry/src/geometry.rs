@@ -138,7 +138,6 @@ pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
-pub(in crate::geometry) use derived::inscribed_candidate_is_contained;
 pub(crate) use derived::{
     CircleSolution, PointSetCenter, centroid_line_row_columns, centroid_polygon_row_columns,
     centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, geometric_xy_cmp,

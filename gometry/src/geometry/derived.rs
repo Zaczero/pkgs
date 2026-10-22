@@ -3,7 +3,7 @@
 //! inaccessibility.
 
 mod centroid;
-mod circle;
+pub(in crate::geometry) mod circle;
 mod concave;
 mod hull;
 mod minimum_circle;
@@ -20,7 +20,6 @@ pub(crate) use centroid::{
     point_centroid, point_set_center_summary,
 };
 pub(crate) use circle::CircleSolution;
-pub(in crate::geometry) use circle::inscribed_candidate_is_contained;
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
 pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_chart_hull, monotone_chain_hull, shape_from_open_hull,

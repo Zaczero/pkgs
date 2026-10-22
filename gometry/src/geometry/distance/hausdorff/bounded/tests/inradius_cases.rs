@@ -1,3 +1,5 @@
+use crate::geometry::derived::circle::inscribed_candidate_is_contained;
+
 fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> DirectedCandidate {
     let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
     let mut context = SearchContext::new_directed(
@@ -266,7 +268,7 @@ fn retained_clearance_disk_rejects_candidate_enclosing_a_hole() {
     let valid = polygon(&[(3.0, 2.0), (2.0, 3.0), (1.0, 2.0), (2.0, 1.0), (3.0, 2.0)]);
     assert!(shape.covers(&valid).unwrap());
     assert!(
-        crate::geometry::inscribed_candidate_is_contained(
+        inscribed_candidate_is_contained(
                 Point::new_raw_xy(2.0, 2.0),
                 &boundary
                     .distance_squared(&ExactPoint::from_xy(XY::new(2.0, 2.0)))
@@ -281,7 +283,7 @@ fn retained_clearance_disk_rejects_candidate_enclosing_a_hole() {
     hole_enclosing.for_each_point(|point| assert!(shape.covers_point(point)));
     assert!(!shape.covers(&hole_enclosing).unwrap());
     assert!(
-        !crate::geometry::inscribed_candidate_is_contained(
+        !inscribed_candidate_is_contained(
                 Point::new_raw_xy(0.0, 0.0),
                 &boundary
                     .distance_squared(&ExactPoint::from_xy(XY::new(0.0, 0.0)))

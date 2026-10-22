@@ -1,3 +1,5 @@
+use crate::geometry::derived::circle::inscribed_candidate_is_contained;
+
 #[test]
 fn zero_radius_boundary_point_uses_closed_membership() {
     let shape = degenerate_line_shape();
@@ -21,7 +23,7 @@ fn zero_clearance_certificate_rejects_an_outside_candidate_point() {
     let Shape::Point(center) = circle.center().unwrap() else { panic!("zero-radius center") };
     let candidate = Shape::Point(Point::new_raw_xy(1.0, 1.0));
     assert!(!shape.covers(&candidate).unwrap());
-    assert!(!crate::geometry::inscribed_candidate_is_contained(
+    assert!(!inscribed_candidate_is_contained(
         center, &Rational::zero(), &candidate,
     ).unwrap());
 }
@@ -255,7 +257,7 @@ fn inscribed_circle_certificate_rejects_a_rounded_radius_overrun() {
         &mut ExpansionBudget::new("circle.to_polygon", "quadrant_segments"),
     ).unwrap();
     assert!(
-        !crate::geometry::inscribed_candidate_is_contained(center, &clearance, &first).unwrap(),
+        !inscribed_candidate_is_contained(center, &clearance, &first).unwrap(),
         "the rounded first radius must fail the retained-clearance certificate"
     );
     let circle = crate::geometry::CircleSolution::inscribed(&source, None, 1.0).unwrap();
@@ -264,7 +266,7 @@ fn inscribed_circle_certificate_rejects_a_rounded_radius_overrun() {
     ).expect("the retained solution must produce a contained ring");
     assert_eq!(emitted.geometry_type(), "Polygon");
     assert!(source.covers(&emitted).unwrap());
-    assert!(crate::geometry::inscribed_candidate_is_contained(
+    assert!(inscribed_candidate_is_contained(
         center, &clearance, &emitted,
     ).unwrap());
 }
