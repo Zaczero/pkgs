@@ -731,7 +731,11 @@ fn py_from_geoparquet_arrow(
 
 /// Publish one typed geometry column and retain its rows for file metadata.
 #[pyfunction]
-#[pyo3(name = "_geoparquet_publication", signature = (array, *, encoding = ArrowEncoding::Auto))]
+#[pyo3(
+    name = "_geoparquet_publication",
+    signature = (array, *, encoding = ArrowEncoding::Auto),
+    text_signature = "(array, *, encoding='auto')"
+)]
 fn py_geoparquet_publication(
     py: Python<'_>,
     array: &Bound<'_, PyGeometryArray>,

@@ -490,17 +490,20 @@ def test_explicit_empty_multipart_arrow_export_preserves_axes(
 
 def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> None:
     """Typed empties, missing rows, nonempty members, and frames stay distinct."""
-    for wkt, axes in (
-        ('MULTILINESTRING Z EMPTY', 'XYZ'),
-        ('MULTIPOLYGON ZM EMPTY', 'XYZM'),
+    for wkt, axes, native_encoding in (
+        ('MULTILINESTRING Z EMPTY', 'XYZ', 'geoarrow.multilinestring'),
+        ('MULTIPOLYGON ZM EMPTY', 'XYZM', 'geoarrow.multipolygon'),
     ):
         geometry = gm.from_wkt(wkt)
-        arrow = geometry.to_arrow()
-        assert arrow.type.extension_name == 'geoarrow.wkb'
-        restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
-        assert restored.to_wkt() == [wkt]
-        assert restored[0].coordinate_axes == axes
-        assert len(restored[0]) == 0
+        for encoding in ('auto', 'wkb'):
+            arrow = geometry.to_arrow(encoding=encoding)
+            assert arrow.type.extension_name == (
+                native_encoding if encoding == 'auto' else 'geoarrow.wkb'
+            )
+            restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+            assert restored.to_wkt() == [wkt]
+            assert restored[0].coordinate_axes == axes
+            assert len(restored[0]) == 0
 
     geometry = gm.from_wkt('MULTILINESTRING ZM (EMPTY)')
     missing = gm.GeometryArray([geometry, None])

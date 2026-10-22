@@ -131,7 +131,13 @@ def test_geographic_wkb_and_arrow_preserve_scalar_and_array_bits(
         assert restored[2].is_empty
         assert restored[2].coordinate_axes == axes
 
-        assert arrow.type.extension_name == 'geoarrow.wkb'
+        expected_encoding = (
+            'geoarrow.linestring' if encoding == 'auto' else 'geoarrow.wkb'
+        )
+        assert arrow.type.extension_name == expected_encoding
+        assert scalar_arrow.type.extension_name == expected_encoding
+        if encoding == 'auto':
+            assert arrow.storage.offsets.to_pylist() == [0, 3, 3, 3]
         assert arrow.storage.is_null().to_pylist() == [False, True, False]
 
         padded = gm.GeometryArray(
@@ -235,7 +241,12 @@ def test_geographic_grouped_arrow_offsets_and_values_are_preserved(
 
     for encoding in ('auto', 'wkb'):
         arrow = values.to_arrow(encoding=encoding)
-        assert arrow.type.extension_name == 'geoarrow.wkb'
+        assert arrow.type.extension_name == (
+            'geoarrow.multilinestring' if encoding == 'auto' else 'geoarrow.wkb'
+        )
+        if encoding == 'auto':
+            assert arrow.storage.offsets.to_pylist() == [0, 2, 2, 2]
+            assert arrow.storage.values.offsets.to_pylist() == [0, 3, 6]
         assert arrow.storage.is_null().to_pylist() == [False, True, False]
 
         restored = gm.from_arrow(arrow)

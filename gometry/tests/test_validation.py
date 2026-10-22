@@ -421,7 +421,7 @@ def test_is_valid_packed_arrays_match_mixed() -> None:
         gm.from_wkt('LINESTRING EMPTY'),
     ])
     mixed_lines = gm.from_wkt(['LINESTRING (0 0, 1 1)', 'LINESTRING EMPTY'])
-    assert packed_lines.to_arrow().type.extension_name == 'geoarrow.wkb'
+    assert packed_lines.to_arrow().type.extension_name == 'geoarrow.linestring'
     np.testing.assert_array_equal(packed_lines.is_valid, [True, True])
     np.testing.assert_array_equal(mixed_lines.is_valid, [True, True])
     np.testing.assert_array_equal(packed_lines.is_valid, mixed_lines.is_valid)
