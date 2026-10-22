@@ -6,15 +6,17 @@
 //! index type.
 
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
-use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
+use numpy::{
+    PyArrayDescrMethods as _, PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _,
+};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString};
 
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
-use crate::py::cells::{copy_numeric_ids, copy_u64_ids};
+use crate::py::cells::copy_numeric_ids;
 use crate::py::errors::{ParseFormat, parse_error};
-use crate::py::numpy::reject_masked_array;
+use crate::py::numpy::{reject_masked_array, require_aligned_numpy};
 
 mod sealed {
     pub(in crate::py::cells) trait Sealed {}
@@ -149,28 +151,32 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
         )));
     }
     macro_rules! try_array {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                if let Ok(array) = ids.extract::<PyReadonlyArrayDyn<'_, $ty>>() {
-                    return Ok(Some(copy_numeric_ids(
-                        &array,
-                        || {
-                            PyTypeError::new_err(format!(
-                                "{} ids must be unsigned 64-bit integers",
-                                I::ARRAY_ENTITY
-                            ))
-                        },
-                    )?));
+        ($ty:ty, $kind:literal) => {
+            if array.dtype().kind() == $kind && array.dtype().itemsize() == size_of::<$ty>() {
+                if array.len() == 0 {
+                    return Ok(Some(Vec::new()));
                 }
-            )*
+                let aligned = require_aligned_numpy::<$ty>(ids)?;
+                let array = aligned.extract::<PyReadonlyArrayDyn<'_, $ty>>()?;
+                return Ok(Some(copy_numeric_ids(&array, || {
+                    PyTypeError::new_err(format!(
+                        "{} ids must be unsigned 64-bit integers",
+                        I::ARRAY_ENTITY
+                    ))
+                })?));
+            }
         };
     }
-    try_array!(u8, u16, u32);
-    if let Ok(array) = ids.extract::<PyReadonlyArrayDyn<'_, u64>>() {
-        return Ok(Some(copy_u64_ids(&array)));
-    }
-    try_array!(usize);
-    try_array!(i8, i16, i32, i64, isize);
+    try_array!(u8, b'u');
+    try_array!(u16, b'u');
+    try_array!(u32, b'u');
+    try_array!(u64, b'u');
+    try_array!(usize, b'u');
+    try_array!(i8, b'i');
+    try_array!(i16, b'i');
+    try_array!(i32, b'i');
+    try_array!(i64, b'i');
+    try_array!(isize, b'i');
     // Object / string / other dtypes are not packed uint64 columns — fall
     // through so the collector walks them as an ordinary iterable.
     Ok(None)

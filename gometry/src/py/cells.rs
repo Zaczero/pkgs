@@ -92,7 +92,8 @@ enum FactorizationError {
     CodeOverflow,
 }
 
-/// The caller must keep the source quiescent; this readonly borrow does not
+/// Callers first normalize dtype and alignment with `require_aligned_numpy`.
+/// They must also keep the source quiescent; this readonly borrow does not
 /// synchronize native writers.
 fn copy_numeric_ids<T>(
     ids: &numpy::PyReadonlyArrayDyn<'_, T>,
@@ -126,22 +127,6 @@ where
         }
     }
     Ok(output)
-}
-
-fn copy_u64_ids(ids: &numpy::PyReadonlyArrayDyn<'_, u64>) -> Vec<u64> {
-    let view = ids.as_array();
-    let mut output = Vec::with_capacity(view.len());
-    if let Ok(values) = ids.as_slice() {
-        output.extend_from_slice(values);
-    } else if view.ndim() == 1 {
-        let view = view
-            .into_dimensionality::<numpy::Ix1>()
-            .expect("one-dimensional numeric ID view keeps one dimension");
-        output.extend(view.iter().copied());
-    } else {
-        output.extend(view.iter().copied());
-    }
-    output
 }
 
 impl FactorizationError {

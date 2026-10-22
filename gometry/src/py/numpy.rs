@@ -5,7 +5,7 @@
 //! shape rather than each spelling out rust-numpy mechanics.
 
 use numpy::ndarray::{Array2, ArrayView1};
-use numpy::{IntoPyArray as _, PyArray1, PyArrayMethods as _};
+use numpy::{Element, IntoPyArray as _, PyArray1, PyArrayMethods as _};
 use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -17,6 +17,22 @@ pub(crate) fn numpy_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     NUMPY
         .get_or_try_init(py, || py.import("numpy").map(Bound::unbind))
         .map(|module| module.bind(py))
+}
+
+/// Normalize an admitted NumPy numeric dtype to native byte order and aligned
+/// element storage before creating a typed Rust view. Empty arrays are not
+/// sufficient evidence of pointer alignment; callers must handle them before
+/// extracting a typed array.
+pub(crate) fn require_aligned_numpy<T: Element>(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Bound<'_, PyAny>> {
+    let py = value.py();
+    let kwargs = pyo3::types::PyDict::new(py);
+    kwargs.set_item("dtype", T::get_dtype(py))?;
+    kwargs.set_item("requirements", ["A"])?;
+    numpy_module(py)?
+        .getattr("require")?
+        .call((value,), Some(&kwargs))
 }
 
 /// Reject NumPy masked arrays before any buffer or iterator can expose their

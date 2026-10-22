@@ -42,6 +42,24 @@ def _list_ids(array: np.ndarray) -> list[int]:
     return array.tolist()
 
 
+def _unaligned_ids(values: list[int], layout: str) -> np.ndarray:
+    byte_stride = 8 if layout == 'misaligned_contiguous' else 9
+    offset = (
+        1 + (len(values) - 1) * byte_stride if layout == 'reversed_odd_stride' else 1
+    )
+    stride = -byte_stride if layout == 'reversed_odd_stride' else byte_stride
+    backing = bytearray(1 + max(len(values) - 1, 0) * byte_stride + 8)
+    result = np.ndarray(
+        (len(values),),
+        dtype=np.uint64,
+        buffer=backing,
+        offset=offset,
+        strides=(stride,),
+    )
+    result[:] = values
+    return result
+
+
 @pytest.mark.parametrize('layout', ID_LAYOUTS)
 def test_cell_array_numeric_numpy_ids_match_list_input(layout: str) -> None:
     cells = [
@@ -79,6 +97,93 @@ def test_h3_index_numeric_numpy_ids_match_list_input(
     actual = array_type(ids)
 
     assert list(actual) == list(expected)
+
+
+@pytest.mark.parametrize(
+    'layout',
+    ['misaligned_contiguous', 'odd_stride', 'reversed_odd_stride'],
+    ids=['offset_one', 'stride_nine', 'reversed_stride_nine'],
+)
+def test_cell_array_admits_unaligned_numeric_ids_and_snapshots(layout: str) -> None:
+    cells = [
+        gm.H3Cell(13.4, 52.5, resolution=7),
+        gm.H3Cell(14.4, 52.5, resolution=7),
+        gm.H3Cell(15.4, 52.5, resolution=7),
+    ]
+    ids = [cell.id for cell in cells]
+    source = _unaligned_ids(ids, layout)
+    actual = gm.CellArray(source, type=gm.H3Cell)
+    source[:] = 0
+    assert [cell.id for cell in actual] == ids
+
+
+@pytest.mark.parametrize(
+    ('array_type', 'index_kind'),
+    [
+        pytest.param(gm.H3VertexArray, 'vertices', id='vertices'),
+        pytest.param(gm.H3EdgeArray, 'edges', id='edges'),
+    ],
+)
+@pytest.mark.parametrize(
+    'layout',
+    ['misaligned_contiguous', 'odd_stride', 'reversed_odd_stride'],
+    ids=['offset_one', 'stride_nine', 'reversed_stride_nine'],
+)
+def test_h3_index_arrays_admit_unaligned_numeric_ids_and_snapshot(
+    array_type: type, index_kind: str, layout: str
+) -> None:
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    indexes = list(cell.vertices if index_kind == 'vertices' else cell.edges)
+    ids = [index.id for index in indexes]
+    source = _unaligned_ids(ids, layout)
+    actual = array_type(source)
+    source[:] = 0
+    assert [index.id for index in actual] == ids
+
+
+@pytest.mark.parametrize(
+    'constructor',
+    [
+        pytest.param(
+            lambda values: gm.CellArray(values, type=gm.H3Cell), id='cell-array'
+        ),
+        pytest.param(gm.H3VertexArray, id='h3-vertices'),
+        pytest.param(gm.H3EdgeArray, id='h3-edges'),
+    ],
+)
+def test_empty_unaligned_cell_id_arrays_do_not_create_typed_views(constructor) -> None:
+    source = np.ndarray((0,), dtype=np.uint64, buffer=bytearray(9), offset=1)
+    assert len(constructor(source)) == 0
+
+
+def test_cell_array_keeps_non_native_integer_ids_exact() -> None:
+    ids = [
+        gm.H3Cell(13.4, 52.5, resolution=7).id,
+        gm.H3Cell(14.4, 52.5, resolution=7).id,
+    ]
+    source = np.asarray(ids, dtype='>u8')
+    actual = gm.CellArray(source, type=gm.H3Cell)
+    source[:] = 0
+    assert [cell.id for cell in actual] == ids
+
+
+@pytest.mark.parametrize(
+    ('array_type', 'index_kind'),
+    [
+        pytest.param(gm.H3VertexArray, 'vertices', id='vertices'),
+        pytest.param(gm.H3EdgeArray, 'edges', id='edges'),
+    ],
+)
+def test_h3_index_arrays_keep_non_native_integer_ids_exact(
+    array_type: type, index_kind: str
+) -> None:
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    indexes = list(cell.vertices if index_kind == 'vertices' else cell.edges)
+    ids = [index.id for index in indexes]
+    source = np.asarray(ids, dtype='>u8')
+    actual = array_type(source)
+    source[:] = 0
+    assert [index.id for index in actual] == ids
 
 
 @pytest.mark.parametrize(

@@ -62,6 +62,14 @@ def test_numeric_groups_admit_unaligned_numpy_storage(dtype, layout: str) -> Non
     assert groups.values.dtype == dtype
 
 
+@pytest.mark.parametrize('dtype', [np.int64, np.float64], ids=['int64', 'float64'])
+def test_empty_unaligned_numeric_groups_skip_typed_views(dtype) -> None:
+    source = np.ndarray((0,), dtype=dtype, buffer=bytearray(9), offset=1)
+    groups = gm.Groups(source, [0, 0])
+    assert groups.values.dtype == dtype
+    assert groups.to_list() == [[]]
+
+
 def test_geometry_groups_keep_inner_missing_values_after_gather_and_pickle() -> None:
     values = gm.GeometryArray([gm.Point(3, 4), None, gm.LineString([(5, 6), (7, 8)])])
     groups = gm.Groups(values, [0, 2, 2, 3], missing=[False, True, False])[::-1]

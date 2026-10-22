@@ -2,10 +2,9 @@ use numpy::{
     PyArrayDescrMethods as _, PyReadonlyArray1, PyUntypedArray, PyUntypedArrayMethods as _,
 };
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
 use super::{Arc, Groups, GroupsValues};
-use crate::py::numpy::{numpy_module, reject_masked_array};
+use crate::py::numpy::{reject_masked_array, require_aligned_numpy};
 
 impl Groups {
     pub(super) fn from_float64_csr(
@@ -37,24 +36,31 @@ impl Groups {
                 "Groups numeric values must be a one-dimensional int64 or float64 ndarray",
             ));
         }
-        let py = values.py();
-        let (kind, name) = match dtype.kind() {
-            b'i' => (b'i', "int64"),
-            b'f' => (b'f', "float64"),
+        let item_count = array.len();
+        let kind = match dtype.kind() {
+            b'i' => b'i',
+            b'f' => b'f',
             _ => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "Groups numeric values must have int64 or float64 dtype",
                 ));
             },
         };
+        if item_count == 0 {
+            return match kind {
+                b'i' => Ok(Self::from_int64_values_csr(Vec::new(), offsets)?),
+                b'f' => Ok(Self::from_float64_csr(Vec::new(), offsets)?),
+                _ => unreachable!("numeric kind was admitted above"),
+            };
+        }
         // NumPy's ALIGNED requirement normalizes byte order and element alignment
         // in one owner. It preserves ordinary aligned views, including negative
         // and zero strides, while repairing unaligned exporters before Rust reads.
-        let numpy = numpy_module(py)?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("dtype", name)?;
-        kwargs.set_item("requirements", ["A"])?;
-        let values = numpy.getattr("require")?.call((values,), Some(&kwargs))?;
+        let values = match kind {
+            b'i' => require_aligned_numpy::<i64>(values)?,
+            b'f' => require_aligned_numpy::<f64>(values)?,
+            _ => unreachable!("numeric kind was admitted above"),
+        };
         let aligned = values.cast::<PyUntypedArray>()?;
         debug_assert_eq!(aligned.ndim(), 1);
         debug_assert_eq!(aligned.dtype().kind(), kind);
