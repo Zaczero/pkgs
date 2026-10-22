@@ -137,6 +137,14 @@ def test_circle_value_equality_uses_the_exact_disk() -> None:
         hash(first)
 
 
+def test_zero_radius_circle_equality_uses_values_across_solvers() -> None:
+    point = gm.Point(1, 1).minimum_bounding_circle()
+    polygon = gm.Polygon([(0, 0), (1, 1), (2, 2), (0, 0)]).maximum_inscribed_circle()
+    assert point.center == polygon.center
+    assert point.radius == polygon.radius == 0
+    assert point == polygon
+
+
 def test_finite_numeric_circle_survives_failed_polygon_realization() -> None:
     center = 2.0**60
     source = gm.Polygon([

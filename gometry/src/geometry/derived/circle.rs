@@ -41,8 +41,10 @@ impl CircleSolution {
 
     pub(crate) fn same_disk(&self, other: &Self) -> Result<bool> {
         match (self, other) {
-            (Self::Zero(left), Self::Zero(right))
-            | (Self::SourcePoint(left), Self::SourcePoint(right)) => Ok(left == right),
+            (
+                Self::Zero(left) | Self::SourcePoint(left),
+                Self::Zero(right) | Self::SourcePoint(right),
+            ) => Ok(left == right),
             (Self::Zero(_) | Self::SourcePoint(_), _)
             | (_, Self::Zero(_) | Self::SourcePoint(_)) => Ok(false),
             _ => Ok(self.exact_values()? == other.exact_values()?),
