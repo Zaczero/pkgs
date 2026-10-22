@@ -56,13 +56,15 @@ classifies the interval:
 
 Interval precision is a stopping rule, not an equivalence claim; an interval
 crossing one is not by itself evidence that the implementations are equal. The
-currently published run below retains its historical fixed-six bootstrap
-analysis. New release runs record their permitted looks, actual block plan, and
-per-operation inference with the raw measurements.
+current release run uses the declared six/twelve-block adaptive policy and
+records its actual block plan and per-operation inference with the raw
+measurements.
 
-For the currently published run, the selected timing CPU was not isolated and
-used the powersave governor; host diagnostics also recorded CPU contention. The
-raw measurements retain these conditions and the observed block spread.
+For the current run, CPU 31 was selected from the allowed affinity because no
+kernel-isolated CPU was available; it used the powersave governor. Host
+diagnostics recorded a one-minute load average of 10.12 before timing and 9.04
+at run completion on a 32-CPU host, with external CPU contention. The raw
+measurements retain these conditions and the observed block spread.
 
 --8<-- "benches/results/current/summary.md:environment"
 
