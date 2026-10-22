@@ -217,7 +217,7 @@ def test_geographic_chart_lrs_handles_packed_slices_gathers_and_missing_rows() -
         None,
         gm.LineString([(179.0, 10.0), (-179.0, 10.0)], crs=4326),
     ])
-    assert rows.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert rows.to_arrow().type.extension_name == 'geoarrow.multilinestring'
 
     cases = [
         (

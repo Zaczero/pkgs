@@ -48,7 +48,7 @@ def _export(
     if frontend == 'cdata':
         return pa.array(values)
     if frontend == 'stream':
-        return pa.RecordBatchReader.from_stream(values).read_all().column(0)
+        return pa.chunked_array(_StreamOnly(values))
     return values.to_arrow(encoding='wkb' if frontend == 'wkb' else 'auto')
 
 
@@ -67,8 +67,8 @@ def test_literal_long_edge_is_refined_before_geographic_admission(
     assert result.epoch == 2020.5
     line = result[0]
     assert line is not None
-    assert gm.intersects(line, gm.Point(0, 0, crs=4326))
-    assert not gm.intersects(line, gm.Point(180, 0, crs=4326))
+    assert gm.intersects(line, gm.Point(0, 0, crs=4326, epoch=2020.5))
+    assert not gm.intersects(line, gm.Point(180, 0, crs=4326, epoch=2020.5))
     coordinates = list(line.coords.select('XYZM'))
     assert coordinates[0] == (170, 0, 7, 23)
     assert coordinates[-1] == (-170, 0, 19, 47)
@@ -128,7 +128,7 @@ def test_geographic_wkb_drawing_is_readable_by_shapely(
 ) -> None:
     shapely = pytest.importorskip('shapely', reason='independent WKB reader')
     source = gm.from_wkt(wkt, crs=4326)
-    column = source.to_arrow(encoding='wkb')
+    column: Any = source.to_arrow(encoding='wkb')
     drawing = shapely.from_wkb(column.storage[0].as_py())
     assert drawing.intersects(shapely.Point(inside))
     assert not drawing.intersects(shapely.Point(outside))
@@ -156,7 +156,7 @@ def test_adjacent_binary64_heights_export_as_a_finite_seam_drawing(
 def test_literal_turn_expansion_uses_the_existing_generated_work_budget() -> None:
     source = gm.GeometryArray([gm.LineString([(0, 1), (360_000_000_000, 2)])])
     column = _foreign_column(source, 'wkb')
-    with pytest.raises(gm.GeometryError, match='literal edge subdivision'):
+    with pytest.raises(gm.ResourceLimitError, match='literal edge subdivision'):
         gm.from_arrow(column)
 
 

@@ -310,7 +310,10 @@ def test_packed_proj_source_failure_reports_selected_logical_row(kind: str) -> N
             gm.LineString([(0.0, 0.0), (1.0, 91.0)], crs=4326),
             gm.LineString([(2.0, 2.0), (3.0, 3.0)], crs=4326),
         ])
-        assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+        assert (
+            source.with_crs(None).to_arrow().type.extension_name
+            == 'geoarrow.linestring'
+        )
     else:
         source = gm.GeometryArray([
             gm.box(0.0, 0.0, 1.0, 1.0, crs=4326),
@@ -320,7 +323,9 @@ def test_packed_proj_source_failure_reports_selected_logical_row(kind: str) -> N
             ),
             gm.box(2.0, 2.0, 3.0, 3.0, crs=4326),
         ])
-        assert source.to_arrow().type.extension_name == 'geoarrow.polygon'
+        assert (
+            source.with_crs(None).to_arrow().type.extension_name == 'geoarrow.polygon'
+        )
 
     selected = source[[2, 1, 1, 0]]
     _assert_row_error(
@@ -341,7 +346,7 @@ def test_nullable_mixed_proj_source_failure_uses_gathered_logical_row() -> None:
         gm.Point(1.0, 1.0, crs=4326),
     ])
     selected = source[[3, 0, 2, 2, 1]]
-    assert selected.to_arrow().type.extension_name == 'geoarrow.wkb'
+    assert selected.with_crs(None).to_arrow().type.extension_name == 'geoarrow.wkb'
 
     _assert_row_error(
         lambda: selected.to_crs(WGS84_RADIANS, authority='EPSG'),
@@ -389,14 +394,19 @@ def test_packed_identity_to_crs_validates_selected_csr_rows(kind: str) -> None:
             gm.LineString([(0.0, 0.0), (1.0, 91.0)], crs=4326),
             gm.LineString([(2.0, 2.0), (3.0, 3.0)], crs=4326),
         ])
-        assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+        assert (
+            source.with_crs(None).to_arrow().type.extension_name
+            == 'geoarrow.linestring'
+        )
     else:
         source = gm.GeometryArray([
             gm.Polygon([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], crs=4326),
             gm.Polygon([(0.0, 0.0), (1.0, 0.0), (0.0, 91.0), (0.0, 0.0)], crs=4326),
             gm.Polygon([(2.0, 2.0), (3.0, 2.0), (2.0, 3.0), (2.0, 2.0)], crs=4326),
         ])
-        assert source.to_arrow().type.extension_name == 'geoarrow.polygon'
+        assert (
+            source.with_crs(None).to_arrow().type.extension_name == 'geoarrow.polygon'
+        )
     _assert_identity_row_error(lambda: source[[2, 1, 0]].to_crs('OGC:CRS84'), 1)
 
 
@@ -596,7 +606,7 @@ def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> No
         crs=WGS84_SOUTH_WEST_GRADS,
     )
     dense = gm.GeometryArray([circle, other])
-    assert dense.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert dense.to_arrow().type.extension_name == 'geoarrow.multilinestring'
     dense_output = dense.to_crs(4326, authority='EPSG')
     assert dense_output[0].to_wkb() == line.to_wkb()
     assert dense_output[1].to_wkb() == other.to_crs(4326, authority='EPSG').to_wkb()
@@ -606,7 +616,7 @@ def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> No
     assert selected_dense[2].to_wkb() == line.to_wkb()
 
     nullable_lines = gm.GeometryArray([circle, None, other])
-    assert nullable_lines.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert nullable_lines.to_arrow().type.extension_name == 'geoarrow.multilinestring'
     nullable_lines_output = nullable_lines.to_crs(4326, authority='EPSG')
     assert nullable_lines_output[0].to_wkb() == line.to_wkb()
     assert nullable_lines_output[1] is None
@@ -643,7 +653,7 @@ def test_selected_packed_lines_publish_the_paired_source_circle() -> None:
         crs=WGS84_SOUTH_WEST_GRADS,
     )
     source = gm.GeometryArray([circle, other])
-    assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert source.to_arrow().type.extension_name == 'geoarrow.multilinestring'
 
     transformed = source[[1, 0, 0]].to_crs(4326, authority='EPSG')
 

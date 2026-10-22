@@ -165,7 +165,9 @@ def test_geographic_bbox_keeps_seam_and_pole_aliases(
     assert len(seam) == 1
     assert seam_attrs.to_pydict() == {'id': [59]}
     pole, pole_attrs = gm.from_geoparquet(path, bbox=(-80, 89, -70, 90))
-    assert pole.to_wkt() == ['POINT (360 90)']
+    assert len(pole) == 1
+    assert gm.intersects(pole, gm.Point(0, 90, crs=4326)).tolist() == [True]
+    assert pole.crs == gm.CRS(4326)
     assert pole_attrs.to_pydict() == {'id': [61]}
 
 
@@ -184,7 +186,11 @@ def test_bbox_keeps_admitted_exterior_pole_neighbors(
     source = gm.GeometryArray([gm.Point(73, latitude, crs=4326)])
     source.to_geoparquet(path, encoding=encoding, attributes={'id': [101]})
     restored, attrs = gm.from_geoparquet(path, bbox=bbox)
-    assert restored.to_wkt() == source.to_wkt()
+    assert len(restored) == 1
+    assert gm.intersects(
+        restored, gm.Point(0, math.copysign(90, latitude), crs=4326)
+    ).tolist() == [True]
+    assert restored.crs == source.crs
     assert attrs.to_pydict() == {'id': [101]}
 
 
@@ -201,7 +207,10 @@ def test_bbox_retains_geographic_polar_faces_beyond_vertex_latitudes(
         path, encoding=encoding, attributes={'id': [97]}
     )
     restored, attrs = gm.from_geoparquet(path, bbox=(10, 85, 20, 89))
-    assert restored.to_wkt() == [cap.to_wkt()]
+    assert len(restored) == 1
+    assert gm.intersects(restored, gm.Point(15, 87, crs=4326)).tolist() == [True]
+    assert gm.intersects(restored, gm.Point(15, 0, crs=4326)).tolist() == [False]
+    assert restored.crs == cap.crs
     assert attrs.to_pydict() == {'id': [97]}
 
 

@@ -917,7 +917,9 @@ def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
     arrow = (values).to_arrow()
     recovered = gm.from_arrow(arrow)
     assert arrow.type.extension_name == 'geoarrow.wkb'
-    assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
+    assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
+        _WGS84_PROJJSON_METADATA
+    )
     assert isinstance(recovered, gm.GeometryArray)
     assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
@@ -973,18 +975,12 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
         arrow = pa.array(values)
         restored = gm.from_arrow(arrow)
         assert arrow.type.extension_name == extension_name
-        assert (
-            arrow.type.__arrow_ext_serialize__()
-            == _json.dumps(
-                {
-                    'crs': _CRS(4326).to_projjson(as_dict=True),
-                    'crs_type': 'projjson',
-                    'gometry:crs_definition': 'EPSG:4326',
-                    'epoch': 2020.0,
-                },
-                separators=(',', ':'),
-            ).encode()
-        )
+        assert _json.loads(arrow.type.__arrow_ext_serialize__()) == {
+            'crs': _CRS(4326).to_projjson(as_dict=True),
+            'crs_type': 'projjson',
+            'gometry:crs_definition': 'EPSG:4326',
+            'epoch': 2020.0,
+        }
         assert isinstance(restored, gm.GeometryArray)
         assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
@@ -1236,7 +1232,9 @@ def test_geoarrow_point_array_uses_packed_coordinate_storage() -> None:
     ])
     assert arrow.storage.field('x').to_pylist() == [1.0, 3.0]
     assert arrow.storage.field('y').to_pylist() == [2.0, 4.0]
-    assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
+    assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
+        _WGS84_PROJJSON_METADATA
+    )
     assert isinstance(recovered, gm.GeometryArray)
     assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
@@ -1260,7 +1258,9 @@ def test_geoarrow_linestring_array_uses_packed_coordinate_storage() -> None:
         [{'x': 0.0, 'y': 0.0}, {'x': 1.0, 'y': 1.0}],
         [{'x': 2.0, 'y': 2.0}, {'x': 3.0, 'y': 4.0}, {'x': 5.0, 'y': 8.0}],
     ]
-    assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
+    assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
+        _WGS84_PROJJSON_METADATA
+    )
     assert isinstance(recovered, gm.GeometryArray)
     assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
@@ -1311,7 +1311,9 @@ def test_geoarrow_polygon_array_uses_packed_coordinate_storage() -> None:
             ],
         ],
     ]
-    assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
+    assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
+        _WGS84_PROJJSON_METADATA
+    )
     assert isinstance(recovered, gm.GeometryArray)
     assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
@@ -1401,7 +1403,9 @@ def test_geoarrow_multi_and_polygon_arrays_use_packed_coordinate_storage() -> No
         recovered = gm.from_arrow(arrow)
         assert arrow.type.extension_name == extension_name
         assert arrow.type.storage_type == storage_type
-        assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
+        assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
+            _WGS84_PROJJSON_METADATA
+        )
         assert isinstance(recovered, gm.GeometryArray)
         assert recovered.crs.to_epsg() == 4326
         assert [(item).to_wkt() for item in recovered] == expected_wkt
