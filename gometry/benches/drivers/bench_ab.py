@@ -36,6 +36,10 @@ for _path in (_SUPPORT, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
 from benchroom.stats import (
     bootstrap_interval,

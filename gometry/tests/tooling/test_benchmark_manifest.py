@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 _BENCHES = Path(__file__).resolve().parents[2] / 'benches'
+GOMETRY_ROOT = _BENCHES.parent
 _SUPPORT = _BENCHES / 'support'
 _PYTHON = _BENCHES / 'python'
 for _path in (_SUPPORT, _PYTHON):
@@ -153,6 +154,39 @@ def test_release_uses_one_typed_paired_worker() -> None:
 def test_release_paired_worker_imports_before_a_release_run() -> None:
     script = EXPECTED_PAIR_WORKER
     importlib.import_module(Path(script).stem)
+
+
+def test_benchmark_entrypoints_prefer_the_workspace_benchroom_source() -> None:
+    scripts = (
+        _DRIVERS / 'bench.py',
+        _PYTHON / EXPECTED_PAIR_WORKER,
+        _DRIVERS / 'bench_ab.py',
+        _BENCHES / 'support' / 'summarize_bench.py',
+    )
+    environment = os.environ.copy()
+    environment.pop('PYTHONPATH', None)
+    probe = (
+        'import runpy, sys; from pathlib import Path; script = Path(sys.argv[1]); '
+        'sys.path.insert(0, str(script.parent)); '
+        'runpy.run_path(script, run_name="checkout_import_test"); '
+        'import benchroom; print(Path(benchroom.__file__).resolve())'
+    )
+    expected = (
+        GOMETRY_ROOT.parent / 'benchroom' / 'benchroom' / '__init__.py'
+    ).resolve()
+
+    for script in scripts:
+        result = subprocess.run(
+            [sys.executable, '-c', probe, str(script)],
+            cwd=GOMETRY_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == expected
 
 
 def test_all_child_commands_use_the_selected_interpreter_environment(

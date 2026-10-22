@@ -15,13 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from benchroom.sampling import SamplingPolicy
-
 _ROOT = Path(__file__).resolve().parents[2]
 _TOOLS = _ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
+from benchroom.sampling import SamplingPolicy
 from public_inventory import load_public_symbols, unknown_public_symbols
 
 

@@ -14,8 +14,6 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from benchroom.sampling import next_batch_size
-
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -27,6 +25,12 @@ _TOOLS = _PYTHON.parents[1] / 'tools'
 for _path in (_PYTHON, _SUPPORT, _DRIVERS, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
+from benchroom.sampling import next_batch_size
 
 from _bench_oracles import (
     PUBLIC_CASE_BUILDERS,

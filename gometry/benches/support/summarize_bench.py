@@ -13,8 +13,6 @@ from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from benchroom.sampling import SamplingPolicy, assess_ratios
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -24,6 +22,11 @@ _TOOLS = GOMETRY_ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
+from benchroom.sampling import SamplingPolicy, assess_ratios
 from _bench_registry import RESOURCE_MODES, paired_block_identity, public_api_symbols
 from benchmark_observation import measurement_summary, validate_observation
 from benchroom.stats import median_interval

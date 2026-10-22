@@ -28,6 +28,8 @@ from _bench_registry import RELEASE_OPERATIONS
 from benchmark_evidence import compact_artifact
 from benchmark_observation import make_observation
 
+from tests.tooling._bench_support import producer
+
 
 def _driver_run(
     *,
@@ -43,6 +45,16 @@ def _driver_run(
     operations_by_name = {
         operation.gometry: operation for operation in selected_operations
     }
+    identity_seed = producer(selected_operations[0].gometry, 'A')
+    admission = {
+        'kind': 'gometry-benchmark-admission',
+        'harness_commit': identity_seed['harness_commit'],
+        'uv_lock': identity_seed['uv_lock'],
+        'runtime': {
+            'python_members': identity_seed['runtime_binding']['python_members']
+        },
+    }
+    admission_digest = hashlib.sha256(json.dumps(admission).encode()).hexdigest()
     subject = {
         'kind': 'wheel',
         'path': str(tmp_path / 'subject.whl'),
@@ -52,14 +64,10 @@ def _driver_run(
             'native_source_inputs_sha256': 'c' * 64,
         },
     }
-    admission_digest = hashlib.sha256(
-        json.dumps({'kind': 'gometry-benchmark-admission'}).encode()
-    ).hexdigest()
 
     def prepare_admission(
         admitted_subject: dict[str, Any], _package_root: Path, path: Path
-    ) -> None:
-        admission = {'kind': 'gometry-benchmark-admission'}
+    ) -> dict[str, Any]:
         encoded = json.dumps(admission).encode()
         path.write_bytes(encoded)
         admitted_subject['run_admission'] = {
@@ -67,6 +75,7 @@ def _driver_run(
             'sha256': admission_digest,
             'seconds': 0.01,
         }
+        return admission
 
     monkeypatch.setattr(
         bench_driver.benchmark_runtime, 'load_subject', lambda _path=None: subject
@@ -170,6 +179,12 @@ def _driver_run(
                     warmup_iterations=2,
                     calibration_iterations=1,
                 )
+                identity_a = producer(operation.gometry, 'A')
+                identity_b = producer(operation.competitor, 'B')
+                for identity in (identity_a, identity_b):
+                    identity['runtime_binding']['admission_sha256'] = admission_digest
+                observation_a['producer_identity'] = identity_a
+                observation_b['producer_identity'] = identity_b
                 write_artifact(
                     output,
                     {

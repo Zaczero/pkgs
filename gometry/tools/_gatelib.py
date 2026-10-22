@@ -23,18 +23,17 @@ ROOT = TOOLS_DIR.parent
 
 
 def prepend_tools_import_paths() -> None:
-    """Prepend checkout tool paths and an available workspace tool dependency."""
+    """Prepend checkout tools and available workspace dependencies."""
     tool_paths = [str(entry) for entry in TOOL_IMPORT_DIRS]
-    tool_path_set = set(tool_paths)
-    sys.path[:] = [entry for entry in sys.path if entry not in tool_path_set]
+    workspace_paths = [
+        str(root)
+        for name in ('pyo3stubs', 'benchroom')
+        if (root := ROOT.parent / name).joinpath(name, '__init__.py').is_file()
+    ]
+    checkout_paths = {*tool_paths, *workspace_paths}
+    sys.path[:] = [entry for entry in sys.path if entry not in checkout_paths]
     sys.path[:0] = tool_paths
-    sibling_package = ROOT.parent / 'pyo3stubs'
-    if (sibling_package / 'pyo3stubs' / '__init__.py').is_file():
-        path = str(sibling_package)
-        sys.path[:] = [entry for entry in sys.path if entry != path]
-        last_tools_path = max(sys.path.index(str(entry)) for entry in TOOL_IMPORT_DIRS)
-        # Editable installs can resolve another worktree; select this sibling before site-packages.
-        sys.path.insert(last_tools_path + 1, path)
+    sys.path[len(tool_paths) : len(tool_paths)] = workspace_paths
 
 
 def rust_source_config(src_root: Path = ROOT / 'src') -> StubConfig:

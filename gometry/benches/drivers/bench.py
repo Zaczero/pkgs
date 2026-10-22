@@ -17,13 +17,6 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from benchroom.sampling import (
-    SamplingDecision,
-    SamplingPolicy,
-    assess_ratios,
-    fits_budget,
-)
-
 _BENCHES = Path(__file__).resolve().parents[1]
 GOMETRY_ROOT = _BENCHES.parent
 _SUPPORT = _BENCHES / 'support'
@@ -33,6 +26,17 @@ _TOOLS = GOMETRY_ROOT / 'tools'
 for _path in (_SUPPORT, _DRIVERS, _PYTHON, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
+from benchroom.sampling import (
+    SamplingDecision,
+    SamplingPolicy,
+    assess_ratios,
+    fits_budget,
+)
 
 from _bench_pairs import pair_units
 from _bench_registry import (
@@ -518,10 +522,26 @@ def _sampling_decision_record(
     }
 
 
-def _paired_block_ratio(path: Path, *, operation: str, block_id: str) -> float:
+def _paired_block_ratio(
+    path: Path,
+    *,
+    operation: str,
+    block_id: str,
+    admission: dict[str, Any] | None = None,
+    admission_sha256: str | None = None,
+) -> float:
     from benchmark_observation import measurement_summary
 
     payload = _read_json_object(path, label='paired block')
+    if 'benchmark_evidence' in payload:
+        from benchmark_evidence import expand_artifact
+
+        try:
+            payload = expand_artifact(payload, admission, admission_sha256)
+        except (KeyError, TypeError, ValueError) as error:
+            raise SystemExit(
+                f'paired block {path} has invalid admitted evidence: {error}'
+            ) from error
     metadata = payload.get('operation')
     order = payload.get('lead_order')
     if (
@@ -1900,8 +1920,9 @@ def main() -> None:
         ) from exc
     raw_directory = run_directory / 'raw'
     raw_directory.mkdir()
+    run_admission_record = None
     if not args.plan_only:
-        benchmark_runtime.prepare_run_admission(
+        run_admission_record = benchmark_runtime.prepare_run_admission(
             receipt_binding, package_root, run_directory / 'admission.json'
         )
     cpu, cpu_selection = select_benchmark_cpu(args.cpu)
@@ -2087,6 +2108,10 @@ def main() -> None:
                                 Path(plan['output']),
                                 operation=operation,
                                 block_id=plan['block_id'],
+                                admission=run_admission_record,
+                                admission_sha256=receipt_binding['run_admission'][
+                                    'sha256'
+                                ],
                             )
                             for plan in operation_plans
                         ]
@@ -2222,6 +2247,8 @@ def main() -> None:
                             Path(plan['output']),
                             operation=operation,
                             block_id=plan['block_id'],
+                            admission=run_admission_record,
+                            admission_sha256=receipt_binding['run_admission']['sha256'],
                         )
                         for plan in all_operation_plans
                     ]

@@ -7,10 +7,15 @@ import re
 import sys
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / 'tools'))
+from _gatelib import prepend_tools_import_paths
+
+prepend_tools_import_paths()
+
 from benchroom.plot import curves, save
 from matplotlib.ticker import EngFormatter, PercentFormatter, StrMethodFormatter
 
-_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / 'benches' / 'support'))
 from summarize_bench import (
     DOMAIN_ORDER,
