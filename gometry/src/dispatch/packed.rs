@@ -290,9 +290,7 @@ pub(crate) fn try_unary_packed_array(
     if array.has_missing()
         && !matches!(
             op,
-            Operation::Boundary
-                | Operation::Quantize
-                | Operation::Metric(MetricOp::Segmentize)
+            Operation::Boundary | Operation::Quantize | Operation::Metric(MetricOp::Segmentize)
         )
     {
         return None;

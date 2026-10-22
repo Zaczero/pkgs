@@ -5,8 +5,8 @@ use crate::py::methods::unary_transform_methods::{
     Bound, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
     DistanceUnit, F64Param, GridOrigin, NavigationPath, PyAny, PyGeometry, PyGeometryArray,
     PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod, parse_grid_size,
-    pymethods, validate_buffer_miter_limit,
-    validate_densify_fraction, validate_max_segment_length, validate_quadrant_segments, validate_smooth_iterations,
+    pymethods, validate_buffer_miter_limit, validate_densify_fraction, validate_max_segment_length,
+    validate_quadrant_segments, validate_smooth_iterations,
 };
 use crate::py::vectors::Groups;
 
