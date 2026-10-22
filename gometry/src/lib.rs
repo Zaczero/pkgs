@@ -267,6 +267,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py::crs::register(m)?;
     py::vectors::register(m)?;
     py::errors::register(m)?;
+    py::circles::register(m)?;
     py::cells::register(m)?;
     // Private test-owned indirect PEP-3118 buffers (suboffset soundness).
     py::test_buffers::register(m)?;

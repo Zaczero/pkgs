@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use super::{ArrayRow, I64Param, PyGeometryArray, Shape, row_sample_seed};
-use crate::boundary::input::int_min_error;
+use crate::boundary::input::{int_min_error, resolve_sample_seed};
 use crate::error::{BatchError, BatchResult, Error, ResourceError};
 use crate::geometry::{ExpansionBudget, PreparedSampling, TopologyDomain};
 use crate::py::vectors::Groups;
@@ -31,7 +31,7 @@ impl PyGeometryArray {
         if let Some(value) = negative_count {
             return Err(int_min_error("sample_points", "count", 0, value));
         }
-        let seed = crate::boundary::input::resolve_sample_seed(py, seed)?;
+        let seed = resolve_sample_seed(py, seed)?;
         let seed = I64Param::parse(&seed, "seed", self.len())?;
         let model = crate::broadcast::resolve_metric(
             self.frame.crs_str(),

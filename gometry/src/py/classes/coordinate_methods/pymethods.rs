@@ -13,6 +13,7 @@ use crate::py::classes::coordinate_methods::{
 use crate::py::numpy::{astype_readonly, int64_array, numpy_module};
 use crate::py::row::normalize_row;
 use crate::py::sizeof::python_sizeof;
+use crate::py::support::note_array_row;
 
 #[pymethods]
 impl PyCoordinates {
@@ -430,7 +431,7 @@ impl PyCoordinates {
                         LogicalRow::Missing { .. } => py.None(),
                         LogicalRow::Present { logical, row } => row
                             .try_with_shape(|shape| coordinates_object(py, shape, self.layout))
-                            .map_err(|error| crate::py::support::note_array_row(error, logical))?,
+                            .map_err(|error| note_array_row(error, logical))?,
                     };
                     nested.push(value);
                 }

@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::local::{
-    metric_concave_hull, metric_constructive_shape_budgeted, metric_optional_constructive_shape,
+    FramedCircle, LocalInputPurpose, PreparedLocalInput, metric_concave_hull,
+    metric_constructive_shape_budgeted, metric_optional_constructive_shape,
 };
 use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
@@ -23,6 +24,7 @@ use crate::geometry::{
     Strictness, TopologyDomain, same_topological_coordinate,
 };
 use crate::numeric::Positive;
+use crate::py::circles::CircleOutput;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
     line_substring_shape_m, metric_minimum_clearance, metric_minimum_clearance_line,
@@ -454,7 +456,7 @@ pub(crate) fn unary_circle(
     tolerance: Option<&F64Param>,
     inscribed: bool,
     unit: Option<crate::DistanceUnit>,
-) -> Result<crate::py::circles::CircleOutput> {
+) -> Result<CircleOutput> {
     let operation = if inscribed {
         MetricOp::MaximumInscribedCircle
     } else {
@@ -464,7 +466,7 @@ pub(crate) fn unary_circle(
     if let Some(value) = tolerance {
         Positive::try_new("tolerance", value)?;
     }
-    let disk = crate::crs::local::FramedCircle::solve(
+    let disk = FramedCircle::solve(
         ctx.metric.require_model(operation)?,
         ctx.frame.crs_str(),
         data.shape(),
@@ -473,7 +475,7 @@ pub(crate) fn unary_circle(
         unit,
         ctx.domain,
     )?;
-    Ok(crate::py::circles::CircleOutput(Some(Arc::new(disk))))
+    Ok(CircleOutput(Some(Arc::new(disk))))
 }
 
 pub(crate) fn unary_minimum_width(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -> Result<f64> {
@@ -484,12 +486,12 @@ pub(crate) fn unary_minimum_width(data: &PreparedPlan, ctx: &MetricRowContext<'_
         crate::crs::MetricModel::Geodesic { state, .. } => {
             let mut budget =
                 crate::geometry::ExpansionBudget::new("minimum_width", "input_refinement");
-            let prepared = crate::crs::local::PreparedLocalInput::prepare(
+            let prepared = PreparedLocalInput::prepare(
                 data.shape(),
                 &[data.shape()],
                 ctx.frame.crs_str().unwrap_or("EPSG:4326"),
                 None,
-                crate::crs::local::LocalInputPurpose::BoundarySupport,
+                LocalInputPurpose::BoundarySupport,
                 state,
                 &mut budget,
             )?;

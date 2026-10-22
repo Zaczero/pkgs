@@ -13,6 +13,7 @@ use crate::geometry::Shape;
 use crate::geometry::storage::ValidityMask;
 use crate::py::numpy::{bool_array, float64_array};
 use crate::py::row::{RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices};
+use crate::py::support::initialize_sequence_type;
 use crate::{PyGeometry, Typed};
 
 #[derive(Clone)]
@@ -20,20 +21,23 @@ pub(crate) struct CircleOutput(pub(crate) Option<Arc<FramedCircle>>);
 
 impl BulkElement for CircleOutput {
     fn into_py(self, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
-        match self.0 {
-            None => Ok(py.None()),
-            Some(disk) => PyCircle {
-                disk,
-                frame: frame.clone(),
-            }
-            .into_py_any(py),
-        }
+        self.0.map_or_else(
+            || Ok(py.None()),
+            |disk| {
+                PyCircle {
+                    disk,
+                    frame: frame.clone(),
+                }
+                .into_py_any(py)
+            },
+        )
     }
 
     fn bulk_into_py(values: Vec<Self>, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
+        let rows = 0..values.len();
         PyCircleArray {
-            rows: 0..values.len(),
             values: values.into(),
+            rows,
             frame: frame.clone(),
         }
         .into_py_any(py)
@@ -306,7 +310,7 @@ impl PyCircleArray {
                 .min(self.rows.len())
         };
         let start = clamp(start);
-        let stop = stop.map_or(self.rows.len(), clamp);
+        let stop = stop.map_or_else(|| self.rows.len(), clamp);
         py.detach(|| self.find_row(needle, start..stop))?
             .ok_or_else(not_found)
     }
@@ -440,9 +444,9 @@ impl PyCircleArray {
                 ..
             } => Self {
                 values: Arc::clone(&self.values),
-                frame: self.frame.clone(),
                 rows: self.rows.start.wrapping_add(start as usize)
                     ..self.rows.start.wrapping_add(stop.max(start) as usize),
+                frame: self.frame.clone(),
             }
             .into_py_any(py),
             RowIndexOrSlice::Slice {
@@ -524,4 +528,9 @@ impl PyCircleArrayIter {
     fn __length_hint__(&self) -> usize {
         self.cursor.length_hint(self.array.rows.len())
     }
+}
+
+pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    crate::add_classes!(module; PyCircle, PyCircleArray, PyCircleArrayIter);
+    initialize_sequence_type::<PyCircleArray>(module)
 }

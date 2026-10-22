@@ -343,9 +343,9 @@ fn interpolate_mixed_row_groups(
                                 unreachable!("M groups contain explicit stations");
                             };
                             let context = LinearReferenceRow {
+                                lane: crate::dispatch::Lane::Array(logical),
                                 metric: metric.as_ref().expect("metric resolved for present row"),
                                 cache: &cache,
-                                lane: crate::dispatch::Lane::Array(logical),
                             };
                             return stations
                                 .iter()

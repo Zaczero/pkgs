@@ -172,8 +172,8 @@ mod linref_result_tests {
             results[1],
             Ok(Shape::Empty(GeometryKind::Point, _))
         ));
-        assert!(results[2].is_err());
-        assert!(results[3].is_err());
+        results[2].as_ref().unwrap_err();
+        results[3].as_ref().unwrap_err();
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod linref_result_tests {
             results[1],
             Ok(Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY))
         ));
-        assert!(results[2].is_err());
+        results[2].as_ref().unwrap_err();
     }
 
     #[test]

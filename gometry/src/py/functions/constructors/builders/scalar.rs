@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::same_topological_coordinate;
 
 /// The canonical `LINESTRING EMPTY`.
 pub(super) const fn empty_line_string() -> Shape {
@@ -404,8 +405,8 @@ pub(in crate::py::functions::constructors) fn build_box_shape(
                 geographic_box_piece(west, frame)?,
                 geographic_box_piece(east, frame)?,
             ])
-        } else if minx == -frame.longitude().half_period()
-            && maxx == frame.longitude().half_period()
+        } else if same_topological_coordinate(minx, -frame.longitude().half_period())
+            && same_topological_coordinate(maxx, frame.longitude().half_period())
             && miny < maxy
             && let Ok(bounds) = Bounds::full_geographic_longitude(frame, miny, maxy)
         {

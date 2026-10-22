@@ -202,12 +202,6 @@ crate::tokens::token_from_pyobject!(CellRule);
 
 /// Register every cell-system surface on the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    crate::add_classes!(m;
-        crate::py::circles::PyCircle,
-        crate::py::circles::PyCircleArray,
-        crate::py::circles::PyCircleArrayIter
-    );
-    initialize_sequence_type::<crate::py::circles::PyCircleArray>(m)?;
     h3::register(m)?;
     s2::register_s2(m)?;
     geohash::register(m)?;

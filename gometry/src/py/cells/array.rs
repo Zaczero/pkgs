@@ -187,11 +187,6 @@ impl PyCellArray {
         self.select_logical_rows(range)
     }
 
-    /// Materialized logical cell ids (for CSR value equality / pickling).
-    pub(crate) fn logical_ids(&self) -> Vec<u64> {
-        self.logical_ids_vec()
-    }
-
     /// Value-equal when the grid kind, missing mask, and present cell ids match.
     pub(crate) fn logical_eq(&self, other: &Self) -> bool {
         if self.kind() != other.kind() || self.len() != other.len() {

@@ -3,6 +3,7 @@ use std::num::NonZeroU32;
 use pyo3::types::PyString;
 
 use crate::boundary::FloatInput;
+use crate::boundary::input::py_index_object;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
@@ -10,7 +11,7 @@ use crate::py::support::{
 };
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
-    let integer = crate::boundary::input::py_index_object("precision", value)?;
+    let integer = py_index_object("precision", value)?;
     // Outside this range every admitted binary64 coordinate either stays
     // unchanged or rounds to signed zero. Compare before narrowing so even a
     // Python integer with thousands of digits has the ordinary result.

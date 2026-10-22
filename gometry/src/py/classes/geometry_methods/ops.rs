@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use pyo3::types::{PyBytes, PyTuple};
 
+use crate::boundary::input::resolve_sample_seed;
 use crate::geometry::publication::{PublicationRows, publish_split_parts_array};
 use crate::geometry::storage::replacement::{CoordinateReplacement, replace_shape_coordinates};
 use crate::py::classes::geometry_methods::{
@@ -313,7 +314,7 @@ impl PyGeometry {
         unit: Option<crate::DistanceUnit>,
     ) -> PyResult<PyGeometryArray> {
         let count = parse_sample_count(count)?;
-        let seed = crate::boundary::input::resolve_sample_seed(py, seed)?;
+        let seed = resolve_sample_seed(py, seed)?;
         let seed = parse_sample_seed(&seed)?;
         let model = crate::broadcast::resolve_metric(
             self.frame.crs_str(),

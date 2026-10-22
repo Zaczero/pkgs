@@ -3,6 +3,7 @@ use crate::py::methods::unary_transform_methods::{
     Bound, DefaultedF64Input, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray,
     PyResult, Python, angle_radians, finite_f64_required, parse_affine_matrix, pymethods,
 };
+use crate::py::support::parse_precision;
 
 unary_shape_method!(reverse, Reverse, doc_reverse, kernels::unary_reverse);
 unary_shape_method!(swap_xy, SwapXy, doc_swap_xy, kernels::unary_swap_xy);
@@ -38,7 +39,7 @@ impl PyGeometry {
 
     #[doc = doc_quantize!(scalar)]
     pub fn quantize(&self, py: Python<'_>, precision: &Bound<'_, PyAny>) -> PyResult<crate::Typed> {
-        let precision = crate::py::support::parse_precision(precision)?;
+        let precision = parse_precision(precision)?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -212,7 +213,7 @@ impl PyGeometryArray {
 
     #[doc = doc_quantize!(array)]
     pub fn quantize(&self, py: Python<'_>, precision: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let precision = crate::py::support::parse_precision(precision)?;
+        let precision = parse_precision(precision)?;
         unary_spine_shapes_extras!(
             array,
             py,

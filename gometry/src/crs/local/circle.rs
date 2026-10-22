@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::frame::LocalCrsDefinition;
 use super::{LocalInputPurpose, PreparedLocalInput};
+use crate::crs::geodesic::inverse_distance_azimuths;
 use crate::crs::{MetricModel, RuntimeState};
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
@@ -145,7 +146,6 @@ impl FramedCircle {
                         }
                     });
                     match points.as_slice() {
-                        [] => {},
                         [(_, point)] => {
                             return Ok(Self::Ellipsoidal {
                                 center: *point,
@@ -161,7 +161,7 @@ impl FramedCircle {
                                 frame,
                             });
                         },
-                        [_, _, _, ..] => {},
+                        [] | [_, _, _, ..] => {},
                     }
                 }
                 let mut budget = ExpansionBudget::new("circle", "input_refinement");
@@ -338,7 +338,7 @@ fn two_point_disk(
         &frame.state,
         |error| error,
         |geodesic| {
-            let (distance, azimuth, _) = crate::crs::geodesic::inverse_distance_azimuths(
+            let (distance, azimuth, _) = inverse_distance_azimuths(
                 geodesic,
                 left_geodesic.x,
                 left_geodesic.y,
