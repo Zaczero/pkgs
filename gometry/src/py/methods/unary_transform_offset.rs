@@ -113,8 +113,8 @@ impl PyGeometry {
 
     #[doc = doc_simplify!(scalar)]
     #[pyo3(
-        signature = (tolerance, *, method = SimplifyMethod::Vw, preserve_topology = true),
-        text_signature = "($self, tolerance, *, method='vw', preserve_topology=True)"
+        signature = (tolerance, *, method = SimplifyMethod::Vw, preserve_topology = true, unit = None),
+        text_signature = "($self, tolerance, *, method='vw', preserve_topology=True, unit=None)"
     )]
     pub fn simplify(
         &self,
@@ -122,6 +122,7 @@ impl PyGeometry {
         tolerance: &Bound<'_, PyAny>,
         method: SimplifyMethod,
         preserve_topology: bool,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<crate::Typed> {
         let tolerance = F64Param::parse_raw(tolerance, "tolerance", unary_len!(scalar))?;
         tolerance.require_non_negative("tolerance")?;
@@ -129,8 +130,8 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::Simplify,
-            None,
+            crate::dispatch::Operation::Metric(MetricOp::Simplify),
+            unit,
             default,
             move |data, ctx| {
                 kernels::unary_simplify(data, ctx, &tolerance, method, preserve_topology)
@@ -364,8 +365,8 @@ impl PyGeometryArray {
 
     #[doc = doc_simplify!(array)]
     #[pyo3(
-        signature = (tolerance, *, method = SimplifyMethod::Vw, preserve_topology = true),
-        text_signature = "($self, tolerance, *, method='vw', preserve_topology=True)"
+        signature = (tolerance, *, method = SimplifyMethod::Vw, preserve_topology = true, unit = None),
+        text_signature = "($self, tolerance, *, method='vw', preserve_topology=True, unit=None)"
     )]
     pub fn simplify(
         &self,
@@ -373,6 +374,7 @@ impl PyGeometryArray {
         tolerance: &Bound<'_, PyAny>,
         method: SimplifyMethod,
         preserve_topology: bool,
+        unit: Option<crate::DistanceUnit>,
     ) -> PyResult<Self> {
         let tolerance = F64Param::parse_raw(tolerance, "tolerance", unary_len!(array, self))?;
         tolerance.require_non_negative("tolerance")?;
@@ -380,8 +382,8 @@ impl PyGeometryArray {
             array,
             py,
             self,
-            crate::dispatch::Operation::Simplify,
-            None,
+            crate::dispatch::Operation::Metric(MetricOp::Simplify),
+            unit,
             crate::dispatch::PackedUnary::Simplify {
                 tolerance: tolerance.clone(),
                 method,

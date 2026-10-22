@@ -194,8 +194,11 @@ impl PyGeometryArray {
         tolerance: &F64Param,
         method: SimplifyMethod,
         preserve_topology: bool,
+        physical_frame: Option<crate::geographic::GeographicFrame>,
     ) -> Option<PyResult<Self>> {
-        if let Some(identity) = self.packed_points_identity() {
+        if physical_frame.is_none()
+            && let Some(identity) = self.packed_points_identity()
+        {
             return Some(Ok(identity));
         }
         // Packed lines run the keep-mask kernel straight over the shared
@@ -237,6 +240,7 @@ impl PyGeometryArray {
                         tolerance,
                         method,
                         longitude_axis,
+                        physical_frame,
                     ));
                 }
                 return None;
@@ -247,6 +251,7 @@ impl PyGeometryArray {
                 tolerance,
                 method,
                 longitude_axis,
+                physical_frame,
             ));
         }
         None

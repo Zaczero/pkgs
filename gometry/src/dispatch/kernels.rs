@@ -182,7 +182,58 @@ fn convex_hull_shape(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -> Result<
     })
 }
 
-/// Simplify kernel shared by the spine-routed free function.
+pub(crate) fn simplify_chart_tolerance(metric: &crate::crs::ResolvedMetric, tolerance: f64) -> f64 {
+    match metric {
+        crate::crs::ResolvedMetric::Planar { to_metre } => tolerance / to_metre.get(),
+        crate::crs::ResolvedMetric::Geodesic(metric) => {
+            // The maximum principal radius is a/(1-f) for oblate ellipsoids,
+            // and a*(1-f)^2 for prolate ellipsoids. Combined with the larger
+            // angular-axis factor this bounds chart-curve lengths globally.
+            let angular = metric
+                .frame
+                .longitude()
+                .radians_per_unit()
+                .max(metric.frame.latitude_radians_per_unit());
+            geographic_simplify_chart_tolerance(
+                tolerance,
+                metric.geodesic.a,
+                metric.geodesic.f,
+                angular,
+            )
+        },
+    }
+}
+
+fn geographic_simplify_chart_tolerance(
+    tolerance: f64,
+    semi_major: f64,
+    flattening: f64,
+    angular: f64,
+) -> f64 {
+    use crate::geometry::interval::Interval;
+    let ratio = Interval::exact(1.0).sub(Interval::exact(flattening));
+    let radius_ratio = Interval::exact(1.0)
+        .div(ratio)
+        .upper()
+        .max(ratio.mul(ratio).upper());
+    Interval::exact(tolerance)
+        .div(Interval::exact(semi_major))
+        .div(Interval::exact(radius_ratio))
+        .div(Interval::exact(angular.next_up()))
+        .lower()
+        .max(0.0)
+        .min(f64::MAX)
+}
+
+#[test]
+fn prolate_simplify_scale_bounds_equatorial_meridional_radius() {
+    let tolerance = geographic_simplify_chart_tolerance(1.0, 1.0, -0.01, 1.0);
+    let expected = 1.0_f64 / 1.0201;
+    assert!(tolerance <= expected.next_up());
+    assert!((tolerance - expected).abs() < 1e-14);
+}
+
+/// Simplify kernel shared by the scalar and per-row array spine.
 pub(crate) fn unary_simplify(
     data: &PreparedPlan,
     ctx: &MetricRowContext<'_>,
@@ -190,7 +241,11 @@ pub(crate) fn unary_simplify(
     method: SimplifyMethod,
     preserve_topology: bool,
 ) -> Result<Shape> {
-    let tolerance = tolerance.get(ctx.lane.row());
+    let metric = ctx.metric.require_resolved(MetricOp::Simplify)?;
+    if let ResolvedMetric::Geodesic(metric) = metric {
+        crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
+    }
+    let tolerance = simplify_chart_tolerance(metric, tolerance.get(ctx.lane.row()));
     match (ctx.domain, method) {
         (crate::geometry::TopologyDomain::Geographic(frame), SimplifyMethod::Vw) => data
             .shape()

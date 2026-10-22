@@ -364,13 +364,34 @@ pub(crate) fn try_unary_packed_array(
             }
         },
         (
-            Operation::Simplify,
+            Operation::Metric(MetricOp::Simplify),
             PackedUnary::Simplify {
                 tolerance,
                 method,
                 preserve_topology,
             },
-        ) => array.simplify_unary_packed(tolerance, *method, *preserve_topology),
+        ) => {
+            let mut scratch = super::MetricScratch::default();
+            let metric = match resolver
+                .resolve_ctx(&array.frame, &mut scratch)
+                .and_then(|context| context.require_resolved(MetricOp::Simplify))
+            {
+                Ok(metric) => metric,
+                Err(error) => return Some(Err(error.into())),
+            };
+            let converted = tolerance.as_scalar().map(|value| {
+                crate::F64Param::Scalar(super::kernels::simplify_chart_tolerance(metric, value))
+            });
+            array.simplify_unary_packed(
+                converted.as_ref().unwrap_or(tolerance),
+                *method,
+                *preserve_topology,
+                match metric {
+                    crate::crs::ResolvedMetric::Geodesic(metric) => Some(metric.frame),
+                    crate::crs::ResolvedMetric::Planar { .. } => None,
+                },
+            )
+        },
         (Operation::AffineTransform | Operation::Translate, PackedUnary::Affine { matrix }) => {
             array.affine_transform_unary_packed(py, *matrix)
         },

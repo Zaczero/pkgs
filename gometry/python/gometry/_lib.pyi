@@ -2502,8 +2502,9 @@ class Geometry:
         *,
         method: SimplifyMethod = 'vw',
         preserve_topology: bool = True,
+        unit: DistanceUnit | None = None,
     ) -> Self:
-        """Simplify a geometry, dropping vertices below a tolerance (planar). Two
+        """Simplify a geometry, dropping vertices below a tolerance. Two
         algorithms, selected by ``method``, both reading ``tolerance`` on the
         same distance scale:
 
@@ -2515,11 +2516,19 @@ class Geometry:
           chord against ``tolerance``. Equal maximum distances select the earliest
           source vertex.
 
+        On geographic input, metre tolerances are conservatively converted to chart
+        units using the ellipsoid's global maximum principal radius and the angular
+        axes. This has no local-projection extent limit, but can retain extra detail,
+        especially near the poles. Selection still uses source-chart distances and
+        effective triangle areas, not geodesic replacement edges. VW is an effective-
+        area criterion, not a maximum-displacement guarantee. Original selected
+        vertices, including their Z/M ordinates, survive unchanged.
+
         Parameters
         ----------
         tolerance : float
-            Distance scale of removable detail in coordinate space: native angular
-            units for geographic CRSs, native linear units for projected CRSs, and
+            Distance scale of removable detail: metres for geographic CRSs,
+            native linear units for projected CRSs, and
             raw coordinate units when CRS-free.
         method : {'vw', 'dp'}, default 'vw'
             ``'vw'`` is area-based (Visvalingam-Whyatt); ``'dp'`` is distance-
@@ -2533,6 +2542,11 @@ class Geometry:
             fast path); a guarded pass only runs when a component fails those checks.
             ``False`` skips the guarded check; collapsed areal rings are still removed.
 
+        unit : {'meters', 'planar'} or None, default None
+            Override the CRS-natural tolerance scale. ``'planar'`` uses native chart
+            units, including angular units on geographic input. ``'meters'`` requires
+            a CRS and converts projected linear units to metres.
+
         Returns
         -------
         Geometry
@@ -2543,6 +2557,9 @@ class Geometry:
         ------
         GeometryError
             If ``tolerance`` is negative or non-finite.
+        CRSError
+            If a physical metric cannot be resolved, or geographic coordinates are
+            outside their native latitude domain.
 
         See Also
         --------
@@ -4195,6 +4212,7 @@ class Geometry:
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
+            Uses ``quantize`` rounding, including negative precision and ties to even.
 
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which WKT cannot encode.
@@ -4219,7 +4237,6 @@ class Geometry:
 
         Examples
         --------
-            Uses ``quantize`` rounding, including negative precision and ties to even.
         >>> import gometry as gm
         >>> gm.Point(1.5, 2.5).to_wkt()
         'POINT (1.5 2.5)'
@@ -4247,6 +4264,7 @@ class Geometry:
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
+            Uses ``quantize`` rounding, including negative precision and ties to even.
 
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.
@@ -4271,7 +4289,6 @@ class Geometry:
 
         See Also
         --------
-            Uses ``quantize`` rounding, including negative precision and ties to even.
         from_wkb : Parse WKB/EWKB back into a geometry.
 
         Examples
@@ -9113,8 +9130,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         *,
         method: SimplifyMethod = 'vw',
         preserve_topology: bool = True,
+        unit: DistanceUnit | None = None,
     ) -> Self:
-        """Simplify a geometry, dropping vertices below a tolerance (planar). Two
+        """Simplify a geometry, dropping vertices below a tolerance. Two
         algorithms, selected by ``method``, both reading ``tolerance`` on the
         same distance scale:
 
@@ -9126,11 +9144,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
           chord against ``tolerance``. Equal maximum distances select the earliest
           source vertex.
 
+        On geographic input, metre tolerances are conservatively converted to chart
+        units using the ellipsoid's global maximum principal radius and the angular
+        axes. This has no local-projection extent limit, but can retain extra detail,
+        especially near the poles. Selection still uses source-chart distances and
+        effective triangle areas, not geodesic replacement edges. VW is an effective-
+        area criterion, not a maximum-displacement guarantee. Original selected
+        vertices, including their Z/M ordinates, survive unchanged.
+
         Parameters
         ----------
         tolerance : float or sequence of float
-            Distance scale of removable detail in coordinate space — native angular
-            units for geographic CRSs, native linear units for projected CRSs, and raw
+            Distance scale of removable detail — metres for geographic CRSs,
+            native linear units for projected CRSs, and raw
             coordinate units when CRS-free. A scalar applies to every geometry, or
             pass one value per geometry.
         method : {'vw', 'dp'}, default 'vw'
@@ -9145,6 +9171,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             fast path); a guarded pass only runs when a component fails those checks.
             ``False`` skips the guarded check; collapsed areal rings are still removed.
 
+        unit : {'meters', 'planar'} or None, default None
+            Override the CRS-natural tolerance scale. ``'planar'`` uses native chart
+            units, including angular units on geographic input. ``'meters'`` requires
+            a CRS and converts projected linear units to metres.
+
         Returns
         -------
         GeometryArray
@@ -9155,6 +9186,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If ``tolerance`` is negative or non-finite.
+        CRSError
+            If a physical metric cannot be resolved, or geographic coordinates are
+            outside their native latitude domain.
 
         See Also
         --------
@@ -11322,6 +11356,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
+            Uses ``quantize`` rounding, including negative precision and ties to even.
 
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which WKT cannot encode.
@@ -11368,7 +11403,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         include_srid: bool = False,
         precision: _IntScalar | None = None,
         drop_epoch: bool = False,
-            Uses ``quantize`` rounding, including negative precision and ties to even.
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
 
@@ -11383,6 +11417,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         precision : int, optional
             Decimal places to round coordinates to (omit for full precision).
+            Uses ``quantize`` rounding, including negative precision and ties to even.
 
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.
@@ -11429,7 +11464,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
             per geometry.
 
 
-            Uses ``quantize`` rounding, including negative precision and ties to even.
         Returns
         -------
         GeometryArray

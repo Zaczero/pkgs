@@ -90,6 +90,7 @@ pub(crate) enum MetricOp {
     SamplePoints,
     Segmentize,
     ShortestLine,
+    Simplify,
     SpatialIndexDistanceQuery,
 }
 
@@ -131,6 +132,7 @@ impl MetricOp {
             Self::SamplePoints => "sample_points",
             Self::Segmentize => "segmentize",
             Self::ShortestLine => "shortest_line",
+            Self::Simplify => "simplify",
             Self::SpatialIndexDistanceQuery => "spatial index distance query",
         }
     }
@@ -186,7 +188,6 @@ define_operation! {
     Scale => { name: "scale", resolver: MetricResolver::None },
     Skew => { name: "skew", resolver: MetricResolver::None },
     Snap => { name: "snap", resolver: MetricResolver::GeographicCarry },
-    Simplify => { name: "simplify", resolver: MetricResolver::None },
     Smooth => { name: "smooth", resolver: MetricResolver::GeographicCarry },
     SnapToGrid => { name: "snap_to_grid", resolver: MetricResolver::None },
     SplitAntimeridian => { name: "split_antimeridian", resolver: MetricResolver::GeographicCarry },

@@ -343,6 +343,15 @@ and simple lineal components remain simple. A
 [`GeometryCollection`][gometry.GeometryCollection] is checked child by child;
 relationships between separate children can change.
 
+Tolerance defaults to metres for geographic data, native linear units for a
+projected CRS, and raw coordinate units without a CRS. Use `unit='planar'` for
+native chart units, or `unit='meters'` to convert a projected CRS's linear units.
+Geographic simplification conservatively converts the tolerance using the
+ellipsoid's global maximum principal radius; it retains source-chart edges and
+can keep extra detail near the poles. It does not impose a local-projection
+extent limit. Selected vertices retain their original X/Y/Z/M values. VW's
+effective-area threshold is not a maximum-displacement guarantee.
+
 [`offset_curve`][gometry.Geometry.offset_curve] produces a line parallel to a
 [`LineString`][gometry.LineString] at a signed distance (positive = left of the direction of
 travel), with the same corner vocabulary as [`buffer`][gometry.Geometry.buffer] — round fillet arcs

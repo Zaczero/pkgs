@@ -240,7 +240,6 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::Scale
         | Operation::Skew
         | Operation::Snap
-        | Operation::Simplify
         | Operation::Smooth
         | Operation::SnapToGrid
         | Operation::SplitAntimeridian
@@ -282,6 +281,7 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
             | MetricOp::SamplePoints
             | MetricOp::Segmentize
             | MetricOp::ShortestLine
+            | MetricOp::Simplify
             | MetricOp::SpatialIndexDistanceQuery,
         )
         | Operation::Predicate(_) => UnaryRowMode::ShapeOnly,

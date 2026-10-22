@@ -1026,6 +1026,7 @@ class _GeoInterfaceObject:
 
 
 assert_type(LINE.simplify(0.1), gm.LineString)
+assert_type(LINE.simplify(1.0, unit='planar'), gm.LineString)
 assert_type(POINT.reverse(), gm.Point)
 assert_type(gm.snap(LINE, POINT, 0.5), gm.LineString)
 assert_type(

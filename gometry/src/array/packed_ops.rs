@@ -242,7 +242,20 @@ impl PyGeometryArray {
         tolerance: f64,
         method: crate::geometry::SimplifyMethod,
         longitude_axis: Option<PeriodicAxis>,
+        physical_frame: Option<crate::geographic::GeographicFrame>,
     ) -> PyResult<Self> {
+        if let Some(frame) = physical_frame {
+            for row in 0..line_logical_len(offsets.as_slice(), RowSelectionRef::Identity) {
+                let window = PackedRow::line(row, coords, offsets, RowSelectionRef::Identity)
+                    .vertex_window()
+                    .expect("packed line row has a coordinate window");
+                crate::crs::ensure_geographic_columns_in_frame(
+                    frame,
+                    column_window(coords.xs(), &window),
+                    column_window(coords.ys(), &window),
+                )?;
+            }
+        }
         match (method, longitude_axis) {
             (crate::geometry::SimplifyMethod::Vw, Some(axis)) => {
                 self.simplify_vw_packed_lines_geographic(coords, offsets, tolerance, axis)

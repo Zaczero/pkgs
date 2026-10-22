@@ -188,7 +188,7 @@ Examples
 
 method_doc! {
     doc_simplify;
-    pre: r"Simplify a geometry, dropping vertices below a tolerance (planar). Two
+    pre: r"Simplify a geometry, dropping vertices below a tolerance. Two
 algorithms, selected by ``method``, both reading ``tolerance`` on the
 same distance scale:
 
@@ -200,12 +200,20 @@ same distance scale:
   chord against ``tolerance``. Equal maximum distances select the earliest
   source vertex.
 
+On geographic input, metre tolerances are conservatively converted to chart
+units using the ellipsoid's global maximum principal radius and the angular
+axes. This has no local-projection extent limit, but can retain extra detail,
+especially near the poles. Selection still uses source-chart distances and
+effective triangle areas, not geodesic replacement edges. VW is an effective-
+area criterion, not a maximum-displacement guarantee. Original selected
+vertices, including their Z/M ordinates, survive unchanged.
+
 Parameters
 ----------";
     scalar: (r"
 tolerance : float
-    Distance scale of removable detail in coordinate space: native angular
-    units for geographic CRSs, native linear units for projected CRSs, and
+    Distance scale of removable detail: metres for geographic CRSs,
+    native linear units for projected CRSs, and
     raw coordinate units when CRS-free.
 ", r"
 
@@ -217,8 +225,8 @@ Geometry
 ");
     array: (r"
 tolerance : float or sequence of float
-    Distance scale of removable detail in coordinate space — native angular
-    units for geographic CRSs, native linear units for projected CRSs, and raw
+    Distance scale of removable detail — metres for geographic CRSs,
+    native linear units for projected CRSs, and raw
     coordinate units when CRS-free. A scalar applies to every geometry, or
     pass one value per geometry.
 ", r"
@@ -239,12 +247,20 @@ preserve_topology : bool, default True
     ``GeometryCollection`` is checked child by child; relationships between
     separate children are not preserved. The raw algorithm runs first (the
     fast path); a guarded pass only runs when a component fails those checks.
-    ``False`` skips the guarded check; collapsed areal rings are still removed.";
+    ``False`` skips the guarded check; collapsed areal rings are still removed.
+
+unit : {'meters', 'planar'} or None, default None
+    Override the CRS-natural tolerance scale. ``'planar'`` uses native chart
+    units, including angular units on geographic input. ``'meters'`` requires
+    a CRS and converts projected linear units to metres.";
     tail: r"
 Raises
 ------
 GeometryError
     If ``tolerance`` is negative or non-finite.
+CRSError
+    If a physical metric cannot be resolved, or geographic coordinates are
+    outside their native latitude domain.
 
 See Also
 --------
