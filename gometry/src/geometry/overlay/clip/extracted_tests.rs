@@ -116,32 +116,12 @@ fn assert_clip_oracle_failure_or_equal(name: &str, subjects: &[Polygon], bounds:
     );
 }
 
-fn assert_public_clip_matches_intersection(name: &str, source_wkt: &str, rect: Bounds) -> Shape {
+fn assert_rectangle_intersection(name: &str, source_wkt: &str, rect: Bounds) -> Shape {
     let subject = crate::io::parse_wkt(source_wkt).expect("test geometry parses");
-    let rectangle = Shape::Polygon(rect_polygon(rect).expect("clip rectangle polygon"));
-    let actual = subject.clip_by_rect(rect, false);
-    let expected = subject.intersection(&rectangle, Strictness::Lenient);
-    match (actual, expected) {
-        (Ok(actual), Ok(expected)) => {
-            assert_eq!(
-                shape_wkb(&actual),
-                shape_wkb(&expected),
-                "{name}: clip {actual:?} differs from intersection {expected:?}"
-            );
-            actual
-        },
-        (Err(actual), Err(expected)) => {
-            assert_eq!(
-                actual.to_string(),
-                expected.to_string(),
-                "{name}: clip and intersection failed differently"
-            );
-            panic!("{name}: enumerated input must be accepted")
-        },
-        (actual, expected) => {
-            panic!("{name}: clip returned {actual:?}, intersection returned {expected:?}")
-        },
-    }
+    let rectangle = Shape::Polygon(rect_polygon(rect).expect("finite ordered test rectangle"));
+    subject
+        .intersection(&rectangle, Strictness::Lenient)
+        .unwrap_or_else(|error| panic!("{name}: rectangle intersection failed: {error}"))
 }
 
 #[rstest::rstest]
@@ -193,7 +173,7 @@ fn rectangle_linework_preserves_exact_contacts_and_ordinates(
     #[case] rect: Bounds,
     #[case] expected: &'static str,
 ) {
-    let actual = assert_public_clip_matches_intersection(name, source, rect);
+    let actual = assert_rectangle_intersection(name, source, rect);
     let expected = crate::io::parse_wkt(expected).unwrap().normalize().unwrap();
     assert_eq!(
         shape_wkb(&actual),
@@ -265,18 +245,14 @@ fn rectangle_line_emission_matches_ring_vertex_dissolution(
     )
     .unwrap();
     assert_eq!(shape_wkb(&full), shape_wkb(&expected), "{name}");
-    for actual in [
-        subject.clip_by_rect(rect, false).unwrap(),
-        subject
-            .intersection(&rectangle, Strictness::Lenient)
-            .unwrap(),
-    ] {
-        assert_eq!(shape_wkb(&actual), shape_wkb(&expected), "{name}");
-    }
+    let actual = subject
+        .intersection(&rectangle, Strictness::Lenient)
+        .unwrap();
+    assert_eq!(shape_wkb(&actual), shape_wkb(&expected), "{name}");
 }
 
 #[test]
-fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
+fn rectangle_intersection_matches_closed_box_intersection_on_contacts_and_degeneracies() {
     let rect = bounds(1.0, 1.0, 4.0, 4.0);
     let cases = [
         ("line-point-contact", "LINESTRING (5 3, 4 1)", rect),
@@ -391,19 +367,16 @@ fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
         ),
     ];
     for (name, source_wkt, rect) in cases {
-        assert_public_clip_matches_intersection(name, source_wkt, rect);
+        assert_rectangle_intersection(name, source_wkt, rect);
     }
 
-    let point_contact = assert_public_clip_matches_intersection(
-        "known-line-point-contact",
-        "LINESTRING (5 3, 4 1)",
-        rect,
-    );
+    let point_contact =
+        assert_rectangle_intersection("known-line-point-contact", "LINESTRING (5 3, 4 1)", rect);
     assert_eq!(
         shape_wkb(&point_contact),
         shape_wkb(&crate::io::parse_wkt("POINT (4 1)").unwrap())
     );
-    let edge_contact = assert_public_clip_matches_intersection(
+    let edge_contact = assert_rectangle_intersection(
         "known-polygon-edge-contact",
         "POLYGON ((4 2, 6 2, 6 3, 4 3, 4 2))",
         rect,
@@ -412,7 +385,7 @@ fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
         shape_wkb(&edge_contact),
         shape_wkb(&crate::io::parse_wkt("LINESTRING (4 2, 4 3)").unwrap())
     );
-    let corner_contact = assert_public_clip_matches_intersection(
+    let corner_contact = assert_rectangle_intersection(
         "known-polygon-corner-contact",
         "POLYGON ((4 4, 6 4, 6 6, 4 6, 4 4))",
         rect,
@@ -421,7 +394,7 @@ fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
         shape_wkb(&corner_contact),
         shape_wkb(&crate::io::parse_wkt("POINT (4 4)").unwrap())
     );
-    let mixed_point = assert_public_clip_matches_intersection(
+    let mixed_point = assert_rectangle_intersection(
         "known-mixed-point-and-area",
         "MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 4, 6 4, 6 6, 4 6, 4 4)))",
         rect,
@@ -435,16 +408,13 @@ fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
             .unwrap()
         )
     );
-    let nearest_crossing = assert_public_clip_matches_intersection(
-        "nearest-rounded-crossing",
-        "LINESTRING (0 5, 5 2)",
-        rect,
-    );
+    let nearest_crossing =
+        assert_rectangle_intersection("nearest-rounded-crossing", "LINESTRING (0 5, 5 2)", rect);
     assert_eq!(
         shape_wkb(&nearest_crossing),
         shape_wkb(&crate::io::parse_wkt("LINESTRING (1.6666666666666667 4, 4 2.6)").unwrap())
     );
-    let bow_tie = assert_public_clip_matches_intersection(
+    let bow_tie = assert_rectangle_intersection(
         "known-bow-tie-lobes",
         "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))",
         bounds(-1.0, -1.0, 3.0, 1.0),
@@ -475,7 +445,7 @@ fn contained_valid_polygonal_intersection_preserves_the_operand_verbatim(
 
     let subject = crate::io::parse_wkt(source_wkt).unwrap();
     let expected = shape_wkb(&subject);
-    let actual = assert_public_clip_matches_intersection(name, source_wkt, bounds);
+    let actual = assert_rectangle_intersection(name, source_wkt, bounds);
     assert_eq!(
         shape_wkb(&actual),
         expected,
@@ -497,7 +467,7 @@ fn contained_invalid_polygon_intersection_preserves_the_operand_verbatim() {
     let source_wkt = "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))";
     let subject = crate::io::parse_wkt(source_wkt).unwrap();
     let expected = shape_wkb(&subject);
-    let actual = assert_public_clip_matches_intersection(
+    let actual = assert_rectangle_intersection(
         "contained-bow-tie",
         source_wkt,
         bounds(-1.0, -1.0, 3.0, 3.0),
@@ -516,12 +486,10 @@ fn contained_zm_polygon_intersection_preserves_the_operand_verbatim() {
     let bounds = bounds(0.0, 0.0, 4.0, 4.0);
     let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
 
-    let clipped = subject.clip_by_rect(bounds, false).unwrap();
     let intersection = subject
         .intersection(&rectangle, Strictness::Lenient)
         .unwrap();
 
-    assert_eq!(shape_wkb(&clipped), expected);
     assert_eq!(shape_wkb(&intersection), expected);
 }
 
@@ -532,12 +500,10 @@ fn contained_boundary_touching_polygon_intersection_preserves_the_operand() {
     let bounds = bounds(-1.0, -1.0, 2.0, 3.0);
     let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
 
-    let clipped = subject.clip_by_rect(bounds, false).unwrap();
     let intersection = subject
         .intersection(&rectangle, Strictness::Lenient)
         .unwrap();
 
-    assert_eq!(shape_wkb(&clipped), expected);
     assert_eq!(shape_wkb(&intersection), expected);
 }
 
@@ -550,7 +516,7 @@ fn contained_point_touching_multipolygon_intersection_returns_input_verbatim() {
     .unwrap();
     assert!(subject.validate().unwrap().is_none());
     let rectangle = bounds(-1.0, -1.0, 5.0, 3.0);
-    let clipped = assert_public_clip_matches_intersection(
+    let clipped = assert_rectangle_intersection(
         "contained-point-touching-members",
         "MULTIPOLYGON (((0 0, 2 0, 2 1, 2 2, 0 2, 0 0)), \
              ((2 1, 3 0, 4 1, 3 2, 2 1)))",
@@ -609,7 +575,7 @@ fn disjoint_rectangle_intersection_returns_the_typed_empty() {
 }
 
 #[test]
-fn clip_by_rect_matches_full_intersection_for_country_source_arcs() {
+fn rectangle_intersection_matches_full_partition_for_country_source_arcs() {
     use crate::geometry::test_support::argentina_uruguay_source_arc_polygons;
 
     for (name, subject) in ["Argentina", "Uruguay"]
@@ -618,7 +584,6 @@ fn clip_by_rect_matches_full_intersection_for_country_source_arcs() {
     {
         let window = bounds(-58.3, -33.1, -58.0, -32.9);
         let rectangle = Shape::Polygon(rect_polygon(window).unwrap());
-        let clipped = subject.clip_by_rect(window, false).unwrap();
         let intersection = subject
             .intersection(&rectangle, Strictness::Lenient)
             .unwrap();
@@ -628,9 +593,8 @@ fn clip_by_rect_matches_full_intersection_for_country_source_arcs() {
             Strictness::Lenient,
         )
         .unwrap();
-        assert!(!clipped.is_empty(), "{name}");
-        assert_eq!(shape_wkb(&clipped), shape_wkb(&intersection), "{name}");
-        assert_eq!(shape_wkb(&clipped), shape_wkb(&full), "{name}");
+        assert!(!intersection.is_empty(), "{name}");
+        assert_eq!(shape_wkb(&intersection), shape_wkb(&full), "{name}");
     }
 }
 
@@ -995,9 +959,10 @@ fn rectangle_clip_intersection_preserves_zm_carry() {
         )
         .unwrap(),
     );
+    let line_rectangle = Shape::Polygon(rect_polygon(bounds(0.0, -1.0, 1.0, 1.0)).unwrap());
     assert!(
         source_line
-            .clip_by_rect(bounds(0.0, -1.0, 1.0, 1.0), true)
+            .intersection(&line_rectangle, Strictness::Strict)
             .unwrap()
             .equals_exact(&expected_line, 0.0, true, true)
     );
@@ -1036,12 +1001,17 @@ fn rectangle_clip_intersection_preserves_zm_carry() {
     let expected = carry_ordinates(
         expected_xy,
         &[&source],
-        "clip_by_rect",
+        "intersection",
         false,
         &crate::geometry::SourceArcContext::cartesian(),
     )
     .unwrap();
-    let actual = source.clip_by_rect(rect, false).unwrap();
+    let rectangle = Shape::Polygon(rect_polygon(rect).unwrap());
+    let actual = source
+        .intersection(&rectangle, Strictness::Lenient)
+        .unwrap();
     assert!(actual.equals_exact(&expected, 0.0, true, true));
-    let _error = source.clip_by_rect(rect, true).unwrap_err();
+    let _error = source
+        .intersection(&rectangle, Strictness::Strict)
+        .unwrap_err();
 }

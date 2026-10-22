@@ -9,7 +9,7 @@ use crate::geometry::ordinates::AxisValue;
 use crate::geometry::output::build_certified_shape;
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, OverlayPolygonPartWithSources, Strictness,
-    intersect_rectangle, overlay_declared_axes, rect_polygon, rectangle_bounds,
+    intersect_rectangle, overlay_declared_axes, rectangle_bounds,
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, GeographicTopologyRoute,
@@ -95,24 +95,6 @@ pub(crate) fn overlay_all_with_metric<S: Borrow<Shape>, M: crate::geometry::Char
     )
 }
 
-/// Overlay with bounds already owned by the caller's immutable geometry plan.
-fn overlay_all_with_bounds<S: Borrow<Shape>>(
-    geometries: &[S],
-    domain: TopologyDomain,
-    op: OverlayOp,
-    strictness: Strictness,
-    bounds: &[Option<Bounds>],
-) -> Result<Shape> {
-    overlay_all_inner::<_, crate::crs::GeodesicMetric>(
-        geometries,
-        domain,
-        op,
-        strictness,
-        Some(bounds),
-        None,
-    )
-}
-
 fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
     geometries: &[S],
     domain: TopologyDomain,
@@ -191,42 +173,6 @@ fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
         }
     }
     overlay_all_with_bounds_certificates_and_metric(geometries, &context, op, strictness, true)
-}
-
-pub(crate) fn overlay_intersection_with_rectangle(
-    subject: &Shape,
-    rectangle: Bounds,
-    subject_bounds: Option<Bounds>,
-    strictness: Strictness,
-) -> Result<Shape> {
-    if subject_bounds.is_none() {
-        return Ok(empty_rectangle_result(subject));
-    }
-    if let Some(shape) = rectangle_intersection_result(subject, subject_bounds, rectangle) {
-        return Ok(shape);
-    }
-    let rectangle_polygon = rect_polygon(rectangle)?;
-    let rectangle_first =
-        crate::geometry::compare_shapes(&Shape::Polygon(rectangle_polygon.clone()), subject)
-            .is_lt();
-    if let Some(shape) = intersect_rectangle(
-        subject,
-        &rectangle_polygon,
-        rectangle,
-        rectangle_first,
-        strictness,
-    )? {
-        return Ok(shape);
-    }
-    let rectangle_shape = Shape::Polygon(rectangle_polygon);
-    let bounds = [subject_bounds, Some(rectangle)];
-    overlay_all_with_bounds(
-        &[subject, &rectangle_shape],
-        TopologyDomain::Cartesian,
-        OverlayOp::Intersection,
-        strictness,
-        &bounds,
-    )
 }
 
 fn overlay_operand_bounds(

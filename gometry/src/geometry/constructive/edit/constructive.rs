@@ -1,7 +1,6 @@
 use super::{
-    Bounds, CoordSeq, ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative,
-    Polygon, Result, SegmentPlacement, Shape, Strictness, overlay_intersection_with_rectangle,
-    remove_repeated_points, remove_repeated_ring_points, split,
+    CoordSeq, ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative, Polygon,
+    Result, SegmentPlacement, Shape, remove_repeated_points, remove_repeated_ring_points, split,
 };
 
 impl Shape {
@@ -39,13 +38,6 @@ impl Shape {
             &mut budget,
         )?;
         Ok(parts)
-    }
-
-    pub(crate) fn clip_by_rect(&self, rect: Bounds, drop: bool) -> Result<Self> {
-        if rect.crosses_antimeridian() {
-            return Err(crate::geometry::GeometryErrorKind::InvalidRectangle.into());
-        }
-        overlay_intersection_with_rectangle(self, rect, self.bounds(), Strictness::from(drop))
     }
 }
 

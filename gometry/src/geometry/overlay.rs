@@ -161,7 +161,6 @@ pub(in crate::geometry) use nary::{
 pub(crate) use nary::{
     overlay_all, overlay_all_geographic_chart, overlay_all_geographic_output_with_metric_and_frame,
     overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
-    overlay_intersection_with_rectangle,
 };
 pub(crate) use rect::{rect_polygon, rectangle_bounds};
 #[cfg(test)]

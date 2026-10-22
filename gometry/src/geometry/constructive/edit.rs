@@ -11,11 +11,10 @@ use crate::geometry::numerics::product::{
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
 use crate::geometry::numerics::product_sum::ExactSum;
-use crate::geometry::overlay::overlay_intersection_with_rectangle;
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
+    CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon, ReduceSimd, Shape,
-    ShapeOwnerKey, Strictness, ZOrdinate, axis_pow2_scale, column_all_finite, compare_point_slices,
+    ShapeOwnerKey, ZOrdinate, axis_pow2_scale, column_all_finite, compare_point_slices,
     compare_points, compare_polygons, compare_shapes, same_topological_coordinate,
     set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
