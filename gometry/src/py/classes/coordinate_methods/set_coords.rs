@@ -1,8 +1,8 @@
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::boundary::coordinate_input::coordinate_column_values;
-use crate::geometry::SharedSlice;
 use crate::geometry::storage::replacement::{CoordinateReplacement, ReplacementAxis};
+use crate::geometry::{CoordSeq, MColumn, SharedSlice, column_all_finite};
 use crate::py::classes::coordinate_methods::{
     Bound, CoordinateAxes, CoordinateAxis, PyAny, PyAnyMethods as _, PyCoordinates,
     PyDictMethods as _, PyErr, PyRef, PyResult, PyTupleMethods as _, Python, coordinate_axis_order,
@@ -332,9 +332,9 @@ pub(crate) fn map_coordinates_callback(
 
 pub(crate) fn map_coordinate_sequence_callback(
     py: Python<'_>,
-    coords: &crate::geometry::CoordSeq,
+    coords: &CoordSeq,
     func: &Bound<'_, PyAny>,
-) -> PyResult<crate::geometry::CoordSeq> {
+) -> PyResult<CoordSeq> {
     let mut cells = Vec::with_capacity(coords.len().saturating_mul(coords.axes().dimension()));
     for point in coords {
         cells.extend([point.x, point.y]);
@@ -348,22 +348,21 @@ pub(crate) fn map_coordinate_sequence_callback(
     let matrix = float64_matrix(py, cells, coords.len(), coords.axes().dimension())?;
     let result = func.call1((matrix.bind(py),))?;
     let replacement = replacement_from_matrix(py, &result, coords.axes(), None)?;
-    let axis = |axis: ReplacementAxis| match axis {
-        ReplacementAxis::Replace(values) => Some(values.as_slice().to_vec()),
-        ReplacementAxis::Carry | ReplacementAxis::Drop => None,
+    let axis = |axis: ReplacementAxis| -> PyResult<Option<SharedSlice<f64>>> {
+        match axis {
+            ReplacementAxis::Replace(values) => {
+                if !column_all_finite(values.as_slice()) {
+                    return Err(InvalidGeometryError::new_err("coordinates must be finite"));
+                }
+                Ok(Some(values))
+            },
+            ReplacementAxis::Carry | ReplacementAxis::Drop => Ok(None),
+        }
     };
-    Ok(crate::geometry::CoordSeq::try_from_vecs(
-        replacement
-            .xs
-            .expect("matrix has an X column")
-            .as_slice()
-            .to_vec(),
-        replacement
-            .ys
-            .expect("matrix has a Y column")
-            .as_slice()
-            .to_vec(),
-        axis(replacement.zs),
-        axis(replacement.ms),
+    Ok(CoordSeq::from_shared_columns(
+        replacement.xs.expect("matrix has an X column"),
+        replacement.ys.expect("matrix has a Y column"),
+        axis(replacement.zs)?,
+        axis(replacement.ms)?.map(MColumn::Shared),
     )?)
 }

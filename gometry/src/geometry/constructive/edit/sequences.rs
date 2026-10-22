@@ -1,11 +1,12 @@
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon,
-    Polygon, Ring, Shape,
+    Polygon, Ring, Shape, ShapeCountQuery,
 };
 
 impl Shape {
     pub(crate) fn segments(&self) -> crate::error::Result<Vec<Self>> {
-        let mut segments = Vec::new();
+        let count = ShapeCountQuery::default().segments(self)?;
+        let mut segments = Vec::with_capacity(count);
         self.try_for_each_segment_chain(|coords| {
             for start in 0..coords.len().saturating_sub(1) {
                 segments.push(Self::LineString(LineSeq::row_view(

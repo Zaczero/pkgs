@@ -9,6 +9,12 @@ import numpy as np
 import pytest
 
 
+def _nonfinite_extra_ordinate(coords: np.ndarray) -> np.ndarray:
+    result = coords.copy()
+    result[:, -1] = np.nan
+    return result
+
+
 @pytest.mark.parametrize(
     'wkt',
     [
@@ -119,6 +125,15 @@ def test_sequence_mapping_resizes_multipoint_as_one_coordinate_sequence() -> Non
 def test_sequence_mapping_rejects_domain_errors(wkt, callback, message) -> None:
     with pytest.raises(gm.InvalidGeometryError, match=message):
         gm.from_wkt(wkt).map_coordinate_sequences(callback)
+
+
+@pytest.mark.parametrize(
+    'wkt',
+    ['LINESTRING Z (0 0 1, 1 1 2)', 'LINESTRING M (0 0 10, 1 1 20)'],
+)
+def test_sequence_mapping_rejects_nonfinite_active_extra_ordinates(wkt: str) -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='finite'):
+        gm.from_wkt(wkt).map_coordinate_sequences(_nonfinite_extra_ordinate)
 
 
 def test_sequence_mapping_does_not_discard_holes_with_empty_shell() -> None:
