@@ -1,9 +1,9 @@
+use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyValueError};
 use pyo3::types::PyInt;
-use pyo3::{IntoPyObjectExt as _, PyErr};
 
-use crate::array::ArrayRow;
 use crate::boundary::reserve::py_iter_or_none;
+use crate::geometry::storage::LogicalRow;
 use crate::py::classes::coordinate_methods::{
     Bound, CoordinateAxes, CoordinateAxis, GeometryError, Py, PyAny, PyAnyMethods as _,
     PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef, PyResult, Python,
@@ -424,16 +424,16 @@ impl PyCoordinates {
                 coordinates_object(py, shape, self.layout)
             },
             coordinates::CoordinateSource::Array(rows) => {
-                let nested = rows
-                    .row_operation()
-                    .rows_with_missing(|| ())
-                    .map(|row| match row {
-                        ArrayRow::Missing { .. } => Ok(py.None()),
-                        ArrayRow::Present(row) => row
-                            .row()
-                            .try_with_shape(|shape| coordinates_object(py, shape, self.layout)),
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
+                let mut nested = Vec::with_capacity(rows.len());
+                for row in rows.logical_rows() {
+                    let value = match row {
+                        LogicalRow::Missing { .. } => py.None(),
+                        LogicalRow::Present { logical, row } => row
+                            .try_with_shape(|shape| coordinates_object(py, shape, self.layout))
+                            .map_err(|error| crate::py::support::note_array_row(error, logical))?,
+                    };
+                    nested.push(value);
+                }
                 Ok(PyList::new(py, nested)?.unbind().into())
             },
         }
