@@ -39,7 +39,7 @@ pub(crate) fn quantize_selected_columns(
     })
 }
 
-fn columns_axes(columns: PackedColumns<'_>) -> CoordinateAxes {
+const fn columns_axes(columns: PackedColumns<'_>) -> CoordinateAxes {
     match columns {
         PackedColumns::Points(points) => points.coords().axes(),
         PackedColumns::Lines(lines) => lines.coords().axes(),
