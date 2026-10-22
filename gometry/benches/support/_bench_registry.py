@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from benchroom.sampling import SamplingPolicy
+
 _ROOT = Path(__file__).resolve().parents[2]
 _TOOLS = _ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
@@ -416,7 +418,7 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         'Geometry',
         'Intersect short lines with a rectangle',
         '10,000 three-vertex lines; 40% crossing, 40% inside, 20% outside',
-        ('gm.intersection(GeometryArray, box)',),
+        ('intersection', 'box'),
         'gometry.intersection/10k_realistic_linework_categories',
         'shapely.intersection/10k_realistic_linework_categories',
         'Shapely',
@@ -976,6 +978,15 @@ def operation_for_row(
     return None
 
 
+def paired_block_identity(
+    suite: str, pair_number: int, block_number: int
+) -> tuple[str, str, str]:
+    """Return the stable pair ID, independent block ID, and alternating lead."""
+    lead = 'ab' if block_number % 2 == 1 else 'ba'
+    pair_id = f'{suite}-pair-{pair_number:02d}'
+    return pair_id, f'{pair_id}-block-{block_number:02d}-{lead}', lead
+
+
 def expand_filter_to_pairs(names: set[str]) -> set[str]:
     expanded = set(names)
     for op in ALL_PUBLIC_OPERATIONS:
@@ -990,7 +1001,7 @@ class Profile:
 
     sampling_args: tuple[str, ...]
     paired_sampling_args: tuple[str, ...]
-    paired_blocks: int
+    sampling_policy: SamplingPolicy | None
     row_timeout: int
     command_timeout: int
     total_timeout: int
@@ -1008,13 +1019,23 @@ class Profile:
     def competitors(self) -> tuple[str, ...]:
         return self.rows('competitors')
 
+    @property
+    def initial_paired_blocks(self) -> int:
+        """Required first look, or one diagnostic block for smoke runs."""
+        return self.sampling_policy.looks[0] if self.sampling_policy else 1
+
+    @property
+    def maximum_paired_blocks(self) -> int:
+        """Largest permitted collection, or the diagnostic smoke count."""
+        return self.sampling_policy.looks[-1] if self.sampling_policy else 1
+
 
 RELEASE = Profile(
     sampling_args=('--blocks', '1', '--warmups', '0', '--repetitions', '1'),
-    # Six independent process blocks: three AB and three BA.  Each block
-    # executes both arms and writes one self-contained artifact.
+    # Each paired block executes both arms in a fresh process and writes one
+    # self-contained artifact. SamplingPolicy owns the allowed look counts.
     paired_sampling_args=('--warmups', '2', '--repetitions', '5'),
-    paired_blocks=6,
+    sampling_policy=SamplingPolicy(),
     row_timeout=60,
     command_timeout=900,
     total_timeout=2400,
@@ -1026,7 +1047,7 @@ SMOKE = dataclasses.replace(
     RELEASE,
     sampling_args=('--blocks', '1', '--warmups', '0', '--repetitions', '1'),
     paired_sampling_args=('--warmups', '1', '--repetitions', '1'),
-    paired_blocks=1,
+    sampling_policy=None,
     row_timeout=60,
     command_timeout=600,
     total_timeout=900,
@@ -1035,5 +1056,6 @@ SMOKE = dataclasses.replace(
 
 PROFILES = {'smoke': SMOKE, 'release': RELEASE}
 SUITES = ('competitors',)
+RESOURCE_MODES = ('bearing', 'features', 'intersects', 'mixed')
 PAIR_WORKER = 'bench_paired.py'
 CHUNK_SIZE = 40

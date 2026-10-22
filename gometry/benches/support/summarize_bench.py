@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import sys
@@ -10,7 +11,9 @@ from dataclasses import dataclass
 from glob import glob
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from benchroom.sampling import SamplingPolicy, assess_ratios
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -21,7 +24,7 @@ _TOOLS = GOMETRY_ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
-from _bench_registry import public_api_symbols
+from _bench_registry import RESOURCE_MODES, paired_block_identity, public_api_symbols
 from benchmark_observation import measurement_summary, validate_observation
 from benchroom.stats import median_interval
 from benchmark_identity import common_identity, harness_commits_match
@@ -38,6 +41,7 @@ DOMAIN_ORDER = (
 PRACTICAL_EQUIVALENCE_MARGIN = 0.03
 DEFAULT_BOOTSTRAP_SEED = 20_260_824
 SMOKE_BANNER = 'Smoke/debug run — not publishable release evidence.'
+SAMPLING_PLAN_ARTIFACT = 'sampling-plan.json'
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +95,7 @@ class OpRow:
     gometry: BenchStats
     competitor: BenchStats
     ratio: float
-    ratio_ci95: tuple[float, float]
+    ratio_interval: tuple[float, float] | None
     blocks: tuple[PairedBlock, ...]
     status: str
 
@@ -275,6 +279,29 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
     return operations
 
 
+def _sampling_policy(sampling: dict[str, Any]) -> SamplingPolicy:
+    record = sampling.get('policy')
+    if not isinstance(record, dict):
+        raise SystemExit('adaptive run manifest lacks its prespecified policy')
+    try:
+        policy = SamplingPolicy(
+            looks=tuple(record['looks']),
+            error_probabilities=tuple(record['error_probabilities']),
+            precision_ratio=record['precision_ratio'],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise SystemExit(
+            f'run manifest has an invalid sampling policy: {error}'
+        ) from error
+    if (
+        record.get('confidence') != policy.confidence
+        or sampling.get('initial_look') != policy.looks[0]
+        or sampling.get('maximum_look') != policy.looks[-1]
+    ):
+        raise SystemExit('run manifest sampling policy summary disagrees')
+    return policy
+
+
 def expected_paired_matrix(
     payload: dict[str, Any],
 ) -> dict[tuple[str, str, str, str, str], dict[str, Any]]:
@@ -283,6 +310,53 @@ def expected_paired_matrix(
     sampling = payload.get('sampling')
     if not isinstance(sampling, dict):
         raise SystemExit('run manifest lacks paired sampling identity')
+    if sampling.get('mode') == 'adaptive':
+        actual_plan = sampling.get('actual_plan')
+        policy = _sampling_policy(sampling)
+        if not isinstance(actual_plan, dict) or set(actual_plan) != {
+            operation.gometry for operation in operations
+        }:
+            raise SystemExit('run manifest has incomplete adaptive operation plan')
+        expected: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        for index, operation in enumerate(operations, start=1):
+            record = actual_plan[operation.gometry]
+            if not isinstance(record, dict):
+                raise SystemExit(
+                    f'run manifest has malformed adaptive plan for {operation.gometry}'
+                )
+            block_ids = record.get('block_ids')
+            leads = record.get('lead_orders')
+            if (
+                not isinstance(block_ids, list)
+                or not isinstance(leads, list)
+                or len(block_ids) != len(leads)
+                or len(block_ids) not in policy.looks
+            ):
+                raise SystemExit(
+                    f'run manifest has an unallowed block count for {operation.gometry}'
+                )
+            for block_number, (block_id, lead) in enumerate(
+                zip(block_ids, leads, strict=True), start=1
+            ):
+                pair_id, expected_id, expected_lead = paired_block_identity(
+                    operation.suite, index, block_number
+                )
+                if block_id != expected_id or lead != expected_lead:
+                    raise SystemExit(
+                        f'run manifest sampling plan changed for {operation.gometry}'
+                    )
+                key = (
+                    operation.gometry,
+                    operation.competitor,
+                    pair_id,
+                    block_id,
+                    lead,
+                )
+                expected[key] = {
+                    'operation': operation,
+                    'block_number': block_number,
+                }
+        return expected
     blocks = sampling.get('measured_blocks')
     leads = sampling.get('lead_orders')
     if not isinstance(blocks, int) or blocks < 1 or not isinstance(leads, list):
@@ -291,9 +365,10 @@ def expected_paired_matrix(
         raise SystemExit('run manifest has malformed lead-order matrix')
     expected: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for number, operation in enumerate(operations, start=1):
-        pair_id = f'{operation.suite}-pair-{number:02d}'
-        for block_number, lead in enumerate(leads, start=1):
-            block_id = f'{pair_id}-block-{block_number:02d}-{lead}'
+        for block_number, _lead in enumerate(leads, start=1):
+            pair_id, block_id, lead = paired_block_identity(
+                operation.suite, number, block_number
+            )
             key = (operation.gometry, operation.competitor, pair_id, block_id, lead)
             expected[key] = {
                 'operation': operation,
@@ -306,6 +381,89 @@ def validate_exact_paired_matrix(
     payload: dict[str, Any], artifacts: dict[Path, dict[str, Any]]
 ) -> None:
     """Reject any artifact set other than the run's exact paired matrix."""
+    sampling = payload.get('sampling')
+    if isinstance(sampling, dict) and sampling.get('mode') == 'adaptive':
+        policy = _sampling_policy(sampling)
+        if (
+            payload.get('profile') == 'release'
+            and payload.get('full_manifest') is True
+            and payload.get('filter') is None
+        ):
+            planned = payload.get('planned_commands')
+            resource_plans = (
+                [
+                    command
+                    for command in planned
+                    if isinstance(command, dict) and command.get('kind') == 'resource'
+                ]
+                if isinstance(planned, list)
+                else []
+            )
+            if {plan.get('label') for plan in resource_plans} != {
+                f'resource-{mode}' for mode in RESOURCE_MODES
+            }:
+                raise SystemExit(
+                    'release sampling plan must retain all four required resource probes'
+                )
+        artifact_name = payload.get('sampling_plan_artifact')
+        expected_digest = sampling.get('plan_sha256')
+        if (
+            not isinstance(artifact_name, str)
+            or artifact_name != SAMPLING_PLAN_ARTIFACT
+            or not isinstance(expected_digest, str)
+        ):
+            raise SystemExit('run manifest lacks its pre-measurement sampling plan')
+        plans = [
+            document
+            for path, document in artifacts.items()
+            if path.name == Path(artifact_name).name
+            and document.get('artifact_type') == 'gometry-benchmark-sampling-plan'
+        ]
+        if len(plans) != 1:
+            raise SystemExit(
+                'run manifest sampling plan artifact is missing or duplicated'
+            )
+        plan = plans[0]
+        try:
+            digest = hashlib.sha256(
+                json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()
+            ).hexdigest()
+        except (TypeError, ValueError) as error:
+            raise SystemExit(
+                f'run manifest sampling plan is malformed: {error}'
+            ) from error
+        if digest != expected_digest:
+            raise SystemExit('run manifest sampling plan changed after collection')
+        expected_plan_operations: dict[str, dict[str, Any]] = {}
+        operations = _parse_public_operations(payload.get('public_operations'))
+        for index, operation in enumerate(operations, start=1):
+            pair_id, _, _ = paired_block_identity(operation.suite, index, 1)
+            blocks = []
+            for number in range(1, policy.looks[-1] + 1):
+                _, block_id, lead = paired_block_identity(
+                    operation.suite, index, number
+                )
+                blocks.append({'block_id': block_id, 'lead': lead})
+            expected_plan_operations[operation.gometry] = {
+                'competitor': operation.competitor,
+                'pair_id': pair_id,
+                'blocks': blocks,
+            }
+        expected_plan = {
+            'schema_version': 1,
+            'artifact_type': 'gometry-benchmark-sampling-plan',
+            'policy': {
+                'looks': list(policy.looks),
+                'error_probabilities': list(policy.error_probabilities),
+                'precision_ratio': policy.precision_ratio,
+                'confidence': policy.confidence,
+            },
+            'initial_look': policy.looks[0],
+            'maximum_look': policy.looks[-1],
+            'operations': expected_plan_operations,
+        }
+        if plan != expected_plan:
+            raise SystemExit('run manifest pre-measurement sampling plan changed')
     expected = expected_paired_matrix(payload)
     actual: dict[tuple[str, str, str, str, str], Path] = {}
     nonpaired: set[str] = set()
@@ -326,12 +484,13 @@ def validate_exact_paired_matrix(
         )
         if not all(isinstance(value, str) and value for value in key):
             raise SystemExit(f'{path} has malformed paired matrix identity')
-        if key in actual:
-            raise SystemExit(f'duplicate paired matrix identity: {key!r}')
-        expected_entry = expected.get(key)
+        typed_key = cast('tuple[str, str, str, str, str]', key)
+        if typed_key in actual:
+            raise SystemExit(f'duplicate paired matrix identity: {typed_key!r}')
+        expected_entry = expected.get(typed_key)
         if expected_entry is None:
             raise SystemExit(
-                f'{path} is extra or swapped in the paired matrix: {key!r}'
+                f'{path} is extra or swapped in the paired matrix: {typed_key!r}'
             )
         declared = expected_entry['operation']
         if (
@@ -339,7 +498,7 @@ def validate_exact_paired_matrix(
             != declared.canonical_symbols
         ):
             raise SystemExit(f'{path} canonical operation identity mismatch')
-        actual[key] = path
+        actual[typed_key] = path
     if set(actual) != set(expected):
         missing = sorted(set(expected) - set(actual))
         raise SystemExit(
@@ -347,6 +506,8 @@ def validate_exact_paired_matrix(
             + ', '.join(repr(value) for value in missing)
         )
     expected_nonpaired: set[str] = set()
+    if isinstance(sampling, dict) and sampling.get('mode') == 'adaptive':
+        expected_nonpaired.add(Path(str(payload['sampling_plan_artifact'])).name)
     oracle_artifact = payload.get('oracle_artifact')
     if isinstance(oracle_artifact, str) and oracle_artifact:
         expected_nonpaired.add(Path(oracle_artifact).name)
@@ -652,10 +813,12 @@ def normalize_scaling_values(
 
 
 def classify_ratio(
-    ratio_ci95: tuple[float, float],
+    ratio_interval: tuple[float, float] | None,
     equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
 ) -> str:
-    low, high = ratio_ci95
+    if ratio_interval is None:
+        return 'inconclusive'
+    low, high = ratio_interval
     if low > 1.0 + equivalence_margin:
         return 'faster'
     if high < 1.0 - equivalence_margin:
@@ -673,9 +836,30 @@ def _build_rows(
     seed: int = DEFAULT_BOOTSTRAP_SEED,
     expected_blocks: int | None = None,
     expected_leads: tuple[str, ...] | None = None,
+    sampling: dict[str, Any] | None = None,
 ) -> list[OpRow]:
     rows: list[OpRow] = []
     harness_equivalence: dict[tuple[str, str], bool] = {}
+    if isinstance(sampling, dict) and sampling.get('mode') not in {
+        'adaptive',
+        'diagnostic',
+        'plan-only',
+    }:
+        if expected_blocks is None and isinstance(sampling.get('measured_blocks'), int):
+            expected_blocks = sampling['measured_blocks']
+        if expected_leads is None and isinstance(sampling.get('lead_orders'), list):
+            expected_leads = tuple(sampling['lead_orders'])
+    adaptive_policy: SamplingPolicy | None = None
+    adaptive_plan: dict[str, Any] = {}
+    adaptive_decisions: dict[str, Any] = {}
+    if isinstance(sampling, dict) and sampling.get('mode') == 'adaptive':
+        adaptive_policy = _sampling_policy(sampling)
+        raw_plan = sampling.get('actual_plan')
+        raw_decisions = sampling.get('decisions')
+        if not isinstance(raw_plan, dict) or not isinstance(raw_decisions, dict):
+            raise SystemExit('run manifest lacks adaptive decisions and actual plan')
+        adaptive_plan = raw_plan
+        adaptive_decisions = raw_decisions
     missing: list[str] = []
     for meta in operations:
         gometry = stats.get(meta.gometry)
@@ -712,7 +896,17 @@ def _build_rows(
                 )
             if block_work[0].get('unit') != meta.scaling['useful_work_unit']:
                 raise SystemExit(f'{meta.gometry} has mismatched useful-work unit')
-        if expected_blocks is not None and len(blocks) != expected_blocks:
+        if sampling is not None and sampling.get('mode') == 'diagnostic':
+            measured_blocks = sampling.get('measured_blocks')
+            if (
+                not isinstance(measured_blocks, int)
+                or isinstance(measured_blocks, bool)
+                or len(blocks) != measured_blocks
+            ):
+                raise SystemExit(
+                    f'{meta.gometry} has an incomplete diagnostic block set'
+                )
+        elif expected_blocks is not None and len(blocks) != expected_blocks:
             raise SystemExit(
                 f'{meta.gometry} requires exactly {expected_blocks} paired blocks; got {len(blocks)}'
             )
@@ -752,16 +946,83 @@ def _build_rows(
                 f'{meta.gometry} has inconsistent producer identities across blocks'
             )
         ratios = paired_block_ratios(blocks)
-        ratio_ci95 = median_interval(ratios, seed=seed)
+        if adaptive_policy is not None:
+            plan = adaptive_plan.get(meta.gometry)
+            record = adaptive_decisions.get(meta.gometry)
+            block_ids = [block.block_id for block in blocks]
+            leads = [block.lead for block in blocks]
+            if (
+                not isinstance(plan, dict)
+                or not isinstance(record, dict)
+                or plan.get('block_ids') != block_ids
+                or plan.get('lead_orders') != leads
+                or record.get('block_ids') != block_ids
+                or record.get('lead_orders') != leads
+                or len(block_ids) not in adaptive_policy.looks
+            ):
+                raise SystemExit(
+                    f'{meta.gometry} actual blocks differ from its adaptive plan'
+                )
+            decision = assess_ratios(
+                ratios,
+                block_ids=block_ids,
+                policy=adaptive_policy,
+            )
+            inference = record.get('inference')
+            interval = decision.uncertainty.interval
+            expected_interval = list(interval) if interval is not None else None
+            if (
+                not isinstance(inference, dict)
+                or inference.get('estimate') != decision.estimate
+                or inference.get('interval') != expected_interval
+                or inference.get('achieved_coverage')
+                != decision.uncertainty.achieved_coverage
+                or inference.get('sample_size') != decision.uncertainty.sample_size
+                or inference.get('lower_order') != decision.uncertainty.lower_order
+                or inference.get('upper_order') != decision.uncertainty.upper_order
+                or inference.get('confidence') != decision.confidence
+                or inference.get('error_probability') != decision.error_probability
+                or inference.get('direction') != decision.direction
+                or inference.get('reason') != decision.reason
+                or inference.get('next_look') != decision.next_look
+            ):
+                raise SystemExit(
+                    f'{meta.gometry} recorded inference disagrees with paired ratios'
+                )
+            collection_status = record.get('collection_status')
+            if collection_status == 'budget-limited':
+                if (
+                    len(block_ids) != adaptive_policy.looks[0]
+                    or decision.next_look is None
+                ):
+                    raise SystemExit(
+                        f'{meta.gometry} has an invalid budget-limited sampling record'
+                    )
+            elif collection_status == 'complete':
+                if decision.next_look is not None:
+                    raise SystemExit(
+                        f'{meta.gometry} stopped before its recorded look was complete'
+                    )
+            else:
+                raise SystemExit(
+                    f'{meta.gometry} has an incomplete adaptive collection'
+                )
+            ratio_interval = interval
+        elif sampling is not None and sampling.get('mode') == 'diagnostic':
+            ratio_interval = None
+        else:
+            # Records published before adaptive sampling retain their original
+            # fixed-six bootstrap analysis.
+            ratio_interval = median_interval(ratios, seed=seed)
         rows.append(
             OpRow(
                 meta=meta,
                 gometry=gometry,
                 competitor=competitor,
                 ratio=statistics.median(ratios),
-                ratio_ci95=ratio_ci95,
+                ratio_interval=ratio_interval,
                 blocks=blocks,
-                status=classify_ratio(ratio_ci95, equivalence_margin),
+                status=classify_ratio(ratio_interval, equivalence_margin),
             )
         )
     if missing:
@@ -931,6 +1192,7 @@ def render(
     *,
     publishable: bool,
     environment: dict[str, Any] | None = None,
+    sampling: dict[str, Any] | None = None,
 ) -> list[str]:
     lines: list[str] = []
     if not publishable:
@@ -1000,6 +1262,29 @@ def render(
             lines.append(f'Versions: {", ".join(versions)}.')
         lines.append('')
         lines.extend(('<!-- --8<-- [end:environment] -->', ''))
+    if sampling is not None and sampling.get('mode') == 'adaptive':
+        policy = _sampling_policy(sampling)
+        lines.extend((
+            'Ratios are comparator duration divided by gometry duration. '
+            f'Each comparison uses exact median order intervals with at least '
+            f'{policy.confidence:.0%} coverage across its permitted looks. '
+            f'“Similar” requires the entire interval within the '
+            f'{PRACTICAL_EQUIVALENCE_MARGIN:.0%} practical-equivalence margin; '
+            'a narrow interval crossing 1 is not by itself evidence of equality.',
+            '',
+        ))
+    elif sampling is not None and sampling.get('mode') == 'diagnostic':
+        lines.extend((
+            'One-block smoke measurements are diagnostic only and do not carry '
+            'a confidence interval.',
+            '',
+        ))
+    elif sampling is not None and 'measured_blocks' in sampling:
+        lines.extend((
+            'Historical fixed-six measurements use a 95% paired bootstrap '
+            'interval and the recorded 3% practical-equivalence margin.',
+            '',
+        ))
     lines.extend(('<!-- --8<-- [start:comparisons] -->', ''))
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
@@ -1053,11 +1338,21 @@ def summarize_payload(
     equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
 ) -> list[str]:
     operations = _parse_public_operations(payload.get('public_operations'))
-    rows = _build_rows(operations, stats, equivalence_margin=equivalence_margin)
+    rows = _build_rows(
+        operations,
+        stats,
+        equivalence_margin=equivalence_margin,
+        sampling=payload.get('sampling')
+        if isinstance(payload.get('sampling'), dict)
+        else None,
+    )
     return render(
         rows,
         publishable=bool(payload.get('publishable')),
         environment=_run_environment(payload),
+        sampling=payload.get('sampling')
+        if isinstance(payload.get('sampling'), dict)
+        else None,
     )
 
 
@@ -1075,7 +1370,24 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     payload, artifacts = _resolve_run(args.results)
     stats = _load_all_blocks(artifacts)
-    if not stats and not payload.get('plan_only'):
+    if payload.get('plan_only'):
+        sampling = payload.get('sampling')
+        plan = sampling.get('maximum_plan') if isinstance(sampling, dict) else None
+        if not isinstance(plan, dict):
+            raise SystemExit('plan-only run lacks its maximum allowed sampling plan')
+        block_counts = {
+            operation: len(value.get('block_ids', ()))
+            for operation, value in plan.items()
+            if isinstance(value, dict)
+        }
+        print(
+            f'Plan only: {len(block_counts)} operations; maximum '
+            f'{max(block_counts.values(), default=0)} paired process blocks per '
+            'operation; no measurements collected.'
+        )
+        return
+    validate_exact_paired_matrix(payload, artifacts)
+    if not stats:
         raise SystemExit('no typed paired benchmark block artifacts found in run')
     print(
         '\n'.join(

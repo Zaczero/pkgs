@@ -6,10 +6,12 @@ import copy
 import dataclasses
 import hashlib
 import json
+import statistics
 import sys
 from pathlib import Path
 
 import pytest
+from benchroom.sampling import SamplingPolicy, assess_ratios
 
 _BENCHES = Path(__file__).resolve().parents[2] / 'benches'
 for _path in (_BENCHES / 'support',):
@@ -19,6 +21,9 @@ for _path in (_BENCHES / 'support',):
 import benchmark_observation as bo  # ruff: ignore[module-import-not-at-top-of-file]
 import benchmark_runtime  # ruff: ignore[module-import-not-at-top-of-file]
 import summarize_bench as sb  # ruff: ignore[module-import-not-at-top-of-file]
+from _bench_registry import (  # ruff: ignore[module-import-not-at-top-of-file]
+    paired_block_identity,
+)
 
 from tests.tooling._bench_support import (  # ruff: ignore[module-import-not-at-top-of-file]
     producer,
@@ -150,6 +155,101 @@ def _meta() -> sb.PublicOpMeta:
     )
 
 
+def _adaptive_fixture(
+    ratios: list[float],
+) -> tuple[dict[str, sb.BenchStats], dict[str, object]]:
+    policy = SamplingPolicy()
+    operation = _meta()
+    blocks = []
+    for index, ratio in enumerate(ratios, start=1):
+        pair_id, block_id, lead = paired_block_identity('competitors', 1, index)
+        blocks.append(
+            sb.PairedBlock(
+                artifact=f'{block_id}.json',
+                block_id=block_id,
+                pair_id=pair_id,
+                lead=lead,
+                metric='duration',
+                unit='seconds',
+                gometry_median=2.0,
+                competitor_median=2.0 * ratio,
+                ratio=ratio,
+                arm_identities={
+                    'A': {'harness_commit': 'commit', 'row': operation.gometry},
+                    'B': {'harness_commit': 'commit', 'row': operation.competitor},
+                },
+                phase='warm',
+                scaling=None,
+            )
+        )
+    ratio_values = [block.ratio for block in blocks]
+    block_ids = [block.block_id for block in blocks]
+    decision = assess_ratios(ratio_values, block_ids=block_ids, policy=policy)
+    inference = {
+        'estimate': decision.estimate,
+        'interval': (
+            list(decision.uncertainty.interval)
+            if decision.uncertainty.interval is not None
+            else None
+        ),
+        'achieved_coverage': decision.uncertainty.achieved_coverage,
+        'sample_size': decision.uncertainty.sample_size,
+        'lower_order': decision.uncertainty.lower_order,
+        'upper_order': decision.uncertainty.upper_order,
+        'confidence': decision.confidence,
+        'error_probability': decision.error_probability,
+        'direction': decision.direction,
+        'reason': decision.reason,
+        'next_look': decision.next_look,
+    }
+    plan = {
+        'block_ids': block_ids,
+        'lead_orders': [block.lead for block in blocks],
+    }
+    sampling = {
+        'mode': 'adaptive',
+        'policy': {
+            'looks': list(policy.looks),
+            'error_probabilities': list(policy.error_probabilities),
+            'precision_ratio': policy.precision_ratio,
+            'confidence': policy.confidence,
+        },
+        'initial_look': policy.looks[0],
+        'maximum_look': policy.looks[-1],
+        'actual_plan': {operation.gometry: plan},
+        'decisions': {
+            operation.gometry: {
+                **plan,
+                'inference': inference,
+                'collection_status': (
+                    'complete' if decision.complete else 'budget-limited'
+                ),
+                'estimated_extension_seconds': 12.0,
+            }
+        },
+    }
+    gometry_values = [block.gometry_median for block in blocks]
+    competitor_values = [block.competitor_median for block in blocks]
+    stats = {
+        name: sb.BenchStats(
+            name=name,
+            metric='duration',
+            unit='seconds',
+            mean=statistics.fmean(values),
+            median=statistics.median(values),
+            stdev=statistics.stdev(values) if len(values) > 1 else 0.0,
+            nrun=len(values),
+            samples=len(values),
+            blocks=tuple(blocks),
+        )
+        for name, values in (
+            (operation.gometry, gometry_values),
+            (operation.competitor, competitor_values),
+        )
+    }
+    return stats, sampling
+
+
 def test_real_block_populates_both_arm_stats_without_ordinal_matching(
     tmp_path: Path,
 ) -> None:
@@ -196,6 +296,42 @@ def test_report_separates_reference_implementations() -> None:
     assert 'Country boundary length' not in comparisons
     assert 'Country boundary length' in references
     assert 'Python/NumPy quadrature reference' in references
+
+
+def test_adaptive_summary_recomputes_the_recorded_median_order_inference() -> None:
+    stats, sampling = _adaptive_fixture([1.5] * 6)
+    row = sb._build_rows(
+        [_meta()],
+        stats,
+        equivalence_margin=0.03,
+        sampling=sampling,
+    )[0]
+    assert row.ratio == pytest.approx(1.5)
+    assert row.ratio_interval == (1.5, 1.5)
+    assert row.status == 'faster'
+
+    sampling['decisions']['gometry.op/10k']['inference']['estimate'] = 1.0
+    with pytest.raises(SystemExit, match='recorded inference disagrees'):
+        sb._build_rows(
+            [_meta()],
+            stats,
+            equivalence_margin=0.03,
+            sampling=sampling,
+        )
+
+
+def test_maximum_look_can_complete_with_a_noisy_inconclusive_result() -> None:
+    stats, sampling = _adaptive_fixture([0.8, 1.2] * 6)
+    outcome = sampling['decisions']['gometry.op/10k']
+    outcome['collection_status'] = 'complete'
+    row = sb._build_rows(
+        [_meta()],
+        stats,
+        equivalence_margin=0.03,
+        sampling=sampling,
+    )[0]
+    assert outcome['inference']['next_look'] is None
+    assert row.status == 'inconclusive'
 
 
 @pytest.mark.parametrize('iterations', [0, 4])

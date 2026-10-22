@@ -25,29 +25,44 @@ compared with a Python/NumPy quadrature reference.
 
 <span id="scaling-curves"></span>
 
-Call time as input or output size grows. Whiskers show the range across six runs.
+Call time as input or output size grows. Whiskers show the range across paired
+process blocks.
 
 <!-- benchmark-scaling -->
 
 ## Methodology {#what-the-run-measures}
 
-Each workload runs both libraries in six fresh processes, alternating which
-runs first. After warm-up, calls are timed in batches of at least 1 ms, and
-each displayed time is the median per call. Before timing, both outputs are
-checked for equivalent rows, types, coordinates, and topology.
+Every release workload first runs six independent paired process blocks, with
+the libraries alternating which runs first. After that first look, an unresolved
+comparison may extend to twelve blocks if the run budget still protects all
+required resource probes and time to finish. Resolved or sufficiently precise
+comparisons stop at six. Each block times calls in batches of at least 1 ms
+after warm-up; its result is the median per call. Before timing, both outputs
+are checked for equivalent rows, types, coordinates, and topology. The external
+oracle and four resource probes run independently of throughput confidence.
+One-block smoke runs are diagnostic only.
 
-Labels compare the two libraries within each process and use a 95% bootstrap
-interval with a 3% equivalence margin:
+Labels use the ordinary median of per-block comparator/gometry duration ratios
+and an exact median order interval. The first and second looks allocate error
+probabilities of 1/32 and 3/160, respectively, for at least 95% coverage across
+the permitted looks for each comparison. A 3% practical-equivalence margin
+classifies the interval:
 
 | Label | Meaning |
 | --- | --- |
 | Faster / slower | The entire interval is beyond the 3% margin. |
 | Similar | The entire interval is within the margin. |
-| Inconclusive | The interval crosses a decision boundary. |
+| Inconclusive | The interval is too wide or crosses a decision boundary. |
 
-For this run, the selected timing CPU was not isolated and used the powersave
-governor; host diagnostics also recorded CPU contention. The raw measurements
-retain these conditions and the six-block spread.
+Interval precision is a stopping rule, not an equivalence claim; an interval
+crossing one is not by itself evidence that the implementations are equal. The
+currently published run below retains its historical fixed-six bootstrap
+analysis. New release runs record their permitted looks, actual block plan, and
+per-operation inference with the raw measurements.
+
+For the currently published run, the selected timing CPU was not isolated and
+used the powersave governor; host diagnostics also recorded CPU contention. The
+raw measurements retain these conditions and the observed block spread.
 
 --8<-- "benches/results/current/summary.md:environment"
 

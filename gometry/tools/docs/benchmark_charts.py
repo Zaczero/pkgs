@@ -37,8 +37,7 @@ def on_pre_build(config, **_kwargs):
         _parse_public_operations(payload['public_operations']),
         _load_all_blocks(artifacts),
         equivalence_margin=PRACTICAL_EQUIVALENCE_MARGIN,
-        expected_blocks=payload['sampling']['measured_blocks'],
-        expected_leads=tuple(payload['sampling']['lead_orders']),
+        sampling=payload['sampling'],
     )
     by_curve = {}
     for row in rows:

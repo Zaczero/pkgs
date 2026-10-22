@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from benchroom.sampling import SamplingPolicy, assess_ratios
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BENCHES = _ROOT / 'benches'
@@ -339,6 +340,86 @@ def _result(publication_baseline: str) -> dict[str, object]:
     return json.loads(publication_baseline)
 
 
+def _adaptive_result(
+    publication_baseline: str,
+    tmp_path: Path,
+) -> dict[str, object]:
+    result = _result(publication_baseline)
+    operations = result['public_operations']
+    policy = SamplingPolicy()
+    plan = bench_driver._sampling_plan(operations, policy)
+    plan_path = tmp_path / 'sampling-plan.json'
+    plan_path.write_text(json.dumps(plan, sort_keys=True), encoding='utf-8')
+    result['source_artifacts'].append(str(plan_path))
+    result['sampling_plan_artifact'] = 'sampling-plan.json'
+
+    actual_plan = {}
+    decisions = {}
+    for operation in operations:
+        operation_name = operation['gometry']
+        operation_plan = plan['operations'][operation_name]
+        blocks = operation_plan['blocks'][: policy.looks[0]]
+        block_ids = [block['block_id'] for block in blocks]
+        leads = [block['lead'] for block in blocks]
+        decision = assess_ratios(
+            [2.0] * policy.looks[0],
+            block_ids=block_ids,
+            policy=policy,
+        )
+        actual_plan[operation_name] = {
+            'block_ids': block_ids,
+            'lead_orders': leads,
+        }
+        decisions[operation_name] = {
+            'block_ids': block_ids,
+            'lead_orders': leads,
+            'inference': bench_driver._sampling_decision_record(decision),
+            'collection_status': 'complete',
+            'estimated_extension_seconds': 12.0,
+        }
+
+    resource_plans = []
+    resources = []
+    for mode in ('bearing', 'features', 'intersects', 'mixed'):
+        source = tmp_path / f'resource-{mode}.json'
+        source.write_text(
+            json.dumps({'artifact_type': 'gometry-resource-probe', 'mode': mode}),
+            encoding='utf-8',
+        )
+        result['source_artifacts'].append(str(source))
+        resource_plans.append({
+            'kind': 'resource',
+            'label': f'resource-{mode}',
+            'output': f'raw/{source.name}',
+        })
+        resources.append({'mode': mode})
+
+    result['sampling'] = {
+        'worker': 'bench_paired.py',
+        'mode': 'adaptive',
+        'policy': bench_driver._sampling_policy_record(policy),
+        'initial_look': policy.looks[0],
+        'maximum_look': policy.looks[-1],
+        'plan_sha256': bench_driver._json_digest(plan),
+        'finish_reserve_seconds': 30,
+        'required_resource_reserve_seconds': 240,
+        'warmup_iterations': 2,
+        'repetitions': 5,
+        'independent_process_blocks': True,
+        'state_scope': 'shared-process-prepared-fixture',
+        'phase': 'warm',
+        'oracle_state_scope': 'external-fresh-process',
+        'actual_plan': actual_plan,
+        'decisions': decisions,
+    }
+    result['planned_commands'] = [
+        {'kind': 'oracle', 'output': 'raw/oracle.json'},
+        *resource_plans,
+    ]
+    result['resources'] = resources
+    return result
+
+
 def _synthetic_subject(receipt_path: str) -> dict[str, object]:
     identity = producer('gometry.op/fixture', 'A', receipt_path=receipt_path)
     binding = identity['runtime_binding']
@@ -432,9 +513,17 @@ def _run_manifest(
     raw_directory.mkdir(parents=True)
     artifacts = []
     for source in result.pop('source_artifacts'):
-        artifact = raw_directory / Path(str(source)).name
+        artifact = (
+            run_directory / Path(str(source)).name
+            if Path(str(source)).name == 'sampling-plan.json'
+            else raw_directory / Path(str(source)).name
+        )
         os.link(source, artifact)
-        artifacts.append(f'raw/{artifact.name}')
+        artifacts.append(
+            artifact.name
+            if artifact.parent == run_directory
+            else f'raw/{artifact.name}'
+        )
     result.update({
         'manifest_type': bench_driver._RUN_MANIFEST_TYPE,
         'schema_version': bench_driver._MANIFEST_SCHEMA_VERSION,
@@ -640,7 +729,9 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         ],
     )
     (tmp_path / 'lock').write_bytes(b'x')
-    bench_driver.main()
+    with pytest.raises(SystemExit) as error:
+        bench_driver.main()
+    assert error.value.code == 1
 
     after = {
         path.relative_to(current).as_posix(): path.read_bytes()
@@ -652,6 +743,12 @@ def test_release_measurement_cannot_publish_or_mutate_current(
     assert len(manifests) == 1
     assert (manifests[0].parent / 'raw/release.json').is_file()
     assert not (manifests[0].parent / 'run.md').exists()
+    run = json.loads(manifests[0].read_text(encoding='utf-8'))
+    assert run['commands_complete'] is False
+    assert all(
+        decision['collection_status'] == 'incomplete'
+        for decision in run['sampling']['decisions'].values()
+    )
 
 
 def test_publication_rejects_filtered_run_without_touching_current(
@@ -738,6 +835,52 @@ def test_publication_rejects_exact_matrix_mutations(
     run_manifest = _run_manifest(tmp_path, publication_baseline)
     _mutate_first_block(run_manifest, mutation)
     with pytest.raises(SystemExit, match=message):
+        _publish(run_manifest, tmp_path)
+
+
+def test_adaptive_publication_uses_recorded_inference_and_required_probes(
+    tmp_path: Path,
+    publication_baseline: str,
+) -> None:
+    adaptive = _adaptive_result(publication_baseline, tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, adaptive)
+
+    summary = _publish(run_manifest, tmp_path).read_text(encoding='utf-8')
+
+    assert 'exact median order intervals' in summary
+    assert (
+        'a narrow interval crossing 1 is not by itself evidence of equality' in summary
+    )
+
+
+@pytest.mark.parametrize('mutation', ['duplicate', 'mismatch'])
+def test_publication_rejects_adaptive_block_ids_outside_the_prespecified_plan(
+    tmp_path: Path,
+    publication_baseline: str,
+    mutation: str,
+) -> None:
+    adaptive = _adaptive_result(publication_baseline, tmp_path)
+    operation = ALL_PUBLIC_OPERATIONS[0].gometry
+    run_manifest = _run_manifest(tmp_path, publication_baseline, adaptive)
+    result = json.loads(run_manifest.read_text(encoding='utf-8'))
+    block_ids = result['sampling']['actual_plan'][operation]['block_ids']
+    block_ids[1] = block_ids[0] if mutation == 'duplicate' else 'unexpected-block'
+    result['sampling']['decisions'][operation]['block_ids'] = block_ids
+    run_manifest.write_text(json.dumps(result), encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='sampling plan changed'):
+        _publish(run_manifest, tmp_path)
+
+
+def test_publication_rejects_a_missing_required_resource_artifact(
+    tmp_path: Path,
+    publication_baseline: str,
+) -> None:
+    adaptive = _adaptive_result(publication_baseline, tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, adaptive)
+    (run_manifest.parent / 'raw' / 'resource-mixed.json').unlink()
+
+    with pytest.raises(SystemExit, match='path is missing'):
         _publish(run_manifest, tmp_path)
 
 

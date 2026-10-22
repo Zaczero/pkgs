@@ -270,13 +270,129 @@ def test_smoke_shares_operation_tuple() -> None:
     assert SMOKE.rows('competitors') == tuple(
         row for op in RELEASE_OPERATIONS for row in op.rows
     )
-    assert SMOKE.paired_blocks == 1
+    assert SMOKE.sampling_policy is None
+    assert SMOKE.initial_paired_blocks == 1
     assert SMOKE.paired_sampling_args == ('--warmups', '1', '--repetitions', '1')
 
 
-def test_release_declares_exact_balanced_block_matrix() -> None:
-    assert RELEASE.paired_blocks == 6
+def test_release_uses_the_shared_six_then_twelve_block_policy() -> None:
+    assert RELEASE.sampling_policy is not None
+    assert RELEASE.sampling_policy.looks == (6, 12)
+    assert RELEASE.initial_paired_blocks == 6
+    assert RELEASE.maximum_paired_blocks == 12
     assert RELEASE.paired_sampling_args == ('--warmups', '2', '--repetitions', '5')
+
+
+def test_release_plans_the_first_six_then_only_the_second_six(
+    tmp_path: Path,
+) -> None:
+    operation = RELEASE_OPERATIONS[0]
+    common = {
+        'profile_name': 'release',
+        'profile': RELEASE,
+        'selected': {'competitors': operation.rows},
+        'output_dir': tmp_path,
+        'timestamp': 'run',
+        'cpu': 0,
+        'receipt_binding': {'path': '/receipt', 'receipt_sha256': '0' * 64},
+        'package_root': tmp_path,
+    }
+    first, _ = _bench_driver._benchmark_plans(
+        **common,
+        block_numbers={operation.gometry: tuple(range(1, 7))},
+    )
+    extension, _ = _bench_driver._benchmark_plans(
+        **common,
+        block_numbers={operation.gometry: tuple(range(7, 13))},
+    )
+    assert [plan['block_id'] for plan in first] == [
+        f'competitors-pair-01-block-{number:02d}-{"ab" if number % 2 else "ba"}'
+        for number in range(1, 7)
+    ]
+    assert [plan['block_id'] for plan in extension] == [
+        f'competitors-pair-01-block-{number:02d}-{"ab" if number % 2 else "ba"}'
+        for number in range(7, 13)
+    ]
+
+
+def test_extension_admission_protects_required_work_and_finish_reserve() -> None:
+    admitted, rejected = _bench_driver._admit_extensions(
+        [
+            {'operation': 'op-a', 'estimated_seconds': 20.0},
+            {'operation': 'op-b', 'estimated_seconds': 30.0},
+        ],
+        remaining_seconds=89.0,
+        required_seconds=40.0,
+        reserve_seconds=10.0,
+    )
+    assert admitted == {'op-a': 20.0}
+    assert rejected == {'op-b': 'budget-limited'}
+
+
+def test_plan_only_records_the_allowed_maximum_without_claiming_measurements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _bench_driver.benchmark_runtime,
+        'load_subject',
+        lambda _path=None: {
+            'path': str(tmp_path / 'receipt.json'),
+            'receipt_sha256': '0' * 64,
+            'source': {},
+        },
+    )
+    monkeypatch.setattr(
+        _bench_driver.benchmark_runtime,
+        'package_root_for_subject',
+        lambda _subject, _explicit=None: tmp_path,
+    )
+    monkeypatch.setattr(_bench_driver, '_validate_oracle_builders', lambda _: None)
+    monkeypatch.setattr(
+        _bench_driver,
+        'select_benchmark_cpu',
+        lambda _cpu: (0, 'explicit-kernel-isolated'),
+    )
+    monkeypatch.setattr(
+        _bench_driver,
+        'collect',
+        lambda **_: {
+            'metadata': {'cpu_frequency_state': {}},
+            'hard_failures': [],
+            'warnings': [],
+        },
+    )
+    monkeypatch.setattr(
+        _bench_driver,
+        '_run',
+        lambda *_args, **_kwargs: pytest.fail('plan-only must not run commands'),
+    )
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        [
+            'bench.py',
+            '--profile',
+            'release',
+            '--plan-only',
+            '--filter',
+            RELEASE_OPERATIONS[0].gometry,
+            '--output-dir',
+            str(tmp_path / 'planned'),
+        ],
+    )
+
+    _bench_driver.main()
+
+    manifest_path = next((tmp_path / 'planned').glob('*/run.json'))
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    operation = RELEASE_OPERATIONS[0].gometry
+    assert manifest['sampling']['mode'] == 'plan-only'
+    assert len(manifest['sampling']['maximum_plan'][operation]['block_ids']) == 12
+    assert 'actual_plan' not in manifest['sampling']
+    assert manifest['commands'] == []
+    assert manifest['commands_complete'] is False
+    assert manifest['sampling_plan_artifact'] == 'sampling-plan.json'
 
 
 def test_domain_order_is_contiguous() -> None:

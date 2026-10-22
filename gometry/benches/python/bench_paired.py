@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchroom.sampling import next_batch_size
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -146,9 +148,14 @@ def _measure_arm(
     for _ in range(MAX_CALIBRATION_BATCHES):
         elapsed = _time_batch(call, iterations, clock_ns)
         calibration_iterations += iterations
-        if elapsed >= min_sample_ns:
+        next_iterations = next_batch_size(
+            iterations,
+            elapsed / 1_000_000_000.0,
+            minimum_seconds=min_sample_ns / 1_000_000_000.0,
+        )
+        if next_iterations == iterations:
             break
-        iterations *= 2
+        iterations = next_iterations
     else:
         raise SystemExit(f'paired batch calibration did not converge for {row}')
     started = clock_ns()

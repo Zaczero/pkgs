@@ -17,6 +17,13 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchroom.sampling import (
+    SamplingDecision,
+    SamplingPolicy,
+    assess_ratios,
+    fits_budget,
+)
+
 _BENCHES = Path(__file__).resolve().parents[1]
 GOMETRY_ROOT = _BENCHES.parent
 _SUPPORT = _BENCHES / 'support'
@@ -32,6 +39,7 @@ from _bench_registry import (
     ALL_PUBLIC_OPERATIONS,
     PROFILES,
     PAIR_WORKER,
+    RESOURCE_MODES,
     RELEASE_OPERATIONS,
     SCALING_OPERATIONS,
     SUITES,
@@ -39,6 +47,7 @@ from _bench_registry import (
     ReleaseOperation,
     ScalingOperation,
     expand_filter_to_pairs,
+    paired_block_identity,
     scaling_record,
     validate_canonical_symbols,
     validate_scaling_operations,
@@ -65,10 +74,10 @@ import operator
 def _serialize_public_operations(
     operations: tuple[ReleaseOperation | ScalingOperation, ...],
     selected: dict[str, tuple[str, ...]],
-) -> list[dict[str, object]]:
+) -> list[dict[str, Any]]:
     """Ordered operation records for the run JSON (summarizer input)."""
     selected_names = {name for rows in selected.values() for name in rows}
-    records: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
     for op in operations:
         if not any(name in selected_names for name in op.rows):
             continue
@@ -97,6 +106,9 @@ _REQUIRED_ENGINE_LIBRARY_TOKENS = {
     'pyproj': ('proj',),
 }
 _EVIDENCE_ROOT = GOMETRY_ROOT / 'docs' / 'assets' / 'benchmark-runs'
+_SAMPLING_PLAN_ARTIFACT = 'sampling-plan.json'
+_SAMPLING_PLAN_TYPE = 'gometry-benchmark-sampling-plan'
+_FINISH_RESERVE_SECONDS = 30
 
 
 def _stamp() -> str:
@@ -395,36 +407,33 @@ def _benchmark_plans(
     cpu: int,
     receipt_binding: dict[str, Any],
     package_root: Path,
+    block_numbers: dict[str, tuple[int, ...]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[Path]]]:
     plans: list[dict[str, Any]] = []
     outputs: dict[str, list[Path]] = {suite: [] for suite in selected}
     for suite, rows in selected.items():
         units = pair_units(rows, suite=suite)
-        scheduled = []
         for number, unit in enumerate(units, start=1):
             if len(unit) != 2:
                 raise SystemExit(f'public benchmark unit is not paired: {unit!r}')
-            for block_number in range(profile.paired_blocks):
-                lead = 'ab' if block_number % 2 == 0 else 'ba'
-                scheduled.append((
-                    f'pair-{number:02d}-block-{block_number + 1:02d}-{lead}',
-                    unit,
-                ))
-        for label, scheduled_rows in scheduled:
-            run_label = f'{suite}-{label}'
-            output = output_dir / f'{timestamp}-{run_label}-{profile_name}.json'
-            outputs[suite].append(output)
-            command: list[str]
-            environment: dict[str, str]
-            if len(scheduled_rows) == 2 and label.startswith('pair-'):
-                pair_number, block_spec = label.removeprefix('pair-').split(
-                    '-block-', 1
+            operation = unit[0]
+            if block_numbers is not None and operation not in block_numbers:
+                continue
+            numbers = (
+                block_numbers[operation]
+                if block_numbers is not None
+                else tuple(range(1, profile.initial_paired_blocks + 1))
+            )
+            for block_number in numbers:
+                pair_id, run_label, lead = paired_block_identity(
+                    suite, number, block_number
                 )
-                _, lead = block_spec.split('-', 1)
+                output = output_dir / f'{timestamp}-{run_label}-{profile_name}.json'
+                outputs[suite].append(output)
                 invocation_id = uuid.uuid4().hex
                 command = _paired_command(
-                    gometry=scheduled_rows[0],
-                    pair_id=f'{suite}-pair-{pair_number}',
+                    gometry=operation,
+                    pair_id=pair_id,
                     block_id=run_label,
                     lead=lead,
                     output=output,
@@ -438,18 +447,220 @@ def _benchmark_plans(
                     invocation_id=invocation_id,
                     control=False,
                 )
-            else:
-                raise SystemExit(f'unsupported public benchmark schedule: {label}')
-            plans.append({
-                'kind': 'paired-block',
-                'suite': suite,
-                'label': run_label,
-                'rows': scheduled_rows,
-                'environment': environment,
-                'command': command,
-                'output': str(output),
-            })
+                plans.append({
+                    'kind': 'paired-block',
+                    'suite': suite,
+                    'label': run_label,
+                    'operation': operation,
+                    'block_id': run_label,
+                    'lead': lead,
+                    'rows': unit,
+                    'environment': environment,
+                    'command': command,
+                    'output': str(output),
+                })
     return plans, outputs
+
+
+def _sampling_policy_record(policy: SamplingPolicy) -> dict[str, Any]:
+    return {
+        'looks': list(policy.looks),
+        'error_probabilities': list(policy.error_probabilities),
+        'precision_ratio': policy.precision_ratio,
+        'confidence': policy.confidence,
+    }
+
+
+def _sampling_plan(
+    operations: list[dict[str, Any]], policy: SamplingPolicy
+) -> dict[str, Any]:
+    """Describe all permitted process blocks before production collection."""
+    scheduled: dict[str, dict[str, Any]] = {}
+    for index, operation in enumerate(operations, start=1):
+        pair_id, _, _ = paired_block_identity(operation['suite'], index, 1)
+        blocks = []
+        for number in range(1, policy.looks[-1] + 1):
+            _, block_id, lead = paired_block_identity(operation['suite'], index, number)
+            blocks.append({'block_id': block_id, 'lead': lead})
+        scheduled[operation['gometry']] = {
+            'competitor': operation['competitor'],
+            'pair_id': pair_id,
+            'blocks': blocks,
+        }
+    return {
+        'schema_version': 1,
+        'artifact_type': _SAMPLING_PLAN_TYPE,
+        'policy': _sampling_policy_record(policy),
+        'initial_look': policy.looks[0],
+        'maximum_look': policy.looks[-1],
+        'operations': scheduled,
+    }
+
+
+def _sampling_decision_record(
+    decision: SamplingDecision,
+) -> dict[str, Any]:
+    uncertainty = decision.uncertainty
+    return {
+        'estimate': decision.estimate,
+        'interval': (
+            list(uncertainty.interval) if uncertainty.interval is not None else None
+        ),
+        'achieved_coverage': uncertainty.achieved_coverage,
+        'sample_size': uncertainty.sample_size,
+        'lower_order': uncertainty.lower_order,
+        'upper_order': uncertainty.upper_order,
+        'confidence': decision.confidence,
+        'error_probability': decision.error_probability,
+        'direction': decision.direction,
+        'reason': decision.reason,
+        'next_look': decision.next_look,
+    }
+
+
+def _paired_block_ratio(path: Path, *, operation: str, block_id: str) -> float:
+    from benchmark_observation import measurement_summary
+
+    payload = _read_json_object(path, label='paired block')
+    metadata = payload.get('operation')
+    order = payload.get('lead_order')
+    if (
+        payload.get('artifact_type') != 'gometry-paired-block'
+        or payload.get('block_id') != block_id
+        or not isinstance(metadata, dict)
+        or metadata.get('gometry') != operation
+        or not isinstance(order, list)
+        or order not in (['A', 'B'], ['B', 'A'])
+    ):
+        raise SystemExit(f'paired block {path} does not match its sampling plan')
+    arms = payload.get('arms')
+    if not isinstance(arms, dict) or set(arms) != {'A', 'B'}:
+        raise SystemExit(f'paired block {path} has incomplete measured arms')
+    _, _, gometry, _ = measurement_summary(arms['A']['observation'])
+    _, _, competitor, _ = measurement_summary(arms['B']['observation'])
+    if gometry <= 0 or competitor <= 0:
+        raise SystemExit(f'paired block {path} has non-positive duration estimates')
+    return competitor / gometry
+
+
+def _initial_plan_is_complete(
+    plans: list[dict[str, Any]],
+    operations: list[dict[str, Any]],
+    *,
+    block_count: int,
+) -> bool:
+    by_operation: dict[str, list[dict[str, Any]]] = {}
+    for plan in plans:
+        operation = plan.get('operation')
+        if not isinstance(operation, str):
+            return False
+        by_operation.setdefault(operation, []).append(plan)
+    if set(by_operation) != {operation['gometry'] for operation in operations}:
+        return False
+    for index, operation in enumerate(operations, start=1):
+        expected = [
+            paired_block_identity(operation['suite'], index, number)[1:]
+            for number in range(1, block_count + 1)
+        ]
+        actual = [
+            (plan.get('block_id'), plan.get('lead'))
+            for plan in by_operation[operation['gometry']]
+        ]
+        if actual != expected:
+            return False
+    return True
+
+
+def _admit_extensions(
+    candidates: list[dict[str, Any]],
+    *,
+    remaining_seconds: float,
+    required_seconds: float,
+    reserve_seconds: float,
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Admit complete second looks using measured first-look cost estimates."""
+    admitted: dict[str, float] = {}
+    rejected: dict[str, str] = {}
+    planned_seconds = 0.0
+    for candidate in candidates:
+        operation = candidate['operation']
+        cost = candidate['estimated_seconds']
+        if fits_budget(
+            remaining_seconds=remaining_seconds,
+            required_seconds=required_seconds,
+            optional_seconds=planned_seconds + cost,
+            reserve_seconds=reserve_seconds,
+        ):
+            admitted[operation] = cost
+            planned_seconds += cost
+        else:
+            rejected[operation] = 'budget-limited'
+    return admitted, rejected
+
+
+def _json_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _invoke_plan(
+    plan: dict[str, Any],
+    *,
+    profile: Profile,
+    started: float,
+    reserve_seconds: float = 0,
+    future_seconds: float = 0,
+    benchmark_subject: dict[str, Any],
+    package_root: Path,
+) -> dict[str, Any]:
+    remaining = profile.total_timeout - (time.monotonic() - started)
+    allowance = int(remaining - reserve_seconds - future_seconds)
+    result: dict[str, Any]
+    if allowance < 1:
+        result = {
+            'command': plan['command'],
+            'returncode': 124,
+            'timeout': True,
+            'elapsed_seconds': 0.0,
+            'stdout_tail': '',
+            'stderr_tail': 'run budget reserves required work and finish time',
+        }
+    else:
+        timeout = min(
+            profile.command_timeout
+            if plan.get('kind') == 'oracle'
+            else profile.row_timeout,
+            allowance,
+        )
+        environment = dict(plan.get('environment') or {})
+        if plan.get('kind') != 'oracle':
+            environment['GOMETRY_BENCH_ORACLE_OK'] = '1'
+        result = _run(
+            plan['command'],
+            environment=environment,
+            timeout=timeout,
+            benchmark_subject=(
+                benchmark_subject if plan.get('kind') == 'resource' else None
+            ),
+            package_root=package_root if plan.get('kind') == 'resource' else None,
+            case_path=(
+                Path(plan['case_path']) if plan.get('kind') == 'resource' else None
+            ),
+            result_path=(
+                Path(plan['output']) if plan.get('kind') == 'resource' else None
+            ),
+        )
+    result['suite'] = plan['suite']
+    result['label'] = plan['label']
+    result['kind'] = plan.get('kind', 'paired-block')
+    for field in ('operation', 'block_id', 'lead'):
+        if field in plan:
+            result[field] = plan[field]
+    if result['returncode'] == 0 and Path(plan['output']).is_file():
+        result['phase_seconds'] = _read_json_object(
+            Path(plan['output']), label='worker result'
+        ).get('phase_seconds', {})
+    return result
 
 
 def _resource_plans(
@@ -462,7 +673,7 @@ def _resource_plans(
 ) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
     case_path = GOMETRY_ROOT / 'benches' / 'cases' / 'case_resource_tail.py'
-    for mode in ('bearing', 'features', 'intersects', 'mixed'):
+    for mode in RESOURCE_MODES:
         output = output_dir / f'{timestamp}-resource-{mode}-release.json'
         invocation_id = uuid.uuid4().hex
         environment = _benchmark_environment(
@@ -987,7 +1198,69 @@ def _validate_publication_result(result: dict[str, Any]) -> dict[str, Any]:
     sampling = result.get('sampling')
     if not isinstance(sampling, dict):
         raise SystemExit('publication rejected: paired sampling matrix is missing')
-    if sampling.get('measured_blocks') != 6 or sampling.get('lead_orders') != [
+    if sampling.get('mode') == 'adaptive':
+        policy = sampling.get('policy')
+        plan_artifact = result.get('sampling_plan_artifact')
+        plan_digest = sampling.get('plan_sha256')
+        actual_plan = sampling.get('actual_plan')
+        decisions = sampling.get('decisions')
+        operation_names = [
+            operation.get('gometry')
+            for operation in operations
+            if isinstance(operation, dict)
+        ]
+        if (
+            not isinstance(policy, dict)
+            or not isinstance(plan_artifact, str)
+            or not plan_artifact
+            or not isinstance(plan_digest, str)
+            or len(plan_digest) != 64
+            or not isinstance(actual_plan, dict)
+            or set(actual_plan) != set(operation_names)
+            or not isinstance(decisions, dict)
+            or set(decisions) != set(operation_names)
+        ):
+            raise SystemExit(
+                'publication rejected: adaptive per-operation sampling record is incomplete'
+            )
+        if result.get('full_manifest') and result.get('filter') is None:
+            resources = result.get('resources')
+            if not isinstance(resources, list) or {
+                item.get('mode') for item in resources if isinstance(item, dict)
+            } != set(RESOURCE_MODES):
+                raise SystemExit(
+                    'publication rejected: all four required resource probes are missing'
+                )
+        try:
+            SamplingPolicy(
+                looks=tuple(policy['looks']),
+                error_probabilities=tuple(policy['error_probabilities']),
+                precision_ratio=policy['precision_ratio'],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SystemExit(
+                f'publication rejected: adaptive sampling policy is invalid: {error}'
+            ) from error
+        for operation in operation_names:
+            plan = actual_plan[operation]
+            decision = decisions[operation]
+            if (
+                not isinstance(plan, dict)
+                or not isinstance(decision, dict)
+                or not isinstance(plan.get('block_ids'), list)
+                or not isinstance(plan.get('lead_orders'), list)
+                or plan['block_ids'] != decision.get('block_ids')
+                or plan['lead_orders'] != decision.get('lead_orders')
+                or len(plan['block_ids']) not in policy['looks']
+                or len(plan['block_ids']) != len(plan['lead_orders'])
+                or decision.get('collection_status')
+                not in {'complete', 'budget-limited'}
+                or not isinstance(decision.get('inference'), dict)
+            ):
+                raise SystemExit(
+                    f'publication rejected: adaptive block plan is malformed for {operation}'
+                )
+    elif sampling.get('measured_blocks') != 6 or sampling.get('lead_orders') != [
         'ab',
         'ba',
         'ab',
@@ -995,8 +1268,10 @@ def _validate_publication_result(result: dict[str, Any]) -> dict[str, Any]:
         'ab',
         'ba',
     ]:
+        # Published fixed-six records predate adaptive sampling and remain
+        # readable using their recorded bootstrap analysis.
         raise SystemExit(
-            'publication rejected: release requires exactly six paired blocks '
+            'publication rejected: historical release requires six paired blocks '
             '(three ab and three ba)'
         )
     return _publication_metadata(result)
@@ -1316,7 +1591,9 @@ def _validate_block_identity(
                     )
             for token in _REQUIRED_ENGINE_LIBRARY_TOKENS.get(package_name, ()):
                 loaded_engine = [
-                    path for path in loaded_by_path if token in Path(path).name.lower()
+                    path
+                    for path in loaded_by_path
+                    if isinstance(path, str) and token in Path(path).name.lower()
                 ]
                 attributed_engine = [
                     item
@@ -1407,10 +1684,14 @@ def _render_publication(
         _parse_public_operations(result['public_operations']),
         stats,
         equivalence_margin=PRACTICAL_EQUIVALENCE_MARGIN,
-        expected_blocks=sampling['measured_blocks'],
-        expected_leads=tuple(sampling['lead_orders']),
+        sampling=sampling,
     )
-    lines = render(rows, publishable=True, environment=_run_environment(result))
+    lines = render(
+        rows,
+        publishable=True,
+        environment=_run_environment(result),
+        sampling=sampling,
+    )
     return '\n'.join(lines) + '\n', receipt_cache
 
 
@@ -1624,7 +1905,20 @@ def main() -> None:
             receipt_binding, package_root, run_directory / 'admission.json'
         )
     cpu, cpu_selection = select_benchmark_cpu(args.cpu)
-    plans, _outputs = _benchmark_plans(
+    public_operations = _serialize_public_operations(profile.all_operations, selected)
+    operation_names: list[str] = [
+        operation['gometry'] for operation in public_operations
+    ]
+    initial_block_numbers = {
+        operation: tuple(range(1, profile.initial_paired_blocks + 1))
+        for operation in operation_names
+    }
+    maximum_block_numbers = {
+        operation: tuple(range(1, profile.maximum_paired_blocks + 1))
+        for operation in operation_names
+    }
+    block_numbers = maximum_block_numbers if args.plan_only else initial_block_numbers
+    initial_plans, _outputs = _benchmark_plans(
         profile_name=args.profile,
         profile=profile,
         selected=selected,
@@ -1633,17 +1927,39 @@ def main() -> None:
         cpu=cpu,
         receipt_binding=receipt_binding,
         package_root=package_root,
+        block_numbers=block_numbers,
     )
-    if args.profile == 'release' and args.filter is None:
-        plans.extend(
-            _resource_plans(
-                output_dir=raw_directory,
-                timestamp=timestamp,
-                cpu=cpu,
-                receipt_binding=receipt_binding,
-                package_root=package_root,
-            )
+    resource_plans = (
+        _resource_plans(
+            output_dir=raw_directory,
+            timestamp=timestamp,
+            cpu=cpu,
+            receipt_binding=receipt_binding,
+            package_root=package_root,
         )
+        if args.profile == 'release' and args.filter is None
+        else []
+    )
+    sampling_plan: dict[str, Any] | None = None
+    sampling_plan_path: Path | None = None
+    sampling_plan_sha256: str | None = None
+    if profile.sampling_policy is not None:
+        sampling_plan = _sampling_plan(public_operations, profile.sampling_policy)
+        plan_path = run_directory / _SAMPLING_PLAN_ARTIFACT
+        sampling_plan_path = plan_path
+        plan_evidence = sampling_plan
+        if not args.plan_only:
+            from benchmark_evidence import compact_artifact
+
+            plan_evidence = compact_artifact(
+                sampling_plan, receipt_binding['run_admission']['sha256']
+            )
+        _write_json_once(
+            plan_path,
+            plan_evidence,
+            label='sampling plan',
+        )
+        sampling_plan_sha256 = _json_digest(sampling_plan)
     # Oracle runs once after env/manifest validation and before timing.
     oracle_output = raw_directory / f'{timestamp}-oracle-{args.profile}.json'
     oracle_plan: dict[str, Any] = {
@@ -1712,101 +2028,322 @@ def main() -> None:
     commands: list[dict[str, Any]] = []
     started = time.monotonic()
     oracle_ok = False
+    required_blocks_complete = False
+    chosen_plans: list[dict[str, Any]] = []
+    decision_records: dict[str, dict[str, Any]] = {}
     if not args.plan_only:
-        oracle_result = _run(
-            oracle_plan['command'],
-            environment=oracle_plan['environment'],
-            timeout=min(profile.command_timeout, profile.total_timeout),
+        oracle_result = _invoke_plan(
+            oracle_plan,
+            profile=profile,
+            started=started,
+            benchmark_subject=receipt_binding,
+            package_root=package_root,
         )
-        oracle_result['suite'] = 'oracle'
-        oracle_result['label'] = 'oracle'
-        oracle_result['kind'] = 'oracle'
-        if oracle_result['returncode'] == 0 and oracle_output.is_file():
-            oracle_result['phase_seconds'] = _read_json_object(
-                oracle_output, label='oracle result'
-            ).get('phase_seconds', {})
         commands.append(oracle_result)
-        if oracle_result['returncode']:
-            # Failed oracle: no measurement commands, publishable=false, nonzero.
-            oracle_ok = False
-        else:
-            oracle_ok = True
-            for plan in plans:
-                remaining = profile.total_timeout - (time.monotonic() - started)
-                if remaining <= 0:
-                    commands.append({
-                        'suite': plan['suite'],
-                        'label': plan['label'],
-                        'command': plan['command'],
-                        'returncode': 124,
-                        'timeout': True,
-                        'elapsed_seconds': 0.0,
-                        'stdout_tail': '',
-                        'stderr_tail': 'whole-run timeout exhausted',
-                    })
-                    break
-                env = dict(plan['environment'] or {})
-                env['GOMETRY_BENCH_ORACLE_OK'] = '1'
-                result = _run(
-                    plan['command'],
-                    environment=env,
-                    timeout=min(profile.command_timeout, max(1, int(remaining))),
-                    benchmark_subject=(
-                        receipt_binding if plan.get('kind') == 'resource' else None
-                    ),
-                    package_root=(
-                        package_root if plan.get('kind') == 'resource' else None
-                    ),
-                    case_path=(
-                        Path(plan['case_path'])
-                        if plan.get('kind') == 'resource'
-                        else None
-                    ),
-                    result_path=(
-                        Path(plan['output']) if plan.get('kind') == 'resource' else None
-                    ),
+        oracle_ok = (
+            oracle_result['returncode'] == 0 and Path(oracle_plan['output']).is_file()
+        )
+
+        if oracle_ok:
+            chosen_plans.extend(initial_plans)
+            commands.extend(
+                _invoke_plan(
+                    plan,
+                    profile=profile,
+                    started=started,
+                    benchmark_subject=receipt_binding,
+                    package_root=package_root,
                 )
-                result['suite'] = plan['suite']
-                result['label'] = plan['label']
-                result['kind'] = plan.get('kind', 'paired-block')
-                if result['returncode'] == 0 and Path(plan['output']).is_file():
-                    result['phase_seconds'] = _read_json_object(
-                        Path(plan['output']), label='worker result'
-                    ).get('phase_seconds', {})
-                commands.append(result)
-                if result['returncode']:
-                    break
-    else:
-        # plan-only: surface oracle + timing/resource plans
-        plans = [oracle_plan, *plans]
-        oracle_ok = True
+                for plan in initial_plans
+            )
+
+            initial_ok = (
+                _initial_plan_is_complete(
+                    initial_plans,
+                    public_operations,
+                    block_count=profile.initial_paired_blocks,
+                )
+                and all(command['returncode'] == 0 for command in commands[1:])
+                and all(Path(plan['output']).is_file() for plan in initial_plans)
+            )
+            required_blocks_complete = initial_ok
+            candidates: list[dict[str, Any]] = []
+            if profile.sampling_policy is not None:
+                plans_by_operation: dict[str, list[dict[str, Any]]] = {}
+                commands_by_block = {
+                    command.get('block_id'): command for command in commands
+                }
+                for plan in initial_plans:
+                    operation = plan.get('operation')
+                    if isinstance(operation, str):
+                        plans_by_operation.setdefault(operation, []).append(plan)
+                for operation in operation_names:
+                    operation_plans = plans_by_operation.get(operation, [])
+                    block_ids = [plan['block_id'] for plan in operation_plans]
+                    lead_orders = [plan['lead'] for plan in operation_plans]
+                    if initial_ok:
+                        ratios = [
+                            _paired_block_ratio(
+                                Path(plan['output']),
+                                operation=operation,
+                                block_id=plan['block_id'],
+                            )
+                            for plan in operation_plans
+                        ]
+                        decision = assess_ratios(
+                            ratios,
+                            block_ids=block_ids,
+                            policy=profile.sampling_policy,
+                        )
+                        elapsed = sum(
+                            float(commands_by_block[block_id]['elapsed_seconds'])
+                            for block_id in block_ids
+                        )
+                        decision_records[operation] = {
+                            'block_ids': block_ids,
+                            'lead_orders': lead_orders,
+                            'inference': _sampling_decision_record(decision),
+                            'collection_status': (
+                                'complete' if decision.complete else 'pending'
+                            ),
+                            'estimated_extension_seconds': elapsed,
+                        }
+                        if decision.next_look is not None:
+                            candidates.append({
+                                'operation': operation,
+                                'estimated_seconds': elapsed,
+                            })
+                    else:
+                        decision_records[operation] = {
+                            'block_ids': block_ids,
+                            'lead_orders': lead_orders,
+                            'inference': None,
+                            'collection_status': 'incomplete',
+                            'estimated_extension_seconds': None,
+                        }
+
+                required_seconds = len(resource_plans) * profile.row_timeout
+                remaining = profile.total_timeout - (time.monotonic() - started)
+                admitted, rejected = _admit_extensions(
+                    candidates,
+                    remaining_seconds=remaining,
+                    required_seconds=required_seconds,
+                    reserve_seconds=_FINISH_RESERVE_SECONDS,
+                )
+                for operation, status in rejected.items():
+                    decision_records[operation]['collection_status'] = status
+
+                extension_numbers = tuple(
+                    range(
+                        profile.sampling_policy.looks[0] + 1,
+                        profile.sampling_policy.looks[-1] + 1,
+                    )
+                )
+                extension_plans: list[dict[str, Any]] = []
+                if admitted:
+                    extension_block_numbers: dict[str, tuple[int, ...]] = {}
+                    for operation in admitted:
+                        extension_block_numbers[operation] = extension_numbers
+                    extension_plans, _ = _benchmark_plans(
+                        profile_name=args.profile,
+                        profile=profile,
+                        selected=selected,
+                        output_dir=raw_directory,
+                        timestamp=timestamp,
+                        cpu=cpu,
+                        receipt_binding=receipt_binding,
+                        package_root=package_root,
+                        block_numbers=extension_block_numbers,
+                    )
+                extensions_by_operation: dict[str, list[dict[str, Any]]] = {}
+                for plan in extension_plans:
+                    extensions_by_operation.setdefault(plan['operation'], []).append(
+                        plan
+                    )
+                extension_failed = False
+                for candidate in candidates:
+                    operation = candidate['operation']
+                    if operation not in admitted:
+                        continue
+                    operation_plans = extensions_by_operation[operation]
+                    remaining = profile.total_timeout - (time.monotonic() - started)
+                    if not fits_budget(
+                        remaining_seconds=remaining,
+                        required_seconds=required_seconds,
+                        optional_seconds=admitted[operation],
+                        reserve_seconds=_FINISH_RESERVE_SECONDS,
+                    ):
+                        decision_records[operation]['collection_status'] = (
+                            'budget-limited'
+                        )
+                        continue
+                    chosen_plans.extend(operation_plans)
+                    spent = 0.0
+                    block_estimate = (
+                        admitted[operation] / len(operation_plans)
+                        if operation_plans
+                        else 0.0
+                    )
+                    for plan in operation_plans:
+                        future_seconds = max(
+                            0.0,
+                            admitted[operation] - spent - block_estimate,
+                        )
+                        commands.append(
+                            _invoke_plan(
+                                plan,
+                                profile=profile,
+                                started=started,
+                                reserve_seconds=(
+                                    required_seconds + _FINISH_RESERVE_SECONDS
+                                ),
+                                future_seconds=future_seconds,
+                                benchmark_subject=receipt_binding,
+                                package_root=package_root,
+                            )
+                        )
+                        command = commands[-1]
+                        spent += float(command['elapsed_seconds'])
+                        if command['returncode']:
+                            extension_failed = True
+                            decision_records[operation]['collection_status'] = (
+                                'incomplete'
+                            )
+                            break
+                    if extension_failed:
+                        break
+                    all_operation_plans = (
+                        plans_by_operation[operation] + operation_plans
+                    )
+                    block_ids = [plan['block_id'] for plan in all_operation_plans]
+                    lead_orders = [plan['lead'] for plan in all_operation_plans]
+                    ratios = [
+                        _paired_block_ratio(
+                            Path(plan['output']),
+                            operation=operation,
+                            block_id=plan['block_id'],
+                        )
+                        for plan in all_operation_plans
+                    ]
+                    decision = assess_ratios(
+                        ratios,
+                        block_ids=block_ids,
+                        policy=profile.sampling_policy,
+                    )
+                    decision_records[operation] = {
+                        'block_ids': block_ids,
+                        'lead_orders': lead_orders,
+                        'inference': _sampling_decision_record(decision),
+                        'collection_status': 'complete',
+                        'estimated_extension_seconds': candidate['estimated_seconds'],
+                    }
+                if extension_failed:
+                    for candidate in candidates:
+                        operation = candidate['operation']
+                        if (
+                            decision_records[operation]['collection_status']
+                            == 'pending'
+                        ):
+                            decision_records[operation]['collection_status'] = (
+                                'incomplete'
+                            )
+
+            # Resource probes are required release work, regardless of whether
+            # throughput comparisons resolved or spent their optional extension.
+            chosen_plans.extend(resource_plans)
+            for index, plan in enumerate(resource_plans):
+                future_required = (len(resource_plans) - index - 1) * (
+                    profile.row_timeout
+                )
+                commands.append(
+                    _invoke_plan(
+                        plan,
+                        profile=profile,
+                        started=started,
+                        reserve_seconds=(future_required + _FINISH_RESERVE_SECONDS),
+                        benchmark_subject=receipt_binding,
+                        package_root=package_root,
+                    )
+                )
 
     contention_after = (
         collect_contention()
         if args.profile == 'release' and not args.plan_only
         else {'metadata': {}, 'warnings': []}
     )
-    # Keep the external oracle artifact separate from timing/resource plans.
-    timing_plans = [plan for plan in plans if plan.get('kind') != 'oracle']
-    expected_commands = 1 + len(timing_plans)  # oracle + timing/resource
-    if args.plan_only:
-        commands_complete = True
-    else:
-        commands_complete = (
-            oracle_ok
-            and len(commands) == expected_commands
-            and all(command['returncode'] == 0 for command in commands)
-        )
     admission_completion = None
     if not args.plan_only:
         admission_completion = benchmark_runtime.complete_run_admission(receipt_binding)
-    artifact_plans = ([] if args.plan_only else [oracle_plan]) + timing_plans
-    artifacts = [
+    maximum_plan = {
+        operation: {
+            'block_ids': [
+                plan['block_id']
+                for plan in initial_plans
+                if plan.get('operation') == operation
+            ],
+            'lead_orders': [
+                plan['lead']
+                for plan in initial_plans
+                if plan.get('operation') == operation
+            ],
+        }
+        for operation in operation_names
+    }
+    actual_plan = {
+        operation: {
+            'block_ids': [
+                plan['block_id']
+                for plan in chosen_plans
+                if plan.get('kind') == 'paired-block'
+                and plan.get('operation') == operation
+            ],
+            'lead_orders': [
+                plan['lead']
+                for plan in chosen_plans
+                if plan.get('kind') == 'paired-block'
+                and plan.get('operation') == operation
+            ],
+        }
+        for operation in operation_names
+    }
+    planned_commands = (
+        [oracle_plan, *initial_plans, *resource_plans]
+        if args.plan_only
+        else [oracle_plan, *chosen_plans]
+    )
+    artifact_plans = ([] if args.plan_only else [oracle_plan]) + chosen_plans
+    artifacts = []
+    if sampling_plan_path is not None:
+        artifacts.append(sampling_plan_path.relative_to(run_directory).as_posix())
+    artifacts.extend(
         Path(plan['output']).relative_to(run_directory).as_posix()
         for plan in artifact_plans
         if plan.get('output') and Path(plan['output']).is_file()
-    ]
-    expected_artifacts = sum(1 for plan in artifact_plans if plan.get('output'))
+    )
+    expected_artifacts = (1 if sampling_plan_path is not None else 0) + sum(
+        1 for plan in artifact_plans if plan.get('output')
+    )
+    commands_complete = (
+        not args.plan_only
+        and oracle_ok
+        and required_blocks_complete
+        and len(commands) == 1 + len(chosen_plans)
+        and all(command['returncode'] == 0 for command in commands)
+        and len(artifacts) == expected_artifacts
+    )
+    resource_summaries = (
+        []
+        if args.plan_only
+        else _resource_summaries(chosen_plans, subject=receipt_binding)
+    )
+    required_resources_complete = not (
+        args.profile == 'release' and args.filter is None
+    ) or (
+        {plan['label'] for plan in resource_plans}
+        == {f'resource-{mode}' for mode in RESOURCE_MODES}
+        and {summary['mode'] for summary in resource_summaries} == set(RESOURCE_MODES)
+    )
+    commands_complete = commands_complete and required_resources_complete
     publishable = (
         args.profile == 'release'
         and args.filter is None
@@ -1814,16 +2351,12 @@ def main() -> None:
         and oracle_ok
         and commands_complete
         and len(artifacts) == expected_artifacts
+        and len(resource_summaries) == len(resource_plans)
         and not doctor['hard_failures']
     )
 
-    public_operations = _serialize_public_operations(profile.all_operations, selected)
     sampling = {
         'worker': PAIR_WORKER,
-        'measured_blocks': profile.paired_blocks,
-        'lead_orders': [
-            'ab' if index % 2 == 0 else 'ba' for index in range(profile.paired_blocks)
-        ],
         'warmup_iterations': int(profile.paired_sampling_args[1]),
         'repetitions': int(profile.paired_sampling_args[3]),
         'independent_process_blocks': True,
@@ -1831,6 +2364,45 @@ def main() -> None:
         'phase': 'warm',
         'oracle_state_scope': 'external-fresh-process',
     }
+    if profile.sampling_policy is None:
+        sampling.update({
+            'mode': 'plan-only' if args.plan_only else 'diagnostic',
+            'measured_blocks': None
+            if args.plan_only
+            else profile.initial_paired_blocks,
+            'lead_orders': (
+                None
+                if args.plan_only
+                else [
+                    plan['lead']
+                    for plan in initial_plans[: profile.initial_paired_blocks]
+                ]
+            ),
+            'maximum_plan': maximum_plan,
+        })
+    elif args.plan_only:
+        sampling.update({
+            'mode': 'plan-only',
+            'policy': _sampling_policy_record(profile.sampling_policy),
+            'initial_look': profile.sampling_policy.looks[0],
+            'maximum_look': profile.sampling_policy.looks[-1],
+            'plan_sha256': sampling_plan_sha256,
+            'maximum_plan': maximum_plan,
+        })
+    else:
+        sampling.update({
+            'mode': 'adaptive',
+            'policy': _sampling_policy_record(profile.sampling_policy),
+            'initial_look': profile.sampling_policy.looks[0],
+            'maximum_look': profile.sampling_policy.looks[-1],
+            'plan_sha256': sampling_plan_sha256,
+            'finish_reserve_seconds': _FINISH_RESERVE_SECONDS,
+            'required_resource_reserve_seconds': (
+                len(resource_plans) * profile.row_timeout
+            ),
+            'actual_plan': actual_plan,
+            'decisions': decision_records,
+        })
     result = {
         'manifest_type': _RUN_MANIFEST_TYPE,
         'schema_version': _MANIFEST_SCHEMA_VERSION,
@@ -1850,23 +2422,22 @@ def main() -> None:
         'elapsed_seconds': time.monotonic() - started,
         'doctor': doctor,
         'contention_after': contention_after,
-        'planned_commands': (
-            [oracle_plan, *timing_plans] if not args.plan_only else plans
-        ),
+        'planned_commands': planned_commands,
         'commands': commands,
         'commands_complete': commands_complete,
         'oracle_ok': oracle_ok if not args.plan_only else None,
+        'sampling_plan_artifact': (
+            sampling_plan_path.relative_to(run_directory).as_posix()
+            if sampling_plan_path is not None
+            else None
+        ),
         'oracle_artifact': (
             oracle_output.relative_to(run_directory).as_posix()
             if oracle_output.is_file()
             else None
         ),
         'artifacts': artifacts,
-        'resources': (
-            []
-            if args.plan_only
-            else _resource_summaries(plans, subject=receipt_binding)
-        ),
+        'resources': resource_summaries,
     }
     if admission_completion is not None:
         result['artifact_admission'] = {
@@ -1884,8 +2455,21 @@ def main() -> None:
     output = run_directory / 'run.json'
     _write_json_once(output, result, label='run manifest')
     print(f'wrote {output}')
+    if args.plan_only:
+        if profile.sampling_policy is not None:
+            print(
+                f'plan only: collect {profile.sampling_policy.looks[0]} blocks '
+                f'for every operation, then extend unresolved operations up to '
+                f'{profile.sampling_policy.looks[-1]}; no measurements collected'
+            )
+        else:
+            print(
+                'plan only: one diagnostic block per operation; '
+                'no measurements collected'
+            )
     if (
         (not args.plan_only and not oracle_ok)
+        or (not args.plan_only and not commands_complete)
         or any(command['returncode'] for command in commands)
         or (
             args.profile == 'release'
