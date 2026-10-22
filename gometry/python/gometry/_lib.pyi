@@ -1532,22 +1532,43 @@ class Geometry:
         'LINESTRING (5 5, 6 6)'
         """
     def segments(self) -> GeometryArray[LineString]:
-        """Consecutive pairs per independent line and ring, including ring closure.
+        """Consecutive vertex pairs from each line and polygon ring, in source order.
 
-        Points and empty geometries yield an empty array. Source ordinates,
-        CRS, and epoch are retained.
+        Includes closing ring edges and repeated-coordinate pairs; never joins
+        independent parts or rings. Points and empty geometries have no segments.
+        Every segment retains its source ordinates, CRS, and epoch.
+
+        Returns
+        -------
+        GeometryArray[LineString]
         """
     def map_coordinate_sequences(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
     ) -> Self:
-        """Map each line, ring, or point sequence through a read-only (N, D) matrix.
+        """Map each line, ring, or point coordinate sequence independently.
 
-        N may change; D and the native ordinate schema must remain unchanged.
-        A multipoint maps its stored point sequence; resizing it replaces point
-        membership, including empty slots. A point may return zero or one vertex.
-        Empty output empties components or removes holes. Undersized nonempty
-        lines and rings raise InvalidGeometryError. Ring constructor admission
-        applies, including closing open rings. No validity repair is performed.
+        The callback receives a read-only ``(N, D)`` float64 array in native
+        ordinate order (XY, XYZ, XYM, or XYZM). It may change N, but must retain
+        D and return finite coordinates. A point receives one coordinate and
+        may return zero or one. A multipoint receives its stored point sequence;
+        changing its size replaces its point membership, including empty slots.
+        Empty components are retained without calling the callback.
+
+        Parts, rings, CRS, epoch, and ordinate schemas stay with their source.
+        Empty output empties a point or line, removes a hole, or empties a
+        polygon whose rings all become empty. A nonempty hole with an empty
+        shell is an error. Nonempty lines need two vertices; nonempty rings
+        use constructor admission (three open corners, or four closed
+        vertices, closed on all active ordinates). No validity repair is run.
+
+        Parameters
+        ----------
+        func : callable
+            Per-sequence transformation, returning a two-dimensional matrix.
+
+        Returns
+        -------
+        Geometry
         """
     def map_coordinates(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
@@ -2246,15 +2267,19 @@ class Geometry:
     def line_merge(self, *, directed: bool = False) -> LineString | MultiLineString:
         """Merge connected LineString parts into longer LineStrings.
 
+        Joins occur only at degree-two endpoints, never across branching junctions.
+        With ``directed=True``, join only a source end to a source start: no component's
+        coordinate order is reversed.
+        Directed merging keeps active-distinct endpoint occurrences at a join, so
+        different Z/M values at the same X/Y are retained as consecutive vertices.
+        Geographic endpoints use seam and pole identity. Joining source aliases may
+        canonicalize their longitude spelling and insert vertices to retain authored
+        full-period edges; inserted Z/M follow original-source arclength.
+
         Parameters
         ----------
         directed : bool, default False
-            Join only source ends to source starts without reversing any source
-            coordinate sequence. Both modes stop at branching junctions.
-            Distinct Z/M values at a join retain both source endpoint occurrences.
-            Geographic seam and pole aliases join by frame identity. Publication
-            retains source full-period edges and carries inserted Z/M by source
-            arclength, even when longitude spellings change.
+            Preserve the direction of every source coordinate sequence.
 
         Returns
         -------
@@ -2961,9 +2986,12 @@ class Geometry:
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
-            Numeric Groups on an array supply separate explicit station sequences
-            per route. Empty station rows produce empty groups; missing station
-            rows or routes produce missing groups.
+            For an array, numeric ``Groups`` supplies a separate sequence of explicit
+            locations per route, for either basis. Group count must match array length.
+            Empty station groups produce empty point groups; missing routes or station
+            groups produce missing groups. Empty routes yield one empty point per station.
+            A plain numeric sequence stays flat, including an empty sequence; only
+            ``Groups`` selects per-route groups.
 
 
         count : int, optional
@@ -7386,14 +7414,35 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def segments(
         self: GeometryArray[Geometry | None],
     ) -> Groups[GeometryArray[LineString] | None]:
-        """Consecutive line/ring vertex pairs per row; missing rows stay missing."""
+        """Consecutive vertex pairs per source geometry.
+
+        Each group contains that row's line and ring segments, including closing
+        edges, without joining parts or rings. Point and empty rows have empty
+        groups; missing rows remain missing. Ordinates, CRS, and epoch are retained.
+
+        Returns
+        -------
+        Groups[GeometryArray[LineString] | None]
+        """
     def map_coordinate_sequences(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
     ) -> Self:
-        """Map point, line, and ring sequences independently with Geometry admission.
+        """Map each point, line, or ring sequence independently in row order.
 
-        Callback matrices are read-only, use each sequence's native ordinate
-        schema, and may change vertex count. Missing rows skip the callback.
+        Uses ``Geometry.map_coordinate_sequences`` admission and callback rules,
+        preserving each row's grouping, native ordinate schema, CRS, and epoch.
+        Missing rows remain missing and do not invoke the callback. Errors carry
+        the source row; callback exceptions retain their original type.
+
+        Parameters
+        ----------
+        func : callable
+            Receives one read-only ``(N, D)`` float64 matrix at a time and may
+            change N while preserving D.
+
+        Returns
+        -------
+        GeometryArray
         """
     def map_coordinates(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
@@ -8776,15 +8825,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[LineString | MultiLineString | None]:
         """Merge connected LineString parts into longer LineStrings.
 
+        Joins occur only at degree-two endpoints, never across branching junctions.
+        With ``directed=True``, join only a source end to a source start: no component's
+        coordinate order is reversed.
+        Directed merging keeps active-distinct endpoint occurrences at a join, so
+        different Z/M values at the same X/Y are retained as consecutive vertices.
+        Geographic endpoints use seam and pole identity. Joining source aliases may
+        canonicalize their longitude spelling and insert vertices to retain authored
+        full-period edges; inserted Z/M follow original-source arclength.
+
         Parameters
         ----------
         directed : bool, default False
-            Join only source ends to source starts without reversing any source
-            coordinate sequence. Both modes stop at branching junctions.
-            Distinct Z/M values at a join retain both source endpoint occurrences.
-            Geographic seam and pole aliases join by frame identity. Publication
-            retains source full-period edges and carries inserted Z/M by source
-            arclength, even when longitude spellings change.
+            Preserve the direction of every source coordinate sequence.
 
         Returns
         -------
@@ -9727,9 +9780,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
-            Numeric Groups supply separate explicit station sequences per route
-            for either basis. Empty station rows produce empty groups; missing
-            station rows or routes produce missing groups.
+            For an array, numeric ``Groups`` supplies a separate sequence of explicit
+            locations per route, for either basis. Group count must match array length.
+            Empty station groups produce empty point groups; missing routes or station
+            groups produce missing groups. Empty routes yield one empty point per station.
+            A plain numeric sequence stays flat, including an empty sequence; only
+            ``Groups`` selects per-route groups.
 
 
         count : int or iterable of int, optional
@@ -9766,7 +9822,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         GeometryArray[Point] or Groups[GeometryArray[Point]]
             One point per row for scalar or row-aligned ``at``; one point group per
-            row for ``count`` samples or numeric Groups of explicit stations.
+            row for ``count`` samples or numeric ``Groups`` of explicit stations.
 
 
         Raises
@@ -11728,7 +11784,7 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
         Raises
         ------
         ValueError
-        If the selected window contains no equal Circle or missing row.
+            If the selected window contains no equal Circle or missing row.
         """
     @overload
     def __getitem__(self, index: SupportsIndex, /) -> _CircleT_co: ...
@@ -11794,12 +11850,20 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
         *,
         missing: _BoolArray1D | _BoolLane | None,
     ) -> Groups[_GroupValuesT | None]:
-        """Group a flat typed payload using CSR offsets and optional missing rows.
+        """Group a flat typed values array using CSR row boundaries.
 
-        Numeric values must be one-dimensional int64 or float64 ndarrays.
-        GeometryArray and CellArray retain their types and inner validity.
-        Offsets start at zero and end at len(values). Missing groups have empty
-        values windows. Integer payloads remain exact integers.
+        The values kind is explicit even when empty. Numeric values are copied,
+        retaining int64 versus float64; geometry and cell arrays share immutable
+        storage. Integer values remain exact int64 values.
+
+        Parameters
+        ----------
+        values : numpy.ndarray, GeometryArray, or CellArray
+            Flat payload. Numeric arrays must be one-dimensional int64 or float64.
+        offsets : iterable of int
+            Nondecreasing boundaries, starting at zero and ending at len(values).
+        missing : iterable of bool, optional
+            One flag per group. Missing groups must have empty values windows.
         """
     values: _GroupsValuesProjection
     """The logical flat payload window (numeric ndarray, `GeometryArray`, or
@@ -16826,7 +16890,7 @@ def box(
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> Polygon | MultiPolygon:
-    """Create a rectangular geometry from bounds ``(minx, miny, maxx, maxy)``.
+    """Create a rectangular polygon from bounds ``(minx, miny, maxx, maxy)``.
 
     Parameters
     ----------
@@ -16838,8 +16902,9 @@ def box(
         CRS label (EPSG code, authority string, or WKT); attached as metadata,
         coordinates are not transformed.
         With a geographic CRS, bounds within the frame's native longitude and
-        latitude ranges use chart edges along parallels and meridians.
-        Seam-crossing bounds are split into two polygons. Ordered bounds outside
+        latitude ranges use chart edges along parallels and meridians. A
+        seam-crossing interval returns a `MultiPolygon`; ``(-half_period,
+        half_period)`` selects the full longitude band. Ordered bounds outside
         those ranges retain the corner-only, unwrapped construction.
 
     ccw : bool, default True
@@ -16979,7 +17044,7 @@ def boxes(
     ccw: bool = True,
     epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon | MultiPolygon]:
-    """Create a ``GeometryArray`` of rectangular geometries from bound columns.
+    """Create a ``GeometryArray`` of rectangular polygons from bound columns.
 
     Parameters
     ----------
@@ -21551,7 +21616,7 @@ def _from_geoparquet_arrow(
 def _geoparquet_publication(
     array: GeometryArray[Geometry | None], *, encoding: ArrowEncoding = 'auto'
 ) -> tuple[PyArrowArray, GeometryArray[Geometry | None]]:
-    """Publish one typed drawing for Arrow payload and file metadata."""
+    """Publish one typed geometry column and retain its rows for file metadata."""
 
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
