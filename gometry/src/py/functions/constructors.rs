@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
-use crate::py::errors::{CRSError, InvalidGeometryError};
+use crate::py::errors::InvalidGeometryError;
 use crate::{
     CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind, PyGeometry, PyGeometryArray, Typed,
     box_polygon, broadcast_coordinate_group, broadcast_crs_coordinate_inputs,
