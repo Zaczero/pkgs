@@ -1711,16 +1711,29 @@ def test_geographic_intersection_with_box_resolves_longitude_and_pole_aliases() 
         assert gm.equals(gm.intersection(rows, box_in_frame(rows, rect))[0], expected)
 
 
-def test_geographic_boxes_preserve_ordered_unwrapped_bounds() -> None:
+def test_geographic_boxes_preserve_ordered_unwrapped_coordinates() -> None:
     line = gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326)
     east_unwrapped = gm.box(170, -1, 190, 1, crs=4326)
     west_unwrapped = gm.box(-190, -1, 170, 1, crs=4326)
-    assert east_unwrapped.bounds == (170.0, -1.0, 190.0, 1.0)
-    assert west_unwrapped.bounds == (-190.0, -1.0, 170.0, 1.0)
-    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
-        gm.intersection(line, east_unwrapped)
-    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
-        gm.intersection(line, west_unwrapped)
+    assert list(east_unwrapped.exterior.coords) == [
+        (170, -1),
+        (190, -1),
+        (190, 1),
+        (170, 1),
+        (170, -1),
+    ]
+    assert list(west_unwrapped.exterior.coords) == [
+        (-190, -1),
+        (170, -1),
+        (170, 1),
+        (-190, 1),
+        (-190, -1),
+    ]
+    assert gm.equals(
+        gm.intersection(line, east_unwrapped),
+        gm.MultiLineString([[(-175, 0), (-170, 0)], [(170, 0), (175, 0)]], crs=4326),
+    )
+    assert gm.equals(gm.intersection(line, west_unwrapped), line)
     with pytest.raises(ValueError, match='geographic rectangle bounds'):
         gm.box(190, -1, -170, 1, crs=4326)
 

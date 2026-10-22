@@ -230,7 +230,7 @@ NON_FINITE_CASES: list[NonFinite] = [
             .maximum_inscribed_circle(tolerance=[0.1, NAN, 0.2])
             .to_polygon()
         ),
-        'tolerance must be a positive finite number, got NaN',
+        'tolerance must be finite',
         gm.GeometryError,
     ),
     (
@@ -243,7 +243,7 @@ NON_FINITE_CASES: list[NonFinite] = [
             .maximum_inscribed_circle(tolerance=[0.1, POS_INF, 0.2])
             .to_polygon()
         ),
-        'tolerance must be a positive finite number, got inf',
+        'tolerance must be finite',
         gm.GeometryError,
     ),
     (

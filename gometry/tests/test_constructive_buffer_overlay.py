@@ -1107,7 +1107,7 @@ def test_intersection_with_box_clips_scalar_array_and_preserves_line_axes() -> N
     )
     assert clipped_array[0].area == pytest.approx(4)
     assert clipped_array[1].to_wkt() == 'POINT EMPTY'
-    with pytest.raises(ValueError, match='rectangle bounds'):
+    with pytest.raises(ValueError, match='box minx'):
         gm.intersection(polygon, box_in_frame(polygon, (2, 0, 1, 1)))
 
 

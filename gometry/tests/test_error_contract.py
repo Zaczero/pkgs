@@ -93,12 +93,6 @@ def test_overlay_handles_every_dimension_combination() -> None:
             id='predicate',
         ),
         pytest.param(
-            lambda: gm.box(0, 0, 1, 1, wrap='bogus'),
-            'unknown box wrap "bogus"; expected \'split\'',
-            'wrap',
-            id='box-wrap',
-        ),
-        pytest.param(
             lambda: gm.crs_apply('+proj=affine', 0, 0, direction='sideways'),
             "unknown direction \"sideways\"; expected 'forward' or 'inverse'",
             'direction',

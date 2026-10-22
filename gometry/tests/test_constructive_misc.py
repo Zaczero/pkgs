@@ -540,7 +540,7 @@ def test_minimum_bounding_circle_is_smallest_enclosing() -> None:
         rel=0.02,
     )
     lifted = gm.Point(0, 0, z=1)
-    assert lifted.minimum_bounding_circle().to_polygon().to_wkt() == 'POINT (0 0)'
+    assert lifted.minimum_bounding_circle().to_polygon().to_wkt() == 'POINT Z (0 0 1)'
     _, _, r_huge = _circle_center_radius(
         gm
         .MultiPoint([(1e155, 0), (0, 1e155), (-1e155, 0)])
