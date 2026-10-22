@@ -4,6 +4,7 @@
 
 use crate::error::Result;
 mod buffer;
+mod decimal;
 mod edit;
 mod linework;
 mod offset;
@@ -16,12 +17,13 @@ mod subdivide;
 mod walk;
 mod winding;
 
+pub(crate) use decimal::{quantize_column, quantize_decimal};
 pub(crate) use edit::{AffineLinear, OriginAffine, OriginSpec, stable_affine_xy};
 pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_buffer_loop};
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
-    decimal_scale, normalized_line, orient_ring, quantize_column_simd, quantize_to_scale,
-    snap_column_simd, stable_snap_ordinate, vw_keep, vw_keep_geographic,
+    normalized_line, orient_ring, snap_column_simd, stable_snap_ordinate, vw_keep,
+    vw_keep_geographic,
 };
 #[cfg(test)]
 pub(crate) use segmentize::densify_points_budgeted;

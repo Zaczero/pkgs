@@ -8,7 +8,7 @@ use crate::geometry::constructive::reversed_points;
 use crate::geometry::{
     AxisFrame, BinaryHeap, CoordSeq, Coordinates, GeometryErrorKind, Ordering, Point, REDUCE_LANES,
     ReduceSimd, Ring, axis_pow2_scale, compare_f64, compare_points, power_of_two_exponent,
-    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, simd_map_f64,
+    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two,
     topology_coordinate_bits_simd, try_simd_map_f64, wrap_index,
 };
 
@@ -514,65 +514,6 @@ fn least_rotation_by(len: usize, compare: impl Fn(usize, usize) -> Ordering) -> 
         }
     }
     left.min(right)
-}
-
-/// Decimal scales for the boundary-validated quantize precisions (0..=15,
-/// enforced at the Python boundary) — a table lookup instead of a runtime
-/// `powi` loop per quantize call.
-pub(crate) const DECIMAL_SCALES: [f64; 16] = [
-    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
-];
-
-pub(crate) fn decimal_scale(precision: i32) -> f64 {
-    debug_assert!((0..=15).contains(&precision));
-    *DECIMAL_SCALES
-        .get(usize::try_from(precision).expect("quantize precision was admitted"))
-        .expect("quantize precision fits the scale table")
-}
-
-pub(crate) fn quantize_to_scale(value: f64, scale: f64) -> f64 {
-    let quantized = (value * scale).round() / scale;
-    // The grid falls outside f64's representable resolution when `scale`
-    // over/underflows (|precision| past ~308) or when `value * scale` overflows
-    // for a large finite coordinate. In every such case rounding is a no-op the
-    // type cannot express, so keep the original value rather than yielding the
-    // inf/NaN that would otherwise be stored unvalidated as a coordinate.
-    if quantized.is_finite() && !same_topological_coordinate(value, quantized) {
-        quantized
-    } else {
-        value
-    }
-}
-
-/// SIMD quantize of one ordinate column: `(v*scale).round()/scale`, keeping the
-/// original value wherever the result is non-finite (the [`quantize_to_scale`]
-/// overflow fallback, lane-selected). 8-wide; `StdFloat::round` rounds
-/// half-away-from-zero, matching `f64::round`, so this is bit-identical to the
-/// scalar per-element map (which compiled to a scalar loop through the
-/// closure).
-pub(crate) fn quantize_column_simd(column: &[f64], scale: f64) -> Box<[f64]> {
-    let n = column.len();
-    let mut out = vec![0.0_f64; n].into_boxed_slice();
-    let vscale = ReduceSimd::splat(scale);
-    let infinity = ReduceSimd::splat(f64::INFINITY);
-    simd_map_f64(
-        column,
-        &mut out,
-        |value| quantize_to_scale(value, scale),
-        |value| {
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "the SIMD quantize lane preserves the scalar binary64 expression"
-            )]
-            let quantized = (value * vscale).round() / vscale;
-            // `abs() < INFINITY` is the per-lane finiteness test (±inf and NaN both fail).
-            let finite = quantized.abs().simd_lt(infinity);
-            let changed = topology_coordinate_bits_simd(value)
-                .simd_ne(topology_coordinate_bits_simd(quantized));
-            (finite & changed).select(quantized, value)
-        },
-    );
-    out
 }
 
 /// SIMD snap of one ordinate column onto `origin + k * size`:

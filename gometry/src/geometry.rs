@@ -234,7 +234,7 @@ pub(crate) use constructive::{
     vw_keep_geographic,
 };
 use constructive::{
-    SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
+    SnapReference, orient_ring, quantize_decimal, snap_ring_to_reference,
     snap_ring_to_reference_with_context,
 };
 #[cfg(test)]

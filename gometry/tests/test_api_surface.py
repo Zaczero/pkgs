@@ -154,7 +154,6 @@ def _normalize_boundary_cases(
 
 def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
     huge = 10**100
-    point = gm.Point(0, 0, crs=4326)
     area = gm.box(-1, -1, 1, 1, crs=4326)
     h3_cell = gm.H3Cell(0, 0, resolution=5)
     s2_cell = gm.S2Cell(0, 0, level=5)
@@ -176,8 +175,6 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: s2_cell.parent(-1), 'S2 level'),
         (lambda: gm.CellArray([-1], type=gm.S2Cell).polygon, 'S2Cell id'),
         (lambda: gm.CellArray([huge], type=gm.S2Cell).polygon, 'S2Cell id'),
-        (lambda: point.quantize(huge), 'precision'),
-        (lambda: gm.Point(0, 0).to_wkb(precision=16), 'precision'),
         (lambda: gm.Point(0, 0).buffer(1, quadrant_segments=-1), 'quadrant_segments'),
         (lambda: idx.nearest(gm.Point(0, 0), k=-1), 'nearest k'),
         (

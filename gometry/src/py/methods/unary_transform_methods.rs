@@ -5,7 +5,7 @@ use crate::{
     BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
     DistanceUnit, F64Param, GeometryArrayStorage, GridOrigin, NavigationPath, OriginSpec,
     PyGeometry, PyGeometryArray, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
-    angle_radians, finite_f64_required, parse_affine_matrix, parse_grid_size, parse_precision,
+    angle_radians, finite_f64_required, parse_affine_matrix, parse_grid_size,
     validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
     validate_max_segment_length, validate_smooth_iterations,
 };
@@ -658,7 +658,10 @@ method_doc! {
 Parameters
 ----------
 precision : int
-    Decimal places to keep (``0``-``15``).";
+    Decimal places to keep. Negative values round to tens, hundreds, and so
+    on. Every present X/Y/Z/M ordinate is rounded independently, with ties to
+    even, as with Python's ``round``. The decimal result is rounded once to
+    binary64.";
     scalar: r"
 
 Returns
@@ -679,7 +682,7 @@ GeometryArray
 Raises
 ------
 GeometryError
-    If ``precision`` is outside ``0``-``15``.
+    If a rounded coordinate is outside the finite binary64 range.
 
 Examples
 --------

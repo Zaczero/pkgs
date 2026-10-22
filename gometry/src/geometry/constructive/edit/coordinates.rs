@@ -1,8 +1,8 @@
 use super::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, HasM, HasZ, OrdinateAxis, OriginAffine,
     ReduceSimd, Result, Shape, affine_ordinate_simd, affine_x_row_identity, affine_y_row_identity,
-    column_all_finite, decimal_scale, quantize_column_simd, set_point_ordinate, simd_xy_map_f64,
-    simd_xy_map_one_f64, snap_column_simd, stable_affine_xy,
+    column_all_finite, quantize_column, set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
+    snap_column_simd, stable_affine_xy,
 };
 
 impl CoordSeq {
@@ -229,13 +229,12 @@ impl CoordSeq {
 
     /// Every ordinate column quantized to `precision` decimal places.
     pub fn quantize(&self, precision: i32) -> Result<Self> {
-        let scale = decimal_scale(precision);
-        let map = |column: &[f64]| -> Vec<f64> { quantize_column_simd(column, scale).into_vec() };
+        let map = |column: &[f64]| quantize_column(column, precision);
         Self::try_from_vecs(
-            map(self.xs()),
-            map(self.ys()),
-            self.zs().map(map),
-            self.ms().map(map),
+            map(self.xs())?,
+            map(self.ys())?,
+            self.zs().map(map).transpose()?,
+            self.ms().map(map).transpose()?,
         )
     }
 
@@ -304,7 +303,7 @@ impl CoordSeq {
 impl Shape {
     pub fn quantize(&self, precision: i32) -> Result<Self> {
         Ok(match self {
-            Self::Point(point) => Self::Point(point.quantize(precision)),
+            Self::Point(point) => Self::Point(point.quantize(precision)?),
             Self::MultiPoint(points) => Self::MultiPoint(points.quantize(precision)?),
             Self::LineString(points) => Self::LineString(points.quantize(precision)?),
             Self::MultiLineString(lines) => Self::MultiLineString(

@@ -256,10 +256,84 @@ def test_quantize_preserves_crs_and_rounds_coordinates() -> None:
         [1.23, 2.35],
         [9.88, 8.77],
     ]
-    with pytest.raises(gm.GeometryError, match='precision must be between 0 and 15'):
-        point.quantize(16)
+    assert point.quantize(16).coords.to_nested() == point.coords.to_nested()
     huge = gm.Point(1e300, 2e300).quantize(15)
     assert huge.coords.to_nested() == [1e300, 2e300]
+
+
+@pytest.mark.parametrize(
+    ('value', 'precision'),
+    [
+        (2.675, 2),
+        (1.25, 1),
+        (1.75, 1),
+        (-2.5, 0),
+        (149.9, -2),
+        (150.0, -2),
+        (250.0, -2),
+        (-350.0, -2),
+        (1.7976931348623157e308, 300),
+        (1.7976931348623157e308, -303),
+        (1.234567e-20, 22),
+        (5e-324, 323),
+        (5e-324, 324),
+        (1.0, 10**100),
+        (-1.0, -(10**100)),
+    ],
+)
+def test_quantize_matches_python_decimal_rounding(value: float, precision: int) -> None:
+    expected = round(value, precision)
+    point = gm.Point(value, -value, z=value, m=-value)
+    assert point.quantize(precision).coords.to_nested() == [
+        expected,
+        -expected,
+        expected,
+        -expected,
+    ]
+    packed = gm.GeometryArray([point, point])
+    assert (
+        packed.quantize(precision).to_wkt() == [point.quantize(precision).to_wkt()] * 2
+    )
+
+
+def test_quantize_rejects_actual_result_overflow() -> None:
+    with pytest.raises(gm.GeometryError, match='finite coordinate range'):
+        gm.Point(1.7976931348623157e308, 0).quantize(-308)
+
+
+@pytest.mark.parametrize('precision', [-2, -1, 0, 2, 6, 7, 22])
+def test_quantize_columns_mix_certified_values_ties_and_extremes(
+    precision: int,
+) -> None:
+    values = np.array([
+        2.675,
+        -2.675,
+        1.25,
+        1.75,
+        12.34567891,
+        -87.65432109,
+        0.0,
+        -0.0,
+        1e300,
+        1.234567e-20,
+        5e-324,
+        -5e-324,
+        37.123456789,
+        52.765432198,
+        0.125,
+        0.375,
+        123.456789,
+    ])
+    result = gm.points(values, -values, z=values, m=-values).quantize(precision)
+    expected = [round(float(value), precision) for value in values]
+    np.testing.assert_array_equal([point.x for point in result], expected)
+    np.testing.assert_array_equal(
+        [point.y for point in result], [-value for value in expected]
+    )
+    np.testing.assert_array_equal([point.z for point in result], expected)
+    np.testing.assert_array_equal(
+        [point.m for point in result], [-value for value in expected]
+    )
 
 
 def test_is_valid_packed_arrays_match_mixed() -> None:

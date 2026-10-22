@@ -19,6 +19,7 @@ include_srid : bool, default False
 
 precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
+    Uses ``quantize`` rounding, including negative precision and ties to even.
 
 drop_epoch : bool, default False
     Permit losing coordinate-epoch metadata, which WKT cannot encode.");
@@ -42,7 +43,7 @@ list of str
 Raises
 ------
 GeometryError
-    If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
+    If a rounded coordinate overflows, or the geometry carries a coordinate epoch and
     ``drop_epoch`` is false.
 CRSError
     If ``include_srid`` is set and the CRS has no EPSG code.
@@ -75,6 +76,7 @@ include_srid : bool, default False
 
 precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
+    Uses ``quantize`` rounding, including negative precision and ties to even.
 
 drop_epoch : bool, default False
     Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.");
@@ -102,7 +104,7 @@ round-trip; use Arrow interchange when the epoch matters.
 Raises
 ------
 GeometryError
-    If ``precision`` is not between 0 and 15, or the geometry carries a
+    If a rounded coordinate overflows, or the geometry carries a
     coordinate epoch and ``drop_epoch`` is false.
 CRSError
     If ``include_srid`` is set and the CRS has no EPSG code.

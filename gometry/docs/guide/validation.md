@@ -273,6 +273,10 @@ without a full repair.
 [`geom.quantize(precision)`][gometry.Geometry.quantize] rounds every coordinate to `precision` decimal
 places. It gives coordinates from different sources a common precision for
 overlay, equality, deduplication, and interchange.
+Negative precision rounds to tens (`-1`), hundreds (`-2`), and larger decimal
+steps. All present X/Y/Z/M ordinates use ties-to-even rounding, as with Python's
+`round`; tiny coordinates can use more than 15 decimal places. WKT and WKB
+writers' `precision=` applies this same operation before serialization.
 
 ```python exec="on" source="block" result="text" interactive="off"
 import gometry as gm

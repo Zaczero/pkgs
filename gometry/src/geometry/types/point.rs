@@ -1,8 +1,8 @@
 use crate::error::Result;
+use crate::geometry::quantize_decimal;
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, XY, ZOrdinate,
 };
-use crate::geometry::{decimal_scale, quantize_to_scale};
 
 impl Point {
     pub fn new(x: f64, y: f64) -> Result<Self> {
@@ -101,20 +101,22 @@ impl Point {
         self.with_xy(self.x + dx, self.y + dy)
     }
 
-    pub fn quantize(self, precision: i32) -> Self {
-        // Table lookup once per point (precision is boundary-validated).
-        let scale = decimal_scale(precision);
-        Self {
-            x: quantize_to_scale(self.x, scale),
-            y: quantize_to_scale(self.y, scale),
+    pub fn quantize(self, precision: i32) -> Result<Self> {
+        Ok(Self {
+            x: quantize_decimal(self.x, precision)?,
+            y: quantize_decimal(self.y, precision)?,
             z: self
                 .z()
-                .map_or(0.0, |value| quantize_to_scale(value, scale)),
+                .map(|value| quantize_decimal(value, precision))
+                .transpose()?
+                .unwrap_or(0.0),
             m: self
                 .m()
-                .map_or(0.0, |value| quantize_to_scale(value, scale)),
+                .map(|value| quantize_decimal(value, precision))
+                .transpose()?
+                .unwrap_or(0.0),
             axes: self.axes,
-        }
+        })
     }
 
     pub const fn force_2d(self) -> Self {

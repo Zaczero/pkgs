@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::NonNegative;
 use crate::geometry::constructive::{
-    Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
-    remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
-    segmentize_points_budgeted, snap_column_simd, split,
+    Result, SegmentPlacement, normalized_line, quantize_column, remove_repeated_line_points,
+    remove_repeated_points, remove_repeated_ring_points, segmentize_points_budgeted,
+    snap_column_simd, split,
 };
 use crate::geometry::numerics::product::{
     DekkerParts, binary_zero, checked_normal_sum, floor_binary_exponent, normal_or_zero,

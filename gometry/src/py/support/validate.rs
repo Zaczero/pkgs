@@ -6,14 +6,21 @@ use crate::boundary::FloatInput;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
-    PyAnyMethods as _, PyErr, PyResult, Python, non_negative_int, py_i64_bounded,
+    PyAnyMethods as _, PyErr, PyResult, Python, non_negative_int,
 };
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
-    py_i64_bounded("precision", value, 0..=15, &|v| {
-        GeometryError::new_err(format!("precision must be between 0 and 15, got {v}"))
-    })
-    .map(|precision| precision as i32)
+    let integer = crate::boundary::input::py_index_object("precision", value)?;
+    // Outside this range every admitted binary64 coordinate either stays
+    // unchanged or rounds to signed zero. Compare before narrowing so even a
+    // Python integer with thousands of digits has the ordinary result.
+    if integer.gt(324)? {
+        Ok(324)
+    } else if integer.lt(-309)? {
+        Ok(-309)
+    } else {
+        integer.extract()
+    }
 }
 
 pub(crate) fn validate_buffer_quadrant_segments(quadrant_segments: i64) -> PyResult<NonZeroU32> {

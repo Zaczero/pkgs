@@ -1674,7 +1674,7 @@ def test_serializer_precision_kwarg_rounds_output() -> None:
 def test_serializer_precision_kwarg_matches_quantize() -> None:
     geom = gm.LineString([(1.23456, 2.34567), (7.65432, 8.76543)], crs=4326)
     array = gm.GeometryArray([geom, gm.Point(3.14159, 2.71828, crs=4326)])  # ruff: ignore[math-constant] - Deliberately rounded input for quantization.
-    for precision in (1, 2, 5):
+    for precision in (-2, -1, 0, 1, 2, 5, 22, 10**100):
         assert geom.to_wkt(precision=precision) == geom.quantize(precision).to_wkt()
         assert geom.to_wkb(precision=precision) == geom.quantize(precision).to_wkb()
         assert array.to_wkt(precision=precision) == array.quantize(precision).to_wkt()
@@ -1682,10 +1682,10 @@ def test_serializer_precision_kwarg_matches_quantize() -> None:
 
 
 def test_serializer_precision_kwarg_rejects_overflow() -> None:
-    with pytest.raises(gm.GeometryError, match='precision'):
-        gm.Point(0, 0).to_wkt(precision=16)
-    with pytest.raises(gm.GeometryError, match='precision'):
-        gm.Point(0, 0).to_wkb(precision=16)
+    with pytest.raises(gm.GeometryError, match='finite coordinate range'):
+        gm.Point(1.7976931348623157e308, 0).to_wkt(precision=-308)
+    with pytest.raises(gm.GeometryError, match='finite coordinate range'):
+        gm.Point(1.7976931348623157e308, 0).to_wkb(precision=-308)
 
 
 def test_serializer_methods_agree_across_scalar_and_array() -> None:

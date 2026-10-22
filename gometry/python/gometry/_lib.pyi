@@ -3782,7 +3782,10 @@ class Geometry:
         Parameters
         ----------
         precision : int
-            Decimal places to keep (``0``-``15``).
+            Decimal places to keep. Negative values round to tens, hundreds, and so
+            on. Every present X/Y/Z/M ordinate is rounded independently, with ties to
+            even, as with Python's ``round``. The decimal result is rounded once to
+            binary64.
 
         Returns
         -------
@@ -3793,7 +3796,7 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``precision`` is outside ``0``-``15``.
+            If a rounded coordinate is outside the finite binary64 range.
 
         Examples
         --------
@@ -4195,7 +4198,7 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
+            If a rounded coordinate overflows, or the geometry carries a coordinate epoch and
             ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
@@ -4206,6 +4209,7 @@ class Geometry:
 
         Examples
         --------
+            Uses ``quantize`` rounding, including negative precision and ties to even.
         >>> import gometry as gm
         >>> gm.Point(1.5, 2.5).to_wkt()
         'POINT (1.5 2.5)'
@@ -4250,13 +4254,14 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``precision`` is not between 0 and 15, or the geometry carries a
+            If a rounded coordinate overflows, or the geometry carries a
             coordinate epoch and ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
 
         See Also
         --------
+            Uses ``quantize`` rounding, including negative precision and ties to even.
         from_wkb : Parse WKB/EWKB back into a geometry.
 
         Examples
@@ -10684,7 +10689,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         precision : int
-            Decimal places to keep (``0``-``15``).
+            Decimal places to keep. Negative values round to tens, hundreds, and so
+            on. Every present X/Y/Z/M ordinate is rounded independently, with ties to
+            even, as with Python's ``round``. The decimal result is rounded once to
+            binary64.
 
         Returns
         -------
@@ -10695,7 +10703,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``precision`` is outside ``0``-``15``.
+            If a rounded coordinate is outside the finite binary64 range.
 
         Examples
         --------
@@ -11309,7 +11317,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
+            If a rounded coordinate overflows, or the geometry carries a coordinate epoch and
             ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
@@ -11342,6 +11350,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         include_srid: bool = False,
         precision: _IntScalar | None = None,
         drop_epoch: bool = False,
+            Uses ``quantize`` rounding, including negative precision and ties to even.
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
 
@@ -11373,7 +11382,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``precision`` is not between 0 and 15, or the geometry carries a
+            If a rounded coordinate overflows, or the geometry carries a
             coordinate epoch and ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
@@ -11402,6 +11411,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             per geometry.
 
 
+            Uses ``quantize`` rounding, including negative precision and ties to even.
         Returns
         -------
         GeometryArray
