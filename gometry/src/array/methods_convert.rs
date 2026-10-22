@@ -417,11 +417,12 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn quantize_unary_packed(&self, py: Python<'_>, precision: i32) -> PyResult<Self> {
-        if let Some(axes) = self.storage().packed_axes()
-            && let Some(mapped) =
-                self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
-                    Ok(point.quantize(precision))
-                })?
+        if let Some(mapped) =
+            self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
+                crate::geometry::storage::packed_columns::quantize_selected_columns(
+                    columns, precision,
+                )
+            })?
         {
             return Ok(mapped);
         }

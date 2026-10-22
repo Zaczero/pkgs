@@ -1,7 +1,8 @@
 use super::transform::TargetLongitudeOutput;
 use super::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder, GeographicFrame,
-    PackedColumnOutput, PackedColumns, Point, TransformFailure, batch_err, row_err, storage,
+    PackedColumnOutput, PackedColumns, Point, RowSelectionRef, TransformFailure, batch_err,
+    row_err, storage,
 };
 use crate::error::BatchResult;
 
@@ -13,6 +14,62 @@ fn finish_pointwise_coords(builder: CoordSeqBuilder, has_missing: bool) -> Batch
     } else {
         builder.finish().map_err(batch_err)
     }
+}
+
+/// Contiguous dense points and complete identity CSR payloads use the column
+/// kernel. Other selections and nullable layouts keep the present-row cursor:
+/// backing columns may include missing placeholders or unselected coordinates.
+/// Identity CSR selectors also need complete child-column coverage, since
+/// admitted offsets may leave an unreferenced coordinate or ring tail.
+pub(crate) fn quantize_selected_columns(
+    columns: PackedColumns<'_>,
+    precision: i32,
+) -> BatchResult<PackedColumnOutput> {
+    let axes = match &columns {
+        PackedColumns::Points(points) => {
+            if let Some(coords) = points.contiguous_coords() {
+                return Ok(PackedColumnOutput::Points(
+                    coords.quantize(precision).map_err(batch_err)?,
+                ));
+            }
+            points.coords().axes()
+        },
+        PackedColumns::Lines(lines) => {
+            if lines.missing.is_none()
+                && matches!(lines.row_map, RowSelectionRef::Identity)
+                && lines
+                    .offsets()
+                    .last()
+                    .is_some_and(|&end| end as usize == lines.coords().len())
+            {
+                return Ok(PackedColumnOutput::Lines {
+                    coords: lines.coords().quantize(precision).map_err(batch_err)?,
+                    offsets: lines.offsets.clone(),
+                });
+            }
+            lines.coords().axes()
+        },
+        PackedColumns::Polygons(polygons) => {
+            if polygons.missing.is_none()
+                && matches!(polygons.row_map, RowSelectionRef::Identity)
+                && polygons.polygon_offsets().last().is_some_and(|&end| {
+                    end as usize == polygons.ring_offsets().len().saturating_sub(1)
+                })
+                && polygons
+                    .ring_offsets()
+                    .last()
+                    .is_some_and(|&end| end as usize == polygons.coords().len())
+            {
+                return Ok(PackedColumnOutput::Polygons {
+                    coords: polygons.coords().quantize(precision).map_err(batch_err)?,
+                    ring_offsets: polygons.ring_offsets.clone(),
+                    polygon_offsets: polygons.polygon_offsets.clone(),
+                });
+            }
+            polygons.coords().axes()
+        },
+    };
+    map_selected_points(columns, axes, |point| point.quantize(precision))
 }
 
 pub(super) fn canonicalize_transformed_points(

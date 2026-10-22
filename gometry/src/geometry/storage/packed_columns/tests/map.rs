@@ -2,6 +2,50 @@ use super::super::resolve::resolve_point_columns;
 use super::*;
 
 #[test]
+fn quantize_skips_unreferenced_coordinate_and_ring_tails() {
+    let coords = CoordSeq::try_from_vecs(
+        vec![
+            1.25,
+            2.75,
+            1.25,
+            1.25,
+            f64::MAX,
+            f64::MAX,
+            f64::MAX,
+            f64::MAX,
+        ],
+        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        None,
+        None,
+    )
+    .unwrap();
+    let line_offsets = CsrOffsetColumn::try_new(vec![0, 4], coords.len()).unwrap();
+    let ring_offsets = CsrOffsetColumn::try_new(vec![0, 4, 8], coords.len()).unwrap();
+    let polygon_offsets = CsrOffsetColumn::try_new(vec![0, 1], 2).unwrap();
+    let lines = LineColumns::from_parts(&coords, &line_offsets, RowSelectionRef::Identity);
+    let polygons = PolygonColumns::from_parts(
+        &coords,
+        &ring_offsets,
+        &polygon_offsets,
+        RowSelectionRef::Identity,
+    );
+    for columns in [
+        PackedColumns::Lines(lines),
+        PackedColumns::Polygons(polygons),
+    ] {
+        let output = quantize_selected_columns(columns, -308).unwrap();
+        let output = match output {
+            PackedColumnOutput::Lines { coords, .. }
+            | PackedColumnOutput::Polygons { coords, .. } => coords,
+            PackedColumnOutput::Points(_) => unreachable!("line and polygon inputs preserve kind"),
+        };
+        assert_eq!(output.len(), 4);
+        assert_eq!(output.xs(), &[0.0; 4]);
+        assert_eq!(output.ys(), &[0.0; 4]);
+    }
+}
+
+#[test]
 fn point_buffers_reserve_all_output_columns_once() {
     let allocations = [2_usize, 128].map(|rows| {
         let storage = GeometryArrayStorage::Packed(PackedStorage::Points {

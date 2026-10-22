@@ -336,6 +336,78 @@ def test_quantize_columns_mix_certified_values_ties_and_extremes(
     )
 
 
+@pytest.mark.parametrize('kind', ['point', 'line', 'polygon'])
+@pytest.mark.parametrize('precision', [2, 6, -1, 22, -308])
+def test_quantize_packed_kinds_keep_selected_missing_and_empty_rows(
+    kind: str,
+    precision: int,
+) -> None:
+    shape = {
+        'point': gm.Point(2.675, 9.87654, z=3.45678, m=4.56789),
+        'line': gm.LineString(
+            [(2.675, 9.87654), (12.34567, 8.76543), (23.45678, 7.65432)],
+            z=[3.45678, 4.56789, 5.67891],
+            m=[6.78912, 7.89123, 8.91234],
+        ),
+        'polygon': gm.Polygon(
+            [
+                (2.675, 9.87654),
+                (12.34567, 8.76543),
+                (23.45678, 17.65432),
+                (2.675, 9.87654),
+            ],
+            z=[3.45678, 4.56789, 5.67891, 3.45678],
+            m=[6.78912, 7.89123, 8.91234, 6.78912],
+        ),
+    }[kind]
+    empty = gm.from_wkt(
+        {
+            'point': 'POINT ZM EMPTY',
+            'line': 'LINESTRING ZM EMPTY',
+            'polygon': 'POLYGON ZM EMPTY',
+        }[kind]
+    )
+    dense = gm.GeometryArray([shape] * 17)
+    nullable = gm.GeometryArray([shape, None, shape, None])
+    with_empty = gm.GeometryArray([empty, shape, None, empty, shape])
+    for rows in (
+        dense,
+        dense[2:13],
+        dense[[12, 1, 12, 0]],
+        nullable,
+        nullable[[3, 0, 1, 2]],
+        nullable[[1, 3]],
+        with_empty,
+        with_empty[[3, 2, 1, 0, 4]],
+    ):
+        expected = [
+            None if row is None else row.quantize(precision).to_wkt() for row in rows
+        ]
+        assert rows.quantize(precision).to_wkt() == expected
+
+
+@pytest.mark.parametrize('kind', ['point', 'line', 'polygon'])
+def test_quantize_does_not_visit_excluded_overflowing_coordinates(kind: str) -> None:
+    maximum = 1.7976931348623157e308
+    bad, good = {
+        'point': (gm.Point(maximum, 0), gm.Point(1, 2)),
+        'line': (
+            gm.LineString([(0, 0), (maximum, 1)]),
+            gm.LineString([(1, 2), (3, 4)]),
+        ),
+        'polygon': (
+            gm.Polygon([(0, 0), (maximum, 0), (0, 1), (0, 0)]),
+            gm.Polygon([(1, 2), (3, 4), (0, 5), (1, 2)]),
+        ),
+    }[kind]
+    rows = gm.GeometryArray([bad, good])
+    with pytest.raises(gm.GeometryError, match='finite coordinate range'):
+        rows.quantize(-308)
+    expected = good.quantize(-308).to_wkt()
+    assert rows[1:].quantize(-308).to_wkt() == [expected]
+    assert rows[[1, 1]].quantize(-308).to_wkt() == [expected, expected]
+
+
 def test_is_valid_packed_arrays_match_mixed() -> None:
     """Packed point/line/polygon columns agree with mixed-row arrays."""
     packed_pts = gm.points([0.0, 1.0], [0.0, 1.0], crs=4326)

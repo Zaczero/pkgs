@@ -284,12 +284,15 @@ pub(crate) fn try_unary_packed_array(
     // packed storage directly stay on the present-row/scatter lane. `Boundary`
     // preserves packed structure without inspecting missing coordinates;
     // `Segmentize` owns a mask-aware fallback so one generated-work budget
-    // spans every present row. Other constructive ops would need different
-    // skip-or-scatter logic and stay bailed here.
+    // spans every present row. `Quantize` maps only selected present coordinates.
+    // Other constructive ops would need different skip-or-scatter logic and
+    // stay bailed here.
     if array.has_missing()
         && !matches!(
             op,
-            Operation::Boundary | Operation::Metric(MetricOp::Segmentize)
+            Operation::Boundary
+                | Operation::Quantize
+                | Operation::Metric(MetricOp::Segmentize)
         )
     {
         return None;
