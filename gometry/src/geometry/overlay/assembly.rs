@@ -34,7 +34,7 @@ fn extend_chain(
 /// map lookup per edge end and no per-node allocation, which is what an
 /// overlay of thousands of atomic segments spends its time on otherwise.
 pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Result<Vec<CoordSeq>> {
-    merge_chains_impl(edges, &mut |_, _, _| {})
+    merge_chains_impl(edges, false, &mut |_, _, _| {})
 }
 
 /// Merge chains while retaining the input vertex occurrence that emitted each
@@ -44,7 +44,7 @@ pub(crate) fn merge_chains_with_origins<E: AsRef<CoordSeq>>(
     edges: &[E],
 ) -> crate::error::Result<(Vec<CoordSeq>, ChainOrigins)> {
     let mut origins = Vec::with_capacity(edges.len());
-    let chains = merge_chains_impl(edges, &mut |chain, edge, vertex| {
+    let chains = merge_chains_impl(edges, false, &mut |chain, edge, vertex| {
         while origins.len() <= chain {
             origins.push(Vec::new());
         }
@@ -56,12 +56,20 @@ pub(crate) fn merge_chains_with_origins<E: AsRef<CoordSeq>>(
     Ok((chains, origins))
 }
 
+pub(crate) fn merge_line_chains<E: AsRef<CoordSeq>>(
+    edges: &[E],
+    directed: bool,
+) -> crate::error::Result<Vec<CoordSeq>> {
+    merge_chains_impl(edges, directed, &mut |_, _, _| {})
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "dense endpoint IDs, aligned live/node columns, checked CSR totals, and CSR-row traversal bound every lookup"
 )]
 fn merge_chains_impl<E: AsRef<CoordSeq>>(
     edges: &[E],
+    directed: bool,
     record_origin: &mut impl FnMut(usize, usize, usize),
 ) -> crate::error::Result<Vec<CoordSeq>> {
     let mut ends: Vec<[PointKey; 2]> = Vec::with_capacity(edges.len());
@@ -72,7 +80,7 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         let Some(first) = points.next().map(PointKey::new) else {
             continue;
         };
-        if points.any(|point| PointKey::new(point) != first) {
+        if (directed && edge.len() >= 2) || points.any(|point| PointKey::new(point) != first) {
             ends.push([
                 first,
                 PointKey::new(edge.last().expect("edge has >= 2 vertices")),
@@ -177,29 +185,44 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
             .as_ref();
         let mut coords = CoordSeqBuilder::with_capacity(first.axes(), first.len());
         let mut edge = seed;
+        let mut previous_end = None;
         loop {
             used[edge] = true;
             let [a, b] = node_ends[edge];
             let [start_key, end_key] = ends[edge];
             let from_key = if a == from { start_key } else { end_key };
+            let source = edges[live[edge]].as_ref();
+            let skip = usize::from(
+                coords.len() != 0
+                    && (!directed
+                        || previous_end.is_some_and(|previous| {
+                            crate::geometry::same_active_position(
+                                previous,
+                                source.first().expect("live edge has at least two vertices"),
+                            )
+                        })),
+            );
             extend_chain(
-                edges[live[edge]].as_ref(),
+                source,
                 from_key,
-                usize::from(coords.len() != 0),
+                skip,
                 live[edge],
                 chain_index,
                 &mut coords,
                 record_origin,
             );
+            if directed {
+                previous_end = source.last();
+            }
             let far = if a == from { b } else { a };
             if degree[far as usize] != 2 {
                 break;
             }
-            match incident(far)
-                .iter()
-                .copied()
-                .find(|&next| next as usize != edge && !used[next as usize])
-            {
+            match incident(far).iter().copied().find(|&next| {
+                next as usize != edge
+                    && !used[next as usize]
+                    && (!directed || node_ends[next as usize][0] == far)
+            }) {
                 Some(next) => {
                     edge = next as usize;
                     from = far;
@@ -216,7 +239,16 @@ fn merge_chains_impl<E: AsRef<CoordSeq>>(
         if used[seed] {
             continue;
         }
-        if let Some(from) = [a, b].into_iter().find(|&node| degree[node as usize] != 2) {
+        let start = if directed {
+            (degree[a as usize] != 2
+                || !incident(a)
+                    .iter()
+                    .any(|&edge| edge as usize != seed && node_ends[edge as usize][1] == a))
+            .then_some(a)
+        } else {
+            [a, b].into_iter().find(|&node| degree[node as usize] != 2)
+        };
+        if let Some(from) = start {
             let chain_index = chains.len();
             chains.push(walk(seed, from, chain_index, &mut used)?);
         }

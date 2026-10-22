@@ -13,7 +13,7 @@ use crate::py::vectors::{
     Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyResult, Shape,
 };
 
-fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> Result<usize> {
+pub(super) fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> Result<usize> {
     let values_len = i64::try_from(values_len)
         .map_err(|_| GeometryErrorKind::message("CSR values length does not fit in int64"))?;
     if offsets.first() != Some(&0) || offsets.last() != Some(&values_len) || !offsets.is_sorted() {

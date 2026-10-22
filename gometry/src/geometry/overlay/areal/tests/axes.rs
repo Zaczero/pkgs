@@ -325,7 +325,7 @@ fn geographic_line_merge_does_not_node_disconnected_crossings() {
     reset_partition_builds();
     reset_line_merge_source_candidates();
     let output = input
-        .line_merge_with_context(&context)
+        .line_merge_with_context(&context, false)
         .expect("geographic XYZ line merge succeeds");
     let Shape::MultiLineString(merged) = output else {
         panic!("endpoint-disconnected lines remain a MultiLineString");

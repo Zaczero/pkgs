@@ -24,8 +24,8 @@ pub(crate) use binary_fast::{
 pub(crate) use linref::{line_interpolate_points_scalar, line_locate_input};
 #[cfg(test)]
 pub(crate) use metric::Lane;
-pub(crate) use metric::{
-    MetricCtx, MetricResolver, MetricRowContext, MetricScratch, UnaryMeasureKernel,
+pub(crate) use metric::{ LinearReferenceRow, MetricCtx, MetricResolver, MetricRowContext, MetricScratch,
+    UnaryMeasureKernel,
 };
 pub(crate) use operation::{MetricOp, Operation};
 pub(crate) use packed::{PackedLinearReference, PackedUnary};

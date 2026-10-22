@@ -9,7 +9,7 @@ use crate::py::classes::coordinate_methods::{
     coordinates,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
-use crate::py::numpy::numpy_module;
+use crate::py::numpy::{float64_matrix, numpy_module};
 
 fn replacement_len_error(expected: usize, got: usize) -> PyErr {
     InvalidGeometryError::new_err(format!(
@@ -204,10 +204,14 @@ fn replacement_from_matrix(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     axes: CoordinateAxes,
-    expected_len: usize,
+    expected_len: Option<usize>,
 ) -> PyResult<CoordinateReplacement> {
     if let Ok(coords) = value.extract::<PyRef<PyCoordinates>>() {
-        return replacement_from_coordinates_view(py, &coords, axes, expected_len);
+        let len = match expected_len {
+            Some(len) => len,
+            None => coords.view.len_for_python(py)?,
+        };
+        return replacement_from_coordinates_view(py, &coords, axes, len);
     }
 
     let numpy = numpy_module(py)?;
@@ -222,7 +226,9 @@ fn replacement_from_matrix(
     };
     let (rows, width) = (*rows, *width);
     let expected_width = axis_count(axes);
-    if rows != expected_len {
+    if let Some(expected_len) = expected_len
+        && rows != expected_len
+    {
         return Err(replacement_len_error(expected_len, rows));
     }
     if width != expected_width {
@@ -273,7 +279,7 @@ fn replacement_from_matrix(
         ms: ms.map_or(ReplacementAxis::Carry, |values| {
             ReplacementAxis::Replace(SharedSlice::from_vec(values))
         }),
-        len: expected_len,
+        len: rows,
         axes,
         positional: true,
     })
@@ -292,7 +298,7 @@ pub(crate) fn parse_coordinate_replacement(
             coordinates::checked_vector_len::<f64>(expected_len, "coordinate replacement")?;
             replacement_from_kwargs(py, kwargs.expect("checked"), axes, expected_len)
         },
-        (1, false) => replacement_from_matrix(py, &args.get_item(0)?, axes, expected_len),
+        (1, false) => replacement_from_matrix(py, &args.get_item(0)?, axes, Some(expected_len)),
         (0, false) => Err(GeometryError::new_err(
             "with_coordinates requires a coordinate matrix or at least one ordinate",
         )),
@@ -321,5 +327,43 @@ pub(crate) fn map_coordinates_callback(
     let result = func.call1((matrix.bind(py),))?;
     let axes = coords.view.axes_for_python(py)?;
     let len = coords.view.len_for_python(py)?;
-    replacement_from_matrix(py, &result, axes, len)
+    replacement_from_matrix(py, &result, axes, Some(len))
+}
+
+pub(crate) fn map_coordinate_sequence_callback(
+    py: Python<'_>,
+    coords: &crate::geometry::CoordSeq,
+    func: &Bound<'_, PyAny>,
+) -> PyResult<crate::geometry::CoordSeq> {
+    let mut cells = Vec::with_capacity(coords.len().saturating_mul(coords.axes().dimension()));
+    for point in coords {
+        cells.extend([point.x, point.y]);
+        if let Some(z) = point.z() {
+            cells.push(z);
+        }
+        if let Some(m) = point.m() {
+            cells.push(m);
+        }
+    }
+    let matrix = float64_matrix(py, cells, coords.len(), coords.axes().dimension())?;
+    let result = func.call1((matrix.bind(py),))?;
+    let replacement = replacement_from_matrix(py, &result, coords.axes(), None)?;
+    let axis = |axis: ReplacementAxis| match axis {
+        ReplacementAxis::Replace(values) => Some(values.as_slice().to_vec()),
+        ReplacementAxis::Carry | ReplacementAxis::Drop => None,
+    };
+    Ok(crate::geometry::CoordSeq::try_from_vecs(
+        replacement
+            .xs
+            .expect("matrix has an X column")
+            .as_slice()
+            .to_vec(),
+        replacement
+            .ys
+            .expect("matrix has a Y column")
+            .as_slice()
+            .to_vec(),
+        axis(replacement.zs),
+        axis(replacement.ms),
+    )?)
 }

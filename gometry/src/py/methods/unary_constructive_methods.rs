@@ -342,7 +342,18 @@ Examples
 
 method_doc! {
     doc_line_merge;
-    body: r"Merge connected LineString parts into longer LineStrings.";
+    body: r"Merge connected LineString parts into longer LineStrings.
+
+Joins occur only at degree-two endpoints, never across branching junctions.
+With ``directed=True``, join only a source end to a source start: no component's
+coordinate order is reversed.
+Directed merging keeps active-distinct endpoint occurrences at a join, so
+different Z/M values at the same X/Y are retained as consecutive vertices.
+
+Parameters
+----------
+directed : bool, default False
+    Preserve the direction of every source coordinate sequence.";
     scalar: r"
 
 Returns

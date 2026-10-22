@@ -1524,6 +1524,24 @@ class Geometry:
         >>> gm.LineString([(0, 0), (1, 1)]).with_coordinates([(5, 5), (6, 6)]).to_wkt()
         'LINESTRING (5 5, 6 6)'
         """
+    def segments(self) -> GeometryArray[LineString]:
+        """Consecutive pairs per independent line and ring, including ring closure.
+
+        Points and empty geometries yield an empty array. Source ordinates,
+        CRS, and epoch are retained.
+        """
+    def map_coordinate_sequences(
+        self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
+    ) -> Self:
+        """Map each line, ring, or point sequence through a read-only (N, D) matrix.
+
+        N may change; D and the native ordinate schema must remain unchanged.
+        A multipoint maps its stored point sequence; resizing it replaces point
+        membership, including empty slots. A point may return zero or one vertex.
+        Empty output empties components or removes holes. Undersized nonempty
+        lines and rings raise InvalidGeometryError. Ring constructor admission
+        applies, including closing open rings. No validity repair is performed.
+        """
     def map_coordinates(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
     ) -> Self:
@@ -2212,8 +2230,15 @@ class Geometry:
         True
         """
 
-    def line_merge(self) -> LineString | MultiLineString:
+    def line_merge(self, *, directed: bool = False) -> LineString | MultiLineString:
         """Merge connected LineString parts into longer LineStrings.
+
+        Parameters
+        ----------
+        directed : bool, default False
+            Join only source ends to source starts without reversing any source
+            coordinate sequence. Both modes stop at branching junctions.
+            Distinct Z/M values at a join retain both source endpoint occurrences.
 
         Returns
         -------
@@ -2920,6 +2945,9 @@ class Geometry:
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
+            Numeric Groups on an array supply separate explicit station sequences
+            per route. Empty station rows produce empty groups; missing station
+            rows or routes produce missing groups.
 
 
         count : int, optional
@@ -5384,6 +5412,8 @@ class LineString(Geometry):
     ) -> LineString: ...
     def line_merge(
         self,
+        *,
+        directed: bool = False,
     ) -> LineString: ...
     def unique_points(
         self,
@@ -7330,6 +7360,23 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> arr.with_coordinates([(5, 5), (6, 6)]).to_wkt()
         ['LINESTRING (5 5, 6 6)']
         """
+    @overload
+    def segments(
+        self: GeometryArray[Geometry],
+    ) -> Groups[GeometryArray[LineString]]: ...
+    @overload
+    def segments(
+        self: GeometryArray[Geometry | None],
+    ) -> Groups[GeometryArray[LineString] | None]:
+        """Consecutive line/ring vertex pairs per row; missing rows stay missing."""
+    def map_coordinate_sequences(
+        self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
+    ) -> Self:
+        """Map point, line, and ring sequences independently with Geometry admission.
+
+        Callback matrices are read-only, use each sequence's native ordinate
+        schema, and may change vertex count. Missing rows skip the callback.
+        """
     def map_coordinates(
         self, func: Callable[[npt.NDArray[np.float64]], npt.ArrayLike]
     ) -> Self:
@@ -8682,20 +8729,35 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_merge(
         self: GeometryArray[LineString],
+        *,
+        directed: bool = False,
     ) -> GeometryArray[LineString]: ...
     @overload
     def line_merge(
         self: GeometryArray[LineString | None],
+        *,
+        directed: bool = False,
     ) -> GeometryArray[LineString | None]: ...
     @overload
     def line_merge(
         self: GeometryArray[Geometry],
+        *,
+        directed: bool = False,
     ) -> GeometryArray[LineString | MultiLineString]: ...
     @overload
     def line_merge(
         self: GeometryArray[Geometry | None],
+        *,
+        directed: bool = False,
     ) -> GeometryArray[LineString | MultiLineString | None]:
         """Merge connected LineString parts into longer LineStrings.
+
+        Parameters
+        ----------
+        directed : bool, default False
+            Join only source ends to source starts without reversing any source
+            coordinate sequence. Both modes stop at branching junctions.
+            Distinct Z/M values at a join retain both source endpoint occurrences.
 
         Returns
         -------
@@ -9520,6 +9582,48 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry],
+        at: Groups[npt.NDArray[np.float64]] | Groups[npt.NDArray[np.int64]],
+        *,
+        basis: Literal['distance'] = 'distance',
+        count: None = None,
+        normalized: bool = False,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[Geometry | None],
+        at: Groups[npt.NDArray[np.float64] | None]
+        | Groups[npt.NDArray[np.int64] | None],
+        *,
+        basis: Literal['distance'] = 'distance',
+        count: None = None,
+        normalized: bool = False,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[GeometryArray[Point] | None]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[Geometry],
+        at: Groups[npt.NDArray[np.float64]] | Groups[npt.NDArray[np.int64]],
+        *,
+        basis: Literal['m'],
+        count: None = None,
+        normalized: Literal[False] = False,
+        unit: None = None,
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[Geometry | None],
+        at: Groups[npt.NDArray[np.float64] | None]
+        | Groups[npt.NDArray[np.int64] | None],
+        *,
+        basis: Literal['m'],
+        count: None = None,
+        normalized: Literal[False] = False,
+        unit: None = None,
+    ) -> Groups[GeometryArray[Point] | None]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[Geometry],
         at: FloatInput,
         *,
         basis: Literal['distance'] = 'distance',
@@ -9598,6 +9702,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
+            Numeric Groups supply separate explicit station sequences per route
+            for either basis. Empty station rows produce empty groups; missing
+            station rows or routes produce missing groups.
 
 
         count : int or iterable of int, optional
@@ -9634,7 +9741,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         GeometryArray[Point] or Groups[GeometryArray[Point]]
             One point per row for scalar or row-aligned ``at``; one point group per
-            row for ``count`` samples.
+            row for ``count`` samples or numeric Groups of explicit stations.
 
 
         Raises
@@ -11638,21 +11745,30 @@ class _CircleArrayCenterProjection(Protocol):
 @final
 class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
     """Shared CSR ragged container: one flat `values` payload plus row `offsets`.
-    The values payload keeps its actual type (int64, geometry array, or cell
+    The values payload keeps its actual type (int64, float64, geometry array, or cell
     array). A contiguous values window may share backing; offsets for a window
     starting after row zero are rebased, and counts are materialized.
     """
-    def __new__(cls, _nonconstructible: Never, /) -> Self:
-        """Not constructed directly — the error points at the producers."""
+    @overload
+    def __new__(
+        cls,
+        rows: Iterable[_FloatColumn1D],
+    ) -> Groups[npt.NDArray[np.float64]]: ...
+    @overload
+    def __new__(
+        cls,
+        rows: Iterable[_FloatColumn1D | None],
+    ) -> Groups[npt.NDArray[np.float64] | None]:
+        """Build numeric groups from iterable rows; empty and missing stay distinct."""
     values: _GroupsValuesProjection
-    """The logical flat payload window (int64 ndarray, `GeometryArray`, or
+    """The logical flat payload window (numeric ndarray, `GeometryArray`, or
     `CellArray`), with values in group order. A contiguous source window
     can share backing; gathered values may be materialized.
 
     Returns
     -------
     Group values
-        The selected flat payload window. Numeric values are read-only int64;
+        The selected flat payload window. Numeric values are read-only;
         geometry and cell payloads retain their immutable array types.
     """
     @property

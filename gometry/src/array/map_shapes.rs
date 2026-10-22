@@ -67,6 +67,15 @@ fn rebuild_shared_mixed(
 }
 
 impl PyGeometryArray {
+    pub(crate) fn map_shapes_attached(
+        &self,
+        transform: impl FnMut(&Shape, usize) -> PyResult<Shape>,
+    ) -> PyResult<Self> {
+        let shapes = try_map_shape_rows(self, transform)
+            .map_err(|(row, error)| crate::note_array_row(error, row))?;
+        Ok(self.finish_mapped_shapes(shapes)?)
+    }
+
     fn finish_mapped_shapes(&self, shapes: Vec<Shape>) -> Result<Self> {
         let result = Self::from_shapes(shapes, self.frame.clone())?;
         if self.has_missing() {

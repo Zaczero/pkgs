@@ -45,6 +45,7 @@ mod chains;
 mod constructive;
 mod coordinates;
 mod order;
+mod sequences;
 mod shape;
 
 use affine::affine_ordinate_simd;

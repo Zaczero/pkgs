@@ -117,7 +117,9 @@ mod methods_topology;
 mod methods_unary_io;
 mod ops;
 mod sampling;
-pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_on_lines};
+pub(crate) use linref_kernels::{
+    line_interpolate_points_rows, line_interpolate_station_groups, line_locate_point_on_lines,
+};
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;

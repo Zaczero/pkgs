@@ -480,7 +480,7 @@ impl PyGeometry {
         })?)
     }
 
-    pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Typed> {
+    pub(crate) fn line_merge_impl(&self, py: Python<'_>, directed: bool) -> PyResult<Typed> {
         let shape = Arc::clone(&self.shape);
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
@@ -494,7 +494,7 @@ impl PyGeometry {
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.line_merge_with_context(&context)
+            shape.line_merge_with_context(&context, directed)
         })?;
         Ok(self.typed_shape(merged))
     }

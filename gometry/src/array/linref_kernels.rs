@@ -7,6 +7,7 @@ use crate::array::{
     positive_int, resolve_metric, rows_err,
 };
 use crate::broadcast::degrade_linref_float;
+use crate::dispatch::{LinearReferenceRow, kernels};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, PointRows, RowSelection, ValidityMask,
 };
@@ -17,6 +18,11 @@ use crate::py::vectors::Groups;
 enum RowInterpolatePlan {
     Shared(InterpolatePlan),
     Counts(I64Param),
+    Groups {
+        positions: Groups,
+        normalized: bool,
+        measured: bool,
+    },
 }
 
 impl RowInterpolatePlan {
@@ -27,6 +33,32 @@ impl RowInterpolatePlan {
                 let count = usize::try_from(counts.get(row)).expect("validated positive count");
                 use_plan(&InterpolatePlan::Count(count))
             },
+            Self::Groups {
+                positions,
+                normalized,
+                ..
+            } => use_plan(&InterpolatePlan::Distances(
+                positions
+                    .numeric_row(row)
+                    .expect("numeric Groups admitted before native execution")
+                    .unwrap_or_default(),
+                crs::DistanceMode::of(*normalized),
+            )),
+        }
+    }
+
+    const fn measured(&self) -> bool {
+        matches!(self, Self::Groups { measured: true, .. })
+    }
+
+    fn missing(&self, array: &PyGeometryArray) -> Option<ValidityMask> {
+        match self {
+            Self::Groups { positions, .. } => ValidityMask::from_missing_iter(
+                array.len(),
+                (0..array.len())
+                    .map(|row| array.is_row_missing(row) || positions.is_missing_row(row)),
+            ),
+            Self::Shared(_) | Self::Counts(_) => array.missing().cloned(),
         }
     }
 }
@@ -154,6 +186,57 @@ pub(crate) fn line_interpolate_points_rows(
             ));
         },
     };
+    line_interpolate_row_plan(py, array, plan, unit)
+}
+
+pub(crate) fn line_interpolate_station_groups(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    positions: &Groups,
+    normalized: bool,
+    measured: bool,
+    unit: Option<DistanceUnit>,
+) -> PyResult<Groups> {
+    if !positions.is_numeric() {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "at requires numeric Groups",
+        ));
+    }
+    if positions.row_len() != array.len() {
+        return Err(GeometryError::new_err(format!(
+            "at must have {} groups, got {}",
+            array.len(),
+            positions.row_len(),
+        )));
+    }
+    for row in 0..array.len() {
+        if let Some(values) = positions.numeric_row(row)?
+            && !crate::geometry::column_all_finite(&values)
+        {
+            return Err(note_array_row(
+                GeometryError::new_err("at must be finite"),
+                row,
+            ));
+        }
+    }
+    line_interpolate_row_plan(
+        py,
+        array,
+        RowInterpolatePlan::Groups {
+            positions: positions.clone(),
+            normalized,
+            measured,
+        },
+        unit,
+    )
+}
+
+fn line_interpolate_row_plan(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    plan: RowInterpolatePlan,
+    unit: Option<DistanceUnit>,
+) -> PyResult<Groups> {
     let model = resolve_metric(
         array.crs_str(),
         unit,
@@ -165,11 +248,13 @@ pub(crate) fn line_interpolate_points_rows(
         row_map,
     }) = array.storage()
         && let crs::MetricModel::Planar { .. } = model
+        && !plan.measured()
     {
         let coords = Arc::clone(coords);
         let offsets = offsets.clone();
         let row_map = row_map.clone();
-        let missing = array.missing().cloned();
+        let missing = plan.missing(array);
+        let output_missing = missing.clone();
         let logical_len = array.len();
         let frame = array.frame.clone();
         let result = py.detach(
@@ -201,12 +286,12 @@ pub(crate) fn line_interpolate_points_rows(
         return Ok(Groups::from_geometry_builder(
             frame,
             builder,
-            array.missing().cloned(),
+            output_missing,
         )?);
     }
     let array = array.clone();
     let frame = array.frame.clone();
-    let missing = array.missing().cloned();
+    let missing = plan.missing(&array);
     let result = py.detach(move || interpolate_mixed_row_groups(&array, &plan, &model));
     let builder = match result {
         Ok(builder) => builder,
@@ -232,6 +317,14 @@ fn interpolate_mixed_row_groups(
             },
             crate::array::ArrayRow::Present(row) => {
                 let logical = row.logical();
+                if matches!(plan, RowInterpolatePlan::Groups { positions, .. } if positions.is_missing_row(logical))
+                {
+                    builder
+                        .push_row(std::iter::empty())
+                        .map_err(|error| (logical, error))?;
+                    continue;
+                }
+                let measured = plan.measured();
                 let values = plan
                     .with_row(logical, |plan| {
                         if plan.sample_count() == 0 {
@@ -244,6 +337,26 @@ fn interpolate_mixed_row_groups(
                         }
                         if metric.is_none() {
                             metric = Some(crs::ResolvedMetric::from_model(model)?);
+                        }
+                        if measured {
+                            let InterpolatePlan::Distances(stations, _) = plan else {
+                                unreachable!("M groups contain explicit stations");
+                            };
+                            let context = LinearReferenceRow {
+                                metric: metric.as_ref().expect("metric resolved for present row"),
+                                cache: &cache,
+                                lane: crate::dispatch::Lane::Array(logical),
+                            };
+                            return stations
+                                .iter()
+                                .map(|&station| {
+                                    kernels::unary_line_interpolate_point_m(
+                                        &line,
+                                        &context,
+                                        &crate::F64Param::Scalar(station),
+                                    )
+                                })
+                                .collect();
                         }
                         line_interpolate_points_shape(
                             metric

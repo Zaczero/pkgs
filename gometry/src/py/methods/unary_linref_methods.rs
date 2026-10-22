@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use crate::dispatch::{MetricOp, kernels};
 use crate::py::errors::GeometryError;
 use crate::py::support::LineReferenceBasis;
+use crate::py::vectors::Groups;
 use crate::{
     DistanceUnit, F64Param, GeometryInput, NavigationPath, PyGeometry, PyGeometryArray, Typed,
     parameter_input_with_expected, parse_interpolate_plan,
@@ -41,6 +42,10 @@ at : float or sequence of float, optional
     One location or many explicit distance-basis locations. Under
     ``basis='m'``, pass one stored M value for a scalar result or a sequence of
     stored M values for one line; an array accepts one M value per row.
+    For an array, numeric ``Groups`` supplies a separate sequence of explicit
+    locations per route, for either basis. Group count must match array length.
+    Empty station groups produce empty point groups; missing routes or station
+    groups produce missing groups. Empty routes yield one empty point per station.
 
 ";
     scalar: (r"
@@ -71,7 +76,7 @@ Returns
 -------
 GeometryArray[Point] or Groups[GeometryArray[Point]]
     One point per row for scalar or row-aligned ``at``; one point group per
-    row for ``count`` samples.
+    row for ``count`` samples or numeric ``Groups`` of explicit stations.
 
 ");
     post: concat!(r"
@@ -602,6 +607,21 @@ impl PyGeometryArray {
         }
         let at =
             at.ok_or_else(|| GeometryError::new_err("line_interpolate requires at or count"))?;
+        if let Ok(positions) = at.cast::<Groups>() {
+            if basis == LineReferenceBasis::M {
+                reject_m_basis_distance_options(normalized, unit)?;
+            }
+            return crate::array::line_interpolate_station_groups(
+                py,
+                self,
+                positions.get(),
+                normalized,
+                basis == LineReferenceBasis::M,
+                unit,
+            )?
+            .into_pyobject(py)
+            .map(|value| value.unbind().into());
+        }
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
             let m = F64Param::parse_raw(at, "at", unary_len!(array, self))?;

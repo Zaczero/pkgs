@@ -117,6 +117,7 @@ mod shape;
 #[cfg(test)]
 pub(in crate::geometry) use areal::binary_areal_overlay;
 pub(in crate::geometry) use areal::ray_crossing;
+pub(in crate::geometry) use assembly::merge_line_chains;
 pub(crate) use assembly::{merge_chains, merge_chains_with_origins};
 pub(crate) use clip::intersect_rectangle;
 pub(super) use clip::polygon_parts_to_shape;

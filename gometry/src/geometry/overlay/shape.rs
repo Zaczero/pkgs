@@ -200,15 +200,19 @@ impl Shape {
     }
 
     pub fn line_merge(&self) -> Result<Self> {
-        self.line_merge_with_context(&crate::geometry::ordinates::SourceArcContext::cartesian())
+        self.line_merge_with_context(
+            &crate::geometry::ordinates::SourceArcContext::cartesian(),
+            false,
+        )
     }
 
     pub(crate) fn line_merge_with_context(
         &self,
         context: &SourceArcContext<'_, '_>,
+        directed: bool,
     ) -> Result<Self> {
         let lineal = self.lineal().ok_or(GeometryErrorKind::LinealRequired)?;
-        if let TopologyDomain::Geographic(frame) = context.domain() {
+        if !directed && let TopologyDomain::Geographic(frame) = context.domain() {
             return match lineal {
                 Lineal::MultiLineString(lines) => {
                     line_merge_geographic(self, lines, frame, context)
@@ -222,11 +226,11 @@ impl Shape {
                 // Dissolve the component lines into maximal chains at degree-2
                 // nodes, splitting every Y/T/X junction (degree `>= 3`). The
                 // overlay line sink uses the same [`merge_chains`] rule.
-                let chains = merge_chains(lines)?;
+                let chains = super::merge_line_chains(lines, directed)?;
                 // A merge that produced nothing keeps the lineal type
                 // (`MULTILINESTRING EMPTY`), unlike the general narrowing.
                 if chains.is_empty() {
-                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+                    Self::typed_empty(GeometryKind::MultiLineString, lines.axes())
                 } else {
                     let mut proven = Vec::with_capacity(chains.len());
                     for line in chains {
@@ -236,7 +240,11 @@ impl Shape {
                 }
             },
         };
-        carry_ordinates(merged, &[self], "line_merge", false, context)
+        if directed {
+            Ok(merged)
+        } else {
+            carry_ordinates(merged, &[self], "line_merge", false, context)
+        }
     }
 
     pub fn shared_paths(&self, other: &Self) -> Result<Self> {

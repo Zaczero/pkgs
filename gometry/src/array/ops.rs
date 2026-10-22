@@ -1083,7 +1083,7 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Self> {
+    pub(crate) fn line_merge_impl(&self, py: Python<'_>, directed: bool) -> PyResult<Self> {
         if let Some(identity) = self.packed_lines_identity() {
             return Ok(identity);
         }
@@ -1098,10 +1098,10 @@ impl PyGeometryArray {
                     )
                 })
             };
-            shape.line_merge_with_context(&crate::geometry::SourceArcContext::new(
-                domain,
-                Some(&metric_access),
-            ))
+            shape.line_merge_with_context(
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                directed,
+            )
         })
     }
 

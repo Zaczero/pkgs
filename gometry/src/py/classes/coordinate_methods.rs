@@ -151,4 +151,6 @@ mod types;
 pub(crate) use helpers::{
     column_axis_to_py, coordinate_axis_order, coordinate_matrix_data, coordinate_tuple,
 };
-pub(crate) use set_coords::{map_coordinates_callback, parse_coordinate_replacement};
+pub(crate) use set_coords::{
+    map_coordinate_sequence_callback, map_coordinates_callback, parse_coordinate_replacement,
+};

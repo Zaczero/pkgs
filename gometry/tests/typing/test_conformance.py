@@ -1032,6 +1032,46 @@ class _GeoInterfaceObject:
 assert_type(LINE.simplify(0.1), gm.LineString)
 assert_type(LINE.simplify(1.0, unit='planar'), gm.LineString)
 assert_type(POINT.reverse(), gm.Point)
+assert_type(LINE.line_merge(directed=True), gm.LineString)
+assert_type(LINE.segments(), gm.GeometryArray[gm.LineString])
+assert_type(POINT.segments(), gm.GeometryArray[gm.LineString])
+assert_type(LINE.map_coordinate_sequences(lambda coords: coords), gm.LineString)
+
+
+def _check_linework_group_types(
+    routes: gm.GeometryArray[gm.LineString],
+    nullable_routes: gm.GeometryArray[gm.LineString | None],
+) -> None:
+    stations = gm.Groups([[0.25, 0.75], [0.5]])
+    nullable_stations = gm.Groups([[0.25], None])
+    assert_type(stations, gm.Groups[npt.NDArray[np.float64]])
+    assert_type(nullable_stations, gm.Groups[npt.NDArray[np.float64] | None])
+    assert_type(stations.values, npt.NDArray[np.float64])
+    assert_type(routes.segments(), gm.Groups[gm.GeometryArray[gm.LineString]])
+    assert_type(
+        nullable_routes.segments(), gm.Groups[gm.GeometryArray[gm.LineString] | None]
+    )
+    assert_type(
+        routes.map_coordinate_sequences(lambda coords: coords),
+        gm.GeometryArray[gm.LineString],
+    )
+    assert_type(
+        routes.line_interpolate(stations), gm.Groups[gm.GeometryArray[gm.Point]]
+    )
+    assert_type(
+        nullable_routes.line_interpolate(stations),
+        gm.Groups[gm.GeometryArray[gm.Point] | None],
+    )
+    assert_type(
+        routes.line_interpolate(nullable_stations),
+        gm.Groups[gm.GeometryArray[gm.Point] | None],
+    )
+    assert_type(
+        routes.line_interpolate(stations, basis='m'),
+        gm.Groups[gm.GeometryArray[gm.Point]],
+    )
+
+
 assert_type(gm.snap(LINE, POINT, 0.5), gm.LineString)
 assert_type(
     gm.GeometryArray([LINE]).polygonize(), gm.Groups[gm.GeometryArray[gm.Polygon]]

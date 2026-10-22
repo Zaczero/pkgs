@@ -753,6 +753,67 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
     assert gm.equals(signed, gm.LineString([(-1, 0), (1, 0)]))
 
 
+@pytest.mark.parametrize(
+    ('source', 'expected'),
+    [
+        (
+            'MULTILINESTRING ((1 0, 2 0), (0 0, 1 0))',
+            'LINESTRING (0 0, 1 0, 2 0)',
+        ),
+        (
+            'MULTILINESTRING ((2 0, 1 0), (0 0, 1 0))',
+            'MULTILINESTRING ((2 0, 1 0), (0 0, 1 0))',
+        ),
+        (
+            'MULTILINESTRING ((1 0, 2 0), (1 0, 0 0))',
+            'MULTILINESTRING ((1 0, 2 0), (1 0, 0 0))',
+        ),
+        (
+            'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1))',
+            'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1))',
+        ),
+        (
+            'MULTILINESTRING ((1 0, 1 1), (0 0, 1 0), (1 1, 0 0))',
+            'LINESTRING (1 0, 1 1, 0 0, 1 0)',
+        ),
+    ],
+    ids=['out_of_order_chain', 'sink', 'source', 'branch', 'cycle'],
+)
+def test_directed_line_merge_never_reverses_source_lines(
+    source: str, expected: str
+) -> None:
+    geometry = gm.from_wkt(source)
+    assert geometry.line_merge(directed=True).to_wkt() == expected
+    rows = gm.GeometryArray([None, geometry, geometry])[::-1]
+    assert rows.line_merge(directed=True).to_wkt() == [expected, expected, None]
+
+
+def test_directed_line_merge_preserves_zm_and_geographic_frame() -> None:
+    source = gm.from_wkt(
+        'MULTILINESTRING ZM ((1 1 3 30, 2 2 5 50), (0 0 1 10, 1 1 3 30))',
+        crs=4326,
+    )
+    merged = source.line_merge(directed=True)
+    assert merged.crs == source.crs
+    assert merged.to_wkt() == 'LINESTRING ZM (0 0 1 10, 1 1 3 30, 2 2 5 50)'
+
+
+@pytest.mark.parametrize('crs', [None, 4326])
+def test_directed_line_merge_retains_distinct_join_ordinates(crs) -> None:
+    source = gm.from_wkt(
+        'MULTILINESTRING ZM ((0 0 1 10, 1 0 2 20), (1 0 3 30, 2 0 4 40))',
+        crs=crs,
+    )
+    assert source.line_merge(directed=True).to_wkt() == (
+        'LINESTRING ZM (0 0 1 10, 1 0 2 20, 1 0 3 30, 2 0 4 40)'
+    )
+
+
+def test_directed_line_merge_retains_xy_coincident_source_sequences() -> None:
+    source = gm.from_wkt('MULTILINESTRING M ((1 2 10, 1 2 20), (3 4 30, 3 4 40))')
+    assert source.line_merge(directed=True) == source
+
+
 def test_line_merge_scalar_preserves_reversed_chain_coordinate_order() -> None:
     merged = gm.from_wkt('MULTILINESTRING ((2 0, 1 0), (0 0, 1 0))').line_merge()
 
