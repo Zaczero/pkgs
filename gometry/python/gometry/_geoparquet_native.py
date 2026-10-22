@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 from typing import Any
 
@@ -157,16 +155,9 @@ def admit_native_columns(
     metadata: Any,
     geometry: str | None,
     *,
-    stored_arrow_schema: bytes | None,
+    stored_schema: Any | None,
 ) -> tuple[Any, Any]:
     """Reconcile native, stored Arrow and optional GeoParquet declarations."""
-    stored_schema = None
-    if stored_arrow_schema is not None:
-        try:
-            serialized = base64.b64decode(stored_arrow_schema, validate=True)
-            stored_schema = pa.ipc.read_schema(pa.BufferReader(serialized))
-        except (binascii.Error, pa.ArrowException, ValueError) as error:
-            raise _metadata_error('stored Arrow schema is invalid') from error
     if metadata is None:
         if geometry is None:
             if len(logical) != 1:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import re
@@ -77,6 +79,17 @@ def _metadata_error(detail: str) -> ParseError:
     error.format = 'geoparquet'
     error.category = 'metadata'
     return error
+
+
+def _stored_arrow_schema(pa: Any, serialized: bytes | None) -> Any | None:
+    if serialized is None:
+        return None
+    try:
+        return pa.ipc.read_schema(
+            pa.BufferReader(base64.b64decode(serialized, validate=True))
+        )
+    except (binascii.Error, pa.ArrowException, ValueError) as error:
+        raise _metadata_error('stored Arrow schema is invalid') from error
 
 
 def _layout_error(detail: str) -> GeometryError:

@@ -18,6 +18,7 @@ from gometry._geoparquet_metadata import (
     _metadata_error,
     _parse_geo_metadata,
     _require_native_geometry_types_axes,
+    _stored_arrow_schema,
     _validate_column_metadata,
 )
 from gometry._lib import (
@@ -609,6 +610,7 @@ def _validate_declared_geometry_columns(
     metadata: Mapping[str, Any],
     *,
     admitted_layouts: dict[str, _GeoParquetPhysicalLayout] | None = None,
+    declaration_schema: Any | None = None,
 ) -> frozenset[str]:
     """Validate every geo.columns entry exists once and matches physical encoding.
 
@@ -625,6 +627,11 @@ def _validate_declared_geometry_columns(
 
     schema_names = list(schema.names)
     name_indices = _schema_name_indices(schema_names)
+    declaration_indices = (
+        _schema_name_indices(declaration_schema.names)
+        if declaration_schema is not None
+        else name_indices
+    )
     validated: list[str] = []
     for name, column_meta in columns.items():
         if not isinstance(name, str):
@@ -649,8 +656,18 @@ def _validate_declared_geometry_columns(
                 f'unsupported GeoParquet geometry encoding: {encoding!r}'
             )
         field = schema.field(occurrences[0])
+        declaration_occurrences = declaration_indices.get(name, [])
+        if len(declaration_occurrences) != 1:
+            raise _metadata_error(
+                f'geometry column {name!r} must occur exactly once in stored Arrow schema'
+            )
+        declaration = (
+            declaration_schema.field(declaration_occurrences[0])
+            if declaration_schema is not None
+            else field
+        )
         try:
-            layout = _admit_geometry_storage(field.type, encoding, name, field)
+            layout = _admit_geometry_storage(field.type, encoding, name, declaration)
         except GeometryError as error:
             if getattr(error, 'category', None) != 'layout':
                 raise
@@ -678,6 +695,7 @@ def _validate_attribute_columns(
     columns: Iterable[str] | None,
     *,
     admitted_layouts: dict[str, _GeoParquetPhysicalLayout] | None = None,
+    declaration_schema: Any | None = None,
 ) -> list[str]:
     pa = _pyarrow()
     geometry_columns = _validate_declared_geometry_columns(
@@ -685,6 +703,7 @@ def _validate_attribute_columns(
         schema,
         metadata,
         admitted_layouts=admitted_layouts,
+        declaration_schema=declaration_schema,
     )
     schema_names = list(schema.names)
     if columns is None:
@@ -841,6 +860,9 @@ def from_geoparquet(
     }
     parquet_file = pq.ParquetFile(path, filesystem=filesystem, **parquet_file_options)
     schema = parquet_file.schema_arrow
+    stored_schema = _stored_arrow_schema(
+        pa, (parquet_file.metadata.metadata or {}).get(b'ARROW:schema')
+    )
     if selected_row_groups is not None and any(
         group >= parquet_file.num_row_groups for group in selected_row_groups
     ):
@@ -862,9 +884,7 @@ def from_geoparquet(
             native_columns,
             geo_metadata,
             geometry,
-            stored_arrow_schema=(parquet_file.metadata.metadata or {}).get(
-                b'ARROW:schema'
-            ),
+            stored_schema=stored_schema,
         )
     assert geo_metadata is not None
     primary = geo_metadata.get('primary_column')
@@ -888,11 +908,22 @@ def from_geoparquet(
     # Schema is known: validate columns online (bounded by finite attribute set).
     # Selected geometry is already a member of the declared geometry columns.
     admitted_layouts: dict[str, _GeoParquetPhysicalLayout] = {}
+    declaration_schema = stored_schema
+    if stored_schema is not None and native_columns:
+        # Native admission reconciles and resolves contextual frame metadata.
+        # Other columns retain their original declarations through Arrow rewrites.
+        native_fields = {
+            field.name: field for field in schema if field.name in native_columns
+        }
+        declaration_schema = pa.schema([
+            native_fields.get(field.name, field) for field in stored_schema
+        ])
     attribute_columns = _validate_attribute_columns(
         schema,
         geo_metadata,
         columns,
         admitted_layouts=admitted_layouts,
+        declaration_schema=declaration_schema,
     )
     layout = admitted_layouts[selected_geometry]
 
