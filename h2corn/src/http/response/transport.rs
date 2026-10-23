@@ -4,6 +4,8 @@ use crate::http::app::{AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendState}
 use crate::http::response::actions::{ResponseAction, ResponseActions};
 
 pub(crate) trait HttpResponseTransport {
+    fn log_format(&self) -> crate::config::LogFormat;
+
     /// HTTP/1 has no cross-stream body backlog. HTTP/2 overrides this with a
     /// connection-wide byte ledger before the ASGI callable is constructed.
     fn new_http_send_state(&self) -> (HttpSendState, HttpSendBuffer) {

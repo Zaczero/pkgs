@@ -89,6 +89,10 @@ impl WebSocketHandshakeTransport for H2WebSocketTransport {
 }
 
 impl HttpResponseTransport for H2WebSocketTransport {
+    fn log_format(&self) -> crate::config::LogFormat {
+        self.connection.config().log_format
+    }
+
     /// Delegated, not defaulted: a WebSocket denial body is driven straight
     /// from the handshake loop and would otherwise reach the writer with no
     /// byte credit at all — the same hole that let accepted WebSocket data

@@ -246,6 +246,7 @@ pub(crate) enum PumpEvent {
 /// threads. Exactly one per worker on GIL builds; one per loop shard on
 /// free-threaded builds.
 pub(crate) struct ShardHandle {
+    pub(crate) log_format: crate::config::LogFormat,
     queue: Mutex<VecDeque<PumpEvent>>,
     armed: AtomicBool,
     /// POSIX-only wakeup fd; see [`Doorbell`] for the per-platform ring
@@ -294,11 +295,14 @@ enum TaskFactoryAccessor {
 impl ShardHandle {
     /// Capture the running event loop and cache every Python object the hot
     /// path needs. Must be called on the loop thread with the loop running.
-    pub(crate) fn from_running_loop(py: Python<'_>) -> PyResult<(Shard, SecondaryLoopFactory)> {
+    pub(crate) fn from_running_loop(
+        py: Python<'_>,
+        log_format: crate::config::LogFormat,
+    ) -> PyResult<(Shard, SecondaryLoopFactory)> {
         let asyncio = py.import("asyncio")?;
         let event_loop = asyncio.call_method0("get_running_loop")?;
         let factory = SecondaryLoopFactory::classify(&event_loop)?;
-        Ok((Self::from_event_loop(py, &event_loop)?, factory))
+        Ok((Self::from_event_loop(py, &event_loop, log_format)?, factory))
     }
 
     /// Build a shard around an event loop that is not necessarily running
@@ -306,6 +310,7 @@ impl ShardHandle {
     pub(crate) fn from_event_loop(
         py: Python<'_>,
         event_loop: &Bound<'_, PyAny>,
+        log_format: crate::config::LogFormat,
     ) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = event_loop.clone();
@@ -357,6 +362,7 @@ impl ShardHandle {
         let call_soon_threadsafe = event_loop.getattr("call_soon_threadsafe")?.unbind();
         let call_soon = event_loop.getattr("call_soon")?.unbind();
         let shard: Shard = Arc::new(Self {
+            log_format,
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
             #[cfg(unix)]
@@ -399,6 +405,7 @@ impl ShardHandle {
     #[cfg(test)]
     pub(crate) fn test_stub(py: Python<'_>) -> Shard {
         Arc::new(Self {
+            log_format: crate::config::LogFormat::Text,
             queue: Mutex::new(VecDeque::new()),
             armed: AtomicBool::new(false),
             #[cfg(unix)]
@@ -625,6 +632,7 @@ impl ShardHandle {
 
 /// A loop shard running on its own Python thread (free-threaded builds).
 pub(crate) struct ShardThread {
+    log_format: crate::config::LogFormat,
     shard: Option<Shard>,
     join: Option<JoinHandle<()>>,
 }
@@ -660,7 +668,7 @@ impl ShardThread {
 impl Drop for ShardThread {
     fn drop(&mut self) {
         if let Err(detail) = self.shutdown_inner() {
-            report_shard_thread_panic(&detail);
+            report_shard_thread_panic(self.log_format, &detail);
         }
     }
 }
@@ -677,11 +685,15 @@ fn panic_message(panic: &(dyn Any + Send)) -> String {
     )
 }
 
-pub(crate) fn report_shard_thread_panic(detail: &str) {
-    crate::log::Event::Failed.emit(format_args!("shard thread panicked: {detail}"), |fields| {
-        fields.str("subject", "shard thread");
-        fields.str("detail", detail);
-    });
+pub(crate) fn report_shard_thread_panic(log_format: crate::config::LogFormat, detail: &str) {
+    crate::log::Event::Failed.emit(
+        log_format,
+        format_args!("shard thread panicked: {detail}"),
+        |fields| {
+            fields.str("subject", "shard thread");
+            fields.str("detail", detail);
+        },
+    );
 }
 
 /// Spawn a dedicated Python thread running a fresh event loop with its own
@@ -690,6 +702,7 @@ pub(crate) fn report_shard_thread_panic(detail: &str) {
 pub(crate) fn spawn_shard_thread(
     index: usize,
     factory: SecondaryLoopFactory,
+    log_format: crate::config::LogFormat,
 ) -> PyResult<ShardThread> {
     let (tx, rx) = channel::<PyResult<Shard>>();
     let join = ThreadBuilder::new()
@@ -707,7 +720,7 @@ pub(crate) fn spawn_shard_thread(
                                 "{factory:?} secondary-loop factory returned {actual:?} loop"
                             )));
                         }
-                        ShardHandle::from_event_loop(py, &event_loop)
+                        ShardHandle::from_event_loop(py, &event_loop, log_format)
                     };
                     let result = setup();
                     if let Ok(shard) = &result {
@@ -737,12 +750,13 @@ pub(crate) fn spawn_shard_thread(
         .map_err(|_| PyRuntimeError::new_err("loop thread exited before initializing"));
     match initialized {
         Ok(Ok(shard)) => Ok(ShardThread {
+            log_format,
             shard: Some(shard),
             join: Some(join),
         }),
         Ok(Err(err)) | Err(err) => {
             if let Err(panic) = join.join() {
-                report_shard_thread_panic(&panic_message(panic.as_ref()));
+                report_shard_thread_panic(log_format, &panic_message(panic.as_ref()));
             }
             Err(err)
         },
@@ -803,7 +817,7 @@ pub(crate) fn observe_waiter(
             && let Some(error) = unexpected_join_error(error)
         {
             let detail = format!("background task failed: {error}");
-            crate::server::report_failure(subject, Err(H2CornError::from(error)));
+            crate::server::report_failure(shard.log_format, subject, Err(H2CornError::from(error)));
             shard.push(PumpEvent::Resolve {
                 fut: future,
                 payload: ResolvePayload::Simple(Box::new(move |_| {
@@ -863,12 +877,13 @@ mod tests {
                 let shard = super::ShardHandle::test_stub(py);
                 let join = std::thread::spawn(|| panic!("injected shard thread panic"));
                 let detail = super::ShardThread {
+                    log_format: crate::config::LogFormat::Text,
                     shard: Some(shard),
                     join: Some(join),
                 }
                 .shutdown()
                 .expect_err("thread panic must be returned to the shutdown owner");
-                super::report_shard_thread_panic(&detail);
+                super::report_shard_thread_panic(crate::config::LogFormat::Text, &detail);
             });
             return;
         }
@@ -893,8 +908,12 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     fn dropping_shard_thread_stops_loop_and_releases_handle() {
         pyo3::Python::initialize();
-        let thread = super::spawn_shard_thread(999, super::SecondaryLoopFactory::Asyncio)
-            .expect("secondary loop starts");
+        let thread = super::spawn_shard_thread(
+            999,
+            super::SecondaryLoopFactory::Asyncio,
+            crate::config::LogFormat::Text,
+        )
+        .expect("secondary loop starts");
         let weak = Arc::downgrade(thread.shard());
         drop(thread);
         assert!(weak.upgrade().is_none());

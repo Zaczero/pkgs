@@ -15,6 +15,7 @@ from typing import Literal, cast, overload
 from h2corn._cli import ImportSettings, run_cli
 from h2corn._config import Config
 from h2corn._lifespan import PreparedApplication, await_with_timeout, cancel_task
+from h2corn._log import Event, exit_on_error
 from h2corn._socket import (
     ListenerLease,
     bound_addresses,
@@ -1362,7 +1363,8 @@ def import_target(import_settings: ImportSettings) -> Application | ApplicationF
 
 
 def main() -> None:
-    run_cli(_serve_import_target)
+    with exit_on_error(Event.CLI_ERROR, 'h2corn: error: {detail}'):
+        run_cli(_serve_import_target)
 
 
 if __name__ == '__main__':

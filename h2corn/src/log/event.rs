@@ -4,18 +4,11 @@
 //! in one place rather than beside the human-readable line builder.
 
 use std::fmt::{self, Write as _};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::io::{self, Write as _};
 
 use crate::config::LogFormat;
 use crate::log::{AccessLogBuf, AccessLogWriter, sink};
 
-/// The encoding for context-free diagnostics, last published by a server.
-///
-/// Diagnostics are emitted from paths that never see a `ServerConfig` -- a
-/// panicking connection task, a supervisor signal -- so the choice is read
-/// here rather than threaded through every error site. Access records still
-/// take it from the request's own configuration.
-static LOG_FORMAT: AtomicU8 = AtomicU8::new(0);
 /// Severity of a diagnostic line.
 ///
 /// Not chosen at the call site: it is a property of the event, so the same
@@ -47,6 +40,7 @@ pub(crate) enum Event {
     Listening,
     Http1Enabled,
     Request,
+    WebSocketClosed,
     Failed,
     ConnectionPanicked,
 }
@@ -58,6 +52,7 @@ impl Event {
             Self::Listening => "listening",
             Self::Http1Enabled => "http1_enabled",
             Self::Request => "request",
+            Self::WebSocketClosed => "websocket_closed",
             Self::Failed => "failed",
             Self::ConnectionPanicked => "connection_panicked",
         }
@@ -65,27 +60,34 @@ impl Event {
 
     const fn level(self) -> Level {
         match self {
-            Self::Starting | Self::Listening | Self::Http1Enabled | Self::Request => Level::Info,
+            Self::Starting
+            | Self::Listening
+            | Self::Http1Enabled
+            | Self::Request
+            | Self::WebSocketClosed => Level::Info,
             Self::Failed | Self::ConnectionPanicked => Level::Error,
         }
     }
 
     /// Emit with a human sentence and the machine-readable fields behind it.
-    ///
-    /// Both renderings are given together so they cannot drift apart, and the
-    /// encoding comes from the one place it was published.
-    pub(crate) fn emit(self, text: fmt::Arguments<'_>, fields: impl FnOnce(&mut JsonObject<'_>)) {
-        let line = self.encode(text, fields);
-        sink::write_line(line.as_slice());
+    pub(crate) fn emit(
+        self,
+        format: LogFormat,
+        text: fmt::Arguments<'_>,
+        fields: impl FnOnce(&mut JsonObject<'_>),
+    ) {
+        let line = self.encode(format, text, fields);
+        self.write(format, line.as_slice());
     }
 
     /// Encode without delivery so the sink can report its own failures directly.
     pub(super) fn encode(
         self,
+        format: LogFormat,
         text: fmt::Arguments<'_>,
         fields: impl FnOnce(&mut JsonObject<'_>),
     ) -> AccessLogBuf {
-        match format() {
+        match format {
             LogFormat::Text => {
                 let mut line = AccessLogBuf::new();
                 let out = &mut AccessLogWriter(&mut line);
@@ -103,6 +105,7 @@ impl Event {
         let mut object = JsonObject::new(out);
         object.str("level", self.level().as_str());
         object.str("event", self.name());
+        object.num("pid", std::process::id());
         fields(&mut object);
         object.finish();
         line
@@ -113,10 +116,23 @@ impl Event {
     /// The aligned access line and the styled multi-line banner are richer
     /// than one sentence, so those two branch on the format themselves and
     /// call this inside the JSON arm. That producer's selection is authoritative,
-    /// even when another embedded server changes the diagnostic format.
+    /// independently of other embedded servers.
     pub(crate) fn emit_json(self, fields: impl FnOnce(&mut JsonObject<'_>)) {
         let line = self.encode_json(fields);
-        sink::write_line(line.as_slice());
+        self.write(LogFormat::Json, line.as_slice());
+    }
+
+    fn write(self, format: LogFormat, line: &[u8]) {
+        match self {
+            Self::Request | Self::WebSocketClosed => sink::write_line(format, line),
+            // Access-log backpressure must not discard the error explaining
+            // why a worker or request failed.
+            Self::Starting
+            | Self::Listening
+            | Self::Http1Enabled
+            | Self::Failed
+            | Self::ConnectionPanicked => drop(io::stderr().write_all(line)),
+        }
     }
 }
 
@@ -203,40 +219,21 @@ fn write_json_string(out: &mut dyn fmt::Write, value: &str) {
     let _format_result = out.write_char('"');
 }
 
-pub(crate) fn set_format(format: LogFormat) {
-    LOG_FORMAT.store(
-        match format {
-            LogFormat::Text => 0,
-            LogFormat::Json => 1,
-        },
-        Ordering::Relaxed,
-    );
-}
-
-fn format() -> LogFormat {
-    match LOG_FORMAT.load(Ordering::Relaxed) {
-        0 => LogFormat::Text,
-        _ => LogFormat::Json,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Event, set_format, write_json_string};
+    use super::{Event, write_json_string};
     use crate::config::LogFormat;
 
     #[test]
-    fn selected_json_ignores_process_diagnostic_format() {
-        set_format(LogFormat::Text);
-        let line = Event::Request.encode_json(|fields| {
+    fn json_fields_retain_their_types() {
+        let line = Event::Request.encode(LogFormat::Json, format_args!("request"), |fields| {
             fields.str("target", "/selected-json");
             fields.num("status", 201);
             fields.num("duration_ms", format_args!("{:.3}", 12.3456));
-            set_format(LogFormat::Json);
         });
         assert_eq!(
             line.as_slice(),
-            b"{\"level\":\"info\",\"event\":\"request\",\"target\":\"/selected-json\",\"status\":201,\"duration_ms\":12.346}\n"
+            format!("{{\"level\":\"info\",\"event\":\"request\",\"pid\":{},\"target\":\"/selected-json\",\"status\":201,\"duration_ms\":12.346}}\n", std::process::id()).as_bytes()
         );
     }
 

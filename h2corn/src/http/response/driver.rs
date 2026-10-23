@@ -67,7 +67,7 @@ where
             Ok((file, len)) => controller.handle_pathsend(actions, file, len)?,
             Err(err) => match pathsend_open_substitute_status(&err) {
                 Some(status) => {
-                    crate::server::report_request_failure(Err(err));
+                    crate::server::report_request_failure(transport.log_format(), Err(err));
                     controller.handle_pathsend_substitute(actions, status)?;
                 },
                 None => return Err(err),
@@ -186,6 +186,10 @@ mod tests {
     }
 
     impl HttpResponseTransport for RecordingTransport {
+        fn log_format(&self) -> crate::config::LogFormat {
+            crate::config::LogFormat::Text
+        }
+
         async fn apply_response_action(
             &mut self,
             action: ResponseAction,

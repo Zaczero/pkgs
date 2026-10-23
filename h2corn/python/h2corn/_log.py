@@ -9,9 +9,15 @@ JSON must not receive prose from one of them.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import traceback
+from contextlib import contextmanager
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 LogFormat = Literal['text', 'json']
 
@@ -26,6 +32,7 @@ class Event(Enum):
     """
 
     WORKER_STARTED = ('worker_started', 'info')
+    WORKER_FAILED = ('worker_failed', 'error')
     WORKER_STOPPED = ('worker_stopped', 'info')
     WORKER_EXITED_UNEXPECTEDLY = ('worker_exited_unexpectedly', 'error')
     WORKER_KILLED = ('worker_killed', 'error')
@@ -48,23 +55,31 @@ class Event(Enum):
         `fields` — so a value appears exactly once and the two renderings
         cannot drift apart::
 
-            Event.WORKER_STARTED.log('Started worker [{pid}]', pid=process.pid)
+            Event.WORKER_STARTED.log('Started worker [{worker_pid}]', worker_pid=process.pid)
 
         A sentence built elsewhere is passed as a field rather than as the
         template, so a brace inside it stays data::
 
-            Event.WORKER_KILLED.log('{message}', message=message, pid=pid)
+            Event.WORKER_KILLED.log('{message}', message=message, worker_pid=pid)
         """
         if _format == 'json':
-            record: dict[str, object] = {'level': self.level, 'event': self.event}
+            record: dict[str, object] = {
+                'level': self.level,
+                'event': self.event,
+                'pid': os.getpid(),
+            }
             record.update(fields)
             # `separators` keeps one record on one line; `default=str` means a
             # Path or an exception logs as its text rather than raising here.
             line = json.dumps(record, separators=(',', ':'), default=str)
         else:
             line = template.format(**fields)
-        sys.stderr.write(f'{line}\n')
-        sys.stderr.flush()
+        try:
+            sys.stderr.write(f'{line}\n')
+            sys.stderr.flush()
+        except OSError:
+            # A failed collector must not terminate the supervisor or worker.
+            pass
 
 
 #: Process-wide, published once at startup. The supervisor logs from signal
@@ -75,3 +90,19 @@ _format: LogFormat = 'text'
 def set_format(value: LogFormat) -> None:
     global _format
     _format = value
+
+
+@contextmanager
+def exit_on_error(
+    event: Event, template: str, /, **fields: object
+) -> Generator[None, None, None]:
+    """Report an uncaught process-entrypoint failure without a second traceback."""
+    try:
+        yield
+    except Exception as error:
+        event.log(
+            template,
+            detail=''.join(traceback.format_exception(error)).rstrip(),
+            **fields,
+        )
+        raise SystemExit(1) from None

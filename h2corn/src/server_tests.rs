@@ -245,12 +245,12 @@ fn normal_connection_join_reports_panics_and_keeps_cancellation_silent() {
                 let mut tasks = tokio::task::JoinSet::new();
                 tasks.spawn(std::future::pending::<()>());
                 tasks.abort_all();
-                super::join_connection_task(&mut tasks).await;
+                super::join_connection_task(&mut tasks, crate::config::LogFormat::Text).await;
 
                 tasks.spawn(async {
                     panic!("injected connection task panic");
                 });
-                super::join_connection_task(&mut tasks).await;
+                super::join_connection_task(&mut tasks, crate::config::LogFormat::Text).await;
             });
         return;
     }

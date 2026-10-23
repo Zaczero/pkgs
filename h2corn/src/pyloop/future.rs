@@ -943,7 +943,8 @@ else:
                 .and_then(|asyncio| asyncio.call_method0("new_event_loop"))
                 .expect("test event loop must be created");
             let shard =
-                ShardHandle::from_event_loop(py, &event_loop).expect("test shard must be created");
+                ShardHandle::from_event_loop(py, &event_loop, crate::config::LogFormat::Text)
+                    .expect("test shard must be created");
             let future = new_rust_future(py, &shard).expect("test future must be created");
             drop(shard);
             let locals = PyDict::new(py);

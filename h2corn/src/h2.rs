@@ -643,7 +643,10 @@ where
             return Ok(());
         },
         Err(RequestHeadError::Stream { error_code, error }) => {
-            crate::server::report_request_failure(Err(error.into()));
+            crate::server::report_request_failure(
+                ctx.spawn.connection.config.log_format,
+                Err(error.into()),
+            );
             apply_peer_failure(
                 ctx.writer,
                 ctx.last_client_stream_id,
@@ -935,7 +938,10 @@ where
                     state.peer_failure(H2PeerFailure::connection(error_code, error))?;
                 },
                 Err(RequestHeadError::Stream { error_code, error }) => {
-                    crate::server::report_request_failure(Err(error.into()));
+                    crate::server::report_request_failure(
+                        state.context.config.log_format,
+                        Err(error.into()),
+                    );
                     state.peer_failure(H2PeerFailure::stream(stream_id, error_code))?;
                 },
                 Err(RequestHeadError::Reject { .. }) => {
@@ -1251,7 +1257,11 @@ where
             if !matches!(error.kind(), ErrorKind::Io(_))
                 && let Err(shutdown_error) = linger_after_fatal_goaway(&mut state).await
             {
-                crate::server::report_failure("connection shutdown", Err(shutdown_error));
+                crate::server::report_failure(
+                    state.context.config.log_format,
+                    "connection shutdown",
+                    Err(shutdown_error),
+                );
             }
             Err(error)
         },

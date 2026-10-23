@@ -384,7 +384,6 @@ pub(crate) async fn serve_from_fds(
     let quiesce = quiesce_fd.map(QuiesceReceiver::from_owned_fd).transpose()?;
     #[cfg(not(unix))]
     let quiesce = quiesce_fd;
-    log::set_format(config.log_format);
     if config.access_log {
         // Started here, not lazily on the first request: this runs in the
         // worker process, after any supervisor fork, so the buffer and the
@@ -454,7 +453,11 @@ fn configure_tcp_stream(stream: &TcpStream) {
 /// logging those would bury the ones that matter. An application contract
 /// breach, a broken internal invariant or a configuration fault is somebody's
 /// bug, and used to vanish entirely.
-pub(crate) fn report_failure(subject: &str, result: Result<(), H2CornError>) {
+pub(crate) fn report_failure(
+    format: crate::config::LogFormat,
+    subject: &str,
+    result: Result<(), H2CornError>,
+) {
     let Err(error) = result else {
         return;
     };
@@ -464,7 +467,7 @@ pub(crate) fn report_failure(subject: &str, result: Result<(), H2CornError>) {
         | FailureDomain::InternalInvariant
         | FailureDomain::Configuration => {
             let detail = format_failure(&error);
-            log::Event::Failed.emit(format_args!("{subject} failed: {detail}"), |f| {
+            log::Event::Failed.emit(format, format_args!("{subject} failed: {detail}"), |f| {
                 f.str("subject", subject);
                 f.str("detail", &detail);
             });
@@ -477,41 +480,45 @@ fn format_failure(error: &H2CornError) -> String {
         return error.to_string();
     };
     Python::attach(|py| {
-        error
-            .traceback(py)
-            .and_then(|traceback| traceback.format().ok())
-            .map_or_else(
-                || error.to_string(),
-                |traceback| format!("{traceback}{error}"),
-            )
+        py.import("traceback")
+            .and_then(|module| module.call_method1("format_exception", (error.value(py),)))
+            .and_then(|lines| lines.extract::<Vec<String>>())
+            .map_or_else(|_| error.to_string(), |lines| lines.concat())
     })
 }
 
-fn report_connection_failure(result: Result<(), H2CornError>) {
-    report_failure("connection", result);
+fn report_connection_failure(format: crate::config::LogFormat, result: Result<(), H2CornError>) {
+    report_failure(format, "connection", result);
 }
 
 /// An H2 request keeps the connection alive after a stream-local failure, so
 /// its task cannot return the error to the connection owner. Apply the same
 /// operator-facing failure policy at that task boundary instead.
-pub(crate) fn report_request_failure(result: Result<(), H2CornError>) {
-    report_failure("request", result);
+pub(crate) fn report_request_failure(
+    format: crate::config::LogFormat,
+    result: Result<(), H2CornError>,
+) {
+    report_failure(format, "request", result);
 }
 
-fn report_connection_join(joined: Result<(), tokio::task::JoinError>) {
+fn report_connection_join(
+    format: crate::config::LogFormat,
+    joined: Result<(), tokio::task::JoinError>,
+) {
     if let Err(join_error) = joined
         && let Some(join_error) = unexpected_join_error(join_error)
     {
         log::Event::ConnectionPanicked.emit(
+            format,
             format_args!("connection task panicked: {join_error}"),
             |f| f.text("detail", &join_error),
         );
     }
 }
 
-async fn join_connection_task(tasks: &mut JoinSet<()>) {
+async fn join_connection_task(tasks: &mut JoinSet<()>, format: crate::config::LogFormat) {
     if let Some(joined) = tasks.join_next().await {
-        report_connection_join(joined);
+        report_connection_join(format, joined);
     }
 }
 
@@ -522,6 +529,7 @@ fn spawn_connection(
     accepted: AcceptedConnection,
     shutdown: watch::Receiver<ShutdownState>,
 ) {
+    let format = config.log_format;
     match accepted {
         AcceptedConnection::Tcp(stream, peer) => {
             configure_tcp_stream(&stream);
@@ -540,6 +548,7 @@ fn spawn_connection(
             {
                 tasks.spawn(async move {
                     report_connection_failure(
+                        format,
                         serve_tls_connection(stream, tls, ConnectionArgs {
                             app,
                             config,
@@ -554,6 +563,7 @@ fn spawn_connection(
                 let (reader, writer) = stream.into_split();
                 tasks.spawn(async move {
                     report_connection_failure(
+                        format,
                         serve_connection(reader, writer, ConnectionArgs {
                             app,
                             config,
@@ -572,6 +582,7 @@ fn spawn_connection(
             let (reader, writer) = stream.into_split();
             tasks.spawn(async move {
                 report_connection_failure(
+                    format,
                     serve_connection(reader, writer, ConnectionArgs {
                         app,
                         config,
@@ -643,11 +654,11 @@ async fn serve_listeners(
                     // native connection ownership is settled before teardown.
                     tasks.abort_all();
                     while !tasks.is_empty() {
-                        join_connection_task(&mut tasks).await;
+                        join_connection_task(&mut tasks, config.log_format).await;
                     }
                     break;
                 }
-                () = join_connection_task(&mut tasks), if !tasks.is_empty() => {
+                () = join_connection_task(&mut tasks, config.log_format), if !tasks.is_empty() => {
                     continue;
                 }
             }
@@ -671,7 +682,7 @@ async fn serve_listeners(
                     shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
-            () = join_connection_task(&mut tasks), if !tasks.is_empty() => {
+            () = join_connection_task(&mut tasks, config.log_format), if !tasks.is_empty() => {
                 continue;
             }
             accepted = accept_one(&listeners, accept_start),
@@ -685,7 +696,7 @@ async fn serve_listeners(
                             // closed settlement set after teardown starts.
                             tasks.abort_all();
                             while !tasks.is_empty() {
-                                join_connection_task(&mut tasks).await;
+                                join_connection_task(&mut tasks, config.log_format).await;
                             }
                             return Err(err.into());
                         },

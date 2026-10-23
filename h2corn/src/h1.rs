@@ -211,7 +211,10 @@ where
                     Ok(ConnectionPersistence::Close) => break,
                     Ok(ConnectionPersistence::KeepAlive) => {},
                     Err(err) => {
-                        crate::server::report_request_failure(Err(err));
+                        crate::server::report_request_failure(
+                            connection.config.log_format,
+                            Err(err),
+                        );
                         break;
                     },
                 }
@@ -276,6 +279,7 @@ where
                 .await?;
                 return Ok(());
             };
+            let log_format = context.connection.config.log_format;
             let result = Box::pin(websocket::handle_request(
                 WebSocketContext {
                     request: RequestContext::new(context.connection, request),
@@ -293,7 +297,7 @@ where
             match result {
                 Ok(()) => Ok(()),
                 Err(err) => {
-                    crate::server::report_request_failure(Err(err));
+                    crate::server::report_request_failure(log_format, Err(err));
                     Ok(())
                 },
             }

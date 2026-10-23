@@ -296,6 +296,10 @@ mod tests {
     }
 
     impl HttpResponseTransport for FinalizationBarrierTransport {
+        fn log_format(&self) -> crate::config::LogFormat {
+            crate::config::LogFormat::Text
+        }
+
         async fn apply_response_action(
             &mut self,
             _action: ResponseAction,
@@ -311,6 +315,10 @@ mod tests {
     }
 
     impl HttpResponseTransport for RecordingTransport {
+        fn log_format(&self) -> crate::config::LogFormat {
+            crate::config::LogFormat::Text
+        }
+
         async fn apply_response_action(
             &mut self,
             action: ResponseAction,

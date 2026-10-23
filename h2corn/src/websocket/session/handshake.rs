@@ -197,6 +197,10 @@ mod tests {
     }
 
     impl HttpResponseTransport for RecordingHandshakeTransport {
+        fn log_format(&self) -> crate::config::LogFormat {
+            crate::config::LogFormat::Text
+        }
+
         async fn apply_response_action(
             &mut self,
             action: ResponseAction,

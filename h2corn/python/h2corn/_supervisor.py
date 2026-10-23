@@ -14,7 +14,7 @@ from typing import Any, cast
 
 from h2corn._cli import ImportSettings
 from h2corn._lifespan import cancel_task
-from h2corn._log import Event
+from h2corn._log import Event, exit_on_error, set_format
 from h2corn._reload import take_reload_parent_liveness_fd
 from h2corn._socket import (
     bound_addresses,
@@ -214,90 +214,93 @@ def _worker_entry(
     # of the fleet was still forking.
     os.environ.pop('NOTIFY_SOCKET', None)
 
-    drop_process_privileges(identity)
-    _install_parent_death_signal(expected_supervisor_pid)
-    if isinstance(app, ImportSettings):
-        factory = app.factory
-        app = import_target(app)
-    worker_config = _clone_config(config, workers=1)
-    server = (
-        Server(cast('ApplicationFactory', app), worker_config, factory=True)
-        if factory
-        else Server(cast('Application', app), worker_config)
-    )
-    ready = False
-    native_drain_complete = False
-
-    def _send_control(message: bytes):
-        if control_write_fd is None:
-            return
-        try:
-            os.write(control_write_fd, message)
-        except OSError:
-            pass
-
-    async def _heartbeat_loop(interval: float):
-        while True:
-            # Readiness and native-drain completion are level-triggered. If an
-            # earlier write hit EAGAIN behind queued heartbeats, a later tick
-            # republishes the current lifecycle phase rather than letting a
-            # full pipe turn graceful cleanup into an arbitrary hard kill.
-            if native_drain_complete:
-                _send_control(_CONTROL_LIFESPAN)
-            else:
-                _send_control(_CONTROL_READY if ready else _CONTROL_HEARTBEAT)
-            await asyncio.sleep(interval)
-
-    def _mark_ready() -> None:
-        nonlocal ready
-        ready = True
-        _send_control(_CONTROL_READY)
-
-    def _mark_native_drain_complete() -> None:
-        nonlocal native_drain_complete
-        native_drain_complete = True
-        _send_control(_CONTROL_LIFESPAN)
-
-    async def _run_worker():
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, server.shutdown)
-        loop.add_signal_handler(signal.SIGTERM, server.shutdown)
-        if _RESTART_SIGNAL is not None and _RESTART_SIGNAL not in {
-            signal.SIGINT,
-            signal.SIGTERM,
-        }:
-            loop.add_signal_handler(
-                _RESTART_SIGNAL,
-                # Deliberately private on `Server`: an embedder driving its own
-                # process has no supervisor to request a restart from. This is
-                # the one caller, and it is the supervisor that owns the signal.
-                server._request_restart,  # pyright: ignore[reportPrivateUsage]
-            )
-        heartbeat_task = (
-            asyncio.create_task(_heartbeat_loop(config.timeout_worker_healthcheck / 3))
-            if config.timeout_worker_healthcheck > 0
-            else None
+    set_format(config.log_format)
+    with exit_on_error(
+        Event.WORKER_FAILED,
+        'Worker [{worker_pid}] failed: {detail}',
+        worker_pid=os.getpid(),
+    ):
+        drop_process_privileges(identity)
+        _install_parent_death_signal(expected_supervisor_pid)
+        if isinstance(app, ImportSettings):
+            factory = app.factory
+            app = import_target(app)
+        worker_config = _clone_config(config, workers=1)
+        server = (
+            Server(cast('ApplicationFactory', app), worker_config, factory=True)
+            if factory
+            else Server(cast('Application', app), worker_config)
         )
-        try:
-            await server._serve_worker_fds(
-                list(fds),
-                retire_trigger=(
-                    (lambda: _send_control(_CONTROL_RETIRE))
-                    if config.max_requests > 0
-                    else None
-                ),
-                ready_trigger=_mark_ready,
-                drain_complete_trigger=_mark_native_drain_complete,
-                quiesce_fd=quiesce_read_fd,
-                prepared_tls=prepared_tls,
-            )
-        finally:
-            await cancel_task(heartbeat_task)
-            if control_write_fd is not None:
-                os.close(control_write_fd)
+        ready = False
+        native_drain_complete = False
 
-    with event_loop_runner(config.loop) as runner:
-        runner.run(_run_worker())
+        def _send_control(message: bytes):
+            if control_write_fd is None:
+                return
+            try:
+                os.write(control_write_fd, message)
+            except OSError:
+                pass
+
+        async def _heartbeat_loop(interval: float):
+            while True:
+                # Readiness for both phases is repeated if a full pipe dropped
+                # an earlier notification behind queued heartbeats.
+                if native_drain_complete:
+                    _send_control(_CONTROL_LIFESPAN)
+                else:
+                    _send_control(_CONTROL_READY if ready else _CONTROL_HEARTBEAT)
+                await asyncio.sleep(interval)
+
+        def _mark_ready() -> None:
+            nonlocal ready
+            ready = True
+            _send_control(_CONTROL_READY)
+
+        def _mark_native_drain_complete() -> None:
+            nonlocal native_drain_complete
+            native_drain_complete = True
+            _send_control(_CONTROL_LIFESPAN)
+
+        async def _run_worker():
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(signal.SIGINT, server.shutdown)
+            loop.add_signal_handler(signal.SIGTERM, server.shutdown)
+            if _RESTART_SIGNAL is not None and _RESTART_SIGNAL not in {
+                signal.SIGINT,
+                signal.SIGTERM,
+            }:
+                loop.add_signal_handler(
+                    _RESTART_SIGNAL,
+                    server._request_restart,  # pyright: ignore[reportPrivateUsage]
+                )
+            heartbeat_task = (
+                asyncio.create_task(
+                    _heartbeat_loop(config.timeout_worker_healthcheck / 3)
+                )
+                if config.timeout_worker_healthcheck > 0
+                else None
+            )
+            try:
+                await server._serve_worker_fds(  # pyright: ignore[reportPrivateUsage] - Supervisor-owned entrypoint.
+                    list(fds),
+                    retire_trigger=(
+                        (lambda: _send_control(_CONTROL_RETIRE))
+                        if config.max_requests > 0
+                        else None
+                    ),
+                    ready_trigger=_mark_ready,
+                    drain_complete_trigger=_mark_native_drain_complete,
+                    quiesce_fd=quiesce_read_fd,
+                    prepared_tls=prepared_tls,
+                )
+            finally:
+                await cancel_task(heartbeat_task)
+                if control_write_fd is not None:
+                    os.close(control_write_fd)
+
+        with event_loop_runner(config.loop) as runner:
+            runner.run(_run_worker())
 
 
 def _posix_worker_selector() -> selectors.BaseSelector:
@@ -555,7 +558,9 @@ class _Supervisor:
                 selectors.EVENT_READ,
                 ('worker-control', sentinel),
             )
-            Event.WORKER_STARTED.log('Started worker [{pid}]', pid=process.pid)
+            Event.WORKER_STARTED.log(
+                'Started worker [{worker_pid}]', worker_pid=process.pid
+            )
         except BaseException:
             self.workers.pop(sentinel, None)
             for fd in (sentinel, control_read_fd):
@@ -633,11 +638,13 @@ class _Supervisor:
             os.close(worker.quiesce_write_fd)
             worker.quiesce_write_fd = None
         if expected:
-            Event.WORKER_STOPPED.log('Stopped worker [{pid}]', pid=worker.process.pid)
+            Event.WORKER_STOPPED.log(
+                'Stopped worker [{worker_pid}]', worker_pid=worker.process.pid
+            )
         else:
             Event.WORKER_EXITED_UNEXPECTEDLY.log(
-                'Worker [{pid}] exited unexpectedly with code {exit_code}',
-                pid=worker.process.pid,
+                'Worker [{worker_pid}] exited unexpectedly with code {exit_code}',
+                worker_pid=worker.process.pid,
                 exit_code=worker.process.exitcode,
             )
             self.record_worker_failure(worker.process.exitcode)
@@ -687,8 +694,8 @@ class _Supervisor:
             # Closing the write end is itself a fail-closed stop request:
             # native retirement treats EOF as ordinary stop.
             Event.QUIESCE_SIGNAL_FAILED.log(
-                'Worker [{pid}] quiesce signal failed ({detail}); closing channel',
-                pid=worker_pid,
+                'Worker [{worker_pid}] quiesce signal failed ({detail}); closing channel',
+                worker_pid=worker_pid,
                 detail=str(exc),
             )
 
@@ -717,7 +724,7 @@ class _Supervisor:
         worker.forced_retirement_reap = True
         if worker.process.is_alive():
             Event.WORKER_KILLED.log(
-                '{message}', message=message, pid=worker.process.pid
+                '{message}', message=message, worker_pid=worker.process.pid
             )
             worker.process.kill()
 
@@ -824,8 +831,8 @@ class _Supervisor:
             if deadline is None or deadline > now:
                 continue
             Event.WORKER_HEALTHCHECK_FAILED.log(
-                'Worker [{pid}] failed healthcheck and will be replaced',
-                pid=worker.process.pid,
+                'Worker [{worker_pid}] failed healthcheck and will be replaced',
+                worker_pid=worker.process.pid,
             )
             worker.health_deadline = None
             if self.begin_worker_retirement(sentinel, restart=False):
@@ -1029,6 +1036,7 @@ def serve_with_supervisor(
     pid_fd: int | None = None,
     factory: bool = False,
 ) -> None:
+    set_format(config.log_format)
     if sys.platform == 'win32':
         raise NotImplementedError('worker supervisor mode is not supported on Windows')
 

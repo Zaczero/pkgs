@@ -19,7 +19,7 @@ use crate::config::{BindTarget, LogFormat, ServerConfig};
 use crate::http::response::{FinalResponseBody, ResponseAction};
 use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
-pub(crate) use crate::log::event::{Event, set_format};
+pub(crate) use crate::log::event::Event;
 use crate::proxy_protocol::ConnectionInfo;
 use crate::runtime::RequestContext;
 use crate::websocket::{WebSocketCloseCode, close_code};
@@ -584,11 +584,6 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     const LISTENING_PREFIX: &str = "Listening on ";
     const LISTENING_INDENT: &str = "             ";
 
-    // The banner is the first thing anything writes, and an embedding host can
-    // emit it without going through `serve`. Publish here too so the encoding
-    // is established before the first line rather than after it.
-    set_format(config.log_format);
-
     if config.log_format == LogFormat::Json {
         // The aligned, styled banner is a human artifact; a machine stream
         // gets the same facts as events instead.
@@ -683,15 +678,16 @@ fn emit_access_log<T>(
     if format == LogFormat::Json {
         // Never styled: this stream is parsed, not read. ANSI escapes in a
         // field would have to be escaped again by every consumer.
-        Event::Request.emit_json(|f| {
+        let (event, code_field) = match summary_kind {
+            RequestSummaryKind::Http => (Event::Request, "status"),
+            RequestSummaryKind::WebSocket => (Event::WebSocketClosed, "close_code"),
+        };
+        event.emit_json(|f| {
             f.str("client", client_label);
-            f.str("method", match summary_kind {
-                RequestSummaryKind::Http => request.method.as_str(),
-                RequestSummaryKind::WebSocket => "WEBSOCKET",
-            });
+            f.str("method", request.method.as_str());
             f.str("target", request.path_and_query.as_str());
             f.str("protocol", request.http_version.log_label());
-            f.num("status", code);
+            f.num(code_field, code);
             f.num(
                 "duration_ms",
                 format_args!("{:.3}", io_summary.duration.as_secs_f64() * 1000.0),
@@ -720,7 +716,7 @@ fn emit_access_log<T>(
             );
         },
     }
-    sink::write_line(line.as_slice());
+    sink::write_line(format, line.as_slice());
 }
 
 fn format_listen_target(bind: &BindTarget, tls: bool) -> String {

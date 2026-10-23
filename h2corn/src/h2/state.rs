@@ -408,6 +408,7 @@ pub(super) struct RequestSpawnContext<'a> {
 /// RFC stream concurrency: one retained generation may drain request input
 /// while one protocol-active generation continues, but work stays bounded.
 pub(super) struct RequestTasks {
+    log_format: crate::config::LogFormat,
     active: StreamMap<RequestTask>,
     limit: usize,
     runtime: tokio::runtime::Handle,
@@ -460,7 +461,7 @@ impl RequestTask {
         }
     }
 
-    async fn settle_cancellation(&mut self) {
+    async fn settle_cancellation(&mut self, log_format: crate::config::LogFormat) {
         self.begin_cancel();
         if let Some(pending) = &mut self.pending_cancel {
             pending.await;
@@ -470,22 +471,22 @@ impl RequestTask {
             }
         }
         if let Some(task) = self.task.as_mut() {
-            Self::report_join(task.await);
+            Self::report_join(log_format, task.await);
         }
         self.task = None;
     }
 
-    fn report_join(joined: Result<(), JoinError>) {
+    fn report_join(log_format: crate::config::LogFormat, joined: Result<(), JoinError>) {
         if let Err(join_error) = joined
             && let Some(join_error) = unexpected_join_error(join_error)
         {
-            crate::server::report_request_failure(Err(H2CornError::from(join_error)));
+            crate::server::report_request_failure(log_format, Err(H2CornError::from(join_error)));
         }
     }
 }
 
 impl RequestTasks {
-    fn new(max_concurrent_streams: usize) -> Self {
+    fn new(max_concurrent_streams: usize, log_format: crate::config::LogFormat) -> Self {
         let limit = max_concurrent_streams.saturating_mul(2).max(2);
         // A task owns one reserved slot until its completion id is consumed.
         // The second generation covers tasks synchronously cancelled and
@@ -493,6 +494,7 @@ impl RequestTasks {
         let completion_capacity = limit.saturating_mul(2);
         let (completed_tx, completed_rx) = mpsc::channel(completion_capacity);
         Self {
+            log_format,
             active: new_stream_map(),
             limit,
             runtime: tokio::runtime::Handle::current(),
@@ -551,7 +553,7 @@ impl RequestTasks {
         let stream_ids: Vec<StreamId> = self.active.keys().copied().collect();
         for stream_id in stream_ids {
             if let Some(task) = self.active.get_mut(&stream_id) {
-                task.settle_cancellation().await;
+                task.settle_cancellation(self.log_format).await;
             }
         }
         self.active.clear();
@@ -587,19 +589,23 @@ impl RequestTasks {
         }
     }
 
-    fn observe_join_handles(runtime: &tokio::runtime::Handle, joins: Vec<JoinHandle<()>>) {
+    fn observe_join_handles(
+        runtime: &tokio::runtime::Handle,
+        log_format: crate::config::LogFormat,
+        joins: Vec<JoinHandle<()>>,
+    ) {
         let mut pending = Vec::new();
         let mut context = Context::from_waker(Waker::noop());
         for mut task in joins {
             match Pin::new(&mut task).poll(&mut context) {
-                Poll::Ready(joined) => RequestTask::report_join(joined),
+                Poll::Ready(joined) => RequestTask::report_join(log_format, joined),
                 Poll::Pending => pending.push(task),
             }
         }
         if !pending.is_empty() {
             runtime.spawn(async move {
                 for task in pending {
-                    RequestTask::report_join(task.await);
+                    RequestTask::report_join(log_format, task.await);
                 }
             });
         }
@@ -608,7 +614,7 @@ impl RequestTasks {
     pub(super) fn reap_completed(&mut self) {
         let mut joins = Vec::new();
         self.take_completed_tasks(&mut joins);
-        Self::observe_join_handles(&self.runtime, joins);
+        Self::observe_join_handles(&self.runtime, self.log_format, joins);
     }
 
     pub(super) async fn wait_for_completion(&mut self) {
@@ -635,7 +641,7 @@ impl RequestTasks {
         let mut joins = Vec::new();
         self.take_completed_task(stream_id, &mut joins);
         self.take_completed_tasks(&mut joins);
-        Self::observe_join_handles(&self.runtime, joins);
+        Self::observe_join_handles(&self.runtime, self.log_format, joins);
     }
 
     pub(super) fn active_count(&self) -> usize {
@@ -679,7 +685,7 @@ impl Drop for RequestTasks {
             .into_values()
             .filter_map(|mut request| request.task.take())
             .collect::<Vec<_>>();
-        Self::observe_join_handles(&self.runtime, active);
+        Self::observe_join_handles(&self.runtime, self.log_format, active);
     }
 }
 
@@ -868,6 +874,7 @@ impl<R, W> H2ConnectionState<R, W> {
                     "Python configuration bounds the inbound frame size to the HTTP/2 wire limit",
                 );
         let initial_connection_window = context.config.http2.initial_connection_window_size.get();
+        let log_format = context.config.log_format;
         Self {
             reader,
             connection,
@@ -887,7 +894,7 @@ impl<R, W> H2ConnectionState<R, W> {
             input_flow: Arc::default(),
             released_input_credits: Vec::new(),
             request_deadlines: DeadlineQueue::default(),
-            request_tasks: RequestTasks::new(stream_capacity),
+            request_tasks: RequestTasks::new(stream_capacity, log_format),
         }
     }
 
@@ -1268,7 +1275,7 @@ mod tests {
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let (started_tx, started_rx) = oneshot::channel();
         let (dropped_tx, dropped_rx) = oneshot::channel();
-        let mut tasks = RequestTasks::new(1);
+        let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
         tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
             let _drop_signal = DropSignal(Some(dropped_tx));
             started_tx
@@ -1296,7 +1303,7 @@ mod tests {
                 .build()
                 .expect("current-thread runtime builds")
                 .block_on(async {
-                    let mut tasks = RequestTasks::new(1);
+                    let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
                     let cancelled = StreamId::new(1).expect("non-zero stream id");
                     let completion = tasks.reserve_completion(cancelled);
                     tasks.spawn(cancelled, RequestTaskCancellation::Immediate, async move {
@@ -1370,7 +1377,7 @@ mod tests {
         // it had taken — and a dropped `JoinHandle` detaches, leaving
         // application code running with nothing to wait on it. Cancelling in
         // place keeps them here, where this scope's `Drop` still aborts them.
-        let mut tasks = RequestTasks::new(4);
+        let mut tasks = RequestTasks::new(4, crate::config::LogFormat::Text);
         for raw_id in [1_u32, 3, 5] {
             let stream_id = StreamId::new(raw_id).expect("non-zero stream id");
             tasks.spawn(stream_id, RequestTaskCancellation::Immediate, pending());
@@ -1397,7 +1404,7 @@ mod tests {
     async fn request_task_budget_allows_one_bounded_retained_generation() {
         let first = StreamId::new(1).unwrap();
         let second = StreamId::new(3).unwrap();
-        let mut tasks = RequestTasks::new(1);
+        let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
         let first_settlement = tasks.reserve_completion(first);
         let _second_settlement = tasks.reserve_completion(second);
         tasks.spawn(first, RequestTaskCancellation::Immediate, pending());

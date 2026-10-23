@@ -1159,10 +1159,11 @@ class Config:
     log_format: LogFormat = _option(
         default='text',
         doc=(
-            'Encoding for everything h2corn writes to stderr: the startup '
+            'Encoding for h2corn logs on stderr: the startup '
             "banner, worker lifecycle, errors and access records. 'json' "
             'emits one object per line so the stream can be shipped without '
-            'parsing prose.'
+            'parsing prose. Application logging and Python runtime exception '
+            'hooks keep their own configuration.'
         ),
         env_parse=_normalize_log_format,
         converter=_normalize_log_format,

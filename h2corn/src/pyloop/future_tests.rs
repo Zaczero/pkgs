@@ -186,7 +186,8 @@ fn future_loop_cycle_does_not_retain_shard() {
             .expect("asyncio")
             .call_method0("new_event_loop")
             .expect("loop");
-        let shard = ShardHandle::from_event_loop(py, &event_loop).expect("shard");
+        let shard = ShardHandle::from_event_loop(py, &event_loop, crate::config::LogFormat::Text)
+            .expect("shard");
         let weak_shard = Arc::downgrade(&shard);
         let future = new_rust_future(py, &shard).expect("future");
         drop(shard);
@@ -263,7 +264,8 @@ fn cancellation_owns_exactly_one_requeue(
             .expect("asyncio")
             .call_method0("new_event_loop")
             .expect("loop");
-        let shard = ShardHandle::from_event_loop(py, &event_loop).expect("shard");
+        let shard = ShardHandle::from_event_loop(py, &event_loop, crate::config::LogFormat::Text)
+            .expect("shard");
         let future = new_rust_future(py, &shard).expect("future");
         drop(shard);
         let locals = PyDict::new(py);

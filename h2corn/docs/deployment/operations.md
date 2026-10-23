@@ -409,18 +409,48 @@ immediately, naming the setting and the path, before any handshake.
 
 ### Structured logs
 
-[`--log-format`](../configuration.md#option-log_format) `json` encodes everything h2corn writes to stderr — the startup
+[`--log-format`](../configuration.md#option-log_format) `json` encodes h2corn logs on stderr — the startup
 banner, worker lifecycle, errors and access records — as one JSON object per
 line for log shipping.
 
 ```json title="illustrative output (values vary)"
-{"level":"info","event":"listening","url":"http://127.0.0.1:8000"}
-{"level":"info","event":"worker_started","pid":1234}
-{"level":"info","event":"request","client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.420,"rx_bytes":0,"tx_bytes":218}
+{"level":"info","event":"listening","pid":1200,"url":"http://127.0.0.1:8000"}
+{"level":"info","event":"worker_started","pid":1200,"worker_pid":1234}
+{"level":"info","event":"request","pid":1234,"client":"203.0.113.7:54321","method":"GET","target":"/items?q=1","protocol":"HTTP/2","status":200,"duration_ms":0.420,"rx_bytes":0,"tx_bytes":218}
 ```
 
 Numeric fields remain numbers. Timestamps come from the log collector
 (journald, Docker, or Kubernetes), rather than from the record.
+
+#### Reading records
+
+Every record has `level`, `event`, and `pid`, identifying the emitting process.
+Worker lifecycle records also carry `worker_pid` for the affected worker. Lifecycle and
+access records use `info`; server and application failures use `error`.
+An HTTP error status remains an access record, not an extra error event.
+Ordinary client disconnects and malformed traffic do not generate error logs.
+
+| Record | Useful fields and meaning |
+| --- | --- |
+| `starting`, `listening` | Server version and bound `url`, respectively. |
+| `worker_started`, `worker_stopped` | The worker process was spawned or reaped. These are not application-readiness notifications. |
+| `request` | `client`, `method`, `target`, `protocol`, `status`, `duration_ms`, `rx_bytes`, `tx_bytes`. |
+| `websocket_closed` | The same connection and payload fields, with `close_code` instead of HTTP `status`. |
+| `failed` | `subject` identifies the failed operation; `detail` describes the error. |
+| `worker_failed`, `cli_error` | `detail` contains the uncaught failure, including its Python traceback, exception chain, and notes. |
+
+For HTTP, `status` is the response status and `duration_ms` covers request
+handling after the request head has been read. Byte counts cover body payload,
+not headers or transport framing; `tx_bytes` counts response bytes accepted
+for output, not bytes acknowledged by the client. A partial response can retain
+its original status. For WebSockets, the handshake has an HTTP record, followed
+at session end by `websocket_closed`, with `close_code`, session duration,
+and payload counts. `method` retains the handshake's `GET` or `CONNECT`.
+
+`target` includes the query string. Request headers and bodies are not recorded.
+Use [`Server.wait_started()`][h2corn.Server.wait_started] or
+[systemd readiness](#systemd-readiness) to observe readiness; a bound listener
+alone does not establish it.
 
 Within a major release, event names and existing field types, meanings, and
 units remain stable. New events and fields may be added; consumers should
@@ -430,6 +460,18 @@ the [upgrade policy](../compatibility.md#upgrading).
 [`--access-log`](../configuration.md#option-access_log) and `--log-format` are independent — [`--no-access-log`](../configuration.md#option-access_log)
 `--log-format json` keeps the diagnostics machine-readable while dropping the
 per-request records.
+
+#### Application logging
+
+The CLI and programmatic `serve()` use the same log configuration. Embedded
+`Server` instances retain their own formats, including diagnostics. Choose the
+same format for instances sharing stderr when a collector expects a uniform stream.
+
+h2corn does not replace Python logging handlers, warning handlers, or exception
+hooks. Configure application and framework logging separately, using Python
+`logging` or a structured logger such as structlog. Embedded startup and shutdown
+exceptions propagate to the caller. Python runtime diagnostics, including
+`sys.unraisablehook`, remain under the host application's control.
 
 ### Metrics and tracing
 

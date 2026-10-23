@@ -31,25 +31,19 @@ mod tests {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::net::UnixStream;
 
-    use pyo3::Python;
-    use pyo3::types::{PyAnyMethods as _, PyModule};
-
     use super::{CAPACITY, LogSink, fd_is_regular_file};
     use crate::config::LogFormat;
-    use crate::log::set_format;
 
     #[rstest::rstest]
-    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
     #[case::text(LogFormat::Text, "dropped 3 access log lines: sink too slow")]
     #[case::json(
         LogFormat::Json,
-        "{\"level\":\"error\",\"event\":\"failed\",\"subject\":\"access log sink\",\"detail\":\"sink too slow\",\"dropped_lines\":3}"
+        "{\"level\":\"error\",\"event\":\"failed\",\"pid\":PID,\"subject\":\"access log sink\",\"detail\":\"sink too slow\",\"dropped_lines\":3}"
     )]
     fn saturated_sink_reports_drops_directly_before_draining(
         #[case] format: LogFormat,
         #[case] notice: &str,
     ) {
-        set_format(format);
         let sink = LogSink::new();
         let mut output = tempfile::NamedTempFile::new().unwrap();
         assert!(fd_is_regular_file(output.as_raw_fd()));
@@ -57,28 +51,20 @@ mod tests {
             "{{\"event\":\"request\",\"target\":\"{}\"}}\n",
             "x".repeat(CAPACITY)
         );
-        sink.enqueue(oversized.as_bytes());
+        sink.enqueue(format, oversized.as_bytes());
         for _ in 0..3 {
-            sink.enqueue(b"{\"event\":\"request\",\"target\":\"/dropped\"}\n");
+            sink.enqueue(format, b"{\"event\":\"request\",\"target\":\"/dropped\"}\n");
         }
 
         sink.drain_once(&mut output);
-        sink.enqueue(b"{\"event\":\"request\",\"target\":\"/after\"}\n");
-        sink.enqueue(b"{\"event\":\"request\",\"target\":\"/batch\"}\n");
+        sink.enqueue(format, b"{\"event\":\"request\",\"target\":\"/after\"}\n");
+        sink.enqueue(format, b"{\"event\":\"request\",\"target\":\"/batch\"}\n");
         sink.drain_once(&mut output);
 
         let actual = std::fs::read_to_string(output.path()).unwrap();
-        if format == LogFormat::Json {
-            Python::initialize();
-            Python::attach(|py| {
-                let json = PyModule::import(py, "json").unwrap();
-                for line in actual.lines() {
-                    json.call_method1("loads", (line,)).unwrap();
-                }
-            });
-        }
         let mut lines = actual.lines();
-        assert_eq!(lines.next(), Some(notice));
+        let notice = notice.replace("PID", &std::process::id().to_string());
+        assert_eq!(lines.next(), Some(notice.as_str()));
         assert_eq!(lines.next(), Some(oversized.trim_end()));
         assert_eq!(
             lines.next(),
@@ -89,6 +75,27 @@ mod tests {
             Some("{\"event\":\"request\",\"target\":\"/batch\"}")
         );
         assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn saturated_sink_keeps_each_servers_notice_format() {
+        let sink = LogSink::new();
+        sink.enqueue(LogFormat::Text, &vec![b'x'; CAPACITY]);
+        sink.enqueue(LogFormat::Text, b"dropped text\n");
+        sink.enqueue(LogFormat::Json, b"{\"event\":\"dropped\"}\n");
+        sink.enqueue(LogFormat::Json, b"{\"event\":\"dropped\"}\n");
+
+        let mut output = Vec::new();
+        sink.drain_once(&mut output);
+        let output = String::from_utf8(output).unwrap();
+        let mut lines = output.lines();
+        assert_eq!(
+            lines.next(),
+            Some("dropped 1 access log lines: sink too slow")
+        );
+        let json = lines.next().unwrap();
+        assert!(json.starts_with("{\"level\":\"error\",\"event\":\"failed\","));
+        assert!(json.contains("\"dropped_lines\":2"));
     }
 
     #[test]
@@ -113,7 +120,6 @@ mod tests {
 }
 
 use std::io::{self, Write as _};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::{mem, thread};
@@ -121,6 +127,7 @@ use std::{mem, thread};
 use parking_lot::{Condvar, Mutex};
 
 use super::Event;
+use crate::config::LogFormat;
 
 /// Initial capacity of each buffer. A batch is never split to fit it: one
 /// batch is one `write(2)`, which is what keeps a line whole when several
@@ -145,6 +152,8 @@ struct Pending {
     /// only looked at `lines` would return while that batch is still in
     /// flight, and the process could exit before it reached the file.
     writing: bool,
+    dropped_text: u64,
+    dropped_json: u64,
 }
 
 struct LogSink {
@@ -153,7 +162,6 @@ struct LogSink {
     ready: Condvar,
     /// Signalled when the writer has drained everything it took.
     drained: Condvar,
-    dropped: AtomicU64,
 }
 
 /// Start the batching writer thread for this process.
@@ -183,13 +191,13 @@ pub(crate) fn start() {
 }
 
 /// Queue one formatted line, or write it inline if there is no writer.
-pub(crate) fn write_line(line: &[u8]) {
+pub(crate) fn write_line(format: LogFormat, line: &[u8]) {
     let Some(sink) = SINK.get() else {
         drop(io::stderr().write_all(line));
         return;
     };
 
-    sink.enqueue(line);
+    sink.enqueue(format, line);
 }
 
 /// Wait for queued lines to reach stderr, giving up after `timeout`.
@@ -247,17 +255,22 @@ impl LogSink {
                 lines: Vec::with_capacity(INITIAL_CAPACITY),
                 spare: Vec::with_capacity(INITIAL_CAPACITY),
                 writing: false,
+                dropped_text: 0,
+                dropped_json: 0,
             }),
             ready: Condvar::new(),
             drained: Condvar::new(),
-            dropped: AtomicU64::new(0),
         }
     }
 
-    fn enqueue(&self, line: &[u8]) {
+    fn enqueue(&self, format: LogFormat, line: &[u8]) {
         let mut pending = self.pending.lock();
         if !pending.lines.is_empty() && line.len() > CAPACITY.saturating_sub(pending.lines.len()) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            let dropped = match format {
+                LogFormat::Text => &mut pending.dropped_text,
+                LogFormat::Json => &mut pending.dropped_json,
+            };
+            *dropped = dropped.saturating_add(1);
             return;
         }
         let was_empty = pending.lines.is_empty();
@@ -273,19 +286,29 @@ impl LogSink {
     fn drain_once(&self, output: &mut impl io::Write) {
         // The two buffers swap roles every round: producers fill one while the
         // writer drains the other, so a batch never blocks an append.
-        let mut batch = {
+        let (mut batch, dropped_text, dropped_json) = {
             let mut pending = self.pending.lock();
             while pending.lines.is_empty() {
                 self.ready.wait(&mut pending);
             }
             let spare = mem::take(&mut pending.spare);
             pending.writing = true;
-            mem::replace(&mut pending.lines, spare)
+            (
+                mem::replace(&mut pending.lines, spare),
+                mem::take(&mut pending.dropped_text),
+                mem::take(&mut pending.dropped_json),
+            )
         };
 
-        let dropped = self.dropped.swap(0, Ordering::Relaxed);
-        if dropped != 0 {
+        for (format, dropped) in [
+            (LogFormat::Text, dropped_text),
+            (LogFormat::Json, dropped_json),
+        ] {
+            if dropped == 0 {
+                continue;
+            }
             let notice = Event::Failed.encode(
+                format,
                 format_args!("dropped {dropped} access log lines: sink too slow"),
                 |fields| {
                     fields.str("subject", "access log sink");

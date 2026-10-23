@@ -754,7 +754,11 @@ async fn start_secondary_applications(
     };
     let first_startup_error = startup_errors.remove(0);
     for err in startup_errors {
-        crate::server::report_failure("secondary lifespan startup", Err(err));
+        crate::server::report_failure(
+            shards.first().expect("primary shard exists").log_format,
+            "secondary lifespan startup",
+            Err(err),
+        );
     }
     (
         runner_slots.into_iter().flatten().collect(),
@@ -770,6 +774,7 @@ async fn start_secondary_applications(
 async fn stop_secondary_applications(
     runners: Vec<PreparedLoop>,
     shutdown_timeout: Option<f64>,
+    log_format: crate::config::LogFormat,
 ) -> Option<H2CornError> {
     let mut settlements = JoinSet::new();
     for PreparedLoop {
@@ -800,6 +805,7 @@ async fn stop_secondary_applications(
             }),
             Ok((_, _, Err(error))) => {
                 record_shutdown_failure(
+                    log_format,
                     &mut settlement_result,
                     "application startup settlement",
                     error.into(),
@@ -808,6 +814,7 @@ async fn stop_secondary_applications(
             Err(error) => {
                 if let Some(error) = unexpected_join_error(error) {
                     record_shutdown_failure(
+                        log_format,
                         &mut settlement_result,
                         "application startup settlement",
                         error.into(),
@@ -855,12 +862,13 @@ async fn stop_secondary_applications(
     let mut errors = errors.into_iter().map(|(_, err)| err);
     let first = settlement_result.err().or_else(|| errors.next());
     for err in errors {
-        crate::server::report_failure("secondary lifespan shutdown", Err(err));
+        crate::server::report_failure(log_format, "secondary lifespan shutdown", Err(err));
     }
     first
 }
 
 fn record_shutdown_failure(
+    log_format: crate::config::LogFormat,
     result: &mut Result<(), H2CornError>,
     subject: &str,
     failure: H2CornError,
@@ -868,7 +876,7 @@ fn record_shutdown_failure(
     if result.is_ok() {
         *result = Err(failure);
     } else {
-        crate::server::report_failure(subject, Err(failure));
+        crate::server::report_failure(log_format, subject, Err(failure));
     }
 }
 
@@ -887,6 +895,7 @@ async fn run_serve_task(task: ServeTask) {
         main_shard,
         resolve_fut,
     } = task;
+    let log_format = config.log_format;
     let mut fds = Some(fds);
     // Bind secondary owners where startup runs, not via declare-then-reassign.
     let (secondary_runners, startup_error, stopped) = start_secondary_applications(
@@ -936,11 +945,14 @@ async fn run_serve_task(task: ServeTask) {
     // acknowledging completion.
     app.wait_for_scoped_owners().await;
     {
-        let shutdown_error =
-            stop_secondary_applications(secondary_runners, preparation_config.shutdown_timeout)
-                .await;
+        let shutdown_error = stop_secondary_applications(
+            secondary_runners,
+            preparation_config.shutdown_timeout,
+            log_format,
+        )
+        .await;
         if let Some(err) = shutdown_error {
-            record_shutdown_failure(&mut result, "secondary lifespan shutdown", err);
+            record_shutdown_failure(log_format, &mut result, "secondary lifespan shutdown", err);
         }
     }
 
@@ -960,11 +972,21 @@ async fn run_serve_task(task: ServeTask) {
         match released {
             Ok(Ok(())) => {},
             Ok(Err(error)) => {
-                record_shutdown_failure(&mut result, "loop application release", error.into());
+                record_shutdown_failure(
+                    log_format,
+                    &mut result,
+                    "loop application release",
+                    error.into(),
+                );
             },
             Err(error) => {
                 if let Some(error) = unexpected_join_error(error) {
-                    record_shutdown_failure(&mut result, "loop application release", error.into());
+                    record_shutdown_failure(
+                        log_format,
+                        &mut result,
+                        "loop application release",
+                        error.into(),
+                    );
                 }
             },
         }
@@ -982,6 +1004,7 @@ async fn run_serve_task(task: ServeTask) {
         Err(app) => {
             let owners = Arc::strong_count(&app);
             record_shutdown_failure(
+                log_format,
                 &mut result,
                 "server teardown",
                 H2CornError::from(PyRuntimeError::new_err(format!(
@@ -989,7 +1012,7 @@ async fn run_serve_task(task: ServeTask) {
                 ))),
             );
             if let Err(err) = release_app(Arc::clone(&main_shard), app).await {
-                record_shutdown_failure(&mut result, "application release", err);
+                record_shutdown_failure(log_format, &mut result, "application release", err);
             }
             None
         },
@@ -1005,8 +1028,9 @@ async fn run_serve_task(task: ServeTask) {
         {
             Ok(errors) => {
                 for detail in errors {
-                    report_shard_thread_panic(&detail);
+                    report_shard_thread_panic(log_format, &detail);
                     record_shutdown_failure(
+                        log_format,
                         &mut result,
                         "shard thread shutdown",
                         H2CornError::from(PyRuntimeError::new_err(format!(
@@ -1018,6 +1042,7 @@ async fn run_serve_task(task: ServeTask) {
             Err(error) => {
                 if let Some(error) = unexpected_join_error(error) {
                     record_shutdown_failure(
+                        log_format,
                         &mut result,
                         "shard thread shutdown",
                         H2CornError::from(error),
@@ -1096,7 +1121,7 @@ pub(crate) fn serve_fds<'py>(
         .map_err(into_pyerr)?;
     let config = Arc::new(config);
 
-    let (main_shard, loop_factory) = ShardHandle::from_running_loop(py)?;
+    let (main_shard, loop_factory) = ShardHandle::from_running_loop(py, config.log_format)?;
     let preparation = (|| {
         let prepared = prepared_application.bind(py);
         install_prepared_application(py, prepared, &main_shard)?;
@@ -1144,7 +1169,7 @@ pub(crate) fn serve_fds<'py>(
     let shard_threads = if loop_count > 1 {
         match py.detach(|| {
             (1..loop_count)
-                .map(|index| spawn_shard_thread(index, loop_factory))
+                .map(|index| spawn_shard_thread(index, loop_factory, config.log_format))
                 .collect::<PyResult<Vec<_>>>()
         }) {
             Ok(threads) => threads,
@@ -1386,6 +1411,7 @@ mod tests {
         Python::attach(|py| {
             let mut result = Ok(());
             record_shutdown_failure(
+                crate::config::LogFormat::Text,
                 &mut result,
                 "test cleanup",
                 H2CornError::from(PyRuntimeError::new_err("cleanup failed")),
@@ -1399,6 +1425,7 @@ mod tests {
 
             let mut result = Err(H2CornError::from(PyRuntimeError::new_err("serving failed")));
             record_shutdown_failure(
+                crate::config::LogFormat::Text,
                 &mut result,
                 "test cleanup",
                 H2CornError::from(PyRuntimeError::new_err("cleanup failed")),

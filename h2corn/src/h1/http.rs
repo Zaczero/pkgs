@@ -326,6 +326,10 @@ impl<W> HttpResponseTransport for H1HttpTransport<'_, W>
 where
     W: WriteTarget,
 {
+    fn log_format(&self) -> crate::config::LogFormat {
+        self.config.log_format
+    }
+
     async fn apply_response_action(&mut self, action: ResponseAction) -> Result<(), H2CornError> {
         self.state
             .apply_response_action(self.writer, self.config, action)

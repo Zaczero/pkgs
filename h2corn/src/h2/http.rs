@@ -50,6 +50,10 @@ struct H2HttpRequestContext {
 }
 
 impl HttpResponseTransport for H2HttpTransport<'_> {
+    fn log_format(&self) -> crate::config::LogFormat {
+        self.connection.config().log_format
+    }
+
     fn new_http_send_state(&self) -> (HttpSendState, HttpSendBuffer) {
         HttpSendState::with_response_failure(
             self.connection.response_byte_budget(),
@@ -272,8 +276,12 @@ fn spawn_http_request(
     cancellation: RequestTaskCancellation,
     task: H2HttpRequestContext,
 ) {
+    let log_format = task.ctx.connection.config.log_format;
     tasks.spawn(stream_id, cancellation, async move {
-        crate::server::report_request_failure(Box::pin(handle_http_request(stream_id, task)).await);
+        crate::server::report_request_failure(
+            log_format,
+            Box::pin(handle_http_request(stream_id, task)).await,
+        );
     });
 }
 
@@ -296,8 +304,10 @@ fn spawn_websocket_request(
         .map_or(RequestTaskCancellation::Immediate, |signal| {
             RequestTaskCancellation::AfterPendingReceive(std::sync::Arc::clone(signal))
         });
+    let log_format = context.request.connection.config.log_format;
     tasks.spawn(stream_id, cancellation, async move {
         crate::server::report_request_failure(
+            log_format,
             Box::pin(handle_websocket_request(
                 context, stream_id, input, connection,
             ))
