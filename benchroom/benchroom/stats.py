@@ -155,6 +155,8 @@ def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, f
     rng = np.random.default_rng(seed)
     medians = np.empty(_BOOTSTRAP_SAMPLES)
     batch = max(1, (1024 * 1024) // (data.itemsize * size))
+    # Keep the previous batch until its replacement is allocated: releasing it
+    # first can trigger heap trimming and page faults on every iteration.
     for start in range(0, _BOOTSTRAP_SAMPLES, batch):
         end = min(start + batch, _BOOTSTRAP_SAMPLES)
         # NumPy's generic overloads include types unavailable at the Python floor.
