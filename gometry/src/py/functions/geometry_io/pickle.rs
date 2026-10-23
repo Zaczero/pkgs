@@ -739,19 +739,20 @@ fn materialize_array_pickle_payload(
     let pickle_buffer = out_of_band
         .then(|| py.import("pickle")?.getattr("PickleBuffer"))
         .transpose()?;
-    let bytes = |payload: &[u8]| -> PyResult<Py<PyAny>> {
-        let payload = PyBytes::new(py, payload);
+    let bytes = |payload: Vec<u8>| -> PyResult<Py<PyAny>> {
+        let bytes = PyBytes::new(py, &payload);
+        drop(payload);
         match &pickle_buffer {
-            Some(pickle_buffer) => Ok(pickle_buffer.call1((payload,))?.unbind()),
-            None => Ok(payload.unbind().into_any()),
+            Some(pickle_buffer) => Ok(pickle_buffer.call1((bytes,))?.unbind()),
+            None => Ok(bytes.unbind().into_any()),
         }
     };
-    let missing = missing.as_deref().map(bytes).transpose()?;
+    let missing = missing.map(bytes).transpose()?;
     let (name, args) = match rows {
         PickleRows::Mixed(rows) => {
             let mut py_rows = Vec::with_capacity(rows.len());
             for row in rows {
-                py_rows.push(bytes(&row)?);
+                py_rows.push(bytes(row)?);
             }
             (
                 "_unpickle_geometry_array_v1",
@@ -762,7 +763,7 @@ fn materialize_array_pickle_payload(
             columns: (xs, ys, zs, ms),
             levels,
         } => {
-            let offsets = match &levels {
+            let offsets = match levels {
                 OffsetLevels::Points => PyTuple::empty(py),
                 OffsetLevels::Lines(offsets) => PyTuple::new(py, [bytes(offsets)?])?,
                 OffsetLevels::Polygons { rings, polygons } => {
@@ -772,10 +773,10 @@ fn materialize_array_pickle_payload(
             (
                 "_unpickle_packed_array_v1",
                 (
-                    bytes(&xs)?,
-                    bytes(&ys)?,
-                    zs.as_deref().map(bytes).transpose()?,
-                    ms.as_deref().map(bytes).transpose()?,
+                    bytes(xs)?,
+                    bytes(ys)?,
+                    zs.map(bytes).transpose()?,
+                    ms.map(bytes).transpose()?,
                     offsets,
                     crs.as_deref(),
                     epoch,
