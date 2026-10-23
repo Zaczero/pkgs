@@ -123,7 +123,7 @@ impl GeographicCoverageAnalysis {
             region_roots.push(pending.boundary.region);
         }
         let region_facts =
-            overlay::selected_region_facts(q, &selected_faces, &mut regions, &region_roots, work)?;
+            overlay::selected_region_facts(q, &selected_faces, &mut regions, region_roots, work)?;
         let mut face_regions = Vec::with_capacity(face_roots.len());
         for (&owner, root) in assignment.owners.iter().zip(face_roots) {
             work.charge_into_error(1)?;

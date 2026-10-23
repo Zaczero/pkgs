@@ -35,7 +35,7 @@ impl QEmissionPlan {
         )?;
         let region_roots = cycles.iter().map(|cycle| cycle.region).collect::<Vec<_>>();
         let selected_regions =
-            selected_region_facts(q, &selected_faces, &mut regions, &region_roots, work)?;
+            selected_region_facts(q, &selected_faces, &mut regions, region_roots, work)?;
         let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
         let (line_paths, covered_by_area_cycles) =
             boundary_cycle_line_paths(topology, &cycles, work)?;

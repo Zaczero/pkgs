@@ -79,7 +79,7 @@ impl QEmissionPlan {
             }
         }
         let selected_regions =
-            selected_region_facts(q, &selection.selected_faces, &mut regions, &roots, work)?;
+            selected_region_facts(q, &selection.selected_faces, &mut regions, roots, work)?;
         let selected_face_roots =
             selected_face_roots(q, &selection.selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
@@ -157,7 +157,7 @@ impl QEmissionPlan {
         )?;
         let roots = cycles.iter().map(|cycle| cycle.region).collect::<Vec<_>>();
         let selected_regions =
-            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
+            selected_region_facts(q, &selected_faces, &mut regions, roots, work)?;
         let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
         for (cycle, boundary) in cycles.iter().enumerate() {

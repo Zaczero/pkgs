@@ -295,7 +295,7 @@ pub(in crate::geometry::topology) fn selected_region_facts(
     q: &super::super::q::ExactGeographicQ,
     selected: &[bool],
     regions: &mut FaceUnion,
-    region_roots: &[usize],
+    mut roots: Vec<usize>,
     work: &mut impl Work,
 ) -> Result<Vec<SelectedRegionFact>> {
     if selected.len() != q.global_face_count {
@@ -304,10 +304,7 @@ pub(in crate::geometry::topology) fn selected_region_facts(
         )
         .into());
     }
-    work.charge_into_error(
-        u64::try_from(region_roots.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut roots = region_roots.to_vec();
+    work.charge_into_error(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     for &root in &roots {
         work.charge_into_error(1)?;
         if !selected.get(root).copied().unwrap_or(false) || regions.find(root, work)? != root {

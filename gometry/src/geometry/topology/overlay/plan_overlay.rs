@@ -213,7 +213,7 @@ impl QEmissionPlan {
                 .collect::<Result<Vec<_>>>()?,
         };
         let selected_regions =
-            selected_region_facts(q, &faces, &mut face_regions, &region_roots, work)?;
+            selected_region_facts(q, &faces, &mut face_regions, region_roots, work)?;
         let selected_face_roots = selected_face_roots(q, &faces, &mut face_regions, work)?;
         let fragment_recipes =
             build_fragment_recipes(topology, &polygons, &cycles, &line_paths, work)?;
