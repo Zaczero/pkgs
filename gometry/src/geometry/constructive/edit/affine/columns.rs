@@ -1,4 +1,8 @@
-use super::row::{AFFINE_FIXUP_MARKER, AdmittedAffineOriginRow, AffineOriginRow, AffineRowExtents};
+use super::rounding::round_certified_double_double;
+use super::row::{
+    AFFINE_FIXUP_MARKER, AdmittedAffineMode, AdmittedAffineOriginRow, AffineOriginRow,
+    AffineRowExtents, map_biased_product, map_exact_dot, map_general_affine_row, single_product,
+};
 use super::{DekkerParts, GeometryErrorKind, Result, binary_zero};
 
 pub(crate) struct OriginAffine {
@@ -157,23 +161,74 @@ fn map_admitted_xy_columns(
     x_fast: &AdmittedAffineOriginRow,
     y_fast: &AdmittedAffineOriginRow,
 ) -> Result<()> {
+    /// Keep the chosen row formulas concrete through the fused coordinate loop.
+    macro_rules! map_pair {
+        ($split:literal, $x:expr, $y:expr) => {
+            map_admitted_xy_columns_kernel::<$split, _, _>(
+                xs, ys, out_x, out_y, x_row, y_row, $x, $y,
+            )
+        };
+    }
+    match (x_fast.mode, y_fast.mode) {
+        (AdmittedAffineMode::ProductX(x), AdmittedAffineMode::ProductY(y)) => {
+            return map_pair!(
+                false,
+                |value_x, _, _, _| (single_product(x.value(), value_x), true),
+                |_, value_y, _, _| (single_product(y.value(), value_y), true)
+            );
+        },
+        (
+            AdmittedAffineMode::BiasedProductX(x, x_bias),
+            AdmittedAffineMode::BiasedProductY(y, y_bias),
+        ) => {
+            return map_pair!(
+                true,
+                |_, _, parts_x, _| map_biased_product(x_bias, x, parts_x),
+                |_, _, _, parts_y| map_biased_product(y_bias, y, parts_y)
+            );
+        },
+        (AdmittedAffineMode::Dot(xx, xy), AdmittedAffineMode::Dot(yx, yy)) => {
+            return map_pair!(
+                true,
+                |_, _, parts_x, parts_y| map_exact_dot(xx, xy, parts_x, parts_y),
+                |_, _, parts_x, parts_y| map_exact_dot(yx, yy, parts_x, parts_y)
+            );
+        },
+        (
+            AdmittedAffineMode::General(xx, xy, x_bias),
+            AdmittedAffineMode::General(yx, yy, y_bias),
+        ) => {
+            return map_pair!(
+                true,
+                |_, _, parts_x, parts_y| map_general_affine_row(x_bias, xx, xy, parts_x, parts_y),
+                |_, _, parts_x, parts_y| map_general_affine_row(y_bias, yx, yy, parts_x, parts_y)
+            );
+        },
+        _ => {},
+    }
+    let map_x = |x, y, parts_x, parts_y| x_fast.map(x, y, parts_x, parts_y);
+    let map_y = |x, y, parts_x, parts_y| y_fast.map(x, y, parts_x, parts_y);
     if x_fast.requires_coordinate_split() || y_fast.requires_coordinate_split() {
-        map_admitted_xy_columns_kernel::<true>(xs, ys, out_x, out_y, x_row, y_row, x_fast, y_fast)
+        map_pair!(true, map_x, map_y)
     } else {
-        map_admitted_xy_columns_kernel::<false>(xs, ys, out_x, out_y, x_row, y_row, x_fast, y_fast)
+        map_pair!(false, map_x, map_y)
     }
 }
 
-fn map_admitted_xy_columns_kernel<const SPLIT_COORDINATES: bool>(
+fn map_admitted_xy_columns_kernel<const SPLIT_COORDINATES: bool, X, Y>(
     xs: &[f64],
     ys: &[f64],
     out_x: &mut [f64],
     out_y: &mut [f64],
     x_row: &AffineOriginRow,
     y_row: &AffineOriginRow,
-    x_fast: &AdmittedAffineOriginRow,
-    y_fast: &AdmittedAffineOriginRow,
-) -> Result<()> {
+    map_x: X,
+    map_y: Y,
+) -> Result<()>
+where
+    X: Fn(f64, f64, DekkerParts, DekkerParts) -> (f64, bool),
+    Y: Fn(f64, f64, DekkerParts, DekkerParts) -> (f64, bool),
+{
     for (((&x, &y), output_x), output_y) in xs
         .iter()
         .zip(ys)
@@ -185,8 +240,8 @@ fn map_admitted_xy_columns_kernel<const SPLIT_COORDINATES: bool>(
         } else {
             (DekkerParts::zero(), DekkerParts::zero())
         };
-        let (mapped_x, certified_x) = x_fast.map(x, y, x_parts, y_parts);
-        let (mapped_y, certified_y) = y_fast.map(x, y, x_parts, y_parts);
+        let (mapped_x, certified_x) = map_x(x, y, x_parts, y_parts);
+        let (mapped_y, certified_y) = map_y(x, y, x_parts, y_parts);
         *output_x = if certified_x {
             mapped_x
         } else {
@@ -221,27 +276,68 @@ fn map_admitted_one_column(
     exact_row: &AffineOriginRow,
     fast_row: &AdmittedAffineOriginRow,
 ) -> Result<()> {
-    if fast_row.requires_coordinate_split() {
-        map_admitted_one_column_kernel::<true>(xs, ys, output, exact_row, fast_row)
-    } else {
-        map_admitted_one_column_kernel::<false>(xs, ys, output, exact_row, fast_row)
+    /// Instantiate only the coordinate splitting required by the selected formula.
+    macro_rules! map_column {
+        ($split_x:literal, $split_y:literal, $map:expr) => {
+            map_admitted_one_column_kernel::<$split_x, $split_y, _>(xs, ys, output, exact_row, $map)
+        };
+    }
+    match fast_row.mode {
+        AdmittedAffineMode::Zero => map_column!(false, false, |_, _, _, _| (0.0, true)),
+        AdmittedAffineMode::ProductX(coefficient) => map_column!(false, false, |x, _, _, _| (
+            single_product(coefficient.value(), x),
+            true
+        )),
+        AdmittedAffineMode::ProductY(coefficient) => map_column!(false, false, |_, y, _, _| (
+            single_product(coefficient.value(), y),
+            true
+        )),
+        AdmittedAffineMode::BiasOnly(bias) => map_column!(false, false, |_, _, _, _| {
+            round_certified_double_double::<true>(bias.high, bias.low, bias.error)
+        }),
+        AdmittedAffineMode::BiasedProductX(coefficient, bias) => {
+            map_column!(true, false, |_, _, parts_x, _| {
+                map_biased_product(bias, coefficient, parts_x)
+            })
+        },
+        AdmittedAffineMode::BiasedProductY(coefficient, bias) => {
+            map_column!(false, true, |_, _, _, parts_y| {
+                map_biased_product(bias, coefficient, parts_y)
+            })
+        },
+        AdmittedAffineMode::Dot(x, y) => map_column!(true, true, |_, _, parts_x, parts_y| {
+            map_exact_dot(x, y, parts_x, parts_y)
+        }),
+        AdmittedAffineMode::General(x, y, bias) => {
+            map_column!(true, true, |_, _, parts_x, parts_y| {
+                map_general_affine_row(bias, x, y, parts_x, parts_y)
+            })
+        },
     }
 }
 
-fn map_admitted_one_column_kernel<const SPLIT_COORDINATES: bool>(
+fn map_admitted_one_column_kernel<const SPLIT_X: bool, const SPLIT_Y: bool, F>(
     xs: &[f64],
     ys: &[f64],
     output: &mut [f64],
     exact_row: &AffineOriginRow,
-    fast_row: &AdmittedAffineOriginRow,
-) -> Result<()> {
+    map: F,
+) -> Result<()>
+where
+    F: Fn(f64, f64, DekkerParts, DekkerParts) -> (f64, bool),
+{
     for ((&x, &y), output) in xs.iter().zip(ys).zip(output.iter_mut()) {
-        let (x_parts, y_parts) = if SPLIT_COORDINATES {
-            (DekkerParts::admitted(x), DekkerParts::admitted(y))
+        let x_parts = if SPLIT_X {
+            DekkerParts::admitted(x)
         } else {
-            (DekkerParts::zero(), DekkerParts::zero())
+            DekkerParts::zero()
         };
-        let (mapped, certified) = fast_row.map(x, y, x_parts, y_parts);
+        let y_parts = if SPLIT_Y {
+            DekkerParts::admitted(y)
+        } else {
+            DekkerParts::zero()
+        };
+        let (mapped, certified) = map(x, y, x_parts, y_parts);
         *output = if certified {
             mapped
         } else {

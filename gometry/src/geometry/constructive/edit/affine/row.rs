@@ -286,12 +286,12 @@ impl AdmittedAffineOriginRow {
 
 /// A sole exact product rounds correctly with one binary64 multiply. ExactSum
 /// canonicalizes a mathematically zero row to +0, unlike signed-zero multiply.
-fn single_product(coefficient: f64, value: f64) -> f64 {
+pub(super) fn single_product(coefficient: f64, value: f64) -> f64 {
     let product = coefficient * value;
     if binary_zero(value) { 0.0 } else { product }
 }
 
-fn map_biased_product(
+pub(super) fn map_biased_product(
     bias: AffineExpansion,
     coefficient: DekkerParts,
     value: DekkerParts,
@@ -307,7 +307,7 @@ fn map_biased_product(
 
 /// Compact two exact products; the residuals discarded from the low-limb
 /// merge are added to the outward error bound.
-fn map_exact_dot(
+pub(super) fn map_exact_dot(
     coefficient_x: DekkerParts,
     coefficient_y: DekkerParts,
     value_x: DekkerParts,
@@ -324,7 +324,7 @@ fn map_exact_dot(
     round_certified_double_double::<true>(high, low, error)
 }
 
-fn map_general_affine_row(
+pub(super) fn map_general_affine_row(
     bias: AffineExpansion,
     coefficient_x: DekkerParts,
     coefficient_y: DekkerParts,
