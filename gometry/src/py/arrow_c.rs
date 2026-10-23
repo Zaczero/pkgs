@@ -242,7 +242,7 @@ impl SchemaNode {
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .map(|(key, value)| (key.as_bytes().to_vec(), value.as_bytes().to_vec()))
+            .map(|(key, value)| (key.as_bytes(), value.as_bytes()))
             .collect::<Vec<_>>();
         actual_metadata.sort_unstable();
         expected_metadata.sort_unstable();
@@ -255,7 +255,12 @@ impl SchemaNode {
             && expected_metadata
                 .iter()
                 .all(|(key, _)| key.starts_with(b"ARROW:extension:"));
-        if actual_metadata != expected_metadata && !extension_metadata_omitted {
+        if !extension_metadata_omitted
+            && !actual_metadata
+                .iter()
+                .map(|(key, value)| (key.as_slice(), value.as_slice()))
+                .eq(expected_metadata)
+        {
             return Ok(None);
         }
         if child_count == 0 {

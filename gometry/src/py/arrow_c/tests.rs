@@ -370,6 +370,54 @@ fn native_signal_stream(
 }
 
 #[test]
+fn requested_schema_metadata_compares_contents_independently_of_order() {
+    let expected = SchemaNode {
+        format: "g",
+        name: "values",
+        metadata: Some(vec![
+            ("units".into(), "metres".into()),
+            ("description".into(), "elevation".into()),
+        ]),
+        nullable: true,
+        children: Vec::new(),
+    };
+    for (name, metadata, matches) in [
+        (
+            "reordered",
+            vec![("description", "elevation"), ("units", "metres")],
+            Some(false),
+        ),
+        (
+            "different value",
+            vec![("description", "elevation"), ("units", "feet")],
+            None,
+        ),
+        ("missing entry", vec![("units", "metres")], None),
+        (
+            "duplicate entry",
+            vec![("units", "metres"), ("units", "metres")],
+            None,
+        ),
+        ("missing ordinary metadata", Vec::new(), None),
+    ] {
+        let requested = SchemaNode {
+            metadata: Some(
+                metadata
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .collect(),
+            ),
+            ..expected.clone()
+        };
+        let schema = requested.materialize_schema().expect("native schema");
+        drop(requested);
+        // SAFETY: the materialized guard retains all schema fields and metadata.
+        let result = unsafe { expected.matches_schema_node(schema.as_ref(), true) };
+        assert_eq!(result.expect("readable native metadata"), matches, "{name}");
+    }
+}
+
+#[test]
 fn release_callbacks_are_idempotent_for_native_exports() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
