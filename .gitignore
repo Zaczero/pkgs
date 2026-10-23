@@ -465,6 +465,7 @@ uv.lock
 **/.venv*/
 
 # LLVM/coverage profiles (also under target/, but may land elsewhere)
+.pgo/
 *.profraw
 *.profdata
 

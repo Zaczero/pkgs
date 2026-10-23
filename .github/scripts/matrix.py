@@ -387,10 +387,21 @@ def resolve_matrix(
         freethreaded_group=info['freethreaded-group'],
     )
     build_matrix = [
-        {'runner': runner, 'abi': abi}
+        {'runner': runner, 'abi': abi, 'pgo-build': ''}
         for runner in (NATIVE_BUILD_RUNNERS if has_rust else PURE_BUILD_RUNNERS)
         for abi in (('optimized', 'abi3t') if has_rust else ('optimized',))
     ]
+    if pgo := info.get('pgo'):
+        platform = pgo['build'].split('-', maxsplit=1)[1]
+        pgo_runner = {
+            'manylinux_x86_64': LINUX_TEST_RUNNER,
+            'manylinux_aarch64': 'ubuntu-26.04-arm',
+        }.get(platform)
+        if pgo_runner is None:
+            fail(f'{package}: PGO wheel platform is not qualified: {platform}')
+        for cell in build_matrix:
+            if cell['runner'] == pgo_runner and cell['abi'] == 'optimized':
+                cell['pgo-build'] = pgo['build']
 
     plan = {
         'type': info['type'],
