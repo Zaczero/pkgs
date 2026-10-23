@@ -135,7 +135,7 @@ async def _h2spec_output(executable: str, *arguments: str) -> tuple[int, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await process.communicate()
-    return process.returncode, f'{stdout.decode()}\n{stderr.decode()}'
+    return await process.wait(), f'{stdout.decode()}\n{stderr.decode()}'
 
 
 async def test_h2spec_conformance(tmp_path: Path) -> None:
