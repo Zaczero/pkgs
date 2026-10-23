@@ -38,10 +38,8 @@ CLI flags override TOML values.
 h2corn hello:app --workers 4
 ```
 
-The supervisor opens listeners once in the parent process and inherits
-the file descriptors into each worker. Workers accept connections
-directly on a [Tokio](https://tokio.rs/) runtime — no shared
-user-space accept queue.
+Workers share the listeners opened by the supervisor and accept connections
+directly.
 
 ### Event loop
 
@@ -101,11 +99,7 @@ own set of loop threads, so `-w 4 --loop-threads 4` is 16 event loops.
 Loop threads share the process heap but require the application and its
 dependencies to support concurrent execution on free-threaded Python. Workers
 provide stronger isolation and independent application state. Choose the mix
-from application behavior and measured throughput, latency, and memory; keep
-[`workers`](../configuration.md#option-workers) times
-[`loop_threads`](../configuration.md#option-loop_threads) at or below the
-machine's core count unless a workload-specific measurement supports
-oversubscription.
+from application behavior and measured throughput, latency, and memory.
 
 ## Reload and scale
 
@@ -319,12 +313,9 @@ stop budget. h2corn's signal handler stops acceptance; a fixed `sleep` in
 
 ### systemd readiness
 
-Under a `Type=notify` unit, `h2corn` sends `READY=1` when it is actually
-accepting connections — with [`--workers`](../configuration.md#option-workers), once *every* worker is serving, not
-when the supervisor process starts. `STOPPING=1` goes out when shutdown begins,
-before draining, so the unit's published state matches what the process is
-actually doing. It reports state; `systemd` runs `TimeoutStopSec` independently
-of it.
+Under a `Type=notify` unit, h2corn sends `READY=1` after every worker is
+accepting connections and `STOPPING=1` before shutdown draining begins.
+These notifications do not extend systemd's startup or shutdown timeouts.
 
 ```ini title="h2corn.service (configuration template)"
 [Service]
@@ -335,10 +326,7 @@ ExecStart=/srv/app/.venv/bin/h2corn hello:app --bind 127.0.0.1:8000 --workers 4
 The default, `Type=simple`, treats `exec` itself as readiness, so dependent
 units start against a socket on which nothing is accepting yet.
 
-When `$NOTIFY_SOCKET` is absent — every run outside a `Type=notify` unit —
-h2corn sends no notification. Workers never send one either, since the
-supervisor is the main PID and the only process that knows when the whole fleet
-is up.
+The supervisor sends these notifications only when `NOTIFY_SOCKET` is set.
 
 #### Full systemd unit
 
@@ -445,10 +433,7 @@ per-request records.
 
 ### Metrics and tracing
 
-Add metrics and tracing at the ASGI boundary; their observed protocol and
-lifecycle behavior still depends on the server and deployment configuration.
-
-ASGI middleware provides metrics, tracing, correlation IDs, and health routes:
+Use ASGI middleware for metrics, tracing, correlation IDs, and health routes:
 
 | Need                       | Library                                                                                              |
 | -------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -457,7 +442,8 @@ ASGI middleware provides metrics, tracing, correlation IDs, and health routes:
 | Request correlation IDs    | [`asgi-correlation-id`](https://github.com/snok/asgi-correlation-id), which threads an ID through your application's own logging |
 | Liveness / readiness       | A plain ASGI route — e.g. FastAPI `@app.get('/healthz')` — exposed to the orchestrator              |
 
-For FastAPI, instrument the application with Prometheus:
+For FastAPI, install `prometheus-fastapi-instrumentator` and instrument the
+application:
 
 ```python title="app.py"
 from fastapi import FastAPI

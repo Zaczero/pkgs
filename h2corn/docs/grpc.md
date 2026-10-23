@@ -10,6 +10,9 @@ owns RPC routing, codecs, handlers, and status behavior.
 
 ## Host a generated Connect application
 
+Requires CPython 3.11 or newer; see
+[Python compatibility and wheels](compatibility.md) for platform support.
+
 Install h2corn and the
 [published Connect Python package](https://pypi.org/project/connectrpc/):
 
@@ -18,10 +21,6 @@ pip install h2corn connectrpc "protobuf-py<0.7"
 ```
 
 ConnectRPC currently requires the pre-0.7 `protobuf-py` module layout.
-
-Use CPython 3.11 or newer; see
-[Python compatibility and wheels](compatibility.md) for h2corn's runtime and
-wheel support.
 
 Generate a Connect ASGI application with the
 [Connect Python guide](https://connectrpc.com/docs/python/getting-started/).
@@ -47,6 +46,28 @@ it does not authenticate clients or restrict network access. Use a dedicated
 listener and network policy when native gRPC should be isolated. Connect and
 gRPC-Web requests use the ordinary HTTP path and do not need this admission
 setting.
+
+## Try a native gRPC round trip
+
+The repository's
+[Notebook service](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/app.py)
+uses generated Connect service code and includes a real native gRPC client
+round trip in
+[roundtrip.py](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/roundtrip.py).
+From the `h2corn/` package directory in a source checkout, install the example's
+dependencies and run it:
+
+```console
+pip install h2corn connectrpc "protobuf-py<0.7" starlette asgi-lifespan
+python -m examples.grpc.roundtrip
+```
+The script binds an ephemeral loopback port, calls the generated service with
+Connect's released client configured for native gRPC, checks the returned note,
+and shuts the server down. Its output is:
+
+```text
+native gRPC response: Welcome
+```
 
 ## HTTP/2, TLS, and proxies
 
@@ -85,26 +106,3 @@ timeout bounds pending frame output and flushing. See the canonical entries for
 [`timeout-request-body-idle`](configuration.md#option-timeout_request_body_idle),
 [`h2-timeout-response-stall`](configuration.md#option-h2_timeout_response_stall),
 and [`h2-timeout-write`](configuration.md#option-h2_timeout_write).
-
-## Try a native gRPC round trip
-
-The repository's
-[Notebook service](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/app.py)
-uses generated Connect service code and includes a real native gRPC client
-round trip in
-[roundtrip.py](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/roundtrip.py).
-From the `h2corn/` package directory in a source checkout, install the example's
-dependencies and run it:
-
-```console
-pip install h2corn connectrpc "protobuf-py<0.7" starlette asgi-lifespan
-python -m examples.grpc.roundtrip
-```
-
-The script binds an ephemeral loopback port, calls the generated service with
-Connect's released client configured for native gRPC, checks the returned note,
-and shuts the server down. Its output is:
-
-```text
-native gRPC response: Welcome
-```

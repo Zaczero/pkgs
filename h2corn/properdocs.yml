@@ -167,12 +167,13 @@ nav:
     - Migrating: migrating.md
   - Guide:
     - Guide overview: guide.md
-    - gRPC and Connect: grpc.md
     - Behind a reverse proxy: deployment/proxy.md
     - Direct TLS: deployment/tls.md
     - Operations: deployment/operations.md
-    - WebSockets: websockets.md
     - Embedding: embedding.md
+    - WebSockets: websockets.md
+    - gRPC and Connect: grpc.md
+    - Troubleshooting: troubleshooting.md
   - Reference:
     - Configuration: configuration.md
     - ASGI surface: asgi.md
@@ -191,7 +192,6 @@ nav:
     - Python compatibility and wheels: compatibility.md
     - Support: support.md
     - FAQ: faq.md
-    - Troubleshooting: troubleshooting.md
     - License & notices: license.md
 
 watch:

@@ -82,10 +82,9 @@ what it chooses to as headers.
 `client_cert_chain` is empty unless [`--cert-reqs`](../configuration.md#option-cert_reqs) asked for a
 certificate. When it is not empty, every certificate in it was verified
 against [`--ca-certs`](../configuration.md#option-ca_certs) during the handshake, so an application may trust
-the identity without re-checking it, and `client_cert_name` is the leaf
-subject rendered once as an RFC 4514 string (including §2.4 `#`+hex
-encoding for dotted-decimal AttributeTypes). An empty optional-auth
-chain leaves both the tuple empty and the name `None`.
+the verified certificate identity. `client_cert_name` is the leaf subject as
+an RFC 4514 string. With optional authentication and no client certificate,
+the chain is empty and the name is `None`.
 `client_cert_error` is always `None`: a certificate that fails
 verification fails the handshake and never reaches an application.
 

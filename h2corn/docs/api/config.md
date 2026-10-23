@@ -4,6 +4,12 @@ description: Reference for Config, RequestPolicy, construction helpers, and opti
 
 # Config
 
+Use [`Config`][h2corn.Config] to configure the server and
+[`RequestPolicy`][h2corn.RequestPolicy] for path-specific limits.
+Constructor options are keyword-only. The
+[Configuration reference](../configuration.md) lists their types, defaults,
+CLI flags, environment variables, TOML keys, and precedence.
+
 ::: h2corn.Config
     options:
       show_signature: false
@@ -15,10 +21,6 @@ description: Reference for Config, RequestPolicy, construction helpers, and opti
 ::: h2corn.RequestPolicy
     options:
       show_signature: false
-
-`Config(...)` options are keyword-only. Accepted Python input types, normalized
-stored types, defaults, CLI flags, environment variables, TOML keys, and
-precedence are listed in the [Configuration reference](../configuration.md).
 
 ::: h2corn.ProxyProtocolMode
     options:

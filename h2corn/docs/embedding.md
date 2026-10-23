@@ -14,11 +14,14 @@ the [API reference](api/index.md#api-reference).
 
 ## Inside an asyncio app
 
-This uses the `hello.py` application from the [quickstart](quickstart.md).
+This self-contained example starts a loopback server on an available port,
+makes one request, and shuts down:
 
 ```python title="embedded.py"
 --8<-- "embedded.py"
 ```
+
+Run it with `python embedded.py`; it prints `embedded request: 200`.
 
 [`Server.serve()`][h2corn.Server.serve] is an async function that runs
 until the server is asked to shut down. It runs one worker in the calling

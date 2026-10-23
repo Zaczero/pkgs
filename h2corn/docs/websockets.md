@@ -4,8 +4,7 @@ description: WebSockets over HTTP/1.1 and over HTTP/2 (RFC 8441), the limits tha
 
 # WebSockets
 
-`h2corn` implements WebSockets on both transports the ASGI ecosystem
-expects:
+h2corn supports WebSockets over HTTP/1.1 and HTTP/2:
 
 - Classic [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)
   WebSockets over HTTP/1.1 with the `Upgrade` handshake.
@@ -16,6 +15,30 @@ expects:
 To the application, both look identical: a `websocket` ASGI scope, a
 `receive` callable, and a `send` callable. The transport is negotiated
 between client and server with no application code changes.
+
+## Echo application
+
+```python title="ws.py"
+from fastapi import FastAPI, WebSocket
+from starlette.websockets import WebSocketDisconnect
+
+app = FastAPI()
+
+
+@app.websocket('/ws')
+async def echo(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            message = await ws.receive_text()
+            await ws.send_text(f'echo: {message}')
+    except WebSocketDisconnect:
+        pass
+```
+
+Once the peer is gone, `send()` raises `OSError` — see
+[What `send()` raises](asgi.md#what-send-raises). Starlette surfaces that as
+`WebSocketDisconnect`.
 
 ## Why the HTTP/2 transport matters
 
@@ -47,34 +70,8 @@ descriptions, defaults, and CLI flags live in the
   the [permessage-deflate](https://datatracker.ietf.org/doc/html/rfc7692)
   compression extension when a client offers it.
 - [`websocket_ping_interval`](configuration.md#option-websocket_ping_interval) and [`websocket_ping_timeout`](configuration.md#option-websocket_ping_timeout) keep idle
-  connections alive and detect dead peers. Set `websocket_ping_interval`
-  to `0` to turn keep-alive off entirely — that is the single off switch;
-  no pings are sent, and the timeout is irrelevant while keep-alive is
-  unset.
-
-## Echo application
-
-```python title="ws.py"
-from fastapi import FastAPI, WebSocket
-from starlette.websockets import WebSocketDisconnect
-
-app = FastAPI()
-
-
-@app.websocket('/ws')
-async def echo(ws: WebSocket):
-    await ws.accept()
-    try:
-        while True:
-            message = await ws.receive_text()
-            await ws.send_text(f'echo: {message}')
-    except WebSocketDisconnect:
-        pass
-```
-
-Once the peer is gone, `send()` raises `OSError` — see
-[What `send()` raises](asgi.md#what-send-raises). Starlette surfaces that as
-`WebSocketDisconnect`.
+  connections alive and detect dead peers. Setting `websocket_ping_interval`
+  to `0` disables both pings and their timeout.
 
 ## HTTP/2-only deployment
 

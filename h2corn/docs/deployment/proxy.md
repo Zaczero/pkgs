@@ -82,12 +82,9 @@ recognized forwarding header that is not selected or does not come from a
 trusted peer before building `scope["headers"]`. Selected, consumed headers
 remain visible to the application.
 
-Removal covers the underscore spellings the HTTP field-name grammar permits, so
-`X_Forwarded_For` cannot slip past a check written for `X-Forwarded-For`. It
-also reaches an application that reads a forwarding header itself instead of
-through the scope — Django under `USE_X_FORWARDED_HOST`, or a proxy middleware
-in the stack. Naming the field in
-[`--forwarded-fields`](../configuration.md#option-forwarded_fields) keeps it.
+Removal includes underscore spellings such as `X_Forwarded_For`. Applications
+that read forwarding headers directly, including Django with
+`USE_X_FORWARDED_HOST`, see only the selected headers from trusted peers.
 
 [`--proxy-headers`](../configuration.md#option-proxy_headers) with an empty
 `--forwarded-fields`, or an empty
@@ -116,7 +113,7 @@ HTTP/2 framing, while the browser-facing hop multiplexes normally.
 !!! warning "WebSockets need their own HTTP/1.1 location"
     nginx performs the HTTP/1.1 `Upgrade` handshake and does not translate it
     into the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441) extended
-     `CONNECT` that HTTP/2 requires (see [WebSockets](../websockets.md#http2-only-deployment)). An
+    `CONNECT` that HTTP/2 requires (see [WebSockets](../websockets.md#http2-only-deployment)). An
     HTTP/2 upstream cannot carry this handshake. Route `/ws` over HTTP/1.1 and
     all other requests over `h2c`. HTTP/1 must remain enabled when nginx serves
     WebSockets. For WebSockets over a pure HTTP/2 upstream, use

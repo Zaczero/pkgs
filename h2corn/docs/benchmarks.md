@@ -45,13 +45,10 @@ WebSocket scenarios start at one second, the shortest run k6 accepts. A window
 that ends before any request completes moves calibration to the next window;
 a server fails calibration only if the four-second window completes nothing.
 
-Calibration runs after the correctness probe without a separate load warmup.
-Subtracting requested calibration-window durations from calibration-trial
-elapsed time estimates each server's setup and correctness-check cost. The
-runner adds the common selected duration and a 0.25-second production warmup
-(one second for WebSocket) to forecast each cell. Before production it freezes
-allowed decisions at six and twelve fresh-start paired blocks per scenario.
-Server order is rotated and CPU placement is unpinned.
+Calibration follows the correctness probe without a separate load warmup.
+Measured trials use a 0.25-second warmup (one second for WebSocket) and six or
+twelve fresh-start paired blocks per scenario. Server order is rotated and CPU
+placement is unpinned.
 
 Comparisons use paired production-block throughput ratios and
 distribution-free order-statistic intervals for the common median of
@@ -64,8 +61,7 @@ median; restarting processes does not remove persistent host drift.
 A scenario stops at six blocks when every surviving comparison resolves a
 direction or has an upper/lower interval ratio at most 1.10. The latter is a
 reporting-precision goal, not equivalence. Unresolved scenarios may extend to
-twelve only after protecting the complete remaining six-block matrix and
-reporting and cleanup reserves. Otherwise they finish as budget-limited, with
+twelve if the collection budget permits. Otherwise they finish as budget-limited, with
 inconclusive comparisons. At twelve, remaining uncertainty stays inconclusive.
 An interval containing one never establishes a tie. The published figures
 retain their recorded six-block plans and intervals.
@@ -74,16 +70,9 @@ Each comparison records its method and achieved coverage. Rates are medians; dot
 individual blocks and whiskers show their observed range. Latencies are
 medians of per-trial percentiles. Clients use closed-loop load.
 
-One monotonic deadline covers the combined HTTP and gRPC collection. Thirty
-minutes is the target and 45 minutes is the hard total. If the complete
-six-block plan cannot fit the hard limit, the run retains diagnostic evidence,
-exits unsuccessfully, and does not publish.
-
 Peak proportional set size (PSS) is the maximum sampled simultaneous sum
-across unique supervisor and worker processes in production blocks. PSS shares
-mapped-page cost between processes. Calibration uses the same sampler around
-each window so its observer cost enters the forecast; calibration PSS is not
-aggregated into results. Sampling includes initial and final readings plus
+across unique supervisor and worker processes in measured blocks. PSS shares
+mapped-page cost between processes. Sampling includes initial and final readings plus
 one-second readings during measured load; short peaks can fall between samples.
 
 The [raw scenario records](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw)

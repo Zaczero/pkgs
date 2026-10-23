@@ -6,11 +6,12 @@ explains the published workloads and how to read their results.
 
 Run from the `h2corn` checkout on Linux with CPython 3.15, readable
 `/proc/<pid>/smaps_rollup`, and the project's Rust build environment. The full
-HTTP matrix also requires `oha` and `k6`. Build and install an explicit release
-wheel, then keep that installation for the measurement:
+HTTP matrix also requires `oha` and `k6`; gRPC requires Go 1.26 or newer,
+`curl`, and `openssl`. Install both families' dependencies, build a release
+wheel, and keep that installation for the measurement:
 
 ```bash
-uv sync --upgrade --python 3.15
+uv sync --upgrade --group grpc-interop --python 3.15
 WHEELS="$(mktemp -d)"
 uv run --no-sync python bench/bench.py --build-wheel "$WHEELS"
 uv pip install --python .venv/bin/python --reinstall "$WHEELS"/*.whl
@@ -25,25 +26,11 @@ artifacts, and each trial verifies its response contract before and after load.
 
 ## Sampling and time budget
 
-Each scenario calibrates each server in one verified serving process.
-The harness measures successive 0.5, 1, 2, and 4 second windows, stopping when
-adjacent rates agree within 10%. Every server in a scenario then receives the
-longest selected duration. If rates have not stabilized by four seconds, that
-scenario is marked calibration-limited and its comparisons are inconclusive.
-Calibration runs after the correctness probe without a separate load warmup.
-Calibration-trial elapsed time minus the requested calibration-window
-durations estimates per-cell setup and checks. Time-window production blocks
-use a 0.25-second warmup, one second for k6-driven WebSocket scenarios. A
-warmup may complete no request. The production
-forecast adds the selected duration and applicable warmup.
-
-The harness freezes six fresh-process paired production blocks for every
-scenario before collecting production data.
-
-Comparisons use paired production-block rate ratios and distribution-free
-order-statistic intervals for the common median of independent paired-block
-ratios. Six blocks use the minimum and maximum ratios (96.875% coverage). Each
-comparison records its sample size, interval method, and achieved coverage.
+Each scenario calibrates a common duration, then collects six paired
+fresh-process blocks. Unresolved comparisons may extend to twelve blocks
+within the collection budget. The
+[methodology](../docs/benchmarks.md#measurement-method) explains calibration,
+warmup, stopping rules, and uncertainty intervals.
 
 One monotonic deadline covers preparation, qualification, calibration,
 production, reporting, and cleanup. Thirty minutes is the target and 45 minutes
@@ -80,20 +67,15 @@ adaptive sampling policy. Diagnostic runs cannot replace published results.
 - HTTP/2 trials retain the effective peer SETTINGS after a PING round trip.
   Listeners, sockets, and load-generator files are private to each trial.
 
-HTTP connections use loopback, so every result reflects server work rather
-than network round trips.
+HTTP connections use loopback. Results describe local client/server work,
+not latency across a production network.
 
 ## gRPC workloads
 
 The gRPC family compares common generated Protobuf messages and Python handler
 work through Connect on h2corn and Hypercorn, grpc.aio, and a representative
-grpclib subset. It requires CPython 3.15, Go 1.26 or newer, `curl`, and
-`openssl`. The optional development group supplies Buf and the Python RPC
-runtimes:
-
-```bash
-uv sync --upgrade --group grpc-interop --python 3.15
-```
+grpclib subset. The `grpc-interop` group installed above supplies Buf and the
+Python RPC runtimes.
 
 The complete gRPC collection is included in the default combined run. To
 diagnose qualification without measuring throughput:

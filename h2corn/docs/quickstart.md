@@ -9,6 +9,10 @@ example below.
 
 ## Install
 
+Requires **CPython 3.11 or newer**. See
+[Python compatibility and wheels](compatibility.md) for runtime and platform
+support. Multiple workers require Unix; Windows runs one worker.
+
 === "uv"
 
     ```bash
@@ -20,12 +24,6 @@ example below.
     ```bash
     pip install h2corn fastapi
     ```
-
-`h2corn` supports **CPython 3.11 or newer**. See
-[Python compatibility and wheels](compatibility.md) for standard and
-free-threaded versions and wheel families. The multi-worker supervisor is
-Unix-only — see
-[Operations](deployment/operations.md#worker-pool).
 
 With uv, prefix the commands below with `uv run`.
 

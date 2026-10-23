@@ -46,10 +46,7 @@ described in [Behind a reverse proxy](deployment/proxy.md#behind-a-reverse-proxy
 No. `h2corn` speaks HTTP/1.1 and HTTP/2; an `HTTP/1.0` request-line is
 answered with `400 Bad Request`.
 
-HTTP/1.0 is a second framing regime: responses are delimited by connection
-close, with no chunked transfer coding, no keep-alive by default, and no
-`100-continue`. HTTP/1.0 clients in front of `h2corn` require termination at
-the proxy.
+Use a proxy that translates HTTP/1.0 clients to HTTP/1.1 or HTTP/2 upstream.
 
 ## Which HTTP/1.1 requests require a `Host` field?
 
