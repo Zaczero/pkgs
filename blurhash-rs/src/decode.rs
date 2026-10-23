@@ -44,6 +44,23 @@ pub(crate) fn decode_rgb_into(
     let bytes = blurhash.as_bytes();
     validate_output_buffer(dimensions.rgb_len(), out_pixels)?;
     let mut colors = decode_component_vectors(bytes, layout)?;
+    if layout.num_components == 1 || layout.punch == 0.0 {
+        let rgb = colors.each_ref().map(|channel| {
+            srgb::linear_to_srgb_u8(
+                *channel
+                    .first()
+                    .expect("the component grid includes DC")
+                    .as_array()
+                    .first()
+                    .expect("a component vector includes its first lane"),
+            )
+        });
+        let (pixels, []) = out_pixels.as_chunks_mut::<3>() else {
+            unreachable!("the output buffer contains whole RGB pixels")
+        };
+        pixels.fill(rgb);
+        return Ok(());
+    }
     #[expect(
         clippy::float_cmp,
         reason = "exact unit contrast preserves the original DC accumulation order"

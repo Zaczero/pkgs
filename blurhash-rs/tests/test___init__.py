@@ -157,6 +157,21 @@ def test_decode_punch_preserves_dc_with_zero_ac(punch: float) -> None:
     assert image.tobytes() == bytes((255, 0, 0)) * 4
 
 
+@pytest.mark.parametrize('punch', [0.0, -0.0, 0.5, 1.0, 1e308])
+@pytest.mark.parametrize('size', [(1, 1), (32, 32), (128, 128)])
+def test_decode_single_component_is_uniform(
+    punch: float, size: tuple[int, int]
+) -> None:
+    image = blurhash_decode('00TI:j', *size, punch=punch)
+    assert image.tobytes() == bytes((255, 0, 0)) * (size[0] * size[1])
+
+
+@pytest.mark.parametrize('punch', [0.0, -0.0])
+def test_decode_zero_punch_removes_nonzero_ac(punch: float) -> None:
+    image = blurhash_decode('10TI:j|c', 33, 17, punch=punch)
+    assert image.tobytes() == bytes((255, 0, 0)) * (33 * 17)
+
+
 @pytest.mark.parametrize('punch', [-1.0, float('nan'), float('inf'), float('-inf')])
 def test_decode_rejects_invalid_punch(punch: float) -> None:
     with pytest.raises(BlurhashDecodeError):
@@ -220,9 +235,10 @@ def test_decode_rejects_negative_and_huge_python_dimensions(
         blurhash_decode('00TI:j', *size)
 
 
-def test_decode_rejects_out_of_range_ac_component() -> None:
+@pytest.mark.parametrize('punch', [0.0, -0.0, 1.0])
+def test_decode_rejects_out_of_range_ac_component(punch: float) -> None:
     with pytest.raises(BlurhashDecodeError) as excinfo:
-        blurhash_decode('100000~~', 8, 8)
+        blurhash_decode('100000~~', 8, 8, punch=punch)
     assert isinstance(excinfo.value, ValueError)
     assert excinfo.value.blurhash == '100000~~'
     assert str(excinfo.value) == 'blurhash contains an invalid value at index 6'
