@@ -9,7 +9,7 @@ use super::support::span_point;
 use super::upper::raising_clearance;
 use super::{
     Accuracy, CoordSeq, LineSeq, PackedLineColumnView, PreparedSupport, Rational, Result,
-    SearchContext, Shape, XY, storage,
+    SearchContext, Shape, storage,
 };
 use crate::geometry::predicate_spec::Predicate;
 
@@ -154,10 +154,9 @@ pub(super) fn line_columns_with_accuracy(
         &mut context,
         || {
             let line = |xs: &[f64], ys: &[f64]| -> Result<Shape> {
-                let points: Vec<_> = xs.iter().zip(ys).map(|(&x, &y)| XY::new(x, y)).collect();
-                Ok(Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(
-                    &points,
-                )?)?))
+                Ok(Shape::LineString(LineSeq::try_new(
+                    CoordSeq::try_from_vecs(xs.to_vec(), ys.to_vec(), None, None)?,
+                )?))
             };
             line(left_xs, left_ys)?.equals(&line(right_xs, right_ys)?)
         },

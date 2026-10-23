@@ -1022,11 +1022,11 @@ pub(crate) fn geographic_total_bounds_from_columns(
             )
         },
         PackedColumns::Lines(_) | PackedColumns::Polygons(_) => {
-            let shapes = columns
-                .collect_rows::<_, Vec<_>>(|row| row.map(PackedRow::to_shape))
-                .into_iter()
-                .flatten()
-                .collect::<Result<Vec<_>>>()?;
+            let mut shapes = Vec::new();
+            columns.try_for_each_present_row(|_, row| -> Result<()> {
+                shapes.push(row.to_shape()?);
+                Ok(())
+            })?;
             Ok(
                 crate::geographic::GeographicSupportProducts::public_bounds_for_shapes(
                     frame, &shapes, raw,

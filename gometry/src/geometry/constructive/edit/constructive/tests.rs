@@ -10,7 +10,7 @@ mod consecutive_dedup_tests {
     use super::*;
     use crate::geometry::constructive::offset::offset_source;
     use crate::geometry::constructive::strict_cycle;
-    use crate::geometry::{CoordinateAxes, LineSeq, Point};
+    use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Point};
 
     fn point(x: f64, y: f64) -> Point {
         Point::new(x, y).unwrap()

@@ -1,6 +1,6 @@
 use super::{
-    CoordSeq, ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative, Polygon,
-    Result, SegmentPlacement, Shape, remove_repeated_points, remove_repeated_ring_points, split,
+    ExpansionBudget, GeometryKind, MultiPoint, MultiPolygon, NonNegative, Polygon, Result,
+    SegmentPlacement, Shape, remove_repeated_points, remove_repeated_ring_points, split,
 };
 
 impl Shape {
@@ -50,9 +50,19 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
-                let values = points.iter().collect::<Vec<_>>();
-                let cleaned =
-                    remove_repeated_points(&CoordSeq::try_from_points(&values)?, tolerance)?;
+                if ![
+                    Some(points.xs()),
+                    Some(points.ys()),
+                    points.zs(),
+                    points.ms(),
+                ]
+                .into_iter()
+                .flatten()
+                .all(crate::geometry::column_all_finite)
+                {
+                    return Err(crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into());
+                }
+                let cleaned = remove_repeated_points(points, tolerance)?;
                 let mut cleaned = cleaned.iter();
                 let members = points
                     .members()
