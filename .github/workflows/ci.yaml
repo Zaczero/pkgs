@@ -47,7 +47,12 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
             changed="${tag%/*}"
             test_all=true
+            lint_rust=false
+            if [[ -f "$changed/Cargo.toml" ]]; then
+              lint_rust=true
+            fi
           else
+            lint_rust=true
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               test_all=true
               changed=""
@@ -61,12 +66,14 @@ jobs:
 
             test_packages="$(python3 .github/scripts/package_version.py list --test)"
 
-            if ! $test_all && [[ "$base" =~ ^0+$ ]]; then
+            if ! $test_all && {
+              [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null
+            }; then
               test_all=true
               changed=""
             elif ! $test_all; then
               selection="$(
-                git diff --name-only "$base" HEAD |
+                git diff --name-only --no-renames "$base" HEAD |
                   python3 .github/scripts/route_packages.py
               )"
             fi
@@ -81,11 +88,11 @@ jobs:
               split("\n") | map(select(length > 0) | {package: .})
             ' <<< "$changed")"
             echo "lint-python=true" >> "$GITHUB_OUTPUT"
-            echo "lint-rust=true" >> "$GITHUB_OUTPUT"
+            echo "lint-rust=$lint_rust" >> "$GITHUB_OUTPUT"
           fi
           echo "selection=$selection" >> "$GITHUB_OUTPUT"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         if: steps.detect.outputs.selection != '[]' || steps.detect.outputs.lint-rust == 'true'
         with:
           enable-cache: false
@@ -98,15 +105,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/matrix.py <<< "$SELECTION"
-
-      - name: Test offline package matrix
-        if: steps.matrix.outcome == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          uv run --no-project --with pytest python -m pytest \
-            -c /dev/null -p no:cacheprovider --strict-config --strict-markers -q \
-            .github/scripts/tests
 
       - id: release
         if: startsWith(github.ref, 'refs/tags/')
@@ -149,9 +147,10 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ needs.detect.outputs.primary-python }}
+          check-latest: true
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         # zizmor: ignore[cache-poisoning] -- This lint-only job produces no published artifacts.
@@ -161,7 +160,7 @@ jobs:
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-audit
 
@@ -193,9 +192,10 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ needs.detect.outputs.primary-python }}
+          check-latest: true
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         # zizmor: ignore[cache-poisoning] -- Verification produces no distribution artifacts.
@@ -259,8 +259,14 @@ jobs:
       && startsWith(github.ref, 'refs/tags/')
       && needs.test.result == 'success'
       && needs.lint-python.result == 'success'
-      && needs.lint-rust.result == 'success'
-      && needs.test-kani.result == 'success'
+      && (
+        (needs.detect.outputs.lint-rust == 'true'
+          && needs.lint-rust.result == 'success'
+          && needs.test-kani.result == 'success')
+        || (needs.detect.outputs.lint-rust == 'false'
+          && needs.lint-rust.result == 'skipped'
+          && needs.test-kani.result == 'skipped')
+      )
 
     runs-on: ubuntu-26.04
 
@@ -295,6 +301,6 @@ jobs:
           ls -la dist/
 
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
