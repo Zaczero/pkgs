@@ -61,7 +61,8 @@ adaptive sampling policy. Diagnostic runs cannot replace published results.
   are not CPU-pinned.
 - HTTP servers use the same application, standard asyncio, aligned settings,
   and access logging to `/dev/null`. HTTP/1 uses h11 for Uvicorn and the Python
-  parser for Gunicorn; HTTP/2 uses zttp and h2 respectively.
+  parser for Gunicorn. Their selected releases do not support the cleartext
+  prior-knowledge HTTP/2 mode used by this comparison.
 - Every inherited TCP listener has `TCP_NODELAY` enabled. Hypercorn's
   per-connection request cap is raised beyond the trial workload; effective
   settings and unmatched overrides are retained in the evidence.
@@ -118,3 +119,9 @@ uv run --no-sync python bench/bench.py \
 Publication occurs only after the complete matrix, frozen plan, retained
 qualification, and evidence pass their gates. Partial family, server, scenario,
 or gRPC case selections cannot publish.
+
+When a newer comparator dependency is incompatible, `--comparator-selection`
+accepts a JSON record naming the selected version and every newer stable
+release rejected, with a reason and a SHA-256-verified failure-evidence file
+for each. This evidence accompanies the complete matrix; it does not select
+a smaller workload.

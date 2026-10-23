@@ -1598,7 +1598,6 @@ def main() -> int:
         or args.connect_wheel
         or args.connect_development_revision
         or args.connect_source
-        or args.comparator_selection
     ):
         parser.error(
             '--publish requires the complete HTTP+gRPC matrix, a released wheel, and no selectors'
