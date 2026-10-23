@@ -1,4 +1,5 @@
 use std::cell::OnceCell;
+use std::ops::ControlFlow;
 
 use super::contacts::stored_exact_point;
 use super::points::point_from_key;
@@ -9,6 +10,7 @@ use super::{
     cartesian_row_point_location, cartesian_row_point_location_and_area, homogeneous_midpoint,
     matrix_predicates, occupied_toward,
 };
+use crate::geometry::Coordinates as _;
 use crate::geometry::segments::crossing_homogeneous_stored;
 use crate::geometry::source_support::{
     ExactProbe, cartesian_row_probe_location_and_area, cartesian_row_probe_offset_location_and_area,
@@ -21,6 +23,14 @@ pub(super) struct Operand<'a> {
 }
 
 impl<'a> Operand<'a> {
+    pub(super) const fn reborrow(&self) -> Operand<'_> {
+        Operand {
+            row: self.row,
+            plan: self.plan,
+            point_queries: Cell::new(None),
+        }
+    }
+
     pub(super) fn from_row(row: ShapeRow<'a>) -> Self {
         let plan = match row {
             ShapeRow::Handle(plan) => Some(plan.as_ref()),
@@ -44,6 +54,59 @@ impl<'a> Operand<'a> {
     pub(super) fn bounds(&self) -> Option<crate::geometry::Bounds> {
         self.plan
             .map_or_else(|| self.row.quick_bounds(), |plan| plan.bounds())
+    }
+
+    pub(super) fn candidate_point(&self, bounds: crate::geometry::Bounds) -> Option<Point> {
+        if let Some(point) = self.row.point() {
+            return bounds.contains_point(point.xy()).then_some(point);
+        }
+        if let Some(line) = self.row.line_coords() {
+            return line
+                .iter_coords()
+                .find(|point| bounds.contains_point(point.xy()));
+        }
+        if let Some(mut rings) = self.row.polygon_rings() {
+            return rings.find_map(|ring| {
+                ring.iter_coords()
+                    .find(|point| bounds.contains_point(point.xy()))
+            });
+        }
+        let shape = match self.row {
+            ShapeRow::Handle(plan) => plan.shape(),
+            ShapeRow::Shape(shape) => shape,
+            ShapeRow::Point(_) | ShapeRow::Packed(_) => return None,
+        };
+        shape
+            .try_for_each_first_xy_point_run(|point| {
+                if bounds.contains_point(point.xy()) {
+                    ControlFlow::Break(point)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .break_value()
+    }
+
+    pub(super) fn compact_set(&self) -> Result<Option<crate::geometry::Shape>> {
+        use crate::geometry::{Component, Shape};
+        let shape = match self.row {
+            ShapeRow::Handle(plan) => plan.shape(),
+            ShapeRow::Shape(shape) => shape,
+            ShapeRow::Point(_) | ShapeRow::Packed(_) => return Ok(None),
+        };
+        if shape.nesting_depth() <= 1 || !shape.has_repeated_shared_owner() {
+            return Ok(None);
+        }
+        let mut parts = Vec::new();
+        let Ok(()) = shape.try_for_each_first_component(&mut |component| {
+            parts.push(match component {
+                Component::Point(point) => Shape::Point(point),
+                Component::LineString(line) => Shape::LineString(line.clone()),
+                Component::Polygon(polygon) => Shape::Polygon(polygon.clone()),
+            });
+            Ok::<_, std::convert::Infallible>(())
+        });
+        Shape::geometry_collection(parts).map(Some)
     }
 
     pub(super) fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {

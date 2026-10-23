@@ -286,7 +286,7 @@ fn exact_partition_route_matches_planar_validity_codes_paths_and_witnesses(#[cas
     let view = crate::geographic::ScalarGeographicView::try_new(frame, &shape).unwrap();
     assert_eq!(
         crate::geometry::classify_geographic_chart(view),
-        crate::geometry::GeographicTopologyRoute::ExactPartition
+        crate::geometry::GeographicTopologyRoute::Cartesian
     );
     let topology = ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap();
     assert_eq!(

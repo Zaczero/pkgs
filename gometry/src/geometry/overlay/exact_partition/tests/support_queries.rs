@@ -107,10 +107,12 @@ fn cartesian_set_support_consumers_match_unshared_expansion() {
         cartesian_support_nonempty(&shared).unwrap(),
         cartesian_support_nonempty(&expanded).unwrap()
     );
-    let bounds = Bounds::new_raw(0.25, 0.25, 0.75, 0.75);
+    let rectangle = Shape::Polygon(
+        crate::geometry::rect_polygon(Bounds::new_raw(0.25, 0.25, 0.75, 0.75)).unwrap()
+    );
     assert_eq!(
-        exact_intersects_bounds(&shared, bounds).unwrap(),
-        exact_intersects_bounds(&expanded, bounds).unwrap()
+        shared.intersects(&rectangle).unwrap(),
+        expanded.intersects(&rectangle).unwrap()
     );
 }
 

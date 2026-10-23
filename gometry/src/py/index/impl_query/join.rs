@@ -228,7 +228,7 @@ impl PySpatialIndex {
                                     .expect("geographic candidate has a frame cache"),
                                 frame,
                             )?;
-                            evaluator.geographic(candidate, query)?
+                            evaluator.geographic(candidate, query, group.len())?
                         }
                     },
                 };

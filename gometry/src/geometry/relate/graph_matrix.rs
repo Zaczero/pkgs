@@ -1,7 +1,9 @@
 use crate::error::Result;
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
+#[cfg(test)]
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::predicate_spec::Predicate;
 use crate::geometry::relate::De9im;
 use crate::geometry::source_support::PointMembership;
 use crate::geometry::{
@@ -135,7 +137,7 @@ impl<'a> GeographicPrepared<'a> {
         membership: PointMembership,
     ) -> Result<GeographicPointQueries<'a>> {
         let route = match self.chart_route {
-            GeographicTopologyRoute::ExactPartition => GeographicPointQueryRoute::Cartesian(
+            GeographicTopologyRoute::Cartesian => GeographicPointQueryRoute::Cartesian(
                 self.plan.prepare_point_queries(expected_queries)?,
             ),
             GeographicTopologyRoute::Quotient => {
@@ -175,7 +177,7 @@ impl<'a> GeographicPrepared<'a> {
             .canonicalize(point.x)
             .expect("the query point was admitted in the prepared geographic frame");
         let point = Point::new_raw_xy(longitude.get(), point.y);
-        if self.chart_route == GeographicTopologyRoute::ExactPartition {
+        if self.chart_route == GeographicTopologyRoute::Cartesian {
             return self.plan.cartesian_point_membership(point, membership);
         }
         let Some(bounds) = self.plan.bounds() else {
@@ -227,22 +229,14 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
     super::evaluator::relate(left, right)
 }
 
-/// The global partition relation remains the owner for geographic chart pairs
-/// that require its domain-specific face topology.
-fn exact_partition_relate<'a>(
-    left: impl Into<storage::ShapeRow<'a>>,
-    right: impl Into<storage::ShapeRow<'a>>,
-) -> Result<De9im> {
-    let inventory =
-        ExactSourceInventory::from_rows_with_occurrences([left.into(), right.into()].into_iter())?;
+#[cfg(test)]
+pub(crate) fn partition_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
+    let inventory = ExactSourceInventory::from_rows_with_occurrences(
+        [left.shape().into(), right.shape().into()].into_iter(),
+    )?;
     let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.relate(&partition)
-}
-
-#[cfg(test)]
-pub(crate) fn partition_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    exact_partition_relate(left.shape(), right.shape())
 }
 
 pub(crate) fn graph_relate_data_geographic(
@@ -250,8 +244,8 @@ pub(crate) fn graph_relate_data_geographic(
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
-    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
-        return exact_partition_relate(left.plan().shape(), right.plan().shape());
+    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::Cartesian {
+        return graph_relate_data(left.plan(), right.plan());
     }
     graph_relate_data_geographic_q(&left, &right)
 }
@@ -269,13 +263,8 @@ pub(crate) fn graph_intersects_data_geographic(
     if let Shape::Point(point) = right.plan().shape() {
         return left.point_covers(*point);
     }
-    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
-        let shapes = [left.plan().shape(), right.plan().shape()];
-        let inventory = ExactSourceInventory::from_shapes(&shapes)?;
-        let mut budget =
-            crate::geometry::ExpansionBudget::new("geographic intersects", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
-        return Ok(inventory.relate(&partition)?.is_intersects());
+    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::Cartesian {
+        return super::evaluator::predicate(left.plan(), right.plan(), Predicate::Intersects);
     }
     ExactGeographicTopology::from_views_as_set(
         left.frame(),

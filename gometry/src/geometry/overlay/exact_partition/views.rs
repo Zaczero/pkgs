@@ -1,5 +1,5 @@
 use super::{
-    Bounds, Cow, ExactChainView, ExactChainViews, ExactDyadic, ExactPartition, ExactRational,
+    Cow, ExactChainView, ExactChainViews, ExactDyadic, ExactPartition, ExactRational,
     ExactSourceInventory, GeometryErrorKind, KeptNodes, NodeId, Ordering, PointKey, ResourceError,
     Result, Segment, SegmentSource, XY, embedding, parameter_along, walk_exact_chain,
 };
@@ -362,15 +362,6 @@ impl ExactPartition<'_> {
 
     pub(in crate::geometry) fn owners(&self, span: usize) -> &[SegmentSource] {
         self.provenance.owners(span)
-    }
-
-    pub(super) fn node_in_bounds(&self, node: NodeId, bounds: Bounds) -> Result<bool> {
-        Ok(
-            self.compare_axis_to(node, Axis::X, bounds.minx())? != Ordering::Less
-                && self.compare_axis_to(node, Axis::X, bounds.maxx())? != Ordering::Greater
-                && self.compare_axis_to(node, Axis::Y, bounds.miny())? != Ordering::Less
-                && self.compare_axis_to(node, Axis::Y, bounds.maxy())? != Ordering::Greater,
-        )
     }
 
     #[cfg(test)]

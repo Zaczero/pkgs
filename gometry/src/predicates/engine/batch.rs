@@ -66,7 +66,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     let scalar = *scalar_prepared.get_or_try_init(|| {
                         GeographicPrepared::try_new(scalar, scalar_cache, frame)
                     })?;
-                    evaluator.geographic(scalar, element)
+                    evaluator.geographic(scalar, element, element_count)
                 },
             }
         };

@@ -14,6 +14,110 @@ import pytest
 from tests._support import ids, pair_rows
 
 
+@pytest.mark.parametrize('crs', [None, 4326], ids=['cartesian', 'geographic'])
+@pytest.mark.parametrize('reverse', [False, True], ids=['forward', 'reverse'])
+@pytest.mark.parametrize(
+    ('source', 'probe', 'expected'),
+    [
+        pytest.param(
+            'POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))',
+            'LINESTRING (1 6,3 6)',
+            False,
+            id='cancelled-spur-crossing',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))',
+            'POLYGON ((1 5,3 5,3 6,1 6,1 5))',
+            False,
+            id='cancelled-spur-rectangle',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))',
+            'POLYGON ((7 7,10 7,10 10,7 10,7 7))',
+            False,
+            id='external-hole',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))',
+            'POLYGON ((-1 -1,5 -1,5 5,-1 5,-1 -1))',
+            False,
+            id='erased-shell',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,4 4,0 4,4 0,0 0))',
+            'POLYGON ((1 1,3 1,3 3,1 3,1 1))',
+            True,
+            id='bow-tie',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))',
+            'POLYGON ((1 1,2 1,2 2,1 2,1 1))',
+            True,
+            id='twice-wound',
+        ),
+        pytest.param(
+            'MULTIPOLYGON (EMPTY,((0 0,2 2,4 4,0 0)))',
+            'LINESTRING (0 2,2 0)',
+            True,
+            id='collapsed-multipart',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))',
+            'POLYGON ((4 4,6 4,6 6,4 6,4 4))',
+            False,
+            id='inside-hole',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))',
+            'POLYGON ((3 4,6 4,6 6,3 6,3 4))',
+            True,
+            id='hole-boundary',
+        ),
+        pytest.param(
+            'POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))',
+            'MULTIPOINT ((5 5),(1 1))',
+            True,
+            id='some-points-intersect',
+        ),
+        pytest.param(
+            'POLYGON EMPTY',
+            'LINESTRING (0 0,1 1)',
+            False,
+            id='empty',
+        ),
+    ],
+)
+def test_intersection_queries_use_occupied_support_across_surfaces(
+    crs, reverse, source, probe, expected
+):
+    left, right = (gm.from_wkt(wkt, crs=crs) for wkt in (source, probe))
+    if reverse:
+        left, right = right, left
+    assert gm.intersects(left, right) is expected
+    assert gm.disjoint(left, right) is not expected
+    matrix = gm.relate(left, right)
+    assert any(matrix[cell] != 'F' for cell in (0, 1, 3, 4)) is expected
+
+    rows = gm.GeometryArray([right, None, right])[[2, 1, 0]]
+    np.testing.assert_array_equal(
+        gm.intersects(left, rows), [expected, False, expected]
+    )
+    np.testing.assert_array_equal(
+        gm.disjoint(left, rows), [not expected, False, not expected]
+    )
+    np.testing.assert_array_equal(
+        gm.intersects(gm.GeometryArray([left, left, left]), rows),
+        [expected, False, expected],
+    )
+    index = gm.SpatialIndex(rows)
+    assert ids(index.query(left, predicate='intersects')) == (
+        [0, 2] if expected else []
+    )
+    assert pair_rows(index.join([left], predicate='intersects')) == (
+        [(0, 0), (0, 2)] if expected else []
+    )
+
+
 def test_outlying_hole_boundary_is_not_polygon_support() -> None:
     polygon = gm.from_wkt('POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))')
     point = gm.Point(5, 5)

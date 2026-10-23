@@ -1643,7 +1643,7 @@ mod geographic_chart_route_tests {
                     .unwrap();
             assert_eq!(
                 crate::geometry::geographic_topology_route(originals.views().iter().copied()),
-                GeographicTopologyRoute::ExactPartition
+                GeographicTopologyRoute::Cartesian
             );
 
             let routed =
@@ -1684,7 +1684,7 @@ mod geographic_chart_route_tests {
                 .unwrap();
         assert_eq!(
             crate::geometry::geographic_topology_route(originals.views().iter().copied()),
-            GeographicTopologyRoute::ExactPartition
+            GeographicTopologyRoute::Cartesian
         );
 
         let routed =

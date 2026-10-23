@@ -276,7 +276,7 @@ pub(crate) use ordinates::carry_overlay_ordinates;
 #[cfg(test)]
 pub(crate) use overlay::cartesian_support_nonempty;
 use overlay::polygon_parts_to_shape;
-pub(crate) use overlay::{OverlayOp, Strictness, exact_intersects_bounds, rect_polygon};
+pub(crate) use overlay::{OverlayOp, Strictness, rect_polygon};
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(in crate::geometry) use point_location::{
     AreaLocationLabels, ExactLocationIndex, ExactLocationPoints,

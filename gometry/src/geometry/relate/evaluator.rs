@@ -142,6 +142,21 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
             return Ok(point_query.result(matches));
         }
     }
+    // Intersection observes union support, not repeated line-endpoint parity.
+    // Flatten shared collection owners before occurrence-aware contact staging.
+    if query.intersection_result(true).is_some() {
+        let [left, right] = operands;
+        let (left_set, right_set) = (left.compact_set()?, right.compact_set()?);
+        if left_set.is_some() || right_set.is_some() {
+            let left = left_set
+                .as_ref()
+                .map_or_else(|| left.reborrow(), |shape| Operand::from_row(shape.into()));
+            let right = right_set
+                .as_ref()
+                .map_or_else(|| right.reborrow(), |shape| Operand::from_row(shape.into()));
+            return evaluate_mode::<Q, SATURATE>(&[left, right], query);
+        }
+    }
     if SATURATE
         && operands[0].row.same_stored_geometry(operands[1].row)
         && let Some(answer) = query.same_stored_geometry(&operands[0])?
@@ -151,6 +166,26 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
     let bounds = [operands[0].bounds(), operands[1].bounds()];
     if SATURATE && let Some(matrix) = rectangle_relation(operands, &bounds) {
         return Ok(query.decided_matrix(matrix));
+    }
+    if SATURATE && let Some(answer) = query.intersection_result(true) {
+        let [left, right] = operands;
+        let [left_bounds, right_bounds] = bounds;
+        for (source, target, target_bounds) in
+            [(left, right, right_bounds), (right, left, left_bounds)]
+        {
+            let Some(point) = target_bounds.and_then(|bounds| source.candidate_point(bounds))
+            else {
+                continue;
+            };
+            if target.point_membership(point, PointMembership::BoundaryInclusive)?
+                // A stored shell vertex can be cancelled by its own winding or holes.
+                && (!source.row.has_area_parts()
+                    || source
+                        .point_membership(point, PointMembership::BoundaryInclusive)?)
+            {
+                return Ok(answer);
+            }
+        }
     }
     let dimensions = [
         row_dimension(operands[0].row),

@@ -36,9 +36,9 @@ use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
 };
 use crate::geometry::segments::clip::{SegmentClipInterval, clip_segment_rect_interval};
-use crate::geometry::segments::contact::{
-    Contact, RectContact, segment_contact_exact, segment_vs_rect,
-};
+#[cfg(test)]
+use crate::geometry::segments::contact::{Contact, segment_contact_exact};
+use crate::geometry::segments::contact::{RectContact, segment_vs_rect};
 use crate::geometry::segments::{stored_cross_sign, stored_orientation_sign};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::topology::SourceTrace;
@@ -98,8 +98,7 @@ use serialize::{
 };
 #[cfg(test)]
 use support_queries::{
-    cartesian_support_nonempty, exact_intersects_bounds, occupied_cartesian_area,
-    occupied_cartesian_support,
+    cartesian_support_nonempty, occupied_cartesian_area, occupied_cartesian_support,
 };
 use topology::remove_node_antennas;
 use winding::{
@@ -182,14 +181,6 @@ pub(crate) use metrics::{partition_calls, reset_partition_calls};
 use crate::geometry::segments::crossing_homogeneous;
 #[cfg(test)]
 use crate::geometry::tessellation::exact::{compare_ratios, round_ratio};
-
-const fn location(occupied: bool) -> Loc {
-    if occupied {
-        Loc::Interior
-    } else {
-        Loc::Exterior
-    }
-}
 
 #[cfg(test)]
 mod tests;

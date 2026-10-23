@@ -56,6 +56,52 @@ fn prepared_geographic_point_membership_uses_the_open_chart() {
 }
 
 #[rstest::rstest]
+#[case::spur("POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))", "LINESTRING (1 6,3 6)")]
+#[case::erased("POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))", "POLYGON ((-1 -1,5 -1,5 5,-1 5,-1 -1))")]
+#[case::external_hole("POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))", "POLYGON ((7 7,10 7,10 10,7 10,7 7))")]
+#[case::bow_tie("POLYGON ((0 0,4 4,0 4,4 0,0 0))", "POLYGON ((1 1,3 1,3 3,1 3,1 1))")]
+#[case::twice_wound("POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))", "POLYGON ((1 1,2 1,2 2,1 2,1 1))")]
+#[case::collapsed("MULTIPOLYGON (EMPTY,((0 0,2 2,4 4,0 0)))", "LINESTRING (0 2,2 0)")]
+#[case::hole("POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))", "POLYGON ((4 4,6 4,6 6,4 6,4 4))")]
+#[case::touching_hole("POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))", "POLYGON ((3 4,6 4,6 6,3 6,3 4))")]
+#[case::empty("POLYGON EMPTY", "LINESTRING (0 0,1 1)")]
+#[case::crossing("LINESTRING (0 0,3 1)", "LINESTRING (1 -1,1 1)")]
+fn ordinary_chart_queries_match_exact_partition(
+    #[case] left: &str,
+    #[case] right: &str,
+    #[values(false, true)] reverse: bool,
+) {
+    use crate::predicates::engine::{
+        FixedPredicate, Predicate, PreparedTopologyPair, predicate_matrix_value,
+        topology_scalar_pair, topology_scalar_pattern,
+    };
+    let (left, right) = if reverse { (right, left) } else { (left, right) };
+    let left = PreparedPlan::new(crate::io::parse_wkt(left).unwrap());
+    let right = PreparedPlan::new(crate::io::parse_wkt(right).unwrap());
+    let oracle = partition_relate_data(&left, &right).unwrap();
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    let frame = GeographicFrame::crs84();
+    let left_geo = GeographicPrepared::try_new(&left, &left_cache, frame).unwrap();
+    let right_geo = GeographicPrepared::try_new(&right, &right_cache, frame).unwrap();
+    let pair = PreparedTopologyPair::from_geographic(left_geo, right_geo);
+    assert_eq!(pair.relate().unwrap(), oracle);
+    assert_eq!(graph_intersects_data_geographic(&left_geo, &right_geo).unwrap(), oracle.is_intersects());
+    for predicate in Predicate::ALL {
+        let spec = predicate.spec();
+        let expected = predicate_matrix_value(&spec, oracle);
+        assert_eq!(topology_scalar_pair(&spec, &pair).unwrap(), expected, "{predicate:?}");
+        let fixed = FixedPredicate::new(&spec, &left, true);
+        assert_eq!(fixed.geographic(left_geo, right_geo, 1).unwrap(), expected, "{predicate:?}: fixed geographic");
+        assert_eq!(fixed.cartesian(storage::ShapeRow::Shape(right.shape()), right.bounds(), 1, || Ok(&right)).unwrap(), expected, "{predicate:?}: fixed Cartesian");
+    }
+    for pattern in ["T********", "FF*FF****", "T*F**F***", "*********"] {
+        let pattern = crate::geometry::CompiledPattern::new(pattern).unwrap();
+        assert_eq!(topology_scalar_pattern(pattern, &pair).unwrap(), oracle.matches(pattern));
+    }
+}
+
+#[rstest::rstest]
 #[case::point_1_2("POINT (1 2)", Point::new_raw_xy(361.0, 2.0), true)]
 #[case::point_1_2_606c3c65("POINT (1 2)", Point::new_raw_xy(1.0, 2.5), false)]
 #[case::linestring_0_0_2_2("LINESTRING (0 0,2 2)", Point::new_raw_xy(1.0, 1.0), true)]
@@ -176,12 +222,12 @@ fn ordinary_geographic_relation_matches_known_matrices(
         GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
     assert_eq!(
         left_prepared.chart_route(),
-        GeographicTopologyRoute::ExactPartition,
+        GeographicTopologyRoute::Cartesian,
         "{name}: left chart route"
     );
     assert_eq!(
         right_prepared.chart_route(),
-        GeographicTopologyRoute::ExactPartition,
+        GeographicTopologyRoute::Cartesian,
         "{name}: right chart route"
     );
     let q = graph_relate_data_geographic_q(&left_prepared, &right_prepared).unwrap();
@@ -236,13 +282,13 @@ fn ordinary_country_charts_match_q_relation() {
         let prepared_probe = GeographicPrepared::try_new(&probe_plan, &probe_cache, frame).unwrap();
         assert_eq!(
             prepared_probe.chart_route(),
-            GeographicTopologyRoute::ExactPartition,
+            GeographicTopologyRoute::Cartesian,
             "{country}: source vertex chart route"
         );
 
         let q = graph_relate_data_geographic_q(&prepared, &prepared_probe).unwrap();
         let routed = graph_relate_data_geographic(prepared, prepared_probe).unwrap();
-        assert_eq!(routed, q, "{country}: ExactPartition route versus Q");
+        assert_eq!(routed, q, "{country}: Cartesian route versus Q");
         compared += 1;
     }
 
@@ -295,7 +341,7 @@ fn geographic_pair_q_matches_known_matrices_at_quotient_aliases(
     );
     assert_eq!(
         right_prepared.chart_route(),
-        GeographicTopologyRoute::ExactPartition,
+        GeographicTopologyRoute::Cartesian,
         "{name}: ordinary route",
     );
     assert_eq!(

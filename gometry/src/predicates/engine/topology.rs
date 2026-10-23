@@ -62,9 +62,6 @@ pub(crate) fn topology_pair_after_gates(
         if let Some(verdict) = cartesian_point_predicate(spec, left, right)? {
             return Ok(verdict);
         }
-        if matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {
-            return Ok(left.intersects(right)? == (spec.predicate == Predicate::Intersects));
-        }
         return crate::geometry::evaluate_cartesian_predicate(left, right, spec.predicate);
     }
     if let PreparedTopologyPair::Geographic { left, right } = *operands

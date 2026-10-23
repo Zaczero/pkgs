@@ -1,8 +1,8 @@
 //! Exact DE-9IM matrices derived from domain-owned topology.
 //!
-//! Cartesian pairs use exact source-contact witnesses; geographic pairs use
-//! their domain-specific exact chart relation. Named predicates and pattern
-//! matching share the same DE-9IM evidence model.
+//! Cartesian pairs and ordinary geographic charts use exact source-contact
+//! witnesses. Seam and pole aliases use the exact geographic quotient.
+//! Named predicates and pattern matching share the same DE-9IM evidence model.
 //!
 //! A `MultiLineString` follows the OGC Simple Feature Access mod-2 boundary
 //! rule: an endpoint belongs to the collection boundary when it occurs in an

@@ -1,6 +1,5 @@
 use super::{
-    Bounds, Contact, ExactPartition, ExactSourceInventory, ExpansionBudget, NodeId, Point,
-    PolygonOccupancy, Result, Segment, Shape, XY, segment_contact_exact,
+    ExactPartition, ExactSourceInventory, ExpansionBudget, NodeId, PolygonOccupancy, Result, Shape,
 };
 use crate::geometry::output::build_certified_shape;
 
@@ -117,69 +116,4 @@ pub(crate) fn cartesian_support_nonempty(shape: &Shape) -> Result<bool> {
     Ok(cells.faces.iter().any(|&value| value)
         || cells.spans.iter().any(|&value| value)
         || cells.nodes.iter().any(|&value| value))
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the only indirect access is by a span ID produced by the same admitted partition"
-)]
-pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<bool> {
-    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
-    let mut budget = ExpansionBudget::new("intersects", "exact partition");
-    let partition = inventory.partition(&mut budget)?;
-    for [x, y] in bounds.corners() {
-        if crate::geometry::cartesian_point_covers(shape, Point::new_raw_xy(x, y)) {
-            return Ok(true);
-        }
-    }
-    let (topology, edges) = partition.local_topology()?;
-    let global = partition.global_faces(&topology, &edges)?;
-    let cells = inventory.select_cells(
-        &partition,
-        &topology,
-        &edges,
-        &global,
-        crate::geometry::OverlayOp::Union,
-        false,
-    )?;
-    for (index, &selected) in cells.nodes.iter().enumerate() {
-        if selected && partition.node_in_bounds(NodeId(index as u32), bounds)? {
-            return Ok(true);
-        }
-    }
-    let [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = bounds.corners();
-    let rectangle = [
-        Segment {
-            start: XY::new(x0, y0),
-            end: XY::new(x1, y1),
-        },
-        Segment {
-            start: XY::new(x1, y1),
-            end: XY::new(x2, y2),
-        },
-        Segment {
-            start: XY::new(x2, y2),
-            end: XY::new(x3, y3),
-        },
-        Segment {
-            start: XY::new(x3, y3),
-            end: XY::new(x0, y0),
-        },
-    ];
-    for (&span, &selected) in partition.spans.iter().zip(&cells.spans) {
-        if !selected {
-            continue;
-        }
-        let segment = partition.unique[span.unique as usize];
-        if bounds.contains_point(segment.start)
-            || bounds.contains_point(segment.end)
-            || rectangle
-                .iter()
-                .copied()
-                .any(|candidate| segment_contact_exact(segment, candidate) != Contact::Disjoint)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }

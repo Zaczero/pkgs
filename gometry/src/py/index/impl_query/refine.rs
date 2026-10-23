@@ -227,6 +227,7 @@ pub(super) fn retain_topological(
                 Ok(evaluator.geographic(
                     query,
                     crate::geometry::GeographicPrepared::try_new(&data, &cache, frame)?,
+                    element_count,
                 )?)
             },
         }

@@ -1,4 +1,4 @@
-use crate::geometry::distance::{parts_covers_point, parts_segments_cross, quick_area_overlap};
+use crate::geometry::distance::{parts_covers_point, parts_segments_cross};
 use crate::geometry::{Bounds, DistanceParts, Point, Shape};
 /// Coordinate magnitude below which squared-space distance kernels cannot
 /// overflow: gaps are at most `2 × 1e150`, whose square stays below
@@ -41,14 +41,6 @@ pub(crate) fn squared_space_safe(parts: &DistanceParts) -> bool {
                 .iter()
                 .all(|point| coordinate_squared_safe(*point))
     })
-}
-
-/// Boolean facade over the shared pre-parts area witness oracle. Needs only the
-/// `Shape`s (raycast over rings), so callers can answer containment before
-/// paying to build lazy linework; a negative answer still needs the boundary
-/// crossing test.
-pub(crate) fn area_overlap_probe(left: &Shape, right: &Shape) -> bool {
-    quick_area_overlap(left, right).is_some()
 }
 
 /// The isolated-point and segment-contact halves of the parts oracle, for

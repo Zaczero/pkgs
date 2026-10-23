@@ -1,9 +1,9 @@
 use crate::crs::PointEdgeScratch;
 use crate::geometry::distance::{
-    Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
-    cached_chart_distance, cached_chart_dwithin, coordinate_squared_safe, parts_boundary_contact,
-    point_chart_distance, point_chart_dwithin, puntal_brute_distance,
-    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
+    Result, bounds_distance_squared, bounds_squared_safe, cached_chart_distance,
+    cached_chart_dwithin, coordinate_squared_safe, parts_boundary_contact, point_chart_distance,
+    point_chart_dwithin, puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap,
+    squared_space_safe,
 };
 use crate::geometry::{
     ChartMetric, DistanceParts, DwithinOutcome, FacetBvh, FrameDependentCaches, GeodesicMetric,
@@ -481,39 +481,5 @@ impl PreparedPlan {
             values.push(outcome.into_bool()?);
         }
         Ok(values)
-    }
-
-    /// Planar `intersects` on cached prepared state — the facet trees built
-    /// by any earlier distance/dwithin call drive the crossing test, so
-    /// repeated predicates on the same operands never rebuild an index.
-    pub(crate) fn intersects(&self, other: &Self) -> Result<bool> {
-        let (Some(left_bounds), Some(right_bounds)) = (self.bounds(), other.bounds()) else {
-            return Ok(false);
-        };
-        if !left_bounds.intersects(right_bounds) {
-            return Ok(false);
-        }
-        let (left, right) = (self.shape(), other.shape());
-        // Two axis-aligned rectangles each equal their bounding box, so
-        // overlapping bounds is already the exact answer — the box/tile/
-        // envelope fast path.
-        if crate::geometry::is_axis_aligned_rectangle(left, left_bounds)
-            && crate::geometry::is_axis_aligned_rectangle(right, right_bounds)
-        {
-            return Ok(true);
-        }
-        // Containment first (raycast over the rings, no prepared linework) so
-        // the common area-overlap case never builds `distance_parts`. The
-        // boundary-crossing test — and ONLY it — pays to build the prepared
-        // linework, and only when containment is negative.
-        if area_overlap_probe(left, right) {
-            return Ok(true);
-        }
-        Ok(parts_boundary_contact(
-            left,
-            self.distance_parts()?,
-            right,
-            other.distance_parts()?,
-        ))
     }
 }

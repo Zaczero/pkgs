@@ -184,6 +184,20 @@ fn scalar_rows_relate_prepared_array_rows_from_fixed_graphs() {
 }
 
 #[rstest::rstest]
+#[case::intersects(Predicate::Intersects, false)]
+#[case::disjoint(Predicate::Disjoint, true)]
+fn shared_collection_intersection_uses_occupied_support_once(
+    #[case] predicate: Predicate,
+    #[case] expected: bool,
+) {
+    let source = parse_wkt_shape("POLYGON ((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))");
+    let source = shared_collection(source, 128);
+    let probe = parse_wkt_shape("LINESTRING (1 6,3 6)");
+    assert_eq!(cartesian_predicate(predicate, &source, &probe), expected);
+    assert_eq!(cartesian_predicate(predicate, &probe, &source), expected);
+}
+
+#[rstest::rstest]
 #[case::sound(PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)), line((-1.0, 1.0), (3.0, 1.0)))]
 #[case::unsound(PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)), rectangle(170.0, 40.0, -170.0, 50.0))]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]

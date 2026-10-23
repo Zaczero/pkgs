@@ -542,7 +542,7 @@ fn validate_routed_shape(
     path: &str,
 ) -> Result<Option<ValidationIssue>> {
     let issue = match route {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => shape.validate()?,
+        crate::geometry::GeographicTopologyRoute::Cartesian => shape.validate()?,
         crate::geometry::GeographicTopologyRoute::Quotient => {
             ExactGeographicTopology::from_views(frame, std::iter::once(view))?
                 .validity_issue(shape)?
@@ -558,9 +558,7 @@ fn validate_routed_data(
     path: &str,
 ) -> Result<Option<ValidationIssue>> {
     let issue = match route {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => {
-            data.validate_cached()?.cloned()
-        },
+        crate::geometry::GeographicTopologyRoute::Cartesian => data.validate_cached()?.cloned(),
         crate::geometry::GeographicTopologyRoute::Quotient => data.quotient_validity(view)?,
     };
     Ok(issue.map(|issue| issue.with_path_prefix(path)))
@@ -637,7 +635,7 @@ pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomai
     };
     let view = admitted_geographic_view(data.shape(), frame)?;
     match data.geographic_validity_route(view) {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => data.is_simple_cached(),
+        crate::geometry::GeographicTopologyRoute::Cartesian => data.is_simple_cached(),
         crate::geometry::GeographicTopologyRoute::Quotient => simple_on_quotient_chart(data, view),
     }
 }
@@ -655,7 +653,7 @@ pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain)
         return Ok(false);
     }
     match data.geographic_validity_route(view) {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => data.is_simple_cached(),
+        crate::geometry::GeographicTopologyRoute::Cartesian => data.is_simple_cached(),
         crate::geometry::GeographicTopologyRoute::Quotient => simple_on_quotient_chart(data, view),
     }
 }
@@ -672,7 +670,7 @@ pub(crate) fn self_intersections_in_frame(
     };
     let view = admitted_geographic_view(shape, frame)?;
     match crate::geometry::classify_geographic_validity_chart(view) {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => shape.self_intersections(),
+        crate::geometry::GeographicTopologyRoute::Cartesian => shape.self_intersections(),
         crate::geometry::GeographicTopologyRoute::Quotient => {
             ExactGeographicTopology::from_views(frame, std::iter::once(view))?
                 .self_intersection_points(shape)
@@ -689,9 +687,7 @@ pub(crate) fn self_intersections_data_in_frame(
     };
     let view = admitted_geographic_view(data.shape(), frame)?;
     match data.geographic_validity_route(view) {
-        crate::geometry::GeographicTopologyRoute::ExactPartition => {
-            data.shape().self_intersections()
-        },
+        crate::geometry::GeographicTopologyRoute::Cartesian => data.shape().self_intersections(),
         crate::geometry::GeographicTopologyRoute::Quotient => data
             .geographic_occurrence_topology(view)?
             .self_intersection_points(data.shape()),

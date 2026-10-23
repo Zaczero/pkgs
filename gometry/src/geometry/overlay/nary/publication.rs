@@ -123,7 +123,7 @@ fn overlay_all_geographic_output<M: ChartMetric>(
         return Ok(GeometryOutput::Shape(shape));
     }
     if geographic_topology_route(originals.views().iter().copied())
-        == GeographicTopologyRoute::ExactPartition
+        == GeographicTopologyRoute::Cartesian
     {
         return Ok(GeometryOutput::Shape(
             exact_partition_overlay_with_bounds_certificates::<M>(

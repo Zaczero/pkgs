@@ -13,14 +13,14 @@ use crate::test_support::boundary_probe;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GeographicTopologyRoute {
-    ExactPartition,
+    Cartesian,
     Quotient,
 }
 
 impl GeographicTopologyRoute {
     pub(crate) const fn combine(self, other: Self) -> Self {
         match (self, other) {
-            (Self::ExactPartition, Self::ExactPartition) => Self::ExactPartition,
+            (Self::Cartesian, Self::Cartesian) => Self::Cartesian,
             _ => Self::Quotient,
         }
     }
@@ -28,7 +28,7 @@ impl GeographicTopologyRoute {
 
 /// Classify an admitted geographic view for exact planar topology.
 ///
-/// ExactPartition can use stored longitude/latitude coordinates only when
+/// Cartesian topology can use stored longitude/latitude coordinates only when
 /// they name one open chart: canonical ordinary vertices, no seam-crossing
 /// edges, and no full-longitude ring. Seam and pole topology remains Q-owned.
 pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> GeographicTopologyRoute {
@@ -42,7 +42,7 @@ pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> Geogr
         && !crosses_antimeridian_in_frame(view.shape(), frame)
         && !shape_has_polar_ring_in_frame(view.shape(), frame)
     {
-        GeographicTopologyRoute::ExactPartition
+        GeographicTopologyRoute::Cartesian
     } else {
         GeographicTopologyRoute::Quotient
     }
@@ -82,7 +82,7 @@ pub(crate) fn classify_geographic_validity_chart(
         | Shape::Empty(..) => false,
     };
     if faithful {
-        GeographicTopologyRoute::ExactPartition
+        GeographicTopologyRoute::Cartesian
     } else {
         classify_geographic_chart(view)
     }
@@ -153,7 +153,7 @@ pub(crate) fn geographic_topology_route<'a>(
             return GeographicTopologyRoute::Quotient;
         }
     }
-    GeographicTopologyRoute::ExactPartition
+    GeographicTopologyRoute::Cartesian
 }
 
 /// Resolve the complete topology domain from CRS metadata. WGS84 uses the
@@ -516,11 +516,11 @@ mod tests {
 
         assert_eq!(
             classify_geographic_chart(view),
-            GeographicTopologyRoute::ExactPartition
+            GeographicTopologyRoute::Cartesian
         );
         assert_eq!(
             geographic_topology_route([view, view]),
-            GeographicTopologyRoute::ExactPartition
+            GeographicTopologyRoute::Cartesian
         );
     }
 
@@ -538,7 +538,7 @@ mod tests {
             let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
             assert_eq!(
                 classify_geographic_validity_chart(view),
-                GeographicTopologyRoute::ExactPartition
+                GeographicTopologyRoute::Cartesian
             );
             if west.abs() > 180.0 {
                 assert_eq!(
@@ -571,12 +571,12 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::west_200_0(200.0, 220.0, GeographicTopologyRoute::ExactPartition, None)]
-    #[case::negative_west_220_0(-220.0, -200.0, GeographicTopologyRoute::ExactPartition, None)]
+    #[case::west_200_0(200.0, 220.0, GeographicTopologyRoute::Cartesian, None)]
+    #[case::negative_west_220_0(-220.0, -200.0, GeographicTopologyRoute::Cartesian, None)]
     #[case::west_200_0_84b98301(
         200.0,
         202.0,
-        GeographicTopologyRoute::ExactPartition,
+        GeographicTopologyRoute::Cartesian,
         Some("shared_linework")
     )]
     #[case::west_200_0_e0d9faa4(200.0, -160.0, GeographicTopologyRoute::Quotient, Some("shared_linework"))]
@@ -614,7 +614,7 @@ mod tests {
             expected_code,
             "{west}, {east}"
         );
-        if route == GeographicTopologyRoute::ExactPartition {
+        if route == GeographicTopologyRoute::Cartesian {
             let planar = shape.validate().unwrap();
             assert_eq!(planar.as_ref().map(|issue| issue.code), expected_code);
             assert_eq!(

@@ -1,3 +1,4 @@
+use crate::geometry::predicate_spec::Predicate;
 use crate::geometry::predicates::*;
 use crate::geometry::*;
 
@@ -410,9 +411,7 @@ mod convex_tests {
         ));
         assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
         assert!(
-            PreparedPlan::transient(&densified)
-                .intersects(&PreparedPlan::transient(&r))
-                .unwrap(),
+            densified.intersects(&r).unwrap(),
             "cached planar intersects recognizes a densified rectangle"
         );
 
@@ -491,10 +490,6 @@ mod convex_tests {
         #[case] left: &'static str,
         #[case] right: &'static str,
     ) {
-        // Representative probes plus boundary contact decide `intersects`
-        // without the matrix; holes, touching boundaries and nesting are
-        // where either half alone would answer wrongly.
-
         let left = crate::io::parse_wkt(left).unwrap();
         let right = crate::io::parse_wkt(right).unwrap();
         let expected = graph_relate_shapes(&left, &right).unwrap().is_intersects();
@@ -503,12 +498,14 @@ mod convex_tests {
             PreparedPlan::transient(&right),
         );
         assert_eq!(
-            left.intersects(&right).unwrap(),
+            crate::geometry::evaluate_cartesian_predicate(&left, &right, Predicate::Intersects)
+                .unwrap(),
             expected,
             "{left:?} {right:?}"
         );
         assert_eq!(
-            right.intersects(&left).unwrap(),
+            crate::geometry::evaluate_cartesian_predicate(&right, &left, Predicate::Intersects)
+                .unwrap(),
             expected,
             "{right:?} {left:?}"
         );

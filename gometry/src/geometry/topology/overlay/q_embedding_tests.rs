@@ -587,7 +587,7 @@ fn geographic_nearest_certificate_preserves_direct_q_au_pg_union_wkb() -> Result
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
     assert_eq!(
         crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
-        crate::geometry::GeographicTopologyRoute::ExactPartition,
+        crate::geometry::GeographicTopologyRoute::Cartesian,
         "the public AU/PG binary union dispatches to exact partition"
     );
     let topology = test_topology(&shapes);

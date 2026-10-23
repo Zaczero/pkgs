@@ -6,7 +6,7 @@
 
 use super::{
     ArealCells, BoundarySelection, CellFacts, ExactPartition, ExactSourceInventory, NodeId,
-    PolygonOccupancy, location, node_source_range, ring_occupied, rings_occupied, select_operation,
+    PolygonOccupancy, node_source_range, ring_occupied, rings_occupied, select_operation,
 };
 use crate::error::ResourceError;
 #[cfg(test)]
@@ -16,12 +16,15 @@ use crate::geometry::graph::GlobalFaces;
 use crate::geometry::source_support::SourcePointLocation;
 #[cfg(test)]
 use crate::geometry::tessellation::exact::ExactDyadic;
-use crate::geometry::{De9im, Dimension, HashMap, Loc, Result, RingKind};
+#[cfg(test)]
+use crate::geometry::{De9im, Dimension};
+use crate::geometry::{HashMap, Loc, Result, RingKind};
 
 #[cfg(test)]
 type RelationLocationSample = ([ExactDyadic; 3], [SourcePointLocation; 2]);
 
 impl ExactSourceInventory {
+    #[cfg(test)]
     pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -34,6 +37,13 @@ impl ExactSourceInventory {
         for membership in facts.face_membership.chunks_exact(operands) {
             let [left, right] = membership else {
                 unreachable!("DE-9IM relation has exactly two operands")
+            };
+            let location = |occupied| {
+                if occupied {
+                    Loc::Interior
+                } else {
+                    Loc::Exterior
+                }
             };
             matrix.set_at_least(location(*left), location(*right), Dimension::Surface);
         }

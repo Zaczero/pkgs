@@ -327,7 +327,7 @@ fn geographic_crossing_rows_fail_open_the_bounds_gate() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
-fn prepared_intersects_rectangle_queries_use_exact_partition_and_respect_holes() {
+fn prepared_intersects_rectangle_queries_respect_holes() {
     let outer = rectangle(0.0, 0.0, 10.0, 10.0);
     let Shape::Polygon(outer) = outer else {
         unreachable!("rectangle helper returns a polygon");

@@ -20,6 +20,9 @@ pub(super) trait Query {
     ) -> Option<PointMembershipQuery<Self::Output>>;
     fn cells(&self) -> CellMask;
     fn needs_dimensions(&self) -> bool;
+    fn intersection_result(&self, _intersects: bool) -> Option<Self::Output> {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +86,22 @@ pub(super) struct PredicateQuery(pub(super) Predicate);
 
 impl Query for PredicateQuery {
     type Output = bool;
+
+    fn intersection_result(&self, intersects: bool) -> Option<Self::Output> {
+        match self.0 {
+            Predicate::Intersects => Some(intersects),
+            Predicate::Disjoint => Some(!intersects),
+            Predicate::Contains
+            | Predicate::ContainsProperly
+            | Predicate::Within
+            | Predicate::Covers
+            | Predicate::CoveredBy
+            | Predicate::Touches
+            | Predicate::Crosses
+            | Predicate::Overlaps
+            | Predicate::Equals => None,
+        }
+    }
 
     fn verdict(&self, interval: &De9imInterval) -> Option<Self::Output> {
         matrix_predicates::eval(self.0, interval).option()

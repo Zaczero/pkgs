@@ -45,8 +45,7 @@ pub(crate) use hausdorff::{
     hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
 pub(super) use intersects::{
-    area_overlap_probe, bounds_squared_safe, coordinate_squared_safe, parts_boundary_contact,
-    squared_space_safe,
+    bounds_squared_safe, coordinate_squared_safe, parts_boundary_contact, squared_space_safe,
 };
 pub(crate) use misc::{bounds_distance_squared, line_length_3d};
 pub(super) use nearest::{nearest_probe_to_parts, parts_boundary_witness};

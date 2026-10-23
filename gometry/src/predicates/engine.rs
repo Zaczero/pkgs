@@ -4,8 +4,8 @@
 //! and `GeometryArray` methods, the spatial index refine
 //! loop, and `join` — reads dispatch facts from [`Predicate::spec`] and asks
 //! the domain's topology owner for an exact answer. Cartesian predicates use
-//! the witness evaluator, with `intersects` and `disjoint` retaining their
-//! prepared kernel; geographic predicates use their chart relation.
+//! the witness evaluator; geographic predicates share it on ordinary charts
+//! and retain the exact quotient relation at seams and poles.
 
 use std::cell::OnceCell;
 
@@ -97,7 +97,13 @@ impl<'a> PreparedTopologyPair<'a> {
         left: GeographicPrepared<'a>,
         right: GeographicPrepared<'a>,
     ) -> Self {
-        Self::Geographic { left, right }
+        match left.chart_route().combine(right.chart_route()) {
+            GeographicTopologyRoute::Cartesian => Self::Cartesian {
+                left: left.plan(),
+                right: right.plan(),
+            },
+            GeographicTopologyRoute::Quotient => Self::Geographic { left, right },
+        }
     }
 
     pub(crate) fn relate(self) -> crate::error::Result<crate::geometry::De9im> {

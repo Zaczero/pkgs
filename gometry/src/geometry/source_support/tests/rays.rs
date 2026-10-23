@@ -323,18 +323,16 @@ fn exact_overlay_interpolates_each_incident_axis_once() {
 fn exact_bounds_use_selected_support_not_raw_canceled_edges() {
         let spur = shape("POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))");
         assert!(
-            !crate::geometry::exact_intersects_bounds(
-                &spur,
+            !spur.intersects(&Shape::Polygon(crate::geometry::rect_polygon(
                 crate::geometry::Bounds::new_raw(-1.5, -0.1, -0.5, 0.1)
-            )
+            ).unwrap()))
             .unwrap()
         );
         let external_hole = shape("POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))");
         assert!(
-            !crate::geometry::exact_intersects_bounds(
-                &external_hole,
+            !external_hole.intersects(&Shape::Polygon(crate::geometry::rect_polygon(
                 crate::geometry::Bounds::new_raw(7.5, 7.5, 9.5, 9.5)
-            )
+            ).unwrap()))
             .unwrap()
         );
     }

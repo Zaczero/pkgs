@@ -63,12 +63,24 @@ impl<'a> FixedPredicate<'a> {
         if let Some(point) = row.point()
             && let Some(membership) = self.point_membership
         {
-            if self
+            let Some(bounds) = self
                 .gate
                 .bounds
-                .is_none_or(|bounds| !bounds.contains_point(point.xy()))
-            {
+                .filter(|bounds| bounds.contains_point(point.xy()))
+            else {
                 return Ok(predicate == Predicate::Disjoint);
+            };
+            if self.gate.rectangle == Some(true) {
+                let location = if point.x > bounds.minx()
+                    && point.x < bounds.maxx()
+                    && point.y > bounds.miny()
+                    && point.y < bounds.maxy()
+                {
+                    super::Loc::Interior
+                } else {
+                    super::Loc::Boundary
+                };
+                return Ok(membership.accepts(location) != (predicate == Predicate::Disjoint));
             }
             let queries = self
                 .point_queries
@@ -89,13 +101,6 @@ impl<'a> FixedPredicate<'a> {
         let (left, right) = self.ordered(&self.gate, &element);
         if let Some(verdict) = self.spec.pre_topology(left, right) {
             return Ok(verdict);
-        }
-        if predicate == Predicate::Intersects
-            && self.gate.rectangle == Some(false)
-            && let Some(bounds) = element.bounds
-            && crate::geometry::is_axis_aligned_rectangle_row(row, bounds)
-        {
-            return crate::geometry::exact_intersects_bounds(self.scalar.shape(), bounds);
         }
         if matches!(predicate, Predicate::Intersects | Predicate::Disjoint) {
             if self.gate.kind == super::GeometryKind::Point
@@ -121,7 +126,17 @@ impl<'a> FixedPredicate<'a> {
         &self,
         scalar: GeographicPrepared<'_>,
         element: GeographicPrepared<'_>,
+        element_count: usize,
     ) -> crate::error::Result<bool> {
+        if scalar.chart_route().combine(element.chart_route()) == GeographicTopologyRoute::Cartesian
+        {
+            return self.cartesian(
+                ShapeRow::Shape(element.plan().shape()),
+                element.plan().bounds(),
+                element_count,
+                || Ok(element.plan()),
+            );
+        }
         let scalar_gate = GateOperand {
             bounds_sound: scalar.bounds_sound(),
             ..self.gate
@@ -137,23 +152,16 @@ impl<'a> FixedPredicate<'a> {
             && right.bounds_are_sound()
             && let Some(bounds) = element_gate.bounds
             && crate::geometry::is_axis_aligned_rectangle_row(element_gate.row, bounds)
-        {
-            if scalar.chart_route().combine(element.chart_route())
-                == GeographicTopologyRoute::ExactPartition
-            {
-                return crate::geometry::exact_intersects_bounds(self.scalar.shape(), bounds);
-            }
-            if let Some(location) = self
+            && let Some(location) = self
                 .exact_topology
                 .get_or_try_init(|| scalar.exact_topology())?
                 .classify_rectangle(bounds)?
-            {
-                return Ok(matches!(
-                    location,
-                    crate::geometry::ExactGeographicRectangleLocation::Interior
-                        | crate::geometry::ExactGeographicRectangleLocation::Boundary
-                ));
-            }
+        {
+            return Ok(matches!(
+                location,
+                crate::geometry::ExactGeographicRectangleLocation::Interior
+                    | crate::geometry::ExactGeographicRectangleLocation::Boundary
+            ));
         }
         let (left, right) = self.ordered(scalar, element);
         topology_pair_after_gates(

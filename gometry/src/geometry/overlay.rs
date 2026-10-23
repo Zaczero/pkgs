@@ -136,7 +136,7 @@ pub(in crate::geometry) use exact_partition::subdivision::{
 #[cfg(test)]
 pub(crate) use exact_partition::support_queries::cartesian_support_nonempty;
 pub(crate) use exact_partition::support_queries::{
-    exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,
+    occupied_cartesian_area, occupied_cartesian_support,
 };
 pub(in crate::geometry) use exact_partition::winding::homogeneous_midpoint;
 pub(in crate::geometry) use exact_partition::{
