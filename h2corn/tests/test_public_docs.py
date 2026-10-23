@@ -229,12 +229,29 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
     tmp_path: Path, unsupported_server: bool
 ) -> None:
     import json
+    from dataclasses import asdict
 
-    from bench.bench import assert_publishable
+    from bench.bench import SAMPLING_POLICY, assert_publishable, paired_contrasts
 
     raw = tmp_path / 'raw'
     raw.mkdir()
     record = _benchmark_record()
+    policy = json.loads(json.dumps(asdict(SAMPLING_POLICY)))
+    scenario = {
+        'family': 'http',
+        'profile': 'loopback',
+        'slug': 'comparison',
+        'supported_servers': ['h2corn', 'uvicorn'],
+        'minimum_blocks': 6,
+        'maximum_blocks': 12,
+        'calibration_limited': False,
+        'calibration': {
+            'servers': {
+                'h2corn': {'status': 'stable'},
+                'uvicorn': {'status': 'stable'},
+            },
+        },
+    }
     record.update(
         calibration_limited=False,
         duration='1s',
@@ -243,7 +260,12 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
             'h2corn': [1, 2, 3, 4, 5, 6],
             'uvicorn': [1, 2, 3, 4, 5, 6],
         },
-        sampling={'production_blocks': 6},
+        sampling=scenario,
+        sampling_policy=policy,
+        samples={
+            name: [{'rps': rate} for rate in values['rps_samples']]
+            for name, values in record['aggregate'].items()
+        },
         failures={},
     )
     if unsupported_server:
@@ -251,11 +273,17 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
         record['unsupported'] = {
             'gunicorn': 'The selected release has no prior-knowledge cleartext HTTP/2 mode.'
         }
-    record['paired_contrasts']['uvicorn'].update(
-        interval=[0.9, 1.1],
-        decision='inconclusive',
+    record['paired_contrasts'] = paired_contrasts(
+        record['samples'], record['sample_blocks']
     )
-    record['stopped'] = 'max-trials'
+    record['stopped'] = 'direction-resolved'
+    record['look_history'] = [
+        {
+            'blocks': 6,
+            'contrasts': record['paired_contrasts'],
+            'decision': 'direction-resolved',
+        }
+    ]
     (raw / 'comparison.json').write_text(json.dumps(record))
     (tmp_path / 'identity.json').write_text(
         json.dumps({'build': {'command': ['maturin']}})
@@ -270,22 +298,8 @@ def test_benchmark_publication_accepts_complete_supported_measurements(
     (tmp_path / 'suite-plan.json').write_text(
         json.dumps({
             'status': 'frozen',
-            'scenarios': [
-                {
-                    'family': 'http',
-                    'profile': 'loopback',
-                    'slug': 'comparison',
-                    'supported_servers': ['h2corn', 'uvicorn'],
-                    'production_blocks': 6,
-                    'calibration_limited': False,
-                    'calibration': {
-                        'servers': {
-                            'h2corn': {'status': 'stable'},
-                            'uvicorn': {'status': 'stable'},
-                        },
-                    },
-                }
-            ],
+            'sampling_policy': policy,
+            'scenarios': [scenario],
         })
     )
     for name in ('h2corn', 'uvicorn'):
