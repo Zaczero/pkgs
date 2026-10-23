@@ -340,9 +340,13 @@ pub(crate) struct RequestTaskGuard {
 }
 
 impl RequestTaskGuard {
-    pub(crate) const fn new(admission: RequestAdmission, connection: ConnectionContext) -> Self {
+    pub(crate) const fn new(
+        admission: RequestAdmission,
+        connection: ConnectionContext,
+        failure: Option<Arc<dyn ApplicationFailure>>,
+    ) -> Self {
         Self {
-            failure: None,
+            failure,
             admission,
             connection,
         }
@@ -905,8 +909,7 @@ pub(crate) fn start_app_call(
     failure: Option<Arc<dyn ApplicationFailure>>,
 ) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
     let shard = connection.app.pick_shard();
-    let mut guard = RequestTaskGuard::new(admission, connection);
-    guard.failure = failure;
+    let guard = RequestTaskGuard::new(admission, connection, failure);
     let slot = TaskSlot::with_guard(guard);
     shard.push(PumpEvent::StartTask {
         args,
@@ -1041,6 +1044,7 @@ pub(crate) mod test_fixtures {
             try_acquire_request_admission(app)
                 .expect("the unlimited test runtime admits every request"),
             connection_context_for(Arc::clone(app)),
+            None,
         )
     }
 }

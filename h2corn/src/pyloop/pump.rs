@@ -240,11 +240,12 @@ fn fill_app_slot(
     outcome: Result<(), H2CornError>,
     object: Option<&Bound<'_, PyAny>>,
 ) {
-    let failed = outcome.is_err();
-    let unaccepted = slot.fill(outcome);
-    if failed {
+    if outcome.is_err() {
+        // A woken response driver can close its send buffer. Classify the
+        // failure before that transition turns an uncommitted response terminal.
         slot.guard().application_failed();
     }
+    let unaccepted = slot.fill(outcome);
     if let Err(Err(error)) = unaccepted {
         report_unaccepted_error(py, into_pyerr(error), object);
     }
@@ -269,16 +270,76 @@ fn report_unaccepted_error(py: Python<'_>, error: PyErr, object: Option<&Bound<'
 
 #[cfg(test)]
 mod tests {
+    use std::pin::pin;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use parking_lot::Mutex;
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyList};
 
-    use super::{DoneSlot, TaskDone, fill_value_slot, process_event};
+    use super::{DoneSlot, TaskDone, fill_app_slot, fill_value_slot, process_event};
     use crate::error::H2CornError;
     use crate::pyloop::{PumpEvent, ShardHandle, TaskSlot};
-    use crate::runtime::test_fixtures;
+    use crate::runtime::{
+        ApplicationFailure, RequestTaskGuard, test_fixtures, try_acquire_request_admission,
+    };
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn application_failure_is_published_before_waking_the_response_driver() {
+        struct Failure(AtomicBool);
+        impl ApplicationFailure for Failure {
+            fn application_failed(&self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        struct DriverWake {
+            failure: Arc<Failure>,
+            observed: AtomicBool,
+        }
+        impl Wake for DriverWake {
+            fn wake(self: Arc<Self>) {
+                self.observed
+                    .store(self.failure.0.load(Ordering::Relaxed), Ordering::Relaxed);
+            }
+        }
+
+        Python::initialize();
+        Python::attach(|py| {
+            let app = test_fixtures::app_runtime(py);
+            let failure = Arc::new(Failure(AtomicBool::new(false)));
+            let slot = TaskSlot::with_guard(RequestTaskGuard::new(
+                try_acquire_request_admission(&app).unwrap(),
+                test_fixtures::connection_context_for(Arc::clone(&app)),
+                Some(Arc::clone(&failure) as Arc<dyn ApplicationFailure>),
+            ));
+            let wake = Arc::new(DriverWake {
+                failure,
+                observed: AtomicBool::new(false),
+            });
+            let waker = Waker::from(Arc::clone(&wake));
+            let mut context = Context::from_waker(&waker);
+            let mut waiter = pin!(Arc::clone(&slot).wait(app.main_shard()));
+            assert!(waiter.as_mut().poll(&mut context).is_pending());
+
+            fill_app_slot(
+                py,
+                &slot,
+                Err(H2CornError::from(pyo3::exceptions::PyValueError::new_err(
+                    "application failed before sending a response",
+                ))),
+                None,
+            );
+
+            assert!(wake.observed.load(Ordering::Relaxed));
+            assert!(matches!(
+                waiter.as_mut().poll(&mut context),
+                Poll::Ready(Err(_))
+            ));
+        });
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
