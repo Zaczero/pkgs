@@ -62,12 +62,11 @@ impl Store {
         self.revision
     }
 
-    pub(crate) fn candidates(&self, hash: Py_hash_t) -> Vec<u32> {
+    pub(crate) fn candidates(&self, hash: Py_hash_t) -> impl Iterator<Item = u32> + '_ {
         self.table
             .iter_hash(hash as u64)
             .copied()
-            .filter(|&idx| self.node(idx).hash == hash)
-            .collect()
+            .filter(move |&idx| self.node(idx).hash == hash)
     }
 
     pub(crate) fn indices(&self) -> Vec<u32> {

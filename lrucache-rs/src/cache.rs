@@ -74,7 +74,6 @@ impl LRUCache {
                 let guard = self.inner.lock_py_attached(py);
                 let entries = guard
                     .candidates(hash)
-                    .into_iter()
                     .map(|slot| self.entry(py, slot))
                     .collect::<Vec<_>>();
                 (guard.revision(), entries)
