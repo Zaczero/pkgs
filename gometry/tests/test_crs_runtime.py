@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,11 @@ def _proj_tmerc_xy(target: str) -> tuple[float, float]:
 
 def _isolated_child_env(tmpdir: str) -> dict[str, str]:
     return {
+        **{
+            key: os.environ[key]
+            for key in ('NIX_LD', 'NIX_LD_LIBRARY_PATH', 'LD_LIBRARY_PATH')
+            if key in os.environ
+        },
         'TMPDIR': tmpdir,
         'PYTHONPATH': _GOMETRY_PYTHON,
         'PYTHONDONTWRITEBYTECODE': '1',

@@ -11,6 +11,7 @@ import sys
 import venv
 from pathlib import Path
 
+import gometry
 import pytest
 
 _BENCHES = Path(__file__).resolve().parents[2] / 'benches'
@@ -166,7 +167,7 @@ def test_benchmark_entrypoints_prefer_the_workspace_benchroom_source() -> None:
         GOMETRY_ROOT / 'tools' / 'docs' / 'benchmark_charts.py',
     )
     environment = os.environ.copy()
-    environment.pop('PYTHONPATH', None)
+    environment['PYTHONPATH'] = str(Path(gometry.__file__).resolve().parent.parent)
     probe = (
         'import runpy, sys; from pathlib import Path; script = Path(sys.argv[1]); '
         'sys.path.insert(0, str(script.parent)); '
