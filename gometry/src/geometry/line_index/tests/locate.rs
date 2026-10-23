@@ -245,9 +245,12 @@ fn prepared_planar_locate_matches_streaming_across_seeded_ties_zero_edges_and_em
 
     for probe in probes {
         for normalized in [false, true] {
-            let expected =
-                locate_planar_route(shape.linework().unwrap().into_iter(), probe, normalized)
-                    .expect("one-shot streaming reference");
+            let expected = locate_planar_route(
+                shape.linework().unwrap().iter().map(LineSeq::as_coords),
+                probe,
+                normalized,
+            )
+            .expect("one-shot streaming reference");
             assert_eq!(
                 cached_planar_locate(&prepared, probe, normalized)
                     .expect("prepared nearest search")

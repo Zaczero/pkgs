@@ -466,6 +466,6 @@ impl Shape {
 }
 
 /// First vertex of the first non-empty line piece, if any.
-pub(crate) fn linework_first_point(lines: &[&CoordSeq]) -> Option<Point> {
+pub(crate) fn linework_first_point(lines: &[LineSeq]) -> Option<Point> {
     lines.iter().find_map(|line| line.first())
 }

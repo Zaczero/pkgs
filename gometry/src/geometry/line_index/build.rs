@@ -150,14 +150,14 @@ impl LineIndex {
     /// linework retains both endpoint identities.
     pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         let lines = shape.linework()?;
-        let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
+        let first = linework_first_point(lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = ShapeCountQuery::default().segments(shape).ok();
         let (mut segments, mut prefix) = Self::storage(upper);
         prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;
         let mut has_zero_segments = false;
-        for line in &lines {
+        for line in lines {
             for [start, end] in line.segment_pairs() {
                 last = end;
                 let length = metric.admitted_length(start, end)?;
@@ -276,7 +276,7 @@ impl ChartLineIndex {
         metric: &impl ChartMetric,
     ) -> Result<Self> {
         let lines = shape.linework()?;
-        let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
+        let first = linework_first_point(lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let last = lines
             .iter()
             .rev()

@@ -75,12 +75,8 @@ impl Shape {
         publication_frame: crate::Frame,
     ) -> Result<Vec<Self>> {
         if context.domain().is_geographic() {
-            let shapes = shapes
-                .iter()
-                .map(Borrow::<Self>::borrow)
-                .collect::<Vec<_>>();
             let selected = exact_geographic_linework_from_shapes(
-                &shapes,
+                shapes,
                 QProducer::Polygonize,
                 false,
                 strict,
@@ -106,7 +102,7 @@ impl Shape {
     }
 
     pub(crate) fn append_polygonize_rows<M: crate::geometry::ChartMetric>(
-        shapes: &[&Self],
+        shapes: &[impl Borrow<Self>],
         strict: bool,
         context: &SourceArcContext<'_, '_, M>,
         publication_frame: &crate::Frame,

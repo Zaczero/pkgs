@@ -746,12 +746,12 @@ impl Shape {
         }
     }
 
-    fn linework(&self) -> Result<Vec<&CoordSeq>> {
+    fn linework(&self) -> Result<&[LineSeq]> {
         Ok(
             match self.lineal().ok_or(GeometryErrorKind::LineStringRequired)? {
-                Lineal::LineString(points) => vec![points.as_coords()],
-                Lineal::MultiLineString(lines) => lines.iter().map(LineSeq::as_coords).collect(),
-                Lineal::Empty => Vec::new(),
+                Lineal::LineString(points) => std::slice::from_ref(points),
+                Lineal::MultiLineString(lines) => lines.as_slice(),
+                Lineal::Empty => &[],
             },
         )
     }

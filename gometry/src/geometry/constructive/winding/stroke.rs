@@ -10,7 +10,7 @@ use super::*;
 /// `None` means that no usable constructive loop remained; non-finite
 /// derived coordinates are returned as typed errors.
 pub(in crate::geometry) fn winding_stroke_budgeted(
-    chains: &[&CoordSeq],
+    chains: impl IntoIterator<Item = impl AsRef<CoordSeq>>,
     distance: f64,
     cap_style: BufferCapStyle,
     rule: WalkJoinRule,
@@ -22,7 +22,7 @@ pub(in crate::geometry) fn winding_stroke_budgeted(
     for chain in chains {
         let Some(stroke_clean) = stroke_loops(
             &mut loops,
-            chain,
+            chain.as_ref(),
             distance,
             cap_style,
             rule,

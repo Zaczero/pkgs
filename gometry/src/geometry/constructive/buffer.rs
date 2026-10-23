@@ -9,8 +9,8 @@ use crate::geometry::constructive::{
     winding_sided_stroke_budgeted, winding_stroke_budgeted,
 };
 use crate::geometry::{
-    BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget, GeometryErrorKind,
-    LineSeq, Shape, polygon_parts_to_shape, same_topological_coordinate,
+    BufferCapStyle, BufferJoinStyle, BufferSide, ExpansionBudget, GeometryErrorKind, LineSeq,
+    Shape, polygon_parts_to_shape, same_topological_coordinate,
 };
 use crate::{Finite, Positive};
 
@@ -163,24 +163,21 @@ impl Shape {
                 Ok(Some(polygon_parts_to_shape(parts)))
             },
             Self::LineString(chain) => winding_stroke_budgeted(
-                &[chain],
+                std::slice::from_ref(chain),
                 distance,
                 cap_style,
                 rule,
                 quadrant_segments,
                 budget,
             ),
-            Self::MultiLineString(lines) => {
-                let chains: Vec<&CoordSeq> = lines.iter().map(LineSeq::as_coords).collect();
-                winding_stroke_budgeted(
-                    &chains,
-                    distance,
-                    cap_style,
-                    rule,
-                    quadrant_segments,
-                    budget,
-                )
-            },
+            Self::MultiLineString(lines) => winding_stroke_budgeted(
+                lines.as_slice(),
+                distance,
+                cap_style,
+                rule,
+                quadrant_segments,
+                budget,
+            ),
             Self::Polygon(polygon) => winding_buffer_budgeted(
                 std::slice::from_ref(polygon),
                 distance,

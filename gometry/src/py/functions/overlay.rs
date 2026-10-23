@@ -539,9 +539,8 @@ pub(crate) fn polygonize_all(
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
             if q_polygon_product {
-                let shape_refs = shapes.iter().collect::<Vec<_>>();
                 crate::geometry::exact_geographic_polygonize_full_from_shapes(
-                    &shape_refs,
+                    &shapes,
                     false,
                     &context,
                 )
@@ -570,10 +569,9 @@ pub(crate) fn polygonize_all(
                 };
                 let context =
                     crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-                let shape_refs = shapes.iter().collect::<Vec<_>>();
                 let mut rows = PublicationRows::with_producer_drawing_capacity(0);
                 Shape::append_polygonize_rows(
-                    &shape_refs,
+                    &shapes,
                     false,
                     &context,
                     &output_frame,

@@ -76,7 +76,11 @@ impl MeasureRange {
 impl Shape {
     #[cfg(test)]
     pub fn line_locate_point_streaming(&self, point: Point, normalized: bool) -> Result<f64> {
-        crate::geometry::locate_planar_route(self.linework()?.into_iter(), point, normalized)
+        crate::geometry::locate_planar_route(
+            self.linework()?.iter().map(LineSeq::as_coords),
+            point,
+            normalized,
+        )
     }
 
     /// Split this lineal geometry at each splitter point that lies on it.
@@ -268,7 +272,7 @@ impl Shape {
         let mut segment_lengths = Vec::with_capacity(segment_count);
         let mut part_seg_ends = Vec::with_capacity(parts.len());
         let mut total = 0.0_f64;
-        for part in &parts {
+        for part in parts {
             for [start, end] in part.segment_pairs() {
                 let length = segment_length(start, end)?;
                 total += length;

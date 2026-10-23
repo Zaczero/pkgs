@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use super::super::emission::plan::{QDiagnosticLine, QEmissionPlan, QProducer};
 use super::super::q::ExactGeographicTopology;
 use crate::error::{ResourceError, Result};
@@ -16,7 +18,7 @@ use crate::work::Work;
 pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
     M: crate::geometry::ChartMetric,
 >(
-    shapes: &[&Shape],
+    shapes: &[impl Borrow<Shape>],
     producer: QProducer,
     diagnostics: bool,
     strict: bool,
@@ -43,7 +45,7 @@ pub(in crate::geometry) fn exact_geographic_linework_from_shapes<
 pub(in crate::geometry) fn exact_geographic_linework_pending_row<
     M: crate::geometry::ChartMetric,
 >(
-    shapes: &[&Shape],
+    shapes: &[impl Borrow<Shape>],
     producer: QProducer,
     diagnostics: bool,
     strict: bool,
@@ -65,7 +67,7 @@ pub(in crate::geometry) fn exact_geographic_linework_pending_row<
 pub(in crate::geometry) fn exact_geographic_linework_drawing_from_shapes<
     M: crate::geometry::ChartMetric,
 >(
-    shapes: &[&Shape],
+    shapes: &[impl Borrow<Shape>],
     producer: QProducer,
     diagnostics: bool,
     strict: bool,
@@ -86,7 +88,7 @@ pub(in crate::geometry) fn exact_geographic_linework_drawing_from_shapes<
 fn exact_geographic_linework_drawing_with_diagnostics_from_shapes<
     M: crate::geometry::ChartMetric,
 >(
-    shapes: &[&Shape],
+    shapes: &[impl Borrow<Shape>],
     producer: QProducer,
     diagnostics: bool,
     strict: bool,
@@ -99,16 +101,16 @@ fn exact_geographic_linework_drawing_with_diagnostics_from_shapes<
         )
         .into());
     };
-    let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter().copied())
+    let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter().map(Borrow::borrow))
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
     let topology = ExactGeographicTopology::from_views_with_publication_frame(
         frame,
         publication_frame,
         inputs.views().iter().copied(),
     )?;
-    let declared_axes = shapes
-        .iter()
-        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
+    let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
+        axes.union(shape.borrow().axes())
+    });
     let mut budget = EvaluationBudget::new(producer.operation(), 0)?;
     let (shape, diagnostic_lines) = {
         let mut work = EvaluationOnly::new(&mut budget);
@@ -126,7 +128,7 @@ fn exact_geographic_linework_drawing_with_diagnostics_from_shapes<
 }
 
 pub(crate) fn exact_geographic_polygonize_full_from_shapes<M: crate::geometry::ChartMetric>(
-    shapes: &[&Shape],
+    shapes: &[impl Borrow<Shape>],
     strict: bool,
     context: &SourceArcContext<'_, '_, M>,
 ) -> Result<PolygonizeFull> {
