@@ -104,18 +104,14 @@ fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
     }
     leaves.sort_unstable();
     leaves.dedup();
-    if leaves.is_empty() {
-        return None;
-    }
     let mut level = leaves.first()?.level();
     let mut candidate = loop {
-        let at = leaves
+        let mut at = leaves
             .iter()
-            .map(|leaf| leaf.parent(level).unwrap_or(*leaf))
-            .collect::<Vec<_>>();
-        let (common, remaining) = at.split_first()?;
-        if remaining.iter().all(|cell| cell == common) {
-            break *common;
+            .map(|leaf| leaf.parent(level).unwrap_or(*leaf));
+        let common = at.next()?;
+        if at.all(|cell| cell == common) {
+            break common;
         }
         if level == 0 {
             return None;
