@@ -1154,11 +1154,8 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 if let Some(coords) = point_columns.contiguous_coords()
                     && coords.zs().is_none_or(crate::geometry::column_all_finite)
                     && coords.ms().is_none_or(crate::geometry::column_all_finite)
-                    && let Ok(mut mapped) = coords.try_affine_about_origin(&transform)
+                    && let Ok(mapped) = coords.try_affine_about_origin(&transform)
                 {
-                    // A transformed point window must not retain the source's
-                    // unselected M coordinates after its XY columns are replaced.
-                    mapped.compact_m();
                     return Ok(PackedColumnOutput::Points(mapped));
                 }
                 // Replay failed column evaluation in logical order so an earlier

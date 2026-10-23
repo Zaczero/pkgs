@@ -799,9 +799,7 @@ mod coordseq_m_storage_tests {
     }
 
     #[test]
-    fn nested_middle_local_m_keeps_distinct_offset_and_carries_without_allocation() {
-        use crate::test_support::allocation_count;
-
+    fn nested_middle_local_m_keeps_view_offsets_and_compacts_computed_output() {
         let nested = {
             let m = SharedSlice::from_vec((0..10).map(|value| f64::from(value) + 50.0).collect());
             let seq = CoordSeq::from_shared_columns_with_window(
@@ -833,14 +831,15 @@ mod coordseq_m_storage_tests {
             assert_eq!(inner.xs(), &[4.0]);
             assert_eq!(inner.ms(), Some(&[56.0][..]));
 
-            let (_carried, allocations) = allocation_count(|| nested.carried_ms());
-            assert_eq!(allocations, 0);
-
             let mapped = nested.map_xy(|x, y| (x + 1.0, y + 1.0)).unwrap();
             assert_eq!(mapped.xs(), &[4.0, 5.0]);
             assert_eq!(mapped.ms(), Some(&[55.0, 56.0][..]));
+            let columns = mapped.column_arcs();
+            let (owner, window) = columns.m_parts().unwrap();
+            assert_eq!(owner.len(), mapped.len());
+            assert_eq!(window, 0..mapped.len());
             assert!(Arc::ptr_eq(
-                &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
+                &inner.column_arcs().m_parts().unwrap().0.owner().unwrap(),
                 &m.owner().unwrap(),
             ));
             nested
@@ -969,7 +968,7 @@ mod coordseq_m_storage_tests {
     }
 
     #[test]
-    fn shared_middle_m_carry_reuses_owner_as_local_without_allocation() {
+    fn full_m_carry_shares_while_middle_m_output_compacts() {
         use crate::test_support::allocation_count;
 
         let seq = CoordSeq::try_from_vecs(
@@ -978,20 +977,28 @@ mod coordseq_m_storage_tests {
             None,
             Some(vec![50.0, 51.0, 52.0, 53.0, 54.0, 55.0]),
         )
-        .unwrap()
-        .view(CoordWindow::from_range(1..4, 6));
+        .unwrap();
         let source_m = seq.column_arcs().m_parts().unwrap().0.owner().unwrap();
-        assert_eq!(seq.ms(), Some(&[51.0, 52.0, 53.0][..]));
-        let (_carried, allocations) = allocation_count(|| seq.carried_ms());
+        let (carried, allocations) = allocation_count(|| seq.carried_ms());
         assert_eq!(allocations, 0);
+        let MColumn::Shared(carried) = carried.unwrap() else {
+            panic!("a full shared M column stays shared");
+        };
+        assert!(Arc::ptr_eq(&carried.owner().unwrap(), &source_m));
+        let seq = seq.view(CoordWindow::from_range(1..4, 6));
+        assert_eq!(seq.ms(), Some(&[51.0, 52.0, 53.0][..]));
 
         let mapped = seq.map_xy(|x, y| (x + 1.0, y)).unwrap();
         assert_eq!(mapped.xs(), &[2.0, 3.0, 4.0]);
         assert_eq!(mapped.ms(), Some(&[51.0, 52.0, 53.0][..]));
-        assert!(Arc::ptr_eq(
+        assert!(!Arc::ptr_eq(
             &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
             &source_m,
         ));
+        let columns = mapped.column_arcs();
+        let (owner, window) = columns.m_parts().unwrap();
+        assert_eq!(owner.len(), mapped.len());
+        assert_eq!(window, 0..mapped.len());
     }
 }
 

@@ -88,22 +88,6 @@ impl MColumn {
         }
     }
 
-    fn carried(&self, xy_range: Range<usize>, xy_physical: usize) -> Self {
-        match self {
-            Self::Shared(owner) if xy_range.start == 0 && xy_range.end == xy_physical => {
-                Self::Shared(owner.clone())
-            },
-            Self::Shared(owner) => Self::Local {
-                owner: owner.clone(),
-                offset: xy_range.start,
-            },
-            Self::Local { owner, offset } => Self::Local {
-                owner: owner.clone(),
-                offset: *offset,
-            },
-        }
-    }
-
     fn heap_bytes_saturating(&self) -> usize {
         match self {
             Self::Shared(owner) | Self::Local { owner, .. } => owner.shallow_heap_bytes(),
@@ -376,31 +360,23 @@ impl CoordSeq {
         self.zs.as_ref().map(|column| self.carried(column))
     }
 
-    /// The M column carried without copying the payload: full Shared stays
-    /// Shared; a Shared subrange becomes Local at `range.start`; Local keeps
-    /// its existing offset. Visible length stays on `CoordSeq::range`.
+    /// Carry M into newly computed coordinates, sharing a full owner and
+    /// copying only the visible values of a partial owner, like XY/Z carry.
     pub(crate) fn carried_ms(&self) -> Option<MColumn> {
         self.ms.as_ref().map(|column| {
-            column.carried(
-                self.range.start as usize..self.range.end as usize,
-                self.xs.len(),
-            )
+            if column.is_full_owner(self.len()) {
+                column.clone()
+            } else {
+                MColumn::Local {
+                    owner: SharedSlice::from_vec(
+                        column
+                            .values(self.range.start as usize..self.range.end as usize)
+                            .to_vec(),
+                    ),
+                    offset: 0,
+                }
+            }
         })
-    }
-
-    pub(crate) fn compact_m(&mut self) {
-        if let Some(column) = &self.ms
-            && !column.is_full_owner(self.len())
-        {
-            self.ms = Some(MColumn::Local {
-                owner: SharedSlice::from_vec(
-                    column
-                        .values(self.range.start as usize..self.range.end as usize)
-                        .to_vec(),
-                ),
-                offset: 0,
-            });
-        }
     }
 
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice
