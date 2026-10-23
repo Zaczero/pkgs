@@ -705,54 +705,30 @@ async fn start_secondary_applications(
     }
     outcomes.sort_unstable_by_key(|(index, ..)| *index);
 
-    // Classify each outcome into an optional retained owner and an optional
-    // error in one pass. Collect runners only on the path that needs them so
-    // Py owners are not held past the all-success return.
-    let (runner_slots, error_slots): (Vec<_>, Vec<_>) = outcomes
-        .into_iter()
-        .map(|(index, shard, owner, outcome)| match (owner, outcome) {
-            (Some(runner), Ok(())) => (
-                Some(PreparedLoop {
-                    index,
-                    shard,
-                    runner,
-                }),
-                None,
-            ),
-            (Some(runner), Err(err)) => (
-                // Startup failed after the owner crossed into Rust: keep it
-                // for rollback so discard/shutdown still run on its loop.
-                Some(PreparedLoop {
-                    index,
-                    shard,
-                    runner,
-                }),
-                Some((index, err)),
-            ),
-            (None, Err(err)) => (None, Some((index, err))),
-            (None, Ok(())) => (
-                None,
-                Some((
-                    index,
-                    H2CornError::from(PyRuntimeError::new_err(
-                        "secondary lifespan completed startup without an owner",
-                    )),
-                )),
-            ),
-        })
-        .unzip();
-
-    if error_slots.iter().all(Option::is_none) {
-        return (runner_slots.into_iter().flatten().collect(), None, stopped);
+    let mut runners = Vec::with_capacity(outcomes.len());
+    let mut startup_errors = Vec::new();
+    for (index, shard, owner, outcome) in outcomes {
+        if let Some(runner) = owner {
+            // A published owner needs rollback even when its startup failed.
+            runners.push(PreparedLoop {
+                index,
+                shard,
+                runner,
+            });
+        } else if outcome.is_ok() {
+            startup_errors.push(H2CornError::from(PyRuntimeError::new_err(
+                "secondary lifespan completed startup without an owner",
+            )));
+            continue;
+        }
+        if let Err(err) = outcome {
+            startup_errors.push(err);
+        }
     }
 
-    // Keep the lowest-index startup error primary and report rollback failures.
-    let mut startup_errors = {
-        let mut errors: Vec<(usize, H2CornError)> = error_slots.into_iter().flatten().collect();
-        errors.sort_unstable_by_key(|(index, _)| *index);
-        errors.into_iter().map(|(_, err)| err).collect::<Vec<_>>()
-    };
-    let first_startup_error = startup_errors.remove(0);
+    // Outcomes are already ordered by loop index, including startup failures.
+    let mut startup_errors = startup_errors.into_iter();
+    let first_startup_error = startup_errors.next();
     for err in startup_errors {
         crate::server::report_failure(
             shards.first().expect("primary shard exists").log_format,
@@ -760,11 +736,7 @@ async fn start_secondary_applications(
             Err(err),
         );
     }
-    (
-        runner_slots.into_iter().flatten().collect(),
-        Some(first_startup_error),
-        stopped,
-    )
+    (runners, first_startup_error, stopped)
 }
 
 #[expect(

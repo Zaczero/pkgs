@@ -546,15 +546,17 @@ impl RequestTasks {
     }
 
     pub(super) async fn cancel_all(&mut self) {
-        // Cancelled in place, keyed rather than by moving the map out: a
+        // Cancel in place rather than moving the map out: a
         // dropped cancellation future must leave every remaining handle where
         // this scope's `Drop` can still abort it, instead of detaching them
         // with the local it was holding.
-        let stream_ids: Vec<StreamId> = self.active.keys().copied().collect();
-        for stream_id in stream_ids {
-            if let Some(task) = self.active.get_mut(&stream_id) {
-                task.settle_cancellation(self.log_format).await;
-            }
+        let log_format = self.log_format;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "settlement preserves the map's existing iteration order and task ownership"
+        )]
+        for task in self.active.values_mut() {
+            task.settle_cancellation(log_format).await;
         }
         self.active.clear();
         self.reap_completed();
