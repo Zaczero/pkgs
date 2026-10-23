@@ -207,7 +207,13 @@ macro_rules! h3_index_array_common {
                 }
             }
 
+            fn logical_id_iter(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+                (0..self.len()).map(|logical| self.id_at(logical))
+            }
+
             fn logical_ids_vec(&self) -> Vec<u64> {
+                // Consuming edge maps reuse this buffer in place, keeping gather
+                // checks outside the edge operation.
                 (0..self.len()).map(|logical| self.id_at(logical)).collect()
             }
 
@@ -652,7 +658,7 @@ macro_rules! h3_index_array_common {
                 use pyo3::IntoPyObjectExt;
                 let tokens = py.detach(|| {
                     let mut tokens = Vec::with_capacity(self.len());
-                    for id in self.logical_ids_vec() {
+                    for id in self.logical_id_iter() {
                         tokens.push(hex_token(id));
                     }
                     tokens
@@ -896,7 +902,7 @@ impl PyH3VertexArray {
     fn point(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         Ok(py.detach(|| {
             let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, self.len());
-            for id in self.logical_ids_vec() {
+            for id in self.logical_id_iter() {
                 let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
                 let latlng = LatLng::from(vertex);
                 builder.push(crate::geometry::Point::new_raw_xy(
@@ -1007,7 +1013,7 @@ impl PyH3EdgeArray {
     fn line(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         py.detach(|| {
             let mut shapes = Vec::with_capacity(self.len());
-            for id in self.logical_ids_vec() {
+            for id in self.logical_id_iter() {
                 let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
                 let boundary = edge.boundary();
                 let points: Vec<_> = boundary
