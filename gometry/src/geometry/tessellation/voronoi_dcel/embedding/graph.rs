@@ -578,6 +578,7 @@ impl<'a> VoronoiEmbedding<'a> {
             return Err(error);
         }
         debug_assert!(completion.is_continue());
+        drop((clip_bounds, separator_bounds));
         candidate_pairs.sort_unstable();
         let candidate_units = u64::try_from(candidate_pairs.len().div_ceil(16))
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -605,6 +606,7 @@ impl<'a> VoronoiEmbedding<'a> {
         if pairs.next().is_some() {
             return Err(clip_source_trace_error());
         }
+        drop(pairs);
 
         account.charge_evaluations(
             u64::try_from(clip_edge_count.div_ceil(16))

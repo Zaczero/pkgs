@@ -217,13 +217,13 @@ pub(in crate::geometry::tessellation) fn axis_aligned_bounds<'a>(
     ])
 }
 
-pub(in crate::geometry::tessellation) fn rectangular_boundary_for_exact(
-    points: &[&ExactPoint],
+pub(in crate::geometry::tessellation) fn rectangular_boundary_for_exact<'a>(
+    points: impl IntoIterator<Item = &'a ExactPoint>,
     padded: bool,
 ) -> Result<[ExactPoint; 4]> {
+    let mut points = points.into_iter();
     let first = points
-        .first()
-        .copied()
+        .next()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty Voronoi site set"))?;
     let x_axis = ExactDyadic::one();
     let y_axis = ExactDyadic::zero();
@@ -231,7 +231,7 @@ pub(in crate::geometry::tessellation) fn rectangular_boundary_for_exact(
     let mut max_x = min_x.clone();
     let mut min_y = first.projected_coordinate(&y_axis, &x_axis)?;
     let mut max_y = min_y.clone();
-    for point in points.iter().skip(1) {
+    for point in points {
         let x = point.projected_coordinate(&x_axis, &y_axis)?;
         if x.try_cmp(&min_x)?.is_lt() {
             min_x = x.clone();

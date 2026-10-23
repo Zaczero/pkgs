@@ -202,6 +202,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
             return Err(error);
         }
         debug_assert!(flow.is_continue());
+        drop((left_bounds, left_indices));
         pairs.sort_unstable();
         pairs.dedup();
         drop(radius_cache);
@@ -230,6 +231,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
                 );
             }
         }
+        drop(all_bounds);
         account.charge_evaluations(
             u64::try_from(sites.len().div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
@@ -249,6 +251,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
             },
         )?;
         debug_assert!(site_pair_completion.is_continue());
+        drop((separator_bounds, separator_indices, sites));
         site_pairs.sort_unstable();
         site_pairs.dedup();
 

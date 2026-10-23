@@ -1143,9 +1143,10 @@ impl ConstrainedMesh {
                 selected.push((face, self.mesh.triangle(face)));
             }
         }
-        let triangles = selected.iter().map(|(_, sites)| *sites).collect::<Vec<_>>();
-        let canonical =
-            super::exact_delaunay::canonical_triangle_order(&self.coordinates, &triangles);
+        let canonical = super::exact_delaunay::canonical_triangle_order(
+            &self.coordinates,
+            selected.iter().map(|(_, sites)| *sites),
+        );
         let mut faces = Vec::with_capacity(canonical.len());
         let mut face_uses = Vec::with_capacity(canonical.len());
         let mut source_pieces = Vec::with_capacity(self.source_constraints.len());

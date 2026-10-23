@@ -466,9 +466,8 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn normalize_clip_with_chart
             Some((polygon, polygon_from_open_xy_rings(&chart_fixed)?))
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            let points: Vec<_> = sites.iter().map(|site| &site.exact_point).collect();
             let rectangle = exact::frame::rectangular_boundary_for_exact(
-                &points,
+                sites.iter().map(|site| &site.exact_point),
                 matches!(boundary, VoronoiBoundary::Padded),
             )?;
             let mut corners = Vec::with_capacity(rectangle.len());

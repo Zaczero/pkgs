@@ -295,6 +295,7 @@ pub(in crate::geometry) fn mesh_publication_array_receipt(
         &mut literals,
     )?;
     let storage = mesh_triangle_storage(&points, &ring_ends)?;
+    drop((points, ring_ends));
     let mut work = Unmetered;
     let buffers = FrozenLiteralBuffers::flat_rows(
         Arc::new(storage),
@@ -371,6 +372,7 @@ pub(crate) fn finish_mesh_publication_groups(
     }
 
     let storage = mesh_triangle_storage(&points, &ring_ends)?;
+    drop((points, ring_ends));
     let mut work = Unmetered;
     let buffers = FrozenLiteralBuffers::flat_groups(
         Arc::new(storage),

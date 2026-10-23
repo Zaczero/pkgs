@@ -315,9 +315,11 @@ fn clip_to_half_plane_with_origins(
             edges.push((piece.end.clone(), next.start.clone(), vec![cut_origin]));
         }
     }
-    let vertices = edges.iter().map(|(start, ..)| start.clone()).collect();
-    let origins = edges.into_iter().map(|(_, _, origins)| origins).collect();
-    Ok((vertices, origins))
+    drop(pieces);
+    Ok(edges
+        .into_iter()
+        .map(|(start, _, origins)| (start, origins))
+        .unzip())
 }
 
 type RoundedRingWithOrigins = (Vec<XY>, Vec<Vec<VoronoiEdgeOrigin>>, Vec<exact::ExactPoint>);

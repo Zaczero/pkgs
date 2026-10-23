@@ -415,29 +415,29 @@ impl BridgeArena {
 
     #[cfg(test)]
     pub(super) fn splice(&mut self, bridge: BridgeId, hole: &[Point], batch: usize) {
-        let identities = hole
-            .iter()
-            .enumerate()
-            .map(|(vertex, _)| EarcutCornerId::source(batch.wrapping_add(1), vertex, vertex))
-            .collect::<Vec<_>>();
-        self.splice_with_ids(bridge, hole, &identities, batch);
+        let corners = hole.iter().enumerate().map(|(vertex, &point)| {
+            (
+                point,
+                EarcutCornerId::source(batch.wrapping_add(1), vertex, vertex),
+            )
+        });
+        self.splice_with_ids(bridge, corners, batch);
     }
 
     pub(super) fn splice_with_ids(
         &mut self,
         bridge: BridgeId,
-        hole: &[Point],
-        identities: &[EarcutCornerId],
+        mut corners: impl Iterator<Item = (Point, EarcutCornerId)>,
         batch: usize,
     ) {
-        debug_assert_eq!(hole.len(), identities.len());
+        let first = corners.next().expect("validated holes are non-empty");
         let next = self.nodes[bridge.0].next;
         let boundary_next = self.nodes[bridge.0].boundary_next;
         let start = BridgeId(self.nodes.len());
-        for (&point, &identity) in hole.iter().zip(identities) {
+        for (point, identity) in std::iter::once(first).chain(corners) {
             self.append(point, identity, bridge, batch);
         }
-        self.append(hole[0], identities[0], bridge, batch);
+        self.append(first.0, first.1, bridge, batch);
         let end = self.append(
             self.point(bridge),
             self.nodes[bridge.0].identity,
@@ -482,13 +482,20 @@ impl BridgeArena {
     }
 
     pub(super) fn into_points_and_ids(self) -> (Vec<Point>, Vec<EarcutCornerId>) {
-        let mut points = Vec::with_capacity(self.nodes.len().wrapping_sub(1));
-        let mut identities = Vec::with_capacity(self.nodes.len().wrapping_sub(1));
+        let Self {
+            nodes,
+            edges,
+            vertices,
+            ..
+        } = self;
+        drop((edges, vertices));
+        let mut points = Vec::with_capacity(nodes.len().wrapping_sub(1));
+        let mut identities = Vec::with_capacity(nodes.len().wrapping_sub(1));
         let mut id = BridgeId(1);
         loop {
-            points.push(self.point(id));
-            identities.push(self.nodes[id.0].identity);
-            id = self.nodes[id.0].boundary_next;
+            points.push(nodes[id.0].point);
+            identities.push(nodes[id.0].identity);
+            id = nodes[id.0].boundary_next;
             if id == BridgeId(1) {
                 break;
             }

@@ -40,31 +40,29 @@ pub(super) fn eliminate_holes_with_ids(
     for (batch, hole_id) in order.into_iter().enumerate() {
         let hole_ring = holes.ring(hole_id);
         let start = leftmost_vertex(hole_ring);
-        let hole = rotate_ring(hole_ring, start);
         let hole_identity_ring = hole_ids
             .get(hole_id.index())
             .expect("HoleId belongs to the validated source hole table");
-        let hole_identities = rotate_corner_ids(hole_identity_ring, start);
         let bridge = arena
-            .find_bridge(*hole.first().expect("validated holes are non-empty"))
+            .find_bridge(EarcutCycle::new(hole_ring).point(start))
             .ok_or_else(|| {
                 GeometryErrorKind::triangulation("failed to find a visible bridge for polygon hole")
             })?;
-        arena.splice_with_ids(bridge, &hole, &hole_identities, batch.wrapping_add(1));
+        let corners = hole_ring.iter().zip(hole_identity_ring);
+        arena.splice_with_ids(
+            bridge,
+            corners
+                .clone()
+                .skip(start.0)
+                .chain(corners.take(start.0))
+                .map(|(&point, &identity)| (point, identity)),
+            batch.wrapping_add(1),
+        );
     }
     let (points, identities) = arena.into_points_and_ids();
     *ring = points;
     *ring_ids = identities;
     Ok(())
-}
-
-fn rotate_corner_ids(identities: &[EarcutCornerId], start: RingVertexId) -> Vec<EarcutCornerId> {
-    identities
-        .iter()
-        .skip(start.0)
-        .chain(identities.iter().take(start.0))
-        .copied()
-        .collect()
 }
 
 fn compare_hole_leftmost_xy_slope(left: &[Point], right: &[Point]) -> std::cmp::Ordering {
@@ -117,6 +115,7 @@ fn leftmost_vertex(ring: &[Point]) -> RingVertexId {
         })
 }
 
+#[cfg(test)]
 fn rotate_ring(ring: &[Point], start: RingVertexId) -> Vec<Point> {
     ring.iter()
         .skip(start.0)

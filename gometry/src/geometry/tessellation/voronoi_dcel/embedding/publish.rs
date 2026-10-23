@@ -72,6 +72,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
         live_nodes.push(vertex);
         points.push(point);
     }
+    drop(live);
     live_nodes.sort_unstable();
     let operation = if product.includes_polygons() {
         "voronoi_cells"
@@ -137,6 +138,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
             return Err(exact_embedding_unrepresentable(operation, constructed));
         }
     }
+    drop((live_nodes, live_edges, clip_trace));
     let mut published = 0_usize;
     if product.includes_polygons() {
         for part in parts {
@@ -196,25 +198,18 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
         }
         let (shell, shell_roles, shell_vertices) =
             embedded_exact_ring(subdivision, &part.shell, &exact_to_embedded, &points, clip)?;
-        let holes_with_roles = part
-            .holes
-            .iter()
-            .map(|hole| embedded_exact_ring(subdivision, hole, &exact_to_embedded, &points, clip))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let holes: Vec<_> = holes_with_roles
-            .iter()
-            .map(|(ring, ..)| ring.clone())
-            .collect();
-        let edge_roles: Vec<_> = std::iter::once(shell_roles)
-            .chain(holes_with_roles.iter().map(|(_, roles, _)| roles.clone()))
-            .collect();
-        let producer_vertices = std::iter::once(shell_vertices)
-            .chain(
-                holes_with_roles
-                    .into_iter()
-                    .map(|(_, _, vertices)| vertices),
-            )
-            .collect();
+        let mut holes = Vec::with_capacity(part.holes.len());
+        let mut edge_roles = Vec::with_capacity(part.holes.len().saturating_add(1));
+        let mut producer_vertices = Vec::with_capacity(part.holes.len().saturating_add(1));
+        edge_roles.push(shell_roles);
+        producer_vertices.push(shell_vertices);
+        for hole in &part.holes {
+            let (ring, roles, vertices) =
+                embedded_exact_ring(subdivision, hole, &exact_to_embedded, &points, clip)?;
+            holes.push(ring);
+            edge_roles.push(roles);
+            producer_vertices.push(vertices);
+        }
         let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon)? {
             return Err(exact_embedding_unrepresentable(operation, constructed));
@@ -289,17 +284,18 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
                     .expect("source clips retain their normalized chart geometry")
                     .clone(),
             );
-            let source_gap = binary_cartesian_difference_without_partition_budget(
+            let source_gap_empty = binary_cartesian_difference_without_partition_budget(
                 &source,
                 &comparison_clip,
                 Strictness::Lenient,
-            )?;
+            )?
+            .is_empty();
             let source_spill = binary_cartesian_difference_without_partition_budget(
                 &comparison_clip,
                 &source,
                 Strictness::Lenient,
             )?;
-            if !source_gap.is_empty() || !source_spill.is_empty() {
+            if !source_gap_empty || !source_spill.is_empty() {
                 return Err(voronoi_error(
                     "embedded Voronoi clip differs topologically from its source",
                 ));
@@ -321,7 +317,9 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn embed(
         }
         let mut row_boxes = Vec::with_capacity(shape_rows.len());
         row_boxes.extend(shape_rows.iter().map(Shape::bounds));
+        drop(shape_rows);
         let row_index = BoxIndex::build(&row_boxes)?;
+        drop(row_boxes);
         for (site_index, site) in sites.iter().enumerate() {
             let rounded_site = site.rounded_xy()?;
             let point = Shape::Point(Point::new_raw_xy(rounded_site.x, rounded_site.y));

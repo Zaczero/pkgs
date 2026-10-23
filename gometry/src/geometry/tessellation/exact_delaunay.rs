@@ -297,11 +297,10 @@ pub(super) struct CanonicalTriangle {
 
 pub(super) fn canonical_triangle_order<C: MeshCoordinates>(
     coordinates: &C,
-    triangles: &[[usize; 3]],
+    triangles: impl IntoIterator<Item = [usize; 3]>,
 ) -> Vec<CanonicalTriangle> {
     let mut faces = triangles
-        .iter()
-        .copied()
+        .into_iter()
         .enumerate()
         .map(|(selected_face, selected_sites)| {
             let [a, b, c] = selected_sites;

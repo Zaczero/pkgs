@@ -263,6 +263,7 @@ pub(super) fn retained_constrained_source_plan(
     }
 
     let mut occurrence_locations = Vec::with_capacity(source_points.len());
+    drop(source_points);
     for (_, sites) in &retained_rings {
         occurrence_locations.extend_from_slice(sites);
     }
@@ -386,6 +387,7 @@ pub(super) fn retained_constrained_source_plan(
         ]);
     }
 
+    drop(site_indices);
     let mut sources: Vec<cdt::SourceConstraint> = Vec::with_capacity(capacity);
     let mut source_rings = Vec::with_capacity(rings.len());
     let mut seen: crate::collections::HashMap<(usize, usize), usize> =
@@ -453,12 +455,14 @@ pub(super) fn retained_constrained_source_plan(
             .checked_add(coords.coord_count().saturating_sub(1))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
+    drop((occurrence_to_site, seen));
     let coordinates = cdt::CdtCoordinates::retained_with_generated(
         frame,
         &site_locations,
         &occurrence_locations,
         &generated_sites,
     )?;
+    drop((site_locations, occurrence_locations, generated_sites));
     let chart_area = retained_chart_area(frame, &retained_rings, &polar_closures)?;
     Ok(Some(ConstrainedSourcePlan {
         vertices,
@@ -550,6 +554,7 @@ fn raw_constrained_source_plan(rings: &[(RingOwner, &Ring)]) -> Result<Constrain
             .checked_add(coords.coord_count().saturating_sub(1))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
+    drop((indices, seen));
     let coordinates = cdt::CdtCoordinates::raw(&vertices, &source_points);
     Ok(ConstrainedSourcePlan {
         vertices,

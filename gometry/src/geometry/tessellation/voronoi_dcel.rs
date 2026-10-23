@@ -1169,6 +1169,7 @@ pub(super) fn build_product_with_chart(
         node_scaffold_and_separators(scaffold, separators, sites, &adjacency, &clip, &rect)?;
     let mut subdivision = build_exact_subdivision(atoms)?;
     graft_components(&mut subdivision, sites, &adjacency)?;
+    drop(adjacency);
     let parts = assemble_cells(&subdivision)?;
     let chains = if product.includes_edges() {
         assemble_edges(&subdivision)?

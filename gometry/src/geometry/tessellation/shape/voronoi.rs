@@ -13,15 +13,12 @@ pub(in crate::geometry::tessellation) fn canonical_voronoi_sites(
     points: Vec<Point>,
     tolerance: f64,
 ) -> Result<Vec<Site>> {
-    let mut rows = points.into_iter().enumerate().collect::<Vec<_>>();
-    for (_, point) in &mut rows {
+    let mut seen: crate::collections::HashMap<_, usize> =
+        crate::collections::try_hash_map_with_capacity(points.len())?;
+    let mut unique: Vec<(usize, Point, Vec<usize>)> = Vec::with_capacity(points.len());
+    for (source_ordinal, mut point) in points.into_iter().enumerate() {
         point.x += 0.0;
         point.y += 0.0;
-    }
-    let mut seen: crate::collections::HashMap<_, usize> =
-        crate::collections::try_hash_map_with_capacity(rows.len())?;
-    let mut unique: Vec<(usize, Point, Vec<usize>)> = Vec::with_capacity(rows.len());
-    for (source_ordinal, point) in rows {
         let key = PointKey::new(point);
         if let Some(&site) = seen.get(&key) {
             unique
@@ -35,6 +32,7 @@ pub(in crate::geometry::tessellation) fn canonical_voronoi_sites(
             let _ = seen.insert(key, site);
         }
     }
+    drop(seen);
     unique.sort_unstable_by(|(left_ordinal, left, _), (right_ordinal, right, _)| {
         left.x
             .total_cmp(&right.x)
@@ -277,6 +275,7 @@ impl Shape {
                 let _ = seen.insert(key, site);
             }
         }
+        drop(seen);
         retained.sort_unstable_by(|(left, _), (right, _)| left.compare_chart_xy(*right));
         let mut sites = Vec::with_capacity(retained.len());
         for (chart_site, quotient_aliases) in retained {

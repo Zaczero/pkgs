@@ -120,11 +120,9 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn collinear_polygon_receipt
                 .producer_vertices
                 .get(ring_index)
                 .ok_or_else(|| voronoi_error("collinear output exact vertex ring is absent"))?;
-            let exact_ring: Vec<_> = vertices
-                .iter()
-                .map(|vertex| vertex.exact_point.clone())
-                .collect();
-            let orientation = exact::incidence::cycle_orientation(&exact_ring)?;
+            let orientation = exact::incidence::cycle_orientation(
+                vertices.iter().map(|vertex| &vertex.exact_point),
+            )?;
             let solid_left = if ring_index == 0 {
                 orientation == ExactSign::Positive
             } else {

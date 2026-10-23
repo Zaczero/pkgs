@@ -72,17 +72,20 @@ pub(in crate::geometry::tessellation) fn prepare_raw_delaunay_publication(
             )
         })
         .collect::<Vec<_>>();
-    let points = indexed_points
-        .iter()
-        .map(|&(_, point)| point)
-        .collect::<Vec<_>>();
     let provider_sites = indexed_points
         .iter()
         .enumerate()
         .map(|(id, &(source_ordinal, point))| Site::raw(id, point, source_ordinal))
         .collect::<Vec<_>>();
     let mesh = certified_delaunay(&provider_sites)?;
-    let coordinates = |site| exact_delaunay::site_xy(&points, site);
+    drop(provider_sites);
+    let coordinates = |site: usize| {
+        indexed_points
+            .get(site)
+            .expect("mesh site ordinal belongs to the sorted source point table")
+            .1
+            .xy()
+    };
     prepare_delaunay_publication(&mesh, sites, &coordinates, budget)
 }
 
@@ -96,7 +99,8 @@ fn prepare_delaunay_publication<C: exact_delaunay::MeshCoordinates>(
     coordinates: &C,
     budget: &mut ExpansionBudget,
 ) -> Result<PreparedMeshPublication> {
-    let canonical_faces = exact_delaunay::canonical_triangle_order(coordinates, mesh.triangles());
+    let canonical_faces =
+        exact_delaunay::canonical_triangle_order(coordinates, mesh.triangles().iter().copied());
     let capacity = canonical_faces
         .len()
         .checked_mul(4)
@@ -193,6 +197,7 @@ pub(crate) fn prepare_constrained_triangle_plan<'a>(
         coordinates,
         chart_area,
     } = constrained_source_plan(&rings, domain, chart)?;
+    drop(rings);
     let exact_chart_area = chart_area.as_ref();
     let refinement = effective_refinement(area, exact_chart_area, refinement);
     validate_refinement_request(area, exact_chart_area, refinement)?;
@@ -208,6 +213,7 @@ pub(crate) fn prepare_constrained_triangle_plan<'a>(
             "constrained triangulation needs three non-collinear vertices",
         ));
     };
+    drop((sources, restrictions));
     if let CdtRefinement::On {
         min_angle,
         max_area,

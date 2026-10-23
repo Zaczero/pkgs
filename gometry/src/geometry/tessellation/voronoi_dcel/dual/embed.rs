@@ -302,6 +302,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
     if next_dart as usize != total {
         return Err(DualEmbeddingError::Unrepresentable);
     }
+    drop(edge_tags);
     directed.sort_unstable();
     let [min_x, max_x, min_y, max_y] = clip.frame_bounds();
     let mut sides: [Vec<(f64, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -378,6 +379,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
         }
         .push((lo, hi));
     }
+    drop(directed);
     for (frame_side, side) in FrameSide::ALL.into_iter().zip([bottom, right, top, left]) {
         side.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
         let (start, end) = match frame_side {
@@ -395,6 +397,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
             return Err(DualEmbeddingError::Unrepresentable);
         }
     }
+    drop(sides);
     edge_drafts.sort_unstable_by(|left, right| {
         lex_xy(left.coordinates[0], right.coordinates[0])
             .then(lex_xy(left.coordinates[1], right.coordinates[1]))
@@ -458,8 +461,9 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 });
         }
     }
-    let mut twin_by_dart = Vec::with_capacity(directed.len());
-    twin_by_dart.resize(directed.len(), None);
+    drop(center_rounded);
+    let mut twin_by_dart = Vec::with_capacity(total);
+    twin_by_dart.resize(total, None);
     let mut internal_edges = Vec::with_capacity(if product.includes_edges() {
         internal_edge_count
     } else {
@@ -550,6 +554,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
             }
         }
     }
+    drop(edge_drafts);
     for site in sites {
         let site_id =
             u32::try_from(site.id).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -563,6 +568,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
                 .push(VoronoiVertexOrigin::SourceSite { site: site_id });
         }
     }
+    drop(interned);
     for (id, _) in exact_by_id.iter().enumerate() {
         let embedded = *vertex_xy
             .get(id)
@@ -582,8 +588,9 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
             point: embedded,
         });
     }
+    drop(vertex_origins);
     let mut edge_roles_by_ring = Vec::with_capacity(rings.rings.len());
-    let mut dart_receipts = Vec::with_capacity(directed.len());
+    let mut dart_receipts = Vec::with_capacity(total);
     for (ring_index, window) in offsets.array_windows::<2>().enumerate() {
         let [start, end] = *window;
         let ids = ids_all
@@ -655,6 +662,7 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
         edge_roles_by_ring.push(role_row);
     }
     receipt.darts = dart_receipts;
+    drop((by_dart, twin_by_dart, clip_uses_by_dart, edge_id_by_pair));
     let edge_data = EmbeddedEdgeData::Segments(internal_edges);
     let mut polygons = Vec::new();
     if product.includes_polygons() {
@@ -679,12 +687,11 @@ pub(in crate::geometry::tessellation::voronoi_dcel) fn dual_embed(
             xs.push(first.x);
             ys.push(first.y);
             let ring = Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
-            let edge_roles = vec![
+            let edge_roles = vec![std::mem::take(
                 edge_roles_by_ring
-                    .get(ring_index)
-                    .cloned()
+                    .get_mut(ring_index)
                     .ok_or(DualEmbeddingError::Unrepresentable)?,
-            ];
+            )];
             let producer_ids = ids_all
                 .get(start..end)
                 .ok_or(DualEmbeddingError::Unrepresentable)?;

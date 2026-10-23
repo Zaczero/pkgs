@@ -114,6 +114,12 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
     let mut output_edge_id = 0_u32;
     let mut vertex_id = 0_u32;
     let mut edge_roles = Vec::with_capacity(polygon.holes.len().saturating_add(1));
+    let mut cell = VoronoiCellReceipt {
+        owner,
+        face: None,
+        shell: Vec::new(),
+        holes: Vec::with_capacity(polygon.holes.len()),
+    };
     for (ring_index, ring) in std::iter::once(&polygon.shell)
         .chain(polygon.holes.iter())
         .enumerate()
@@ -123,9 +129,9 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             .checked_sub(1)
             .ok_or_else(|| voronoi_error("lone-site clip ring is empty"))?;
         let ring_start = vertex_id;
-        let points: Vec<_> = ring.iter().take(open_count).collect();
-        let exact_points = points
+        let exact_points = ring
             .iter()
+            .take(open_count)
             .map(|point| exact_chart_point(chart, point.xy()))
             .collect::<Result<Vec<_>>>()?;
         let orientation = exact::incidence::cycle_orientation(&exact_points)?;
@@ -140,7 +146,7 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
             [None, Some(owner)]
         };
         let mut role_row = Vec::with_capacity(open_count);
-        for (point, exact_point) in points.iter().zip(&exact_points) {
+        for (point, exact_point) in ring.iter().take(open_count).zip(&exact_points) {
             let id = vertex_id;
             vertex_id = vertex_id
                 .checked_add(1)
@@ -159,7 +165,8 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                 point: point.xy(),
             });
         }
-        let mut ring_edge_ids = Vec::with_capacity(open_count);
+        drop(exact_points);
+        let mut ring_uses = Vec::with_capacity(open_count);
         for edge_index in 0..open_count {
             let next_index = edge_index
                 .checked_add(1)
@@ -210,46 +217,21 @@ pub(in crate::geometry::tessellation) fn lone_site_polygon_outputs(
                     segment: output_edge_id,
                 }],
             });
-            ring_edge_ids.push(output_edge_id);
+            ring_uses.push(VoronoiDirectedEdgeUse {
+                edge: output_edge_id,
+                forward: true,
+            });
             output_edge_id = output_edge_id
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
         }
-        let ring_uses = ring_edge_ids
-            .into_iter()
-            .map(|edge| VoronoiDirectedEdgeUse {
-                edge,
-                forward: true,
-            })
-            .collect::<Vec<_>>();
-        receipt.cells.push(VoronoiCellReceipt {
-            owner,
-            face: None,
-            shell: if ring_index == 0 {
-                ring_uses.clone()
-            } else {
-                Vec::new()
-            },
-            holes: if ring_index == 0 {
-                Vec::new()
-            } else {
-                vec![ring_uses]
-            },
-        });
+        if ring_index == 0 {
+            cell.shell = ring_uses;
+        } else {
+            cell.holes.push(ring_uses);
+        }
         edge_roles.push(role_row);
     }
-    let mut cell = receipt
-        .cells
-        .first()
-        .cloned()
-        .ok_or_else(|| voronoi_error("lone-site receipt has no shell"))?;
-    cell.holes = receipt
-        .cells
-        .iter()
-        .skip(1)
-        .flat_map(|cell| cell.holes.iter().cloned())
-        .collect();
-    receipt.cells.clear();
     receipt.cells.push(cell);
     Ok(crate::geometry::VoronoiPolygonOutputs {
         outputs: vec![crate::geometry::VoronoiPolygonOutput {

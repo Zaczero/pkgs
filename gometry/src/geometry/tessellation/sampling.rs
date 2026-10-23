@@ -134,6 +134,7 @@ impl PreparedSampling {
     }
 
     pub(crate) fn into_points(self) -> Vec<Point> {
+        drop(self.support_elements);
         self.draws.into_iter().map(|draw| draw.point).collect()
     }
 }
@@ -181,6 +182,7 @@ pub(crate) fn publish_sampling_array(
     use crate::geometry::publication::PublicationRows;
 
     validate_prepared_sampling(&prepared, prepared.logical_row)?;
+    drop(prepared.support_elements);
     let output_count = prepared.draws.len();
     let mut rows = PublicationRows::with_producer_drawing_capacity(output_count);
     for (logical_row, draw) in prepared.draws.into_iter().enumerate() {
@@ -218,6 +220,7 @@ pub(crate) fn publish_sampling_groups(
         }
         if let Some(prepared) = prepared {
             validate_prepared_sampling(&prepared, logical_row)?;
+            drop(prepared.support_elements);
             for draw in prepared.draws {
                 output.try_push_drawing(Shape::Point(draw.point), logical_row, "sample_points")?;
             }

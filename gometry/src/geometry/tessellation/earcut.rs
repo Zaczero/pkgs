@@ -111,6 +111,7 @@ pub(crate) fn earcut_polygon_with_ids(
     }
     validate_hole_interactions(&ring, &holes)?;
     eliminate_holes_with_ids(&mut ring, &mut ring_ids, &holes, &hole_ids, next_occurrence)?;
+    drop((holes, hole_ids));
     earcut_linked_ring_with_ids(&ring, &ring_ids, emit)
 }
 

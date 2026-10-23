@@ -228,6 +228,7 @@ impl EarCandidateTree {
             live[representative.index()] =
                 live[representative.index()].wrapping_add(usize::from(is_reflex));
         }
+        drop(representatives);
         let convex = reflex
             .iter()
             .enumerate()
@@ -241,6 +242,7 @@ impl EarCandidateTree {
             normal_arithmetic,
         };
         build(&mut tree, points, &live, &mut order, None);
+        drop((live, order));
         tree.leaves = aliases
             .iter()
             .map(|vertex| tree.leaves[vertex.index()])
