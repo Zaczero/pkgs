@@ -321,50 +321,49 @@ fn interpolate_mixed_row_groups(
                     continue;
                 }
                 let measured = plan.measured();
-                let values = plan
-                    .with_row(logical, |plan| {
-                        if plan.sample_count() == 0 {
-                            return Ok(Vec::new());
+                plan.with_row(logical, |plan| {
+                    if plan.sample_count() == 0 {
+                        return builder.push_row(std::iter::empty());
+                    }
+                    let line = rows.prepared(row)?;
+                    let cache = rows.frame_cache(logical);
+                    if let crs::MetricModel::Geodesic { frame, .. } = model {
+                        crate::geometry::GeographicPrepared::try_new(&line, &cache, *frame)?;
+                    }
+                    if metric.is_none() {
+                        metric = Some(crs::ResolvedMetric::from_model(model)?);
+                    }
+                    if measured {
+                        let InterpolatePlan::Distances(stations, _) = plan else {
+                            unreachable!("M groups contain explicit stations");
+                        };
+                        let context = LinearReferenceRow {
+                            lane: crate::dispatch::Lane::Array(logical),
+                            metric: metric.as_ref().expect("metric resolved for present row"),
+                            cache: &cache,
+                        };
+                        builder.values_mut().reserve(stations.len());
+                        for &station in stations {
+                            let point = kernels::unary_line_interpolate_point_m(
+                                &line,
+                                &context,
+                                &crate::F64Param::Scalar(station),
+                            )?;
+                            builder.values_mut().push(point);
                         }
-                        let line = rows.prepared(row)?;
-                        let cache = rows.frame_cache(logical);
-                        if let crs::MetricModel::Geodesic { frame, .. } = model {
-                            crate::geometry::GeographicPrepared::try_new(&line, &cache, *frame)?;
-                        }
-                        if metric.is_none() {
-                            metric = Some(crs::ResolvedMetric::from_model(model)?);
-                        }
-                        if measured {
-                            let InterpolatePlan::Distances(stations, _) = plan else {
-                                unreachable!("M groups contain explicit stations");
-                            };
-                            let context = LinearReferenceRow {
-                                lane: crate::dispatch::Lane::Array(logical),
-                                metric: metric.as_ref().expect("metric resolved for present row"),
-                                cache: &cache,
-                            };
-                            return stations
-                                .iter()
-                                .map(|&station| {
-                                    kernels::unary_line_interpolate_point_m(
-                                        &line,
-                                        &context,
-                                        &crate::F64Param::Scalar(station),
-                                    )
-                                })
-                                .collect();
-                        }
-                        line_interpolate_points_shape(
-                            metric
-                                .as_ref()
-                                .expect("a present row resolves the operation metric"),
-                            &line,
-                            &cache,
-                            plan,
-                        )
-                    })
-                    .map_err(|error| (logical, error))?;
-                builder.push_row(values).map_err(|error| (logical, error))?;
+                        return builder.push_end(builder.len());
+                    }
+                    let values = line_interpolate_points_shape(
+                        metric
+                            .as_ref()
+                            .expect("a present row resolves the operation metric"),
+                        &line,
+                        &cache,
+                        plan,
+                    )?;
+                    builder.push_row(values)
+                })
+                .map_err(|error| (logical, error))?;
             },
         }
     }
