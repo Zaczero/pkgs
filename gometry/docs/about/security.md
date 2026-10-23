@@ -57,18 +57,13 @@ callbacks; see [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsu
 
 ## Collection and allocation
 
-Python's `__len__` is treated as the provider's exact size contract and is used
-to reserve collection capacity. A provider that reports an inaccurate length
-can request a disproportionate initial reservation; gometry does not recount
-the iterable before reserving. Inputs without `__len__` grow as values are
-consumed. There is no universal element ceiling for finite streams, and an
-unbounded stream can keep consuming memory and CPU.
+Construction consumes the supplied iterable and may reserve memory from its
+reported length. There is no universal element limit; an unbounded iterable can
+keep consuming memory and CPU.
 
-Exceptions raised by a Python provider propagate, including a `MemoryError`
-raised by that provider. Native allocator exhaustion is not converted into a
-catchable `MemoryError` guarantee and can abort the process. Applications
-accepting untrusted payloads should enforce their own input-size and batch
-limits before handing data to the extension.
+Python-provider exceptions propagate. Native allocation failure can abort the
+process rather than raise a catchable `MemoryError`. Limit untrusted payload
+sizes and batch lengths before passing them to the extension.
 
 ## Generated-output and work limits
 
@@ -84,8 +79,8 @@ generated-output cap, [`ResourceLimitError.code`][gometry.ResourceLimitError.cod
 `'output_limit'` for that refusal. A bounded exact search may return
 `code == 'work_limit'` when it stops before certification; that does not prove
 no acceptable result exists.
-An `OverflowError` with `code == 'output_unrepresentable'` means the operation could not satisfy its
-admitted output and preservation contract in its coordinate domain. None of
+An `OverflowError` with `code == 'output_unrepresentable'` means the operation
+could not represent its result while preserving the required topology. None of
 these operation-specific errors is a general CPU deadline or a global resource
 guarantee.
 

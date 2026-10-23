@@ -17,7 +17,7 @@ Choose between similar predicates, cleanup operations, and spatial queries.
 | a cheap pre-group before exact work | bounding-box candidates only | [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates] |
 
 A geometry's own index is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
-is per-collection state (there is no free `gm.index`). For one polygon against one
+is per-collection state. For one polygon against one
 large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared path.
 
 ## Containment: `contains`, `contains_properly`, `covers`, `within`

@@ -151,9 +151,7 @@ print("touches:", gm.touches(region, on_edge))
 The strictest member of the family is
 [`contains_properly`][gometry.contains_properly]: the candidate must lie
 entirely in the interior, never touching the container's boundary
-(DE-9IM `T**FF*FF*`). It excludes shared borders and supports direct containment
-checks on prepared geometries because the boundary-free result needs no boundary
-noding.
+(DE-9IM `T**FF*FF*`). It excludes shared borders.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -251,9 +249,9 @@ print('==:', forward == backward)
 Each named predicate is a shorthand for a pattern over the
 **Dimensionally Extended 9-Intersection Model** (DE-9IM). It describes how the
 *interior*, *boundary*, and *exterior* of two geometries intersect, as a 3×3
-matrix flattened to a 9-character string. Each cell is `F` (no intersection),
-`0`/`1`/`2` (intersection of that dimension), `T` (any intersection), or `*`
-(don't care).
+matrix flattened to a 9-character string. A result cell is `F` (no intersection)
+or `0`/`1`/`2` (the intersection's dimension). Pattern matching also accepts
+`T` (any intersection) and `*` (don't care).
 
 `relate` returns the matrix; [`relate_pattern`][gometry.relate_pattern]
 tests it against a mask.
@@ -278,13 +276,10 @@ patterns without recomputing the relationship for each named predicate.
 
 ## MultiLineString boundary semantics
 
-`MultiLineString` uses the OGC Simple Feature Access **mod-2 boundary rule**.
-OGC 06-103r4 (SFA 1.2.1) defines a `MultiLineString` as a `MultiCurve` in
-§§6.1.8–6.1.9 and puts an endpoint in the collection boundary only when it
-occurs in an odd number of member `LineString` boundaries. The DE-9IM cells and
-their interior/boundary/exterior row and column order (`II IB IE / BI BB BE /
-EI EB EE`) are defined in §6.1.14.2 of the
-[OGC Simple Feature Access 1.2.1 specification](https://docs.ogc.org/is/06-103r4/06-103r4.pdf).
+`MultiLineString` uses the **mod-2 boundary rule** from
+[OGC Simple Feature Access](https://docs.ogc.org/is/06-103r4/06-103r4.pdf):
+an endpoint belongs to the collection boundary only when it occurs in an odd
+number of member `LineString` boundaries.
 
 For the chain represented in the table below, `(0, 0)` and `(4, 4)` have odd
 incidence and are boundary points. The shared node `(4, 0)` has even incidence,

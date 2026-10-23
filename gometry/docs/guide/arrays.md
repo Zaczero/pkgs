@@ -7,10 +7,8 @@ description: Work with GeometryArray, CellArray, broadcasting, ragged results, a
 Many gometry operations on one geometry also accept a whole column and keep the
 per-row traversal in native code.
 
-The core symmetry is that a scalar call and its array form run the **same kernel** —
-only the receiver and the return shape change. State is a property ([`geom.area`][gometry.Geometry.area]), a
-unary transform or measure is a method ([`geom.buffer(d)`][gometry.Geometry.buffer], [`arr.buffer(d)`][gometry.GeometryArray.buffer]), and a binary
-relationship is a free function ([`gm.contains(a, b)`][gometry.contains]):
+Scalar and array calls share names and semantics, with results shaped to match
+their inputs:
 
 | Call shape | Input | Output |
 | --- | --- | --- |
@@ -50,9 +48,8 @@ print("areas (ellipsoidal m²):", repr(arr.area))
 
 ```
 
-Read its state as a property (`arr.area`), call a method (`arr.buffer(d)`), or pass it to
-a binary free function (`gm.contains(arr, pts)`) — each runs over the whole batch in one
-pass. [`GeometryArray.total_bounds`][gometry.GeometryArray.total_bounds] is the combined `(minx, miny, maxx, maxy)` tuple, or
+[`GeometryArray.total_bounds`][gometry.GeometryArray.total_bounds] is the combined
+`(minx, miny, maxx, maxy)` tuple, or
 `None` for an empty/fully-empty array.
 For geographic arrays, longitude bounds are periodic in the CRS's native frame,
 so `minx > maxx` denotes an interval crossing the longitude seam.
@@ -129,8 +126,8 @@ integer array, integer sequence, or boolean mask selects a container of the same
 family. NumPy selectors with rank greater than one raise `TypeError` because
 these row containers have one dimension. Type checkers preserve the result when
 an ndarray's rank is known; if its
-annotation uses a variable-length tuple of integer dimensions, the result is the
-honest scalar-or-container union. If NumPy types the shape as `Any`, annotate the
+annotation uses a variable-length tuple of integer dimensions, the result is a
+scalar-or-container union. If NumPy types the shape as `Any`, annotate the
 rank when you need a narrower result type.
 
 The public classes and cross-grid protocols can be used directly in your own
@@ -287,117 +284,6 @@ shapes (e.g. lengths 2 and 3) rather than a Cartesian product. gometry's
 differences that matter here are attaching a **CRS to arrays** and using the same
 strict equal-length / scalar-vs-array broadcast rules without n×m expansion.
 
-## CellArray
-
-[`CellArray`][gometry.CellArray] is a homogeneous sequence of typed cells. Hierarchy ops
-on a cell object return one — [`H3Cell.children()`][gometry.H3Cell.children], [`.neighbors`][gometry.Cell.neighbors], and the S2/geohash/tile
-mirrors materialize `CellArray[H3Cell]` (or the matching cell type) instead of a bare
-Python list. Accessors mirror the scalar cell name: [`cells.token`][gometry.CellArray.token], [`cells.center`][gometry.CellArray.center], and
-[`cells.area`][gometry.CellArray.area] stay singular while returning columnar/list results. Cell geometry is
-explicit through accessors such as [`.polygon`][gometry.CellArray.polygon], `.center`, and [`.to_polygon()`][gometry.CellArray.to_polygon]; cells do
-not carry an OGC `geometry_type` because they are grid identifiers, not geometry objects.
-
-Construct one directly from a non-empty homogeneous iterable of cell objects and gometry
-infers the grid type: `gm.CellArray([cell_a, cell_b])`. Raw integer IDs, string tokens,
-NumPy arrays, buffers, and empty inputs have no reliable type evidence, so make the grid
-explicit with `type=gm.H3Cell` (or the corresponding S2/geohash/tile class). Mixed
-cell classes and an explicit `type` that disagrees with a cell object are errors.
-Construction preserves input order and duplicates; `CellArray` is a sequence, not a set.
-Bulk cell factories preserve missing input rows as `None`. Missing rows are
-included by slicing, reversing, and fancy indexing; `None in cells`,
-`cells.count(None)`, and `cells.index(None)` follow normal Python sequence
-semantics, while cell/id searches ignore missing rows. [Pickles](https://docs.python.org/3/library/pickle.html) contain only
-public cell identities plus the logical missing mask, never an internal id
-sentinel.
-
-Row-preserving `CellArray` operations keep one result per logical input row:
-hierarchy predicates return `False` for either missing side, geometry accessors
-retain the geometry-array missing mask, numeric results use `NaN`, `parent`
-retains its mask, ragged hierarchy results contain an empty row, and `token`
-contains `None`. Set-like `compact`, `uncompact`, and `to_polygon`
-operate on present cells only.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-cell = gm.H3Cell(gm.Point(21.0, 52.0, crs=4326), resolution=6)
-children = cell.children()
-print(type(children).__name__, len(children), type(children[0]).__name__)
-print("ids:", [c.id for c in children[:3]])
-
-```
-
-H3 topological vertices and directed edges are not cells: [`H3Cell.vertices`][gometry.H3Cell.vertices] returns
-[`H3VertexArray`][gometry.H3VertexArray] and [`H3Cell.edges`][gometry.H3Cell.edges] returns [`H3EdgeArray`][gometry.H3EdgeArray]. Those arrays keep the same
-sequence and uint64 id-column ergonomics but only expose valid topology operations such
-as [`vertices.point`][gometry.H3VertexArray.point], [`edges.origin`][gometry.H3EdgeArray.origin], [`edges.destination`][gometry.H3EdgeArray.destination], [`edges.line`][gometry.H3EdgeArray.line], and
-[`edges.length`][gometry.H3EdgeArray.length]. Bulk point→cell construction uses the prefixed plural builders —
-[`gm.h3_cells`][gometry.h3_cells], [`gm.s2_cells`][gometry.s2_cells], and the geohash/tile twins. Grid cover
-factories return `CellArray` for one geometry and [`Groups`][gometry.Groups] of `CellArray` for geometry
-arrays; hierarchy transforms on that set may return `CellArray` when the engine can keep
-a packed id column. For exact membership, keep the source geometry separately and use
-free predicates such as [`gm.covers`][gometry.covers] or [`gm.contains`][gometry.contains].
-
-## Groups (ragged CSR)
-
-Some operations return **one variable-length result per input row** — spatial index
-queries against an array of probes, or multi-hit predicate scans. [`Groups`][gometry.Groups]
-stores those results in **CSR form**: a flat [`.values`][gometry.Groups.values]
-payload plus [`.offsets`][gometry.Groups.offsets] that bound each row. The
-payload keeps its actual type: an `int64` or `float64` ndarray, a
-[`GeometryArray`][gometry.GeometryArray], or a [`CellArray`][gometry.CellArray].
-
-Construct reusable groups with `Groups(values, offsets)`. The flat values
-array determines the payload kind even when empty, and offsets start at zero
-and end at `len(values)`. Numeric payloads must be one-dimensional int64 or
-float64 ndarrays; integer IDs remain exact. Geometry and cell payloads keep
-their inner missing values. Use `missing=` for missing groups, whose offset
-windows must be empty. This distinguishes a missing group from a present
-group containing missing values.
-
-For example, `gm.Groups(np.array([1.0, 3.0, 5.0]), [0, 2, 2, 3])`
-represents three station groups: `[1.0, 3.0]`, `[]`, and `[5.0]`.
-Passing numeric groups to `GeometryArray.line_interpolate` samples each route
-at its own explicit stations.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-pts = gm.points([21.0, 30.0, 40.0], [52.0, 52.0, 52.0], crs=4326)
-zones = gm.GeometryArray([
-    gm.box(20.0, 51.0, 22.0, 53.0, crs=4326),
-    gm.box(29.0, 51.0, 31.0, 53.0, crs=4326),
-])
-idx = gm.SpatialIndex(pts)
-groups = idx.query(zones, predicate="contains")
-
-print(type(groups).__name__, "rows:", len(groups))
-print("row 0 ids:", groups[0].tolist())
-print("row 1 ids:", groups[1].tolist())
-print("offsets:", groups.offsets.tolist())
-
-```
-
-`Groups.values` is the logical flat payload window; contiguous source windows
-can share backing, while gathered values may be materialized. A slice whose
-first row is source row zero can share its offsets; a slice starting later
-returns rebased offsets. `Groups.counts` is materialized from adjacent offsets.
-Index hits use read-only `int64` value and offset arrays; geometry-valued ragged
-results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
-[`GeometryArray.parts`][gometry.GeometryArray.parts] and other ragged array
-operations return one group per source row. A missing source row is `None`;
-a present empty geometry is an empty group. `Groups.is_missing` identifies the
-missing rows while `offsets` continues to map each source row to its flat
-payload. `Groups.to_list()` preserves missing rows as `None`.
-Coordinate extraction is the flat numeric exception: `geom.coords` exposes one
-vertex stream; convert it with NumPy for a matrix and read `view.row_index` when
-source-row indexes are needed.
-
-!!! tip "Scalar vs array index query"
-    A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an
-    array of query geometries and you get `Groups` — one result row per element. See
-    [Spatial indexing](indexing.md).
-
 ## Missing rows
 
 `None` is a missing row; a typed empty geometry is a real geometry value. For
@@ -462,6 +348,115 @@ one scalar geometry or a row-aligned `GeometryArray` fill source; indexes and
 [`GeometryCollection`][gometry.GeometryCollection] construction require dense input.
 Drop or fill missing rows before passing them to a boundary that cannot represent them.
 
+## CellArray
+
+[`CellArray`][gometry.CellArray] is a homogeneous sequence of typed cells. Hierarchy ops
+on a cell object return one — [`H3Cell.children()`][gometry.H3Cell.children], [`.neighbors`][gometry.Cell.neighbors], and the S2/geohash/tile
+mirrors materialize `CellArray[H3Cell]` (or the matching cell type) instead of a bare
+Python list. Accessors mirror the scalar cell name: [`cells.token`][gometry.CellArray.token], [`cells.center`][gometry.CellArray.center], and
+[`cells.area`][gometry.CellArray.area] stay singular while returning columnar/list results. Cell geometry is
+explicit through accessors such as [`.polygon`][gometry.CellArray.polygon], `.center`, and [`.to_polygon()`][gometry.CellArray.to_polygon]; cells do
+not carry an OGC `geometry_type` because they are grid identifiers, not geometry objects.
+
+Construct one directly from a non-empty homogeneous iterable of cell objects and gometry
+infers the grid type: `gm.CellArray([cell_a, cell_b])`. Raw integer IDs, string tokens,
+NumPy arrays, buffers, and empty inputs have no reliable type evidence, so make the grid
+explicit with `type=gm.H3Cell` (or the corresponding S2/geohash/tile class). Mixed
+cell classes and an explicit `type` that disagrees with a cell object are errors.
+Construction preserves input order and duplicates; `CellArray` is a sequence, not a set.
+Bulk cell factories preserve missing input rows as `None`. Missing rows are
+included by slicing, reversing, and fancy indexing; `None in cells`,
+`cells.count(None)`, and `cells.index(None)` follow normal Python sequence
+semantics, while cell/id searches ignore missing rows.
+
+Row-preserving `CellArray` operations keep one result per logical input row:
+hierarchy predicates return `False` for either missing side, geometry accessors
+retain the geometry-array missing mask, numeric results use `NaN`, `parent`
+retains its mask, ragged hierarchy results contain an empty row, and `token`
+contains `None`. Set-like `compact`, `uncompact`, and `to_polygon`
+operate on present cells only.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+cell = gm.H3Cell(gm.Point(21.0, 52.0, crs=4326), resolution=6)
+children = cell.children()
+print(type(children).__name__, len(children), type(children[0]).__name__)
+print("ids:", [c.id for c in children[:3]])
+
+```
+
+H3 topological vertices and directed edges are not cells: [`H3Cell.vertices`][gometry.H3Cell.vertices] returns
+[`H3VertexArray`][gometry.H3VertexArray] and [`H3Cell.edges`][gometry.H3Cell.edges] returns [`H3EdgeArray`][gometry.H3EdgeArray]. Those arrays keep the same
+sequence and uint64 id-column ergonomics but only expose valid topology operations such
+as [`vertices.point`][gometry.H3VertexArray.point], [`edges.origin`][gometry.H3EdgeArray.origin], [`edges.destination`][gometry.H3EdgeArray.destination], [`edges.line`][gometry.H3EdgeArray.line], and
+[`edges.length`][gometry.H3EdgeArray.length]. Bulk point→cell construction uses the prefixed plural builders —
+[`gm.h3_cells`][gometry.h3_cells], [`gm.s2_cells`][gometry.s2_cells], and the geohash/tile twins. Grid cover
+factories return `CellArray` for one geometry and [`Groups`][gometry.Groups] of `CellArray` for geometry
+arrays; hierarchy transforms on that set may return `CellArray` when the engine can keep
+a packed id column. For exact membership, keep the source geometry separately and use
+free predicates such as [`gm.covers`][gometry.covers] or [`gm.contains`][gometry.contains].
+
+## Groups (ragged results) {#groups-ragged-csr}
+
+Some operations return **one variable-length result per input row** — spatial index
+queries against an array of probes, or multi-hit predicate scans. [`Groups`][gometry.Groups]
+stores those results as a flat [`.values`][gometry.Groups.values]
+payload plus [`.offsets`][gometry.Groups.offsets] that bound each row. The
+payload keeps its actual type: an `int64` or `float64` ndarray, a
+[`GeometryArray`][gometry.GeometryArray], or a [`CellArray`][gometry.CellArray].
+
+Construct reusable groups with `Groups(values, offsets)`. The flat values
+array determines the payload kind even when empty, and offsets start at zero
+and end at `len(values)`. Numeric payloads must be one-dimensional int64 or
+float64 ndarrays; integer IDs remain exact. Geometry and cell payloads keep
+their inner missing values. Use `missing=` for missing groups, whose offset
+windows must be empty. This distinguishes a missing group from a present
+group containing missing values.
+
+For example, `gm.Groups(np.array([1.0, 3.0, 5.0]), [0, 2, 2, 3])`
+represents three station groups: `[1.0, 3.0]`, `[]`, and `[5.0]`.
+Passing numeric groups to `GeometryArray.line_interpolate` samples each route
+at its own explicit stations.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+pts = gm.points([21.0, 30.0, 40.0], [52.0, 52.0, 52.0], crs=4326)
+zones = gm.GeometryArray([
+    gm.box(20.0, 51.0, 22.0, 53.0, crs=4326),
+    gm.box(29.0, 51.0, 31.0, 53.0, crs=4326),
+])
+idx = gm.SpatialIndex(pts)
+groups = idx.query(zones, predicate="contains")
+
+print(type(groups).__name__, "rows:", len(groups))
+print("row 0 ids:", groups[0].tolist())
+print("row 1 ids:", groups[1].tolist())
+print("offsets:", groups.offsets.tolist())
+
+```
+
+`Groups.values` is the logical flat payload window; contiguous source windows
+can share backing, while gathered values may be materialized. A slice whose
+first row is source row zero can share its offsets; a slice starting later
+returns rebased offsets. `Groups.counts` is materialized from adjacent offsets.
+Index hits use read-only `int64` value and offset arrays; geometry-valued ragged
+results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
+[`GeometryArray.parts`][gometry.GeometryArray.parts] and other ragged array
+operations return one group per source row. A missing source row is `None`;
+a present empty geometry is an empty group. `Groups.is_missing` identifies the
+missing rows while `offsets` continues to map each source row to its flat
+payload. `Groups.to_list()` preserves missing rows as `None`.
+Coordinate extraction is the flat numeric exception: `geom.coords` exposes one
+vertex stream; convert it with NumPy for a matrix and read `view.row_index` when
+source-row indexes are needed.
+
+!!! tip "Scalar vs array index query"
+    A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an
+    array of query geometries and you get `Groups` — one result row per element. See
+    [Spatial indexing](indexing.md).
+
 ## Batching choices
 
 Gometry keeps geometry kernels in Rust and exposes packed, vectorized entry points.
@@ -498,7 +493,7 @@ arrays, prefer the vectorized predicates or a [join](indexing.md).
 
 ### Index or join for many-to-many work
 
-A nested loop over two collections is O(N·M) and allocates per test. The
+A nested loop over two collections makes O(N·M) predicate calls. The
 [`SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] replace it with a
 bbox prefilter plus exact refine in Rust. Cost depends on index construction, query count,
 bounding-box selectivity, candidate count, and predicate complexity; adversarial
@@ -617,10 +612,10 @@ converters accept whole columns.
   vectorized WKB step. Avoid rebuilding a `GeoSeries` element by element (`[g.wkb for g in
   series]`); that per-row hop into Shapely is the per-item path the vectorized helpers exist to
   replace.
-- **Arrow:** [`array.to_arrow()`][gometry.GeometryArray.to_arrow] and [`gm.from_arrow`][gometry.from_arrow] move whole arrays
-  as GeoArrow through the C data interface — no WKB round-trip and no `pyarrow` needed on
-  the import side for capsule-producing sources (`polars`, `duckdb`, `nanoarrow`). It avoids
-  decoding row-by-row through WKB.
+- **Arrow:** [`array.to_arrow()`][gometry.GeometryArray.to_arrow] and
+  [`gm.from_arrow`][gometry.from_arrow] exchange whole columns through GeoArrow.
+  Homogeneous geometry uses native layouts; mixed types can use WKB fallback.
+  Importing an Arrow capsule provider does not require PyArrow.
 
 For dataframe geometry columns, see [DataFrames](../ecosystem/dataframes.md). For
 portable GeoArrow interchange or GeoParquet storage, see [Arrow & storage](../ecosystem/arrow.md).

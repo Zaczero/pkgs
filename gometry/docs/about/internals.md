@@ -30,7 +30,7 @@ Geographic topology treats seam-equivalent longitudes and longitude aliases at
 the poles as the same locations. Geometry edges remain straight in their source
 coordinate chart; geodesic measurement is a separate operation. Results use
 binary64 coordinates, and an operation reports an error rather than silently
-changing topology when coordinate publication cannot preserve the required
+changing topology when rounded coordinates cannot preserve the required
 relationships. Z and M behavior remains specific to each operation; see
 [geometry and coordinates](../guide/geometry.md#zm-under-operations).
 
@@ -40,14 +40,14 @@ Exchange geometry with dataframes and databases through Arrow, GeoArrow, or
 WKB. gometry does not provide a storage or SQL engine.
 
 The Arrow C Data Interface is an ABI boundary. Providers must conform to the
-interface; gometry copies and validates admitted data before decoding it. See
+interface; gometry copies and validates their data before decoding it. See
 [Arrow & storage](../ecosystem/arrow.md) and [Security & untrusted input](security.md)
 for the trust and resource boundaries.
 
 ## Runtime concurrency
 
 On standard CPython, native work can release the interpreter lock after Python
-inputs are admitted, including bulk array work and scalar topology predicate and
+inputs are captured, including bulk array work and scalar topology predicate and
 nearest-point evaluation. Lock release is an implementation detail, not a
 per-API parallelism guarantee. On a [free-threaded build](compatibility.md#runtime-and-platform-matrix),
 the same public API is used without separate thread-specific entry points.

@@ -4,10 +4,10 @@ description: gometry spatial indexing — candidates (bbox prefilter) vs query p
 
 # Spatial indexing & joins
 
-A spatial index makes brute-force geometry practical: instead of testing a query
-against every feature, you test it against the few whose bounding boxes could
-possibly match. [`gm.SpatialIndex`][gometry.SpatialIndex] builds a bulk-loaded in-memory [R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry
-envelopes. The index exposes
+A spatial index narrows a query to features whose bounding boxes could match,
+then applies the requested geometry predicate.
+[`gm.SpatialIndex`][gometry.SpatialIndex] builds an in-memory
+[R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry envelopes. It exposes
 [`crs`][gometry.SpatialIndex.crs] and [`epoch`][gometry.SpatialIndex.epoch] for
 the shared frame of its rows.
 
@@ -45,10 +45,7 @@ print("exact intersects:", hits.tolist())
 
 ```
 
-`candidates` returns positional indices into the input array whose envelopes overlap
-the query envelope. `query` takes that same candidate set and applies the exact
-predicate, so it is always a subset. Both return handles in ascending source-row
-order. In this example, geometry **1** is a false
+In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
 
@@ -160,18 +157,18 @@ print("within 1 deg:", idx.query(probe, predicate="dwithin", distance=1.0, unit=
 
 Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.md).
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
-`dwithin` accepts a positive-infinite threshold and matches only admitted
+`dwithin` accepts a positive-infinite threshold and matches only
 non-empty geometries. On a geographic CRS, `dwithin` raises `CRSError` if the
 accumulated evaluation work limit cannot certify whether a present pair is
 within the radius; it does not report an unresolved pair as `False`. The [CRS
-guide](crs.md#geographic-point-to-segment-accuracy) describes the work scale and
-ceiling. Successful array results keep one boolean per input pair, and missing
+guide](crs.md#geographic-point-to-segment-accuracy) describes its numerical
+accuracy and failure behavior. Successful array results keep one boolean per input pair, and missing
 rows and present empty geometries remain in their positions as `False`.
 
 ## Nearest neighbors
 
 [`idx.nearest`][gometry.SpatialIndex.nearest] finds the `k` closest indexed geometries to a query
-geometry and returns their positional indices (nearest first). Distance uses the
+geometry and returns their handles (nearest first). Distance uses the
 same `unit=` rule as `query` / free `dwithin` (CRS-natural by default).
 
 ```python exec="on" source="block" result="text"
@@ -279,7 +276,7 @@ the threshold result.
 
 !!! note "Many-to-many query cost"
     The brute-force `for a in polys: for b in points: if gm.contains(a, b)` pattern is
-    O(N·M) and allocates a Python object per test. `gm.join` builds and queries
+    O(N·M). `gm.join` builds and queries
     an index in Rust, then refines candidates exactly. Its cost is driven by
     bounding-box selectivity and candidate count; worst-case overlap can still
     approach O(N·M). Vectorized predicates reject mismatched non-scalar lengths;
@@ -293,16 +290,14 @@ removal accept non-negative integer-index handles and reject `bool`.
 negative and non-index inputs raise. Membership checks return `False` for
 non-index probes.
 
-Bulk construction is the common path, but the index is **mutable** for dynamic
-sets: [`insert`][gometry.SpatialIndex.insert] appends a geometry (same frame as
-the index), and [`remove`][gometry.SpatialIndex.remove] tombstones a row by
+[`insert`][gometry.SpatialIndex.insert] appends a geometry in the index's frame,
+and [`remove`][gometry.SpatialIndex.remove] removes a row by
 handle. Queries include inserted rows and exclude removed ones without
 renumbering the remaining handles.
 
 Batch insertion rejects empty geometries and GeometryArrays containing missing
 rows. It validates the complete input and frame before changing the index, so
-input-validation errors leave its rows and frame unchanged. This is not a
-transaction guarantee for allocation or publication failures.
+input-validation errors leave its rows and frame unchanged.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

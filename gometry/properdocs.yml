@@ -169,6 +169,7 @@ nav:
       - Migration cheatsheet: migrating/cheatsheet.md
   - Guide:
     - Guide overview: guide/index.md
+    - Choosing the right tool: guide/choosing.md
     - Geometry & dimensions: guide/geometry.md
     - CRS, units & measurement: guide/crs.md
     - Arrays & performance: guide/arrays.md
@@ -178,7 +179,6 @@ nav:
     - Grids & geocodes: guide/grids.md
     - Validation & repair: guide/validation.md
     - Errors & exceptions: guide/errors.md
-    - Choosing the right tool: guide/choosing.md
   - Ecosystem:
     - ecosystem/index.md
     - NumPy arrays & coordinates: ecosystem/numpy.md

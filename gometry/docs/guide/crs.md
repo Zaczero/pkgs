@@ -121,73 +121,6 @@ distance is metres, but the produced outline is a local-projection approximation
   `epoch=`, and clearing the CRS clears the epoch. See
   [Coordinate epochs](#coordinate-epochs).
 
-### Native geographic units and periodic aliases
-
-The geographic frame is read from the CRS, not assumed to be WGS 84 degrees. It
-owns the longitude and latitude angular units, the longitude period and pole, and
-the prime meridian. For example, EPSG:4326 uses degrees, EPSG:4807 uses grads,
-and a CRS expressed with radian axes uses radians. A full native longitude turn
-therefore has a different numeric spelling in each frame, but the aliases denote
-the same location in topology, metrics, arrays, prepared geometries, indexes, and
-grid-source transforms.
-
-```python exec="on" source="block" result="text"
-import math
-
-import gometry as gm
-
-radian_crs = (
-    'GEOGCS["WGS 84 radians",DATUM["WGS_1984",'
-    'SPHEROID["WGS 84",6378137,298.257223563]],'
-    'PRIMEM["Greenwich",0],UNIT["radian",1],'
-    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
-)
-cases = (
-    ("degree", 4326, 360.0),
-    ("grad", 4807, 400.0),
-    ("radian", radian_crs, math.tau),
-)
-
-for name, crs, period in cases:
-    origin = gm.Point(0.0, 0.0, crs=crs)
-    alias = gm.Point(period, 0.0, crs=crs)
-    units = [axis["unit_name"] for axis in gm.CRS(crs).axes[:2]]
-    print(f"{name}: {units}, one turn distance: {gm.distance(origin, alias)} m")
-    assert gm.distance(origin, alias) == 0.0
-    assert gm.distance(origin, gm.GeometryArray([alias])).tolist() == [0.0]
-
-```
-
-The native values are admitted and interpreted in their own frame. The
-geodesic kernels receive a normalized degree/Greenwich value only at the metric
-boundary; callers do not convert geometry coordinates before using `area`,
-`length`, `distance`, `dwithin`, or exact geographic topology. A CRS object keeps
-the normalized input text as [`CRS.definition`][gometry.CRS.definition]; an
-authority ID discovered inside WKT or PROJJSON is metadata, not a replacement
-for the authored definition.
-
-The prime meridian is part of the same frame. EPSG:4807's 400-grad alias reaches
-the same physical location as its zero-grad spelling when transformed to WGS 84:
-
-```python exec="on" source="block" result="text"
-import math
-
-import gometry as gm
-
-origin = gm.Point(0.0, 0.0, crs=4807).to_crs(4326)
-alias = gm.Point(400.0, 0.0, crs=4807).to_crs(4326)
-same_location = math.isclose(origin.x, alias.x, abs_tol=1e-12) and math.isclose(
-    origin.y, alias.y, abs_tol=1e-12
-)
-print("same WGS 84 location:", same_location)
-assert same_location
-
-```
-
-The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
-degree/radian argument switch; the native-frame rule above describes geometry
-metrics and topology.
-
 ### CRS inputs
 
 Constructors, metadata assignment, transforms, and CRS exporters accept the same
@@ -196,39 +129,6 @@ codes; two-item authority/code pairs; PROJJSON or CF mappings; and objects that
 provide CRS conversion methods such as `to_authority()`, `to_epsg()`, `to_wkt()`,
 or `to_json()`. Objects may also expose a nested `.crs` or `.srs` value in one of
 those forms. Invalid codes and definitions raise `CRSError`.
-
-### Polar rings and full-turn edges
-
-Geographic topology distinguishes an explicit one-period edge between ordinary
-longitude spellings from the two spellings of the seam. For example, `0 → 360`
-degrees is a full circle, while `-180 → 180` is the same seam point. A ring's
-signed chart turn determines whether its unmarked boundary winds once around a
-pole. A once-winding ring is unambiguous when its latitude range stays in one
-closed hemisphere and extends beyond the equator: touching the equator is
-allowed. A ring that crosses the equator, or lies entirely on it, does not name
-a unique pole and is rejected at geographic admission. Use an explicit pole
-closure or split the region into unambiguous rings.
-
-The edge direction is part of the ring's total: a closing full-period edge can
-cancel earlier full-circle traversals. A full-period edge alone therefore does
-not declare that a ring encloses a pole.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-ambiguous = gm.Polygon(
-    [(0, -10), (360, -10), (300, 10), (0, -10)],
-    crs=4326,
-)
-explicit_closure = gm.Polygon(
-    [(0, 60), (360, 60), (360, 90), (0, 90), (0, 60)],
-    crs=4326,
-)
-
-print("unmarked ring:", ambiguous.validate().code)
-print("explicit pole closure:", explicit_closure.validate().valid)
-
-```
 
 ### Changing a CRS label
 
@@ -299,16 +199,109 @@ print(area.crs, area.bounds)
     For ingestion pipelines, repair once at the boundary and keep arrays in one
     frame before indexing, joining, or measuring.
 
+### Native geographic units and periodic aliases
+
+The geographic frame is read from the CRS, not assumed to be WGS 84 degrees. It
+owns the longitude and latitude angular units, the longitude period and pole, and
+the prime meridian. For example, EPSG:4326 uses degrees, EPSG:4807 uses grads,
+and a CRS expressed with radian axes uses radians. A full native longitude turn
+therefore has a different numeric spelling in each frame, but the aliases denote
+the same location in topology, metrics, arrays, prepared geometries, indexes, and
+grid-source transforms.
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+radian_crs = (
+    'GEOGCS["WGS 84 radians",DATUM["WGS_1984",'
+    'SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+cases = (
+    ("degree", 4326, 360.0),
+    ("grad", 4807, 400.0),
+    ("radian", radian_crs, math.tau),
+)
+
+for name, crs, period in cases:
+    origin = gm.Point(0.0, 0.0, crs=crs)
+    alias = gm.Point(period, 0.0, crs=crs)
+    units = [axis["unit_name"] for axis in gm.CRS(crs).axes[:2]]
+    print(f"{name}: {units}, one turn distance: {gm.distance(origin, alias)} m")
+    assert gm.distance(origin, alias) == 0.0
+    assert gm.distance(origin, gm.GeometryArray([alias])).tolist() == [0.0]
+
+```
+
+Use coordinates in their CRS's native units; gometry handles angular-unit and
+prime-meridian conversion for measurements and topology. A CRS object keeps
+the normalized input text as [`CRS.definition`][gometry.CRS.definition]; an
+authority ID discovered inside WKT or PROJJSON is metadata, not a replacement
+for the authored definition.
+
+The prime meridian is part of the same frame. EPSG:4807's 400-grad alias reaches
+the same physical location as its zero-grad spelling when transformed to WGS 84:
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+origin = gm.Point(0.0, 0.0, crs=4807).to_crs(4326)
+alias = gm.Point(400.0, 0.0, crs=4807).to_crs(4326)
+same_location = math.isclose(origin.x, alias.x, abs_tol=1e-12) and math.isclose(
+    origin.y, alias.y, abs_tol=1e-12
+)
+print("same WGS 84 location:", same_location)
+assert same_location
+
+```
+
+The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
+degree/radian argument switch; the native-frame rule above describes geometry
+metrics and topology.
+
+### Polar rings and full-turn edges
+
+Geographic topology distinguishes an explicit one-period edge between ordinary
+longitude spellings from the two spellings of the seam. For example, `0 → 360`
+degrees is a full circle, while `-180 → 180` is the same seam point. A ring's
+signed chart turn determines whether its unmarked boundary winds once around a
+pole. A once-winding ring is unambiguous when its latitude range stays in one
+closed hemisphere and extends beyond the equator: touching the equator is
+allowed. A ring that crosses the equator, or lies entirely on it, does not name
+a unique pole and is rejected at geographic admission. Use an explicit pole
+closure or split the region into unambiguous rings.
+
+The edge direction is part of the ring's total: a closing full-period edge can
+cancel earlier full-circle traversals. A full-period edge alone therefore does
+not declare that a ring encloses a pole.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+ambiguous = gm.Polygon(
+    [(0, -10), (360, -10), (300, 10), (0, -10)],
+    crs=4326,
+)
+explicit_closure = gm.Polygon(
+    [(0, 60), (360, 60), (360, 90), (0, 90), (0, 60)],
+    crs=4326,
+)
+
+print("unmarked ring:", ambiguous.validate().code)
+print("explicit pole closure:", explicit_closure.validate().valid)
+
+```
+
 ## Measurement: the CRS decides
 
-There is exactly one [`geom.area`][gometry.Geometry.area], one
-[`geom.length`][gometry.Geometry.length], one [`distance()`][gometry.distance].
-The geometry's CRS selects the default metric frame (see
-the [operation-family table](#operation-families)). Override the *unit system* with
-`unit=`, or reproject with [`to_crs`][gometry.Geometry.to_crs] to change the
-*coordinate frame*. The same rule governs
-[`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve]
-and [`dwithin`][gometry.dwithin] — distances in, distances out, native by default.
+The geometry's CRS selects the default units for area, length, distance,
+buffering, and proximity tests. Use `unit=` to override the measurement model,
+or [`to_crs`][gometry.Geometry.to_crs] to transform the coordinates.
 
 | `unit=` | Effect |
 |---------|--------|
@@ -316,12 +309,8 @@ and [`dwithin`][gometry.dwithin] — distances in, distances out, native by defa
 | `'meters'` | force SI meters / m² (raises without a CRS) |
 | `'planar'` | force raw coordinate Cartesian math |
 
-Bare measures are **properties** — [`geom.area`][gometry.Geometry.area] /
-[`geom.length`][gometry.Geometry.length] on a scalar, [`arr.area`][gometry.GeometryArray.area] / [`arr.length`][gometry.GeometryArray.length] on
-a [`GeometryArray`][gometry.GeometryArray]. The free functions
-[`area`][gometry.area] and [`length`][gometry.length] exist only as **override
-paths** that take `unit=`; they are not a second vectorized API. Binary
-[`gm.distance`][gometry.distance] is free because it relates two operands.
+Read area and length as properties on a geometry or array. To specify `unit=`,
+use the free functions [`area`][gometry.area] and [`length`][gometry.length].
 
 ### Geographic CRS → ellipsoidal measures, automatically
 
@@ -432,81 +421,6 @@ corner-only, unwrapped construction. The native-range directed-span guarantee
 does not apply on that path. A seam-crossing box must use valid endpoints in
 the frame's native longitude and latitude ranges.
 
-#### Geographic geodesic numerical domain
-
-With CRS-aware units, geographic point-to-point inverse/direct calculations and
-operations that explicitly follow geodesic routes use an order-six
-binary64 series backend. In this model, geographic chart-edge length uses
-ellipsoidal quadrature, while point-to-chart-edge minimization uses geodesic
-inverse samples inside its own bounded search. Continuous geographic Hausdorff
-ranges over those same straight chart edges. `unit='planar'` selects
-Cartesian measurement in stored coordinates instead. These composite
-operations are distinct from exact geographic topology. For a CRS that PROJ
-resolves to an ellipsoid, its semi-major axis and `b = a (1 - f)` must be
-positive and finite, and its flattening must be within the supported domain
-`|f| <= 0.02`. Geodesic admission also checks that the squared axes, half the
-squared semi-major axis, authalic radius squared, and full ellipsoid area are
-representable as normal binary64 values. A CRS outside that domain raises
-`CRSError` before the geodesic object is constructed.
-
-The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
-identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an
-approximate maximum distance error of `30 nm` at `|f| = 0.02`. gometry's
-admission is an ordinary backend domain, not a per-call certificate for
-composite algorithms.
-
-#### Geographic point-to-segment accuracy
-
-With CRS-aware units, geographic linework distance, nearest-point witnesses,
-and `line_locate` use a minimum over each straight chart edge's parameter `t`.
-Each sample evaluates geodesic distance from the query to the chart position. A
-global interval search combines a Lipschitz lower bound with analytic speed and
-covariant-acceleration bounds. Its second-order Taylor bound applies only when
-the full distance interval lies inside a certified normal neighborhood;
-otherwise the search uses the Lipschitz bound. Degenerate edges and pole
-queries use their direct families. A witness lies on the chart edge, and LRS
-carries its ordinates by the fraction of edge arclength.
-
-The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
-maximum of 128 evaluations per point-edge query. If the search reaches that
-budget, distance, nearest-point, and `line_locate` return their best attained
-sample. These are numerical quality budgets, not universal real-arithmetic
-error certificates. Search results are attained witnesses, not topological
-contacts. Exact chart topology establishes contact; a small positive distance
-does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
-arclength and adds the prefix before that edge.
-
-Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
-or below the supplied radius, and returns `False` only when its search certifies
-the threshold result. Accumulated evaluations are limited to a binary64
-midpoint-depth factor times the current live frontier, with a 16,384-evaluation
-ceiling. The search also uses safeguarded secant proposals; this allowance is a
-work limit, not a guarantee of reaching binary64 parameter resolution. If it
-cannot certify the radius, `dwithin` raises `CRSError` rather than reporting
-`False`. It does not add a contact tolerance or widen the radius by pruning
-slack. A positive infinite radius returns `True` for admitted non-empty
-operands without forcing an unrepresentable distance result. Vectorized results
-retain one boolean per input pair: missing rows and present empty geometries
-remain in place as `False`; a nonconvergent present pair raises instead of
-receiving a boolean.
-
-Geographic Hausdorff measures the continuous linework supports of the stored
-chart edges: the source ranges over each straight longitude/latitude edge, and
-its distance to the target is the minimum geodesic distance to target edges and
-isolated points. Its global frontier uses a moving correspondence between
-source and target chart edges when that gives a tighter variation bound;
-otherwise it retains the fixed-witness Lipschitz bound and applies the
-second-order Taylor bound only inside a normal neighborhood. Each reported
-value is an attained source/target pair, not an interval bound. The algorithmic
-gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. If source
-parameter refinement reaches adjacent binary64 values before the frontier
-closes that gap, Hausdorff raises `CRSError` rather than dropping the interval.
-These binary64 budgets are numerical quality targets, not real-arithmetic
-certificates.
- Geographic Hausdorff supports point and linework operands only; filled polygon
- interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
-geographic path; its algorithmic gap does not promise a caller-requested bound.
-
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
     display and tile CRS whose scale varies with latitude. A geographic CRS
@@ -547,40 +461,9 @@ print(round(gm.distance(
 
 !!! warning "Argument order: bearing first, then distance"
     `pt.destination(bearing, distance)` takes the **bearing in degrees first**
-    and the **distance in meters second**. Swapping them produces a
+    and the **distance second**, in CRS-natural units (meters for a geographic
+    CRS). Swapping them produces a
     plausible-but-wrong point with no error.
-
-#### Geographic polygon boundary
-
-[`Polygon.boundary`][gometry.Geometry.boundary] and
-[`MultiPolygon.boundary`][gometry.Geometry.boundary] return the
-Boundary-location cells of occupied support. A MultiPolygon's members form one
-areal union, so shared or overlapping internal edges are not part of its
-boundary; a GeometryCollection is handled member by member without dissolving
-between members. Invalid polygonal input follows its occupied support rather
-than returning every stored ring, and collapsed support can produce a
-`MultiPoint` or an empty `GeometryCollection`.
-
-Geographic boundary uses the CRS's longitude period and pole identity. Edges
-that exist only because a ring was cut at the antimeridian, or because a chart
-closes a polar ring, are not boundaries. A genuine one-sided edge on the seam
-remains. The quotient line emitter can include a seam vertex where it splits a
-line run; that vertex does not add a seam edge. CRS and epoch are preserved,
-and no coordinate transformation is performed.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-crossing = gm.Polygon(
-    [(170, 40), (190, 40), (190, 50), (170, 50)],
-    crs=4326,
-)
-print(crossing.boundary().to_wkt())
-```
-
-```text
-LINESTRING (170 50, 170 40, -180 40, -170 40, -170 50, -180 50, 170 50)
-```
 
 ### Projected CRS → native linear units
 
@@ -698,8 +581,10 @@ print("planar deg²:", gm.area(city, unit='planar'))
 
 ```
 
-For a supported metric pair, [`nearest_points`][gometry.nearest_points] returns
-the closest witnesses and [`shortest_line`][gometry.shortest_line] connects
+### Comparing geometry distances
+
+[`nearest_points`][gometry.nearest_points] returns
+the closest points and [`shortest_line`][gometry.shortest_line] connects
 them. Compare a line's length with the reported separation using the same
 `unit=` choice. These operations accept filled polygon supports and can place a
 witness on an edge interior, not only at a vertex.
@@ -725,7 +610,7 @@ print(figure(
 
 ```
 
-An empty operand is total, not an error: `distance`, `hausdorff_distance` and
+For an empty operand, `distance`, `hausdorff_distance` and
 `frechet_distance` return `inf`, while `nearest_points` and `shortest_line`
 return the output-type empty (`(POINT EMPTY, POINT EMPTY)` and
 `LINESTRING EMPTY`), so a single empty row never aborts a vectorized call.
@@ -735,24 +620,17 @@ its members; a zero-area polygon contributes only its closed ring boundary.
 When operands differ in dimensionality (an `XYZM` line
 and an `XY` point) the witnesses drop to the ordinates both carry.
 
+### Coordinate refinement and tolerances
+
 !!! note "Coordinate-space tolerances stay in raw units"
-    A few operations take a tolerance that is always interpreted in raw coordinate
-    units, regardless of CRS — they *remove or move* vertices, and reprojecting
-    would move the survivors:
-    [`simplify`][gometry.Geometry.simplify], [`snap`][gometry.snap],
+    [`snap`][gometry.snap],
     [`snap_to_grid`][gometry.Geometry.snap_to_grid],
     [`quantize`][gometry.Geometry.quantize], and
-    [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]. On geographic
-    data such a tolerance is in the CRS's native angular units; reproject with
-    [`to_crs`][gometry.Geometry.to_crs] first if you need it in meters. Every
-    distance- or area-returning metric — including
-    [`hausdorff_distance`][gometry.hausdorff_distance],
-    [`frechet_distance`][gometry.frechet_distance],
-    [`minimum_bounding_circle(...).radius`][gometry.Geometry.minimum_bounding_circle],
-    [`minimum_width`][gometry.Geometry.minimum_width],
-    [`minimum_clearance`][gometry.Geometry.minimum_clearance], and
-    [`nearest_points`][gometry.nearest_points] — is CRS-aware with a
-    `unit='planar'` escape (and `unit='meters'` for forced SI).
+    [`remove_repeated_points`][gometry.Geometry.remove_repeated_points] use raw
+    coordinate units. On geographic data, these are native angular units;
+    reproject first if you need meters.
+    [`simplify`][gometry.Geometry.simplify] instead uses CRS-natural tolerance
+    units, with `unit=` overrides; see [Simplify and offset](constructive.md#simplify-and-offset).
 
 !!! note "`segmentize` inserts vertices without moving originals"
     [`segmentize`][gometry.Geometry.segmentize] only *inserts* vertices along
@@ -985,6 +863,38 @@ predicate step. Topology and indexing normalize for you. Geographic point-to-poi
 distance uses geodesics; shape distance operations use the same straight chart
 edges as topology and include filled polygon interiors. Geographic Hausdorff
 distance ranges over those chart edges but remains linework-only.
+
+### Geographic polygon boundary
+
+[`Polygon.boundary`][gometry.Geometry.boundary] and
+[`MultiPolygon.boundary`][gometry.Geometry.boundary] return the
+boundary of the occupied region. A MultiPolygon's members form one
+areal union, so shared or overlapping internal edges are not part of its
+boundary; a GeometryCollection is handled member by member without dissolving
+between members. Invalid polygonal input follows its occupied support rather
+than returning every stored ring, and collapsed support can produce a
+`MultiPoint` or an empty `GeometryCollection`.
+
+Geographic boundary uses the CRS's longitude period and pole identity. Edges
+that exist only because a ring was cut at the antimeridian, or because a chart
+closes a polar ring, are not boundaries. A genuine one-sided edge on the seam
+remains. The output can include a seam vertex where it splits a
+line run; that vertex does not add a seam edge. CRS and epoch are preserved,
+and no coordinate transformation is performed.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+crossing = gm.Polygon(
+    [(170, 40), (190, 40), (190, 50), (170, 50)],
+    crs=4326,
+)
+print(crossing.boundary().to_wkt())
+```
+
+```text
+LINESTRING (170 50, 170 40, -180 40, -170 40, -170 50, -180 50, 170 50)
+```
 
 ## Z and M under transformation
 
@@ -1238,6 +1148,56 @@ and PROJJSON are available without requiring a system PROJ shared library in the
 wheel.
 
 Coming from pyproj? See [Migrating](../migrating/index.md#coming-from-pyproj).
+
+## Geographic numerical accuracy
+
+### Geographic geodesic numerical domain
+
+Geographic geodesic calculations use a binary64 series backend. The ellipsoid's
+semi-major axis `a` and semi-minor axis `b = a (1 - f)` must be positive and
+finite, with flattening `|f| <= 0.02`. Squared axes, half the squared semi-major
+axis, authalic radius squared, and full ellipsoid area must fit normal binary64
+values. Unsupported ellipsoids raise `CRSError`.
+
+The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
+identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an
+approximate maximum distance error of `30 nm` at `|f| = 0.02`. gometry's
+domain check does not certify the accuracy of composite operations such as
+point-to-edge distance or Hausdorff distance.
+
+### Geographic point-to-segment accuracy
+
+Geographic linework distance, nearest-point results, and `line_locate` search
+for the minimum geodesic distance to each straight longitude/latitude edge.
+The returned point lies on that edge; linear referencing interpolates Z/M
+by the fraction of ellipsoidal edge length.
+
+The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
+maximum of 128 evaluations per point-edge query. If the search reaches that
+budget, distance, nearest-point, and `line_locate` return their best attained
+sample. These are numerical quality budgets, not universal real-arithmetic
+error certificates. Search results are attained witnesses, not topological
+contacts. Exact chart topology establishes contact; a small positive distance
+does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
+arclength and adds the prefix before that edge.
+
+`dwithin` includes a pair only when a sampled distance is at or below the
+requested radius, and excludes it only when the search resolves that threshold.
+It does not widen the radius or treat a small positive distance as contact.
+If the bounded search cannot resolve the result, it raises `CRSError`.
+A positive-infinite radius matches non-empty operands. Array results preserve
+row positions, with `False` for missing or empty inputs; an unresolved present
+pair raises.
+
+Geographic Hausdorff searches continuously over points and straight chart edges.
+Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS 84.
+This is a numerical quality target, not a certified error bound. If coordinate
+precision prevents further refinement before that gap closes, the call raises
+`CRSError`.
+
+Filled polygon interiors require `unit='planar'` or a projected CRS.
+Omit `max_error` on the geographic path; it cannot promise a caller-requested
+error bound.
 
 ## See also
 

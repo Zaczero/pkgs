@@ -9,7 +9,7 @@ metrics and coordinates, `bool_` for predicate masks, `int64` for ids and labels
 `uint64` for grid-cell ids and space-filling-curve keys. NumPy is installed with
 the core package.
 
-## Every dense numeric bulk result is a typed ndarray
+## Numeric results {#every-dense-numeric-bulk-result-is-a-typed-ndarray}
 
 ```python exec="on" source="block" result="text"
 import numpy as np
@@ -35,16 +35,11 @@ per-row views are `int64` ndarrays. Text outputs ([`to_wkt`][gometry.Geometry.to
 outputs ([`to_wkb`][gometry.Geometry.to_wkb]), and ragged diagnostics stay Python lists because they have no
 single dense ndarray shape.
 
-Numeric input columns also accept PEP-3118 buffers when the operation accepts a
-`FloatColumn` or integer column. This is input admission, not an output-buffer
-promise: gometry does not export geometry containers as PEP-3118 numeric buffers.
-Input buffers are copied into native storage. Capture is synchronous: keep the
-producer quiescent (do not modify it) until the call returns. Holding a buffer
-view keeps its allocation alive but does not synchronize a native writer or
-make a torn concurrent read coherent. Once capture returns, later mutations of
-the input cannot affect the completed geometry. The native coordinate
-representation is float64, so a float32 `FloatColumn` is accepted but converted
-to float64 during ingestion; `FloatColumn` input is not zero-copy.
+Numeric inputs accept PEP-3118 buffers where an operation takes a `FloatColumn`
+or integer column. Geometry containers do not export this numeric buffer
+protocol. Input coordinates are copied into native float64 storage, converting
+float32 values when needed. Do not modify an input buffer until the call
+returns; later changes cannot affect the constructed geometry.
 
 ## Coordinate views and matrix exports
 

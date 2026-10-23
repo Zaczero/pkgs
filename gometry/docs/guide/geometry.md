@@ -22,13 +22,9 @@ ordinates.
 !!! tip "Always (x, y) — lon/lat only under a geographic CRS"
     Every constructor takes coordinates in **(x, y)** order. Under a
     **geographic** CRS those axes are **(longitude, latitude) in that CRS's
-    native angular units** (degrees, radians, grads, or another admitted angular
-    unit); under a
-    projected CRS they are the projection's easting/northing (or other linear
-    axes); CRS-free geometries stay in raw coordinate units. The lon/lat
-    reading is not universal — it is the geographic case. Pass `crs=4326` (or
-    another geographic CRS) on [`gm.Point`][gometry.Point] and the bulk builders
-    when the input is geographic.
+    native angular units** (such as degrees, radians, or grads). Projected CRSs
+    use their linear axes; CRS-free geometries use raw coordinates.
+    Pass `crs=4326` for WGS 84 longitude/latitude in degrees.
 
 ## Points
 
@@ -292,7 +288,7 @@ print("parts:", len(mp), "| first:", mp[0].geometry_type, "| areas:", [p.area fo
 ```
 
 Accessing a member on the wrong type raises `AttributeError`: `line.x` fails
-(only points have coordinates).
+because scalar `.x` is a `Point` property. Use `line.coords.x` for its X column.
 
 ### Equality and hashing
 
@@ -467,6 +463,25 @@ Linear referencing uses the geometry's CRS metric by default. Values are absolut
 distances unless `normalized=True`, when `0.0` and `1.0` mean the start and end.
 Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
+| Task | Distance basis (default) | M basis |
+| --- | --- | --- |
+| point at a location | [`line_interpolate(at)`][gometry.Geometry.line_interpolate] | `line_interpolate(at, basis='m')` |
+| location nearest a point | [`line_locate(point)`][gometry.Geometry.line_locate] | `line_locate(point, basis='m')` |
+| portion between two locations | [`line_substring(start, end)`][gometry.Geometry.line_substring] | `line_substring(start, end, basis='m')` |
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+line = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=32634)
+midpoint = line.line_interpolate(0.5, normalized=True)
+samples = line.line_interpolate(count=3)
+print('midpoint:', midpoint.to_wkt())
+print('samples:', [point.to_wkt() for point in samples])
+
+```
+
+### Distances and route positions
+
 With CRS-aware units (the default on a geographic CRS), linework edges are
 straight in the CRS's longitude/latitude chart and LRS measures the ellipsoidal
 arclength of the retained chart-straight source edge, rather than geodesic
@@ -493,11 +508,7 @@ At a multipart prefix boundary, interpolation selects the preceding part's
 endpoint, so interpolating a locate station at that boundary need not recover
 the next part's nearest point.
 
-| Task | Distance basis (default) | M basis |
-| --- | --- | --- |
-| point at a location | [`line_interpolate(at)`][gometry.Geometry.line_interpolate] | `line_interpolate(at, basis='m')` |
-| location nearest a point | [`line_locate(point)`][gometry.Geometry.line_locate] | `line_locate(point, basis='m')` |
-| portion between two locations | [`line_substring(start, end)`][gometry.Geometry.line_substring] | `line_substring(start, end, basis='m')` |
+### Sampling multiple locations
 
 On the distance basis, `line_interpolate` accepts a sequence of locations or
 `count=` for evenly spaced samples. With `basis='m'`, a scalar line accepts one
@@ -521,18 +532,9 @@ the resulting position. `count=` also uses fractions of the selected metric and
 accepts `unit=`, but rejects `normalized=True` because the count already defines
 fractional sample positions.
 
-```python exec="on" source="block" result="text"
-import gometry as gm
+### M-based positions
 
-line = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=32634)
-midpoint = line.line_interpolate(0.5, normalized=True)
-samples = line.line_interpolate(count=3)
-print('midpoint:', midpoint.to_wkt())
-print('samples:', [point.to_wkt() for point in samples])
-
-```
-
-**M linear referencing** locates positions by the M ordinate rather than by
+M linear referencing locates positions by the M ordinate rather than by
 fractional or absolute length. `line_interpolate(m, basis='m')` returns the
 point at a given measure, `line_locate(point, basis='m')` returns the measure
 nearest a point, and `line_substring(start_m, end_m, basis='m')` cuts the
@@ -554,7 +556,9 @@ measures 100 and 300 places M=150 at latitude approximately
 the same Z/M carry rule; `interpolate_m` assigns vertex measures by cumulative
 edge arclength without moving X/Y/Z.
 
-**Empty input and bad measures.** Empty linework has no positions, so every
+### Empty routes and invalid measures
+
+Empty linework has no positions, so every
 form answers it instead of raising: `line_locate` returns `nan`,
 `line_interpolate` returns `POINT EMPTY`, `line_substring` returns
 `LINESTRING EMPTY`, and `interpolate_m` returns the empty geometry with an M

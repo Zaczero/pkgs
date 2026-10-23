@@ -82,18 +82,8 @@ filter works directly in familiar units.
 
 <div class="rationale" markdown>
 
-### The CRS is the single knob
-
-A geographic CRS measures on its ellipsoid; a projected CRS uses native linear
-units, and a CRS-free geometry uses raw coordinate units. Override with
-`unit='planar'` or `unit='meters'` when you need another interpretation.
-The [measurement guide](guide/crs.md) explains edge models and units.
-
-### Batched without hidden loops
-
-Pass an array to [`contains`][gometry.contains], buffer a whole column, or
-transform thousands of coordinates in one call. Packed arrays keep per-row work
-in Rust.
+<span id="the-crs-is-the-single-knob"></span>
+<span id="batched-without-hidden-loops"></span>
 
 ### Declare, transform, refine
 

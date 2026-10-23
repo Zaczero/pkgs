@@ -20,7 +20,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 
 | Shapely | gometry | Notes |
 |---|---|---|
-| `Point(x, y)` | [`gm.Point(x, y, crs=...)`][gometry.Point] | Same constructor always; under a geographic CRS, `(x, y)` is `(lon, lat)`. `z=` / `m=` for Z/M. |
+| `Point(x, y)` | [`gm.Point(x, y, crs=...)`][gometry.Point] | Under a geographic CRS, `(x, y)` is `(lon, lat)`. Use `z=` / `m=` for Z/M. |
 | `LineString(coords)` | [`gm.LineString(coords, z=..., m=..., crs=...)`][gometry.LineString] | |
 | `Polygon(shell, holes)` | [`gm.Polygon(shell, holes, crs=...)`][gometry.Polygon] | |
 | `MultiPoint(...)` | [`gm.MultiPoint(...)`][gometry.MultiPoint] | |
@@ -100,7 +100,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.point_on_surface()` | `g.point_on_surface()` | |
 | `polylabel(g)` | `g.polylabel()` | [Pole of inaccessibility](https://en.wikipedia.org/wiki/Pole_of_inaccessibility). |
 | `maximum_inscribed_circle(g)` | `g.maximum_inscribed_circle()` | Returns a `Circle` solution: read `.center` and `.radius` from one solve, or call `.to_polygon()` for its contained polygonal realization. Shapely returns a center-to-boundary `LineString`. |
-| `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | Connects the nearest witnesses. On a geographic CRS the default chart-edge length is no shorter than their geodesic separation, subject to binary64 rounding; measure with the same `unit=` choice and expect computed publication to add vertices when needed. |
+| `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | Connects the closest points. Its geographic chart-edge length can exceed their geodesic distance; compare using the same `unit=`. |
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |
 | Voronoi diagram output | [`g.voronoi()`][gometry.Geometry.voronoi] / `g.voronoi(output='edges')` | Use the `output` keyword to select cells or internal edges. |
@@ -133,7 +133,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 |---|---|---|
 | `geom.is_valid` | [`geom.is_valid`][gometry.Geometry.is_valid] | Unchanged; [`geom.validate()`][gometry.Geometry.validate] adds the reason/location. |
 | `explain_validity(geom)` | `report.reason` / `report.location` | |
-| `make_valid(geom)` | [`geom.repair()`][gometry.Geometry.repair] | Canonical spelling. |
+| `make_valid(geom)` | [`geom.repair()`][gometry.Geometry.repair] | |
 | `set_precision(g, grid_size)` | [`geom.snap_to_grid(grid_size=..., repair=...)`][gometry.Geometry.snap_to_grid] | Closest fixed-grid snap. `grid_size` must be positive and finite; unlike `coverage_clean(grid_size=0)`, zero is invalid. Optional `repair=`. JTS-style snap-rounding precision models are not supported. |
 | — | [`geom.quantize(precision)`][gometry.Geometry.quantize] | Decimal-place rounding of coordinates (different model from `set_precision`). |
 | `require(...)` at boundary | [`gm.require(obj, crs=..., axes=...)`][gometry.require] | Storage contract. |
@@ -191,7 +191,7 @@ for coordinate exports without changing the geometry.
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |
-| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_catalog(name=...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
+| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_catalog(name=...)`][gometry.crs_catalog] | Module-level `crs_*` functions. |
 | catalogs | [`gm.crs_ellipsoids()`][gometry.crs_ellipsoids] / [`gm.crs_prime_meridians()`][gometry.crs_prime_meridians] / [`gm.crs_proj_operations()`][gometry.crs_proj_operations] / [`gm.crs_utm_zones(...)`][gometry.crs_utm_zones] / [`gm.crs_celestial_bodies()`][gometry.crs_celestial_bodies] | |
 | operations | [`gm.CRS(a).operation(b)`][gometry.CRS.operation] / `.operations(b)` / `.operation(b, at=(x, y))` / [`gm.crs_apply(...)`][gometry.crs_apply] | |
 | grid lookup | [`gm.crs_grid(...)`][gometry.crs_grid] | Local grid metadata and availability. |

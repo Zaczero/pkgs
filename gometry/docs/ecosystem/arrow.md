@@ -4,80 +4,16 @@ description: Arrow C Data Interface and GeoArrow interchange in gometry — depe
 
 # Arrow & storage
 
-[`Geometry`][gometry.Geometry] and [`GeometryArray`][gometry.GeometryArray] export Arrow C Data Interface capsules in
-[GeoArrow](https://geoarrow.org/) layouts. [`CellArray`][gometry.CellArray],
-[`H3EdgeArray`][gometry.H3EdgeArray], and [`H3VertexArray`][gometry.H3VertexArray]
-export their cell identities as primitive Arrow columns. GeoParquet files and
-lonboard maps build on the geometry capsules.
-
-## Arrow PyCapsules without pyarrow
-
-`Geometry` and `GeometryArray` implement the Arrow PyCapsule protocol with no
-optional dependency:
-
-- `__arrow_c_schema__` → a capsule named `arrow_schema`
-- `__arrow_c_array__` → a `(schema_capsule, array_capsule)` tuple named
-  `arrow_schema` and `arrow_array`
-- `__arrow_c_stream__` → a capsule named `arrow_array_stream`
-
-Cell identity arrays also implement `__arrow_c_array__`. H3, S2, tile, H3 edge,
-and H3 vertex IDs use `uint64`; geohash cells use UTF-8 tokens. `CellArray`
-missing rows are Arrow nulls. These primitive columns do not carry the grid
-kind: pass the known cell type to [`CellArray`][gometry.CellArray] when importing
-IDs, or construct an [`H3EdgeArray`][gometry.H3EdgeArray] or
-[`H3VertexArray`][gometry.H3VertexArray] from its IDs.
-
-A consumer that implements the Arrow C Data Interface can import the GeoArrow
-buffers straight from these capsules **without pyarrow installed**. Whether a
-consumer preserves GeoArrow extension metadata is version- and adapter-specific;
-see the [compatibility matrix](../about/compatibility.md) for deployed
-integration details. Install `gometry[arrow]` for [`(...).to_arrow()`][gometry.Geometry.to_arrow] to return
-a concrete pyarrow array or to ingest an older pyarrow-only object.
-
-The tuple is the Arrow C Data Interface boundary; it is not a geometry result
-that can be passed to [`from_arrow`][gometry.from_arrow] directly. A consumer receives the object
-implementing `__arrow_c_array__`, calls it, and owns the two capsules for the
-duration of the import.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-values = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
-schema_capsule, array_capsule = values.__arrow_c_array__()
-print('schema:', 'arrow_schema' in repr(schema_capsule))
-print('array:', 'arrow_array' in repr(array_capsule))
-```
+Exchange geometry columns through [GeoArrow](https://geoarrow.org/), store them
+in GeoParquet, or export cell IDs as Arrow columns. Install PyArrow support for
+the conversion and file examples:
 
 ```bash
 uv add "gometry[arrow]"
 ```
 
-## Cell IDs and geohash tokens
-
-Install `gometry[arrow]` to use PyArrow with the cell-array protocol. Numeric
-cell arrays become `uint64` columns; geohash cells become UTF-8 token columns.
-Missing `CellArray` entries remain Arrow nulls.
-
-```python exec="on" source="block" result="text"
-import pyarrow as pa
-
-import gometry as gm
-
-cell = gm.H3Cell(13.4, 52.5, resolution=7)
-cells = gm.CellArray([cell, None])
-ids = pa.array(cells)
-restored = gm.CellArray(ids.to_pylist(), type=gm.H3Cell)
-tokens = pa.array(gm.CellArray([gm.GeohashCell('u33d')]))
-
-print("ID column:", ids.type, ids.to_pylist())
-print("restored grid:", restored.grid)
-print("geohash tokens:", tokens.type, tokens.to_pylist())
-```
-
-Contiguous numeric arrays and slices retain their ID buffers through the Arrow
-capsules. Gathered selections own a compact ID buffer, and geohash export
-encodes token bytes. Arrow schema requests must match the exported primitive
-type.
+Consumers that use the [Arrow PyCapsule protocol](#arrow-pycapsules-without-pyarrow)
+can exchange data without PyArrow installed.
 
 ## Round-trip
 
@@ -118,6 +54,137 @@ PyArrow, and all GeoParquet encodings follow the same conversion rules.
 Use [raw WKT/WKB](text-formats.md) when you need literal stored coordinates
 without this typed geographic adaptation.
 
+## GeoParquet — durable columnar storage
+
+[`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] writes
+geometry and aligned attributes to a file;
+[`gm.from_geoparquet`][gometry.from_geoparquet] reads both back. CRS, coordinate
+epoch, and missing rows are preserved.
+
+```python exec="on" source="block" result="text"
+import tempfile
+
+import gometry as gm
+
+geoms = gm.GeometryArray([
+    gm.Point(21.0, 52.0, crs=4326),
+    None,
+    gm.Point(22.0, 52.5, crs=4326),
+])
+attributes = {"name": ["west", None, "east"]}
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = f"{tmp}/places.parquet"
+    geoms.to_geoparquet(path, attributes=attributes)
+    from_file, attributes = gm.from_geoparquet(path)
+
+print("GeoParquet:", from_file, from_file.crs.to_authority())
+print("file mask:", from_file.is_missing.tolist())
+print("attribute columns:", attributes.column_names)
+
+```
+
+### Encodings
+
+The default is WKB with GeoParquet 1.1 metadata.
+Choose `encoding='geoarrow'` for separated coordinates in a homogeneous
+GeoParquet 1.1 column, or `encoding='geometry'` for native Parquet `GEOMETRY`
+with GeoParquet 2.0 metadata. Native geometry preserves XY, XYZ, XYM and XYZM;
+the 1.1 encodings support XY and XYZ and reject M rather than silently dropping
+it. All encodings use the finite geographic drawings described above, rather
+than spherical or ellipsoidal geodesic curves. Nonplanar `GEOGRAPHY` curves
+require explicit conversion before import.
+
+### Spatial reads
+
+The 1.1 writer includes a per-row bbox covering; native geometry uses Parquet's
+row-group geospatial statistics. Read a spatial subset with
+`gm.from_geoparquet(path, bbox=(xmin, ymin, xmax, ymax))`. The rectangle uses the
+selected column's CRS, includes boundary contact, and can cross the geographic
+longitude seam. Coverings or statistics prune candidate reads, then exact
+intersection refinement selects geometry and attributes together. Missing and
+empty geometries do not match. Attribute `filters`, `columns` and `row_groups`
+compose with the spatial selection; requested row-group order and repetitions
+are retained. Geographic pruning uses conservative latitude bounds; native
+coordinate statistics do not exclude potentially polar areal geometries.
+
+### Streams and metadata
+
+Native Parquet geometry can also be read without `geo` metadata. When several
+geometry columns have no declared primary, select one with `geometry='name'`.
+Native logical types, stored Arrow metadata and any GeoParquet declarations
+must describe the same frame.
+
+The GeoParquet reader and writer also accept binary streams, including
+`io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;
+writers require a writable binary sink. Both leave caller-owned streams open.
+Text streams are unsupported.
+
+## Arrow PyCapsules without pyarrow
+
+`Geometry` and `GeometryArray` implement the Arrow PyCapsule protocol with no
+optional dependency:
+
+- `__arrow_c_schema__` → a capsule named `arrow_schema`
+- `__arrow_c_array__` → a `(schema_capsule, array_capsule)` tuple named
+  `arrow_schema` and `arrow_array`
+- `__arrow_c_stream__` → a capsule named `arrow_array_stream`
+
+Cell identity arrays also implement `__arrow_c_array__`. H3, S2, tile, H3 edge,
+and H3 vertex IDs use `uint64`; geohash cells use UTF-8 tokens. `CellArray`
+missing rows are Arrow nulls. These primitive columns do not carry the grid
+kind: pass the known cell type to [`CellArray`][gometry.CellArray] when importing
+IDs, or construct an [`H3EdgeArray`][gometry.H3EdgeArray] or
+[`H3VertexArray`][gometry.H3VertexArray] from its IDs.
+
+A consumer that implements the Arrow C Data Interface can import the GeoArrow
+buffers straight from these capsules **without pyarrow installed**. Whether a
+consumer preserves GeoArrow extension metadata is version- and adapter-specific;
+see the [compatibility matrix](../about/compatibility.md) for deployed
+integration details. Install `gometry[arrow]` for [`(...).to_arrow()`][gometry.Geometry.to_arrow] to return
+a concrete pyarrow array or to ingest an older pyarrow-only object.
+
+The tuple is the Arrow C Data Interface boundary; it is not a geometry result
+that can be passed to [`from_arrow`][gometry.from_arrow] directly. A consumer receives the object
+implementing `__arrow_c_array__`, calls it, and owns the two capsules for the
+duration of the import.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+values = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
+schema_capsule, array_capsule = values.__arrow_c_array__()
+print('schema:', 'arrow_schema' in repr(schema_capsule))
+print('array:', 'arrow_array' in repr(array_capsule))
+```
+
+## Cell IDs and geohash tokens
+
+Install `gometry[arrow]` to use PyArrow with the cell-array protocol. Numeric
+cell arrays become `uint64` columns; geohash cells become UTF-8 token columns.
+Missing `CellArray` entries remain Arrow nulls.
+
+```python exec="on" source="block" result="text"
+import pyarrow as pa
+
+import gometry as gm
+
+cell = gm.H3Cell(13.4, 52.5, resolution=7)
+cells = gm.CellArray([cell, None])
+ids = pa.array(cells)
+restored = gm.CellArray(ids.to_pylist(), type=gm.H3Cell)
+tokens = pa.array(gm.CellArray([gm.GeohashCell('u33d')]))
+
+print("ID column:", ids.type, ids.to_pylist())
+print("restored grid:", restored.grid)
+print("geohash tokens:", tokens.type, tokens.to_pylist())
+```
+
+Contiguous numeric arrays and slices retain their ID buffers through the Arrow
+capsules. Gathered selections own a compact ID buffer, and geohash export
+encodes token bytes. Arrow schema requests must match the exported primitive
+type.
+
 ## Native packed layouts vs WKB fallback
 
 Homogeneous **XY / XYZ / XYM / XYZM** point, multipoint, linestring,
@@ -146,10 +213,9 @@ quiescent until release; PyArrow objects must not be modified during
 `from_arrow`. Copying a foreign span gives gometry ownership after capture but
 does not synchronize a producer that writes during the copy.
 
-Gometry copies the admitted schema and visible spans into owned storage, then
-validates schema formats, offsets (including null slots), null bitmaps,
-BinaryView padding, coordinate finiteness, and GeoArrow encoding/storage pairs.
-Malformed owned data raises a domain error. Resource budgets and untrusted-input
+Gometry copies and validates imported geometry buffers, rejecting malformed
+schemas, offsets, validity data, encodings, and non-finite coordinates.
+Resource budgets and untrusted-input
 limits are documented in [Security & untrusted input](../about/security.md).
 
 ## CRS as PROJJSON, epoch and exact identity as gometry extensions
@@ -197,75 +263,6 @@ Series so it remains independent of PyArrow; that boundary is covered in
 [DataFrames](dataframes.md). The lonboard adapter passes the geometry array, or
 an Arrow-compatible table when attributes are supplied, through the direct
 capsule route.
-
-## GeoParquet — durable columnar storage
-
-Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
-[`gm.from_geoparquet`][gometry.from_geoparquet]. Write a `GeometryArray` to a
-[GeoParquet 1.1](https://geoparquet.org/releases/v1.1.0/) file and read it back —
-CRS metadata is embedded as **PROJJSON** in the column header, with the namespaced
-`gometry:crs_definition` value preserving gometry's exact stored CRS identity.
-Geometry is written with **WKB** encoding (the GeoParquet 1.1 default), and
-gometry's missing rows travel as Arrow validity bits instead of sentinel
-geometries. GeoParquet builds on pyarrow (the `arrow` extra provides it); for an
-in-memory handoff without a file, use `to_arrow`.
-
-Choose `encoding='geoarrow'` for separated coordinates in a homogeneous
-GeoParquet 1.1 column, or `encoding='geometry'` for native Parquet `GEOMETRY`
-with GeoParquet 2.0 metadata. Native geometry preserves XY, XYZ, XYM and XYZM;
-the 1.1 encodings support XY and XYZ and reject M rather than silently dropping
-it. All encodings use the finite geographic drawings described above, rather
-than spherical or ellipsoidal geodesic curves. Nonplanar `GEOGRAPHY` curves
-require explicit conversion before import.
-
-The 1.1 writer includes a per-row bbox covering; native geometry uses Parquet's
-row-group geospatial statistics. Read a spatial subset with
-`gm.from_geoparquet(path, bbox=(xmin, ymin, xmax, ymax))`. The rectangle uses the
-selected column's CRS, includes boundary contact, and can cross the geographic
-longitude seam. Coverings or statistics prune candidate reads, then exact
-intersection refinement selects geometry and attributes together. Missing and
-empty geometries do not match. Attribute `filters`, `columns` and `row_groups`
-compose with the spatial selection; requested row-group order and repetitions
-are retained. Geographic pruning uses conservative latitude bounds; native
-coordinate statistics do not exclude potentially polar areal geometries.
-
-Native Parquet geometry can also be read without `geo` metadata. When several
-geometry columns have no declared primary, select one with `geometry='name'`.
-Native logical types, stored Arrow metadata and any GeoParquet declarations
-must describe the same frame.
-
-The GeoParquet reader and writer also accept binary streams, including
-`io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;
-writers require a writable binary sink. Both leave caller-owned streams open.
-Text streams are unsupported.
-
-```python exec="on" source="block" result="text"
-import tempfile
-
-import gometry as gm
-
-geoms = gm.GeometryArray([
-    gm.Point(21.0, 52.0, crs=4326),
-    None,
-    gm.Point(22.0, 52.5, crs=4326),
-])
-attributes = {"name": ["west", None, "east"]}
-
-arrow = geoms.to_arrow()
-from_arrow = gm.from_arrow(arrow)
-print("GeoArrow nulls:", arrow.null_count)
-print("Arrow mask:", from_arrow.is_missing.tolist())
-
-with tempfile.TemporaryDirectory() as tmp:
-    path = f"{tmp}/places.parquet"
-    geoms.to_geoparquet(path, attributes=attributes)
-    from_file, attributes = gm.from_geoparquet(path)
-
-print("GeoParquet:", from_file, from_file.crs.to_authority())
-print("file mask:", from_file.is_missing.tolist())
-print("attribute columns:", attributes.column_names)
-
-```
 
 ## lonboard — maps in notebooks
 

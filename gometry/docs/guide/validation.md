@@ -86,21 +86,17 @@ and the stable [`.code`][gometry.ValidationReport.code] and human-readable
 an OGC-valid geometry `.reason`, `.location`, `.path`, `.code`, and `.detail`
 are all `None`; they carry detail when topology validation finds a problem.
 
-Geographic validity follows the same frame-aware topology as predicates. Stored
-coordinates in one certified open longitude chart keep planar OGC validity;
-seam or pole cases and other alias spellings read exact quotient incidence
-rather than a shifted coordinate copy. Pole-enclosing
-shells and polar holes are included. Opposite-interior seam spans are a chart
-cut regardless of whether the geometry uses east or west seam spelling;
-same-side overlaps remain invalid. Geographic coordinate admission also
-participates in validity:
+Geographic validity recognizes longitude aliases, the antimeridian, and poles,
+including pole-enclosing shells and holes. Shared seam edges with polygon
+interiors on opposite sides are chart cuts; overlapping interiors on the same
+side remain invalid. Coordinate-domain checks also apply:
 an out-of-range latitude reports `latitude_out_of_range`, and a once-winding
 unmarked ring whose latitude range does not identify one pole reports
 `ambiguous_full_turn_ring`. `is_valid` returns `False` for either issue without
 raising, and `GeometryArray.is_valid` writes `False` for the affected row.
 `validate` reports the issue without raising. Geographic operations still raise
-`InvalidGeometryError` when their input cannot be admitted, and `repair` raises
-`RepairFailed` because an out-of-domain coordinate cannot be reconstructed.
+`InvalidGeometryError` for unsupported coordinates. `repair` raises the same
+exception when it cannot reconstruct an out-of-domain coordinate.
 For quotient-topology issues, the witness is a canonical coordinate of the
 issue's contact set, chosen deterministically by minimum latitude then longitude.
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
@@ -365,10 +361,8 @@ geometry from ever reaching your [predicates](predicates.md),
 produce unexpected answers. See [Security](../about/security.md) for parsing
 and resource limits.
 
-Geometry that crosses a geographic frame's periodic seam (±180° for EPSG:4326)
-is a separate kind of "broken":
-individually valid coordinates that stored naively draw a band the wrong way
-around the globe. gometry's topology ops auto-split crossing geographic input;
+Crossing a geographic longitude seam (±180° for EPSG:4326) does not itself make
+geometry invalid. gometry's topology operations handle the crossing;
 see [Working across the antimeridian](crs.md#across-the-antimeridian) for when
 you must call [`split_antimeridian`][gometry.Geometry.split_antimeridian] yourself.
 

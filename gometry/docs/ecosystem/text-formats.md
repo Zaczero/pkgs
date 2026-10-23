@@ -11,6 +11,25 @@ that can hold it and **rejected** in formats that can't (rather than silently
 discarded); SRID is embedded only when you
 opt in.
 
+## Round-trip cheat sheet
+
+| Format | CRS | Coordinate epoch | Z / M |
+| --- | --- | --- | --- |
+| [ISO WKB](#wkb-and-ewkb) / [WKT](#wkt-and-ewkt) | Not stored | Not stored | Both preserved |
+| [EWKB](#wkb-and-ewkb) / [EWKT](#wkt-and-ewkt) | Integer SRID | Not stored | Both preserved |
+| [GeoJSON](#geojson) / [`__geo_interface__`](#__geo_interface__) | WGS 84 lon/lat; no source CRS label | Not stored | Z preserved; M rejected |
+| [GeoArrow](arrow.md) | PROJJSON | gometry extension metadata | Both preserved |
+| [pandas](dataframes.md#pandas-geometry-storage) | Preserved | Preserved | Both preserved |
+| [GeoPandas](dataframes.md#geopandas-interchange) | Preserved | Not stored | Preserved where the peer supports them |
+| [Polars](dataframes.md#polars-binary-storage) | EWKB SRID, unless dropped | Not stored | Both preserved |
+| [Pickle](#pickle-multiprocessing-and-copies) | Preserved | Preserved | Both preserved |
+
+Serializers that cannot store an epoch require `drop_epoch=True` when one is
+present. The `__geo_interface__` property has no such option: clear the epoch
+explicitly before using it. GeoJSON also requires you to remove M explicitly.
+GeoArrow epoch preservation requires gometry or another consumer that understands
+its extension metadata. Pickle is for trusted Python data only.
+
 ## WKB and EWKB
 
 [`to_wkb`][gometry.Geometry.to_wkb] writes **ISO** [WKB](https://www.ogc.org/standard/sfa/)
@@ -256,9 +275,9 @@ print(features.properties, ids, len(features.geometries))
 ```
 
 `features=True` returns a [`Features`][gometry.Features] container with three
-parallel fields. Destructure it as `geoms, props, ids = gm.from_geojson(..., features=True)`. It has no
-`len()`, so a three-field count cannot be misread as a feature count;
-`len(features.geometries)` is the row count.
+parallel fields. Destructure it as
+`geoms, props, ids = gm.from_geojson(..., features=True)`.
+Use `len(features.geometries)` for the row count.
 
 The outer [`properties`][gometry.Features.properties] and [`ids`][gometry.Features.ids] columns are tuples, so their alignment cannot
 drift after parsing; individual property dictionaries remain editable. A missing
@@ -353,22 +372,6 @@ point = gm.Point(1, 2, crs=4326, epoch=2020.5)
 restored = pickle.loads(pickle.dumps(point))
 print(restored == point, restored.crs, restored.epoch)
 ```
-
-## Round-trip cheat sheet
-
-| Format | Out | In | CRS survives? | Epoch survives? | Z survives? | M survives? |
-| --- | --- | --- | --- | --- | --- | --- |
-| ISO WKB | [`to_wkb()` / `to_wkb(drop_epoch=True)`][gometry.Geometry.to_wkb] | [`from_wkb`][gometry.from_wkb] | no | no (requires `drop_epoch=True` when present) | yes (ISO type codes) | yes (ISO type codes) |
-| EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
-| WKT | [`to_wkt(drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes, when carried | yes (`M`/`ZM` tags) |
-| EWKT | `to_wkt(include_srid=True, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes, when carried | yes |
-| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `with_coordinates(m=None)` or `force_2d()` first |
-| `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
-| GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
-| pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |
-| GeoPandas | [`to_geopandas`][gometry.GeometryArray.to_geopandas] | GeoSeries | yes | no (requires `drop_epoch=True` when present) | yes | yes where the peer stores them |
-| polars | [`to_polars`][gometry.GeometryArray.to_polars] | [`from_polars`][gometry.from_polars] | optional (`drop_crs`) | no (requires `drop_epoch=True` when present) | yes (EWKB) | yes (EWKB) |
-| Pickle (durable values/containers) | [`pickle.dumps`](https://docs.python.org/3/library/pickle.html#pickle.dumps) | [`pickle.loads`](https://docs.python.org/3/library/pickle.html#pickle.loads) | yes | yes | yes | yes (trusted Python only) |
 
 !!! note "Dimensional empties"
     WKT and WKB preserve empty axes (`POINT Z EMPTY` stays XYZ). GeoJSON has no

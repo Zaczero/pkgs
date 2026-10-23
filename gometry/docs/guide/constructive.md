@@ -238,12 +238,11 @@ edges, eligible ordinates follow ellipsoidal arclength along the retained
 straight chart edge, including across later cuts; see
 [Z/M under operations](geometry.md#zm-under-operations).
 
-If no assignment in the overlay operation's admitted finite coordinate domain
-passes the certificate, it raises `OverflowError` with
+If no topology-preserving assignment fits the overlay's coordinate choices,
+it raises `OverflowError` with
 `code == 'output_unrepresentable'` instead of returning geometry with changed
-topology. This is a refusal under that operation's drawing domain and
-preservation contract, not a claim that every possible binary64 drawing of the
-mathematical result is impossible. For a geographic overlay, exhausting the
+topology. This does not rule out every possible binary64 drawing of the
+mathematical result. For a geographic overlay, exhausting the
 bounded work budget raises [`ResourceLimitError`][gometry.ResourceLimitError] with
 `code == 'work_limit'` and `operation` naming the call. No geometry is returned;
 the error means the operation stopped before it could finish its checked
@@ -487,39 +486,6 @@ print('centroid:', (cloud.centroid()).to_wkt())
 
 ```
 
-`maximum_inscribed_circle` returns a [`Circle`][gometry.Circle] result.
-Its `.center` is a `Point` in the input CRS and coordinate epoch, and `.radius`
-is numerical. `unit=None` uses native coordinate units for planar/projected
-input and meters in a local projection for geographic input. The result's
-`.unit` and `.working_crs` identify that numerical frame.
-
-`tolerance=None` selects a scale-aware default from the working geometry's extent.
-An explicit positive tolerance bounds the planar global-inradius gap; arrays
-also accept one tolerance per row. `polylabel` remains a separate approximate
-label-placement search whose tolerance is a stopping target.
-
-Call `.to_polygon(quadrant_segments=16)` when you need geometry. It uses the
-retained disk without repeating the optimization; changing resolution does not
-change the center or radius. Inscribed polygons are certified inside that disk.
-The default has 64 vertices; a zero or subnormal-radius disk yields a `Point`,
-and an empty disk yields `POLYGON EMPTY`. Polygonization can raise `OverflowError`
-when a finite numerical solution has no representable polygonal realization.
-The numerical result remains usable.
-
-Geographic inscribed-circle results retain one local-projection disk. Their center and
-polygon are transformed back to the source CRS, while the radius stays in meters.
-The planar certificate applies in the working projection, not to an ellipsoidal
-optimum or containment of the restored source-coordinate polygon.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-room = gm.box(0, 0, 8, 4)
-circle = room.maximum_inscribed_circle(tolerance=0.01)
-print('center:', circle.center.to_wkt(), 'radius:', round(circle.radius, 3))
-print('disk:', circle.to_polygon().geometry_type)
-
-```
-
 `concavity` sets the greedy peel's distance guard: a candidate triangle's
 opposite vertex must lie within `edge_length / concavity` of its boundary edge
 (`0` disables the guard). Higher values typically keep more area, but the
@@ -553,6 +519,76 @@ print(panels(
     For a C-shaped or ring polygon the center of mass may fall in a hole or
     outside the geometry entirely. [`point_on_surface`][gometry.Geometry.point_on_surface]
     returns a representative point guaranteed to lie in the interior.
+
+[`minimum_width`][gometry.Geometry.minimum_width] measures the narrowest strip
+enclosing the complete convex hull. It is not minimum clearance, and it is not
+the shorter side of the minimum-area rotated rectangle. Holes do not reduce
+width; points and collinear support have width zero. Empty and missing rows
+have width `NaN`. Its scalar/array and unit conventions match other metrics.
+
+### Circles
+
+`maximum_inscribed_circle` returns a [`Circle`][gometry.Circle] result.
+Its `.center` is a `Point` in the input CRS and coordinate epoch, and `.radius`
+is numerical. `unit=None` uses native coordinate units for planar/projected
+input and meters in a local projection for geographic input. The result's
+`.unit` and `.working_crs` identify that numerical frame.
+
+`tolerance=None` selects a scale-aware default from the working geometry's extent.
+An explicit positive tolerance bounds the planar global-inradius gap; arrays
+also accept one tolerance per row. `polylabel` remains a separate approximate
+label-placement search whose tolerance is a stopping target.
+
+Call `.to_polygon(quadrant_segments=16)` when you need geometry. It uses the
+retained disk without repeating the optimization; changing resolution does not
+change the center or radius. Inscribed polygons are certified inside that disk.
+The default has 64 vertices; a zero or subnormal-radius disk yields a `Point`,
+and an empty disk yields `POLYGON EMPTY`. Polygonization can raise `OverflowError`
+when a finite numerical solution has no representable polygonal realization.
+The numerical result remains usable.
+
+Geographic inscribed-circle results retain one local-projection disk. Their center and
+polygon are transformed back to the source CRS, while the radius stays in meters.
+The planar certificate applies in the working projection, not to an ellipsoidal
+optimum or containment of the restored source-coordinate polygon.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+room = gm.box(0, 0, 8, 4)
+circle = room.maximum_inscribed_circle(tolerance=0.01)
+print('center:', circle.center.to_wkt(), 'radius:', round(circle.radius, 3))
+print('disk:', circle.to_polygon().geometry_type)
+
+```
+
+[`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] returns
+the same `Circle` model. For planar/projected input, `.radius` is the correctly
+rounded mathematical minimum radius; `unit='meters'` scales the exact squared
+radius before rounding. `.to_polygon()` creates a certified circumscribed
+polygon whose edges enclose the exact disk and whose vertices lie outside it.
+The exact disk is retained: reconstructing it from the independently rounded
+`.center` and `.radius` can lose that guarantee.
+
+For geographic point sets with two distinct sites, the result retains a
+shortest-geodesic midpoint and half the ellipsoidal distance. These numerical
+results remain available even for globally separated points. Their
+`.to_polygon()` uses the existing geographic point-buffer approximation and can
+raise `CRSError` when no sufficiently accurate local projection fits the
+realization. A single site has radius zero and realizes as its center `Point`.
+Selected zero-radius source points retain their Z/M and stored coordinate
+spelling; computed centers and positive-radius polygons are XY.
+For these ellipsoidal disks, `.unit` is `"meters"` and `.working_crs` is `None`
+because no Cartesian frame defines the solution. Other geographic bounding
+circles use a retained local-projection support disk.
+
+Array circle operations return [`CircleArray`][gometry.CircleArray].
+`.center` is a point `GeometryArray`, `.radius` is a read-only `float64` NumPy
+column, and `.is_missing` distinguishes missing rows from empty results.
+Both have `NaN` radii. Indexing returns a `Circle` or `None`; slicing and
+`.to_polygon()` preserve row order and missingness.
+Type hints preserve the input array's nullability: dense inputs return
+`CircleArray[Circle]`, while nullable inputs return `CircleArray[Circle | None]`.
+Indexing, iteration, and geometry projections retain that distinction.
 
 ## Tessellation: triangulate, Voronoi, polygonize
 
@@ -651,41 +687,6 @@ print(
     len(split_cap.triangulate(method="earcut")),
 )
 ```
-
-[`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] returns
-the same `Circle` model. For planar/projected input, `.radius` is the correctly
-rounded mathematical minimum radius; `unit='meters'` scales the exact squared
-radius before rounding. `.to_polygon()` creates a certified circumscribed
-polygon whose edges enclose the exact disk and whose vertices lie outside it.
-The exact disk is retained: reconstructing it from the independently rounded
-`.center` and `.radius` can lose that guarantee.
-
-For geographic point sets with two distinct sites, the result retains a
-shortest-geodesic midpoint and half the ellipsoidal distance. These numerical
-results remain available even for globally separated points. Their
-`.to_polygon()` uses the existing geographic point-buffer approximation and can
-raise `CRSError` when no sufficiently accurate local projection fits the
-realization. A single site has radius zero and realizes as its center `Point`.
-Selected zero-radius source points retain their Z/M and stored coordinate
-spelling; computed centers and positive-radius polygons are XY.
-For these ellipsoidal disks, `.unit` is `"meters"` and `.working_crs` is `None`
-because no Cartesian frame defines the solution. Other geographic bounding
-circles use a retained local-projection support disk.
-
-Array circle operations return [`CircleArray`][gometry.CircleArray].
-`.center` is a point `GeometryArray`, `.radius` is a read-only `float64` NumPy
-column, and `.is_missing` distinguishes missing rows from empty results.
-Both have `NaN` radii. Indexing returns a `Circle` or `None`; slicing and
-`.to_polygon()` preserve row order and missingness.
-Type hints preserve the input array's nullability: dense inputs return
-`CircleArray[Circle]`, while nullable inputs return `CircleArray[Circle | None]`.
-Indexing, iteration, and geometry projections retain that distinction.
-
-[`minimum_width`][gometry.Geometry.minimum_width] measures the narrowest strip
-enclosing the complete convex hull. It is not minimum clearance, and it is not
-the shorter side of the minimum-area rotated rectangle. Holes do not reduce
-width; points and collinear support have width zero. Empty and missing rows
-have width `NaN`. Its scalar/array and unit conventions match other metrics.
 
 !!! note "Choose the triangulation"
     `method='constrained'` accepts `min_angle` and `max_area` for

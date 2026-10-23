@@ -314,8 +314,7 @@ frame and row-identity checks:
   (exact).
 - **Strict frame checks** — CRS and epoch must match; mixed frames raise rather
   than silently comparing across datums.
-- **Missing-row semantics** — sparse/right-missing handles preserve row identity
-  instead of dropping identity in the result.
+- **Missing query rows** keep their input positions as missing result groups.
 - **Prepared caches** on every geometry, built once it is probed repeatedly;
   there is no separate `prepare` step.
 - **CRS-aware nearest / dwithin queries** when the index frame is geographic:
@@ -417,9 +416,10 @@ returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 `gm.SpatialIndex(geometries)` bulk-loads a balanced in-memory
 [R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry envelopes — suited to
 static, query-heavy workloads — while [`idx.insert(geometry)`][gometry.SpatialIndex.insert] / [`idx.remove(...)`][gometry.SpatialIndex.remove]
-handle dynamic sets without a full rebuild. The index is always in memory; gometry
-never writes index files, so persisting across processes means rebuilding from the
-source geometries (or their stored WKB/EWKB bytes).
+handle dynamic sets without a full rebuild. The search structure is in memory.
+[Pickle](../ecosystem/text-formats.md#pickle-multiprocessing-and-copies) preserves
+the live geometries and stable handles, rebuilding the search structure on load.
+For portable storage, save WKB/EWKB and construct a new index.
 
 ## What gometry covers
 
