@@ -117,7 +117,6 @@ impl CompactLimbs {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn from_vec(limbs: Vec<u64>) -> Self {
         if limbs.len() <= INLINE_DYADIC_LIMBS {
             Self::inline_from_slice(&limbs)

@@ -11,6 +11,9 @@ use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CircleSolution, ExpansionBudget, Point, Shape, TopologyDomain,
 };
 
+mod state;
+pub(crate) use state::FramedCircleStateV1;
+
 pub(crate) struct GeographicCircleFrame {
     #[expect(
         clippy::rc_buffer,
@@ -44,6 +47,15 @@ pub(crate) enum FramedCircle {
 }
 
 impl FramedCircle {
+    pub(crate) const fn is_empty(&self) -> bool {
+        match self {
+            Self::Planar { disk, .. } | Self::Local { disk, .. } => {
+                matches!(disk, CircleSolution::Empty)
+            },
+            Self::Ellipsoidal { .. } => false,
+        }
+    }
+
     pub(crate) fn same_disk(&self, other: &Self) -> Result<bool> {
         match (self, other) {
             (
@@ -73,10 +85,7 @@ impl FramedCircle {
                     local: b,
                     frame: bf,
                 },
-            ) => Ok(a.definition == b.definition
-                && af.crs == bf.crs
-                && af.state.generation == bf.state.generation
-                && left.same_disk(right)?),
+            ) => Ok(a.definition == b.definition && af.crs == bf.crs && left.same_disk(right)?),
             (
                 Self::Ellipsoidal {
                     center: a,
@@ -88,10 +97,7 @@ impl FramedCircle {
                     radius: br,
                     frame: bf,
                 },
-            ) => Ok(a == b
-                && ar.to_bits() == br.to_bits()
-                && af.crs == bf.crs
-                && af.state.generation == bf.state.generation),
+            ) => Ok(a == b && ar.to_bits() == br.to_bits() && af.crs == bf.crs),
             (Self::Planar { .. }, Self::Local { .. } | Self::Ellipsoidal { .. })
             | (Self::Local { .. }, Self::Planar { .. } | Self::Ellipsoidal { .. })
             | (Self::Ellipsoidal { .. }, Self::Planar { .. } | Self::Local { .. }) => Ok(false),

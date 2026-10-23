@@ -8,13 +8,82 @@ use pyo3::prelude::*;
 
 use crate::broadcast::BulkElement;
 use crate::crs::frame::Frame;
-use crate::crs::local::FramedCircle;
+use crate::crs::local::{FramedCircle, FramedCircleStateV1};
 use crate::geometry::Shape;
 use crate::geometry::storage::ValidityMask;
 use crate::py::numpy::{bool_array, float64_array};
-use crate::py::row::{RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices};
+use crate::py::row::{
+    RowContainer, RowGetItemContainer, RowIterState, array_getitem, slice_row_indices,
+};
 use crate::py::support::initialize_sequence_type;
 use crate::{PyGeometry, Typed};
+
+type CirclePickleArgs = (Py<pyo3::types::PyBytes>, Option<String>, Option<f64>);
+
+fn pickle_error(error: &serde_json::Error) -> PyErr {
+    crate::geometry::GeometryErrorKind::pickle_payload(error.to_string()).into()
+}
+
+fn circle_reduce<T: serde::Serialize>(
+    py: Python<'_>,
+    reader: &str,
+    state: &T,
+    frame: &Frame,
+) -> PyResult<(Py<PyAny>, CirclePickleArgs)> {
+    let payload = serde_json::to_vec(state).map_err(|error| pickle_error(&error))?;
+    Ok((
+        crate::gometry_lib_module(py)?.getattr(reader)?.unbind(),
+        (
+            pyo3::types::PyBytes::new(py, &payload).unbind(),
+            frame.crs_ref().map(ToString::to_string),
+            frame.epoch(),
+        ),
+    ))
+}
+
+#[pyfunction(name = "_unpickle_circle_v1")]
+fn unpickle_circle_v1(
+    py: Python<'_>,
+    payload: &[u8],
+    crs: Option<String>,
+    epoch: Option<f64>,
+) -> PyResult<PyCircle> {
+    let state: FramedCircleStateV1 =
+        serde_json::from_slice(payload).map_err(|error| pickle_error(&error))?;
+    let disk = py.detach(|| state.restore())?;
+    Ok(PyCircle {
+        disk: Arc::new(disk),
+        frame: Frame::new(crs.map(crate::Crs::from), epoch)?,
+    })
+}
+
+#[pyfunction(name = "_unpickle_circle_array_v1")]
+fn unpickle_circle_array_v1(
+    py: Python<'_>,
+    payload: &[u8],
+    crs: Option<String>,
+    epoch: Option<f64>,
+) -> PyResult<PyCircleArray> {
+    let states: Vec<Option<FramedCircleStateV1>> =
+        serde_json::from_slice(payload).map_err(|error| pickle_error(&error))?;
+    let values = py.detach(|| {
+        states
+            .into_iter()
+            .map(|state| {
+                state
+                    .map(FramedCircleStateV1::restore)
+                    .transpose()
+                    .map(|disk| CircleOutput(disk.map(Arc::new)))
+            })
+            .collect::<crate::error::Result<Vec<_>>>()
+    })?;
+    let rows = 0..values.len();
+    Ok(PyCircleArray {
+        values: values.into(),
+        rows,
+        frame: Frame::new(crs.map(crate::Crs::from), epoch)?,
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct CircleOutput(pub(crate) Option<Arc<FramedCircle>>);
@@ -64,6 +133,21 @@ pub(crate) struct PyCircle {
 
 #[pymethods]
 impl PyCircle {
+    /// Whether the circle has no points. A zero-radius circle is not empty.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     True for an empty circle; false for a solved disk or source point.
+    #[getter]
+    fn is_empty(&self) -> bool {
+        self.disk.is_empty()
+    }
+
+    fn __bool__(&self) -> bool {
+        !self.is_empty()
+    }
+
     fn __eq__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let Ok(other) = other.cast::<Self>() else {
             return Ok(py.NotImplemented());
@@ -174,6 +258,15 @@ impl PyCircle {
         ))
     }
 
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, CirclePickleArgs)> {
+        circle_reduce(
+            py,
+            "_unpickle_circle_v1",
+            &FramedCircleStateV1::from(self.disk.as_ref()),
+            &self.frame,
+        )
+    }
+
     fn __copy__<'py>(slf: &Bound<'py, Self>) -> Bound<'py, Self> {
         slf.clone()
     }
@@ -188,8 +281,9 @@ impl PyCircle {
 ///
 /// ``center`` returns a point GeometryArray; ``radius`` returns a read-only
 /// NumPy array with NaN for empty or missing rows. ``is_missing`` distinguishes
-/// missing rows from empty circles. Indexing returns Circle or None; slicing
-/// retains the circle solutions without repeating their optimization.
+/// missing rows from empty circles. Scalar indexing returns Circle or None;
+/// slices, integer gathers, and boolean masks retain the circle solutions
+/// without repeating their optimization.
 #[pyclass(name = "CircleArray", module = "gometry", frozen, sequence, generic)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone)]
@@ -200,6 +294,18 @@ pub(crate) struct PyCircleArray {
 }
 
 impl PyCircleArray {
+    fn gather(&self, rows: impl Iterator<Item = usize>) -> Self {
+        let values: Arc<[_]> = rows
+            .map(|row| self.values().get(row).expect("admitted circle row").clone())
+            .collect();
+        let rows = 0..values.len();
+        Self {
+            values,
+            rows,
+            frame: self.frame.clone(),
+        }
+    }
+
     fn row_matches(
         &self,
         value: &CircleOutput,
@@ -258,6 +364,49 @@ impl PyCircleArray {
             self.values().iter().map(|row| row.0.is_none()),
         );
         Shape::bulk_into_py_masked(shapes, py, &self.frame, missing.as_ref())
+    }
+}
+
+impl RowContainer for PyCircleArray {
+    const LABEL: &'static str = "CircleArray";
+
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
+        self.values()
+            .get(row)
+            .expect("admitted circle row")
+            .clone()
+            .into_py(py, &self.frame)
+    }
+}
+
+impl RowGetItemContainer for PyCircleArray {
+    fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
+        Ok(self.gather(rows.iter().copied()))
+    }
+
+    fn slice_rows(&self, start: isize, stop: isize, step: isize, count: usize) -> PyResult<Self> {
+        Ok(if step == 1 {
+            Self {
+                values: Arc::clone(&self.values),
+                rows: self.rows.start.wrapping_add(start as usize)
+                    ..self.rows.start.wrapping_add(stop.max(start) as usize),
+                frame: self.frame.clone(),
+            }
+        } else {
+            self.gather(slice_row_indices(start, step, count))
+        })
+    }
+
+    fn empty(&self) -> PyResult<Self> {
+        self.slice_rows(0, 0, 1, 0)
+    }
+
+    fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>> {
+        value.into_py_any(py)
     }
 }
 
@@ -420,6 +569,23 @@ impl PyCircleArray {
         float64_array(py, values)
     }
 
+    /// Read-only boolean mask identifying empty circles.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray of bool
+    ///     True for empty circles; false for nonempty and missing rows.
+    #[getter]
+    fn is_empty(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        bool_array(
+            py,
+            self.values()
+                .iter()
+                .map(|value| value.0.as_ref().is_some_and(|disk| disk.is_empty()))
+                .collect(),
+        )
+    }
+
     /// Read-only boolean mask distinguishing missing rows from empty circles.
     ///
     /// Returns
@@ -498,40 +664,15 @@ impl PyCircleArray {
         self.rows.len()
     }
 
+    /// Select circles by integer, slice, integer gather, or boolean mask.
+    ///
+    /// Returns
+    /// -------
+    /// Circle, None, or CircleArray
+    ///     A circle or missing value for a scalar index; an array retaining
+    ///     the selected solutions for a slice, gather, or mask.
     fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        match parse_row_index_or_slice(index, self.rows.len(), "CircleArray")? {
-            RowIndexOrSlice::Index(row) => self
-                .values()
-                .get(row)
-                .expect("normalized circle index")
-                .clone()
-                .into_py(py, &self.frame),
-            RowIndexOrSlice::Slice {
-                start,
-                stop,
-                step: 1,
-                ..
-            } => Self {
-                values: Arc::clone(&self.values),
-                rows: self.rows.start.wrapping_add(start as usize)
-                    ..self.rows.start.wrapping_add(stop.max(start) as usize),
-                frame: self.frame.clone(),
-            }
-            .into_py_any(py),
-            RowIndexOrSlice::Slice {
-                start, step, count, ..
-            } => {
-                let values = slice_row_indices(start, step, count)
-                    .map(|row| {
-                        self.values()
-                            .get(row)
-                            .expect("normalized circle slice")
-                            .clone()
-                    })
-                    .collect();
-                CircleOutput::bulk_into_py(values, py, &self.frame)
-            },
-        }
+        array_getitem(self, py, index)
     }
 
     fn __iter__(&self) -> PyCircleArrayIter {
@@ -550,6 +691,15 @@ impl PyCircleArray {
 
     fn __repr__(&self) -> String {
         format!("CircleArray(len={})", self.rows.len())
+    }
+
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, CirclePickleArgs)> {
+        let states: Vec<_> = self
+            .values()
+            .iter()
+            .map(|row| row.0.as_deref().map(FramedCircleStateV1::from))
+            .collect();
+        circle_reduce(py, "_unpickle_circle_array_v1", &states, &self.frame)
     }
 
     fn __copy__<'py>(slf: &Bound<'py, Self>) -> Bound<'py, Self> {
@@ -601,6 +751,8 @@ impl PyCircleArrayIter {
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(unpickle_circle_v1, module)?)?;
+    module.add_function(wrap_pyfunction!(unpickle_circle_array_v1, module)?)?;
     crate::add_classes!(module; PyCircle, PyCircleArray, PyCircleArrayIter);
     initialize_sequence_type::<PyCircleArray>(module)
 }

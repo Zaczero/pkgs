@@ -66,6 +66,10 @@ _ExtensionDtype = _pd.api.extensions.ExtensionDtype
 _ExtensionArray = _pd.api.extensions.ExtensionArray
 
 
+def _unpickle_geometry_dtype_v1() -> GeometryDtype:
+    return GeometryDtype()
+
+
 # mypy cannot model these runtime-selected pandas extension bases. This module
 # is imported only by pandas adapter calls, so pandas remains optional to the
 # top-level package.
@@ -76,6 +80,9 @@ class GeometryDtype(_ExtensionDtype):  # type: ignore[valid-type, misc]
     name = 'gometry.geometry'
     type: builtins.type[Geometry] = Geometry
     na_value = None
+
+    def __reduce__(self):
+        return _unpickle_geometry_dtype_v1, ()
 
     @classmethod
     def construct_from_string(cls, string: str) -> GeometryDtype:

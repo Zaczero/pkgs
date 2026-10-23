@@ -7,7 +7,7 @@ mod input;
 mod operations;
 mod output;
 
-pub(crate) use circle::FramedCircle;
+pub(crate) use circle::{FramedCircle, FramedCircleStateV1};
 pub(crate) use frame::{UtmZone, bearing_from_azimuth, estimate_local_crs, normalize_longitude};
 pub(crate) use input::{LocalInputPurpose, PreparedLocalInput};
 pub(crate) use operations::{

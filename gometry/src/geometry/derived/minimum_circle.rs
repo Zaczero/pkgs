@@ -164,6 +164,45 @@ impl MinimumCircle {
 }
 
 impl CertifiedDisk {
+    pub(super) const fn components(&self) -> ([&ExactDyadic; 5], Option<Point>) {
+        (
+            [
+                &self.center_x,
+                &self.center_y,
+                &self.center_w,
+                &self.radius_squared_numerator,
+                &self.radius_squared_denominator,
+            ],
+            self.source_center,
+        )
+    }
+
+    pub(super) fn from_components(
+        components: [ExactDyadic; 5],
+        source_center: Option<Point>,
+    ) -> Result<Self> {
+        let [
+            center_x,
+            center_y,
+            center_w,
+            radius_squared_numerator,
+            radius_squared_denominator,
+        ] = components;
+        if center_w.is_zero() || radius_squared_denominator.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        let exact_zero_radius = radius_squared_numerator.is_zero();
+        Ok(Self {
+            center_x,
+            center_y,
+            center_w,
+            radius_squared_numerator,
+            radius_squared_denominator,
+            source_center,
+            exact_zero_radius,
+        })
+    }
+
     pub(super) fn exact_values(
         &self,
     ) -> Result<(

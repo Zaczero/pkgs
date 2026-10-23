@@ -5,6 +5,9 @@ use super::{build_inscribed_circle_budgeted, emit_minimum_bounding_circle};
 use crate::error::Result;
 use crate::geometry::{ExactRational, ExpansionBudget, Point, Shape};
 
+mod state;
+pub(crate) use state::{CircleStateV1, PointStateV1};
+
 /// A solved disk, independent of its polygonal realization.
 #[derive(Debug)]
 pub(crate) enum CircleSolution {

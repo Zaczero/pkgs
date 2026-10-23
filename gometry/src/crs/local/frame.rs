@@ -23,7 +23,7 @@ use crate::geometry::ShapeCountQuery;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
-const LOCAL_CRS_DISPLAY_NAME: &str = "Local conformal CRS";
+pub(super) const LOCAL_CRS_DISPLAY_NAME: &str = "Local conformal CRS";
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalCrsDefinition {

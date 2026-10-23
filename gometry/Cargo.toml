@@ -54,7 +54,7 @@ pyo3 = { workspace = true, default-features = false, features = [
   "multiple-pymethods"
 ] }
 rstar = { version = "0.13.0", default-features = false }
-serde = { workspace = true, default-features = false, features = ["std"] }
+serde = { workspace = true, default-features = false, features = ["std", "derive"] }
 # `float_roundtrip`: correctly-rounded binary64 parse so GeoJSON text→f64→text
 # is bit-identical (R15-G). Measured ~+5% on full Value parse of the countries
 # fixture vs default. `raw_value` preserves only opaque Feature properties/ids

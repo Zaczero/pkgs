@@ -362,8 +362,8 @@ _IntArrayUnknownRank: TypeAlias = np.ndarray[
 _BoolArray1D: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool_]]
 _FloatColumn1D: TypeAlias = FloatColumn | _FloatArray1D
 _IntInput: TypeAlias = _IntScalar | _IntArray0D | _IntArray1D | Iterable[int] | Buffer
-_IndexLane: TypeAlias = Iterable[int] | _IntArray1D | Buffer
-_BoolLane: TypeAlias = Iterable[bool]
+_IndexLane: TypeAlias = Sequence[SupportsIndex] | _IntArray1D | Buffer
+_BoolLane: TypeAlias = Sequence[bool]
 _IdArray: TypeAlias = _IntArray0D | _IntArray1D | Buffer
 _Coordinate: TypeAlias = Iterable[float]
 _CoordinateMatrix: TypeAlias = (
@@ -11732,7 +11732,20 @@ class Circle:
             If a geographic polygon cannot fit the local projection's accuracy domain.
             Ellipsoidal center and radius remain available for widely separated sites.
         """
+    @property
+    def is_empty(self) -> bool:
+        """Whether the circle has no points. A zero-radius circle is not empty.
+
+        Returns
+        -------
+        bool
+            True for an empty circle; false for a solved disk or source point.
+        """
+    def __bool__(self) -> bool: ...
     def __repr__(self) -> str: ...
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., Self], tuple[bytes, str | None, float | None]]: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: dict[int, Any]) -> Self: ...
     def __eq__(self, other: object, /) -> bool: ...
@@ -11744,8 +11757,9 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
 
     ``center`` returns a point GeometryArray; ``radius`` returns a read-only
     NumPy array with NaN for empty or missing rows. ``is_missing`` distinguishes
-    missing rows from empty circles. Indexing returns Circle or None; slicing
-    retains the circle solutions without repeating their optimization.
+    missing rows from empty circles. Scalar indexing returns Circle or None;
+    slices, integer gathers, and boolean masks retain the circle solutions
+    without repeating their optimization.
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self: ...
     center: _CircleArrayCenterProjection
@@ -11826,6 +11840,15 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
         CRSError
             If a geographic realization exceeds the local-projection accuracy domain.
         """
+    @property
+    def is_empty(self) -> npt.NDArray[np.bool_]:
+        """Read-only boolean mask identifying empty circles.
+
+        Returns
+        -------
+        numpy.ndarray of bool
+            True for empty circles; false for nonempty and missing rows.
+        """
     def __len__(self) -> int: ...
     def __contains__(self, value: object, /) -> bool: ...
     def count(self, value: object) -> int:
@@ -11869,13 +11892,28 @@ class CircleArray(Sequence[_CircleT_co], Generic[_CircleT_co]):
             If the selected window contains no equal Circle or missing row.
         """
     @overload
+    def __getitem__(self, index: _IntArray0D, /) -> _CircleT_co: ...
+    @overload
+    def __getitem__(self, index: _IntArray1D, /) -> Self: ...
+    @overload
+    def __getitem__(self, index: _BoolArray1D, /) -> Self: ...
+    @overload
+    def __getitem__(self, index: _IntArrayUnknownRank, /) -> _CircleT_co | Self: ...
+    @overload
     def __getitem__(self, index: SupportsIndex, /) -> _CircleT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
+    @overload
+    def __getitem__(self, index: _BoolLane, /) -> Self: ...
+    @overload
+    def __getitem__(self, index: _IndexLane, /) -> Self: ...
     def __iter__(self) -> CircleArrayIterator[_CircleT_co]: ...
     def __reversed__(self) -> CircleArrayIterator[_CircleT_co]: ...
     def __class_getitem__(cls, key: Any) -> types.GenericAlias: ...
     def __repr__(self) -> str: ...
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., Self], tuple[bytes, str | None, float | None]]: ...
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: dict[int, Any]) -> Self: ...
     def __eq__(self, other: object, /) -> bool: ...
@@ -11931,7 +11969,7 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
         values: _GroupValuesT,
         offsets: _IntArray1D | Iterable[_IntScalar],
         *,
-        missing: _BoolArray1D | _BoolLane | None,
+        missing: _BoolArray1D | Iterable[bool] | None,
     ) -> Groups[_GroupValuesT | None]:
         """Group a flat typed values array using CSR row boundaries.
 

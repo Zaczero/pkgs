@@ -6,7 +6,6 @@ use pyo3::exceptions::{PyIndexError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PySequence, PySlice};
 
-use crate::HeapSize;
 use crate::array::{
     CollectedFancyIndex, NumpyFancyIndex, classify_and_collect_fancy_index, is_bool_scalar,
     numpy_fancy_index,
@@ -44,7 +43,7 @@ impl RowIterState {
 }
 
 /// Monomorphized row behavior for sequence-like containers.
-pub(crate) trait RowContainer: HeapSize + Sized {
+pub(crate) trait RowContainer: Sized {
     const LABEL: &'static str;
     const INDEX_LABEL: &'static str = Self::LABEL;
 

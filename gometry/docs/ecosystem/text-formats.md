@@ -295,7 +295,8 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 ## Pickle, multiprocessing, and copies
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
-`GeometryArray`, [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
+`GeometryArray`, [`Circle`][gometry.Circle], [`CircleArray`][gometry.CircleArray],
+[`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
 [`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
 [`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
@@ -319,6 +320,10 @@ can be sent out of band when the pickler uses `buffer_callback`. Those buffers
 are read-only `PickleBuffer` values; the unpickler must receive the collected
 buffers. Pickle protocol 5 alone does not make ordinary process-pool transfers
 zero-copy or create shared memory.
+
+Circle pickles retain the solved disk, including its exact planar values and
+working CRS. Loading does not repeat the optimization or replace the solution
+with its rounded center and radius.
 
 ### Stored-format compatibility
 

@@ -19,7 +19,7 @@ pub(crate) use centroid::{
     centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, lineal_centroid,
     point_centroid, point_set_center_summary,
 };
-pub(crate) use circle::CircleSolution;
+pub(crate) use circle::{CircleSolution, CircleStateV1, PointStateV1};
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
 pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_chart_hull, monotone_chain_hull, shape_from_open_hull,

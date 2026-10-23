@@ -447,6 +447,7 @@ class _RowIndex:
 
 
 row_index: SupportsIndex = _RowIndex()
+assert_type(POINTS[[row_index]], gm.GeometryArray[gm.Point])
 integer_index_0d: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(
     0, dtype=np.int64
 )
@@ -1161,7 +1162,9 @@ assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
 assert_type(gm.require('POINT (1 1)'), gm.Geometry)
 assert_type(POLY.polylabel(), gm.Point)
 assert_type(POLY.minimum_bounding_circle().radius, float)
+assert_type(POLY.minimum_bounding_circle().is_empty, bool)
 assert_type(POINTS.minimum_bounding_circle().radius, npt.NDArray[np.float64])
+assert_type(POINTS.minimum_bounding_circle().is_empty, npt.NDArray[np.bool_])
 assert_type(POLY.minimum_bounding_circle(), gm.Circle)
 assert_type(POLY.maximum_inscribed_circle(), gm.Circle)
 assert_type(POLY.minimum_bounding_circle().center, gm.Point)
@@ -1170,6 +1173,11 @@ assert_type(POINTS.minimum_bounding_circle(), gm.CircleArray[gm.Circle])
 assert_type(POINTS.minimum_bounding_circle().center, gm.GeometryArray[gm.Point])
 assert_type(POINTS.minimum_bounding_circle()[0], gm.Circle)
 assert_type(POINTS.minimum_bounding_circle()[1:], gm.CircleArray[gm.Circle])
+assert_type(POINTS.minimum_bounding_circle()[[1, 0]], gm.CircleArray[gm.Circle])
+assert_type(
+    NULLABLE_POINTS.minimum_bounding_circle()[[True, False]],
+    gm.CircleArray[gm.Circle | None],
+)
 assert_type(NULLABLE_POINTS.minimum_bounding_circle(), gm.CircleArray[gm.Circle | None])
 assert_type(NULLABLE_POINTS.minimum_bounding_circle()[0], gm.Circle | None)
 assert_type(

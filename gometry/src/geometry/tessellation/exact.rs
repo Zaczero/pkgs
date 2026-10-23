@@ -91,6 +91,10 @@ fn slices_equal_with_work<W: Work>(left: &[u64], right: &[u64], work: &mut W) ->
 }
 
 impl ExactRational {
+    pub(crate) const fn components(&self) -> (&ExactDyadic, &ExactDyadic) {
+        (&self.numerator, &self.denominator)
+    }
+
     pub(crate) fn new(numerator: ExactDyadic, denominator: ExactDyadic) -> Result<Self> {
         Self::new_with_work(numerator, denominator, &mut Unmetered)
     }

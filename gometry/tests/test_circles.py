@@ -2,6 +2,7 @@
 
 import copy
 import math
+import pickle
 import types
 from collections.abc import Sequence
 
@@ -9,6 +10,123 @@ import gometry as gm
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
+
+
+def test_circle_truthiness_distinguishes_empty_from_zero_radius() -> None:
+    circles = gm.GeometryArray([
+        gm.Point(1, 2),
+        None,
+        gm.from_wkt('POINT EMPTY'),
+    ]).minimum_bounding_circle()
+    assert bool(circles[0])
+    assert not circles[0].is_empty
+    assert not bool(circles[2])
+    assert circles[2].is_empty
+    assert_array_equal(circles.is_empty, [False, False, True])
+    assert_array_equal(circles.is_missing, [False, True, False])
+    assert bool(circles)
+    assert not bool(circles[:0])
+
+
+@pytest.mark.parametrize(
+    ('selection', 'rows'),
+    [
+        ([2, 0, 2], [2, 0, 2]),
+        (np.array([-1, 0]), [2, 0]),
+        ([False, True, True], [1, 2]),
+        (np.array([True, False, True]), [0, 2]),
+        ([], []),
+    ],
+)
+def test_circle_array_selection_preserves_solution_and_frame(selection, rows) -> None:
+    circles = gm.GeometryArray([
+        gm.Point(9, 10, crs=4326, epoch=2020.5),
+        gm.Point(1, 2, crs=4326, epoch=2020.5),
+        None,
+        gm.Point(3, 4, crs=4326, epoch=2020.5),
+    ]).minimum_bounding_circle()[1:]
+    selected = circles[selection]
+    assert list(selected) == [circles[row] for row in rows]
+    assert selected.center.crs == circles.center.crs
+    assert selected.center.epoch == circles.center.epoch
+    assert selected.to_polygon() == circles.to_polygon()[selection]
+
+
+@pytest.mark.parametrize(
+    ('selection', 'error'),
+    [
+        (True, TypeError),
+        (np.bool_(False), TypeError),
+        ([True], IndexError),
+        ([3], IndexError),
+        (np.array([[0]]), TypeError),
+    ],
+)
+def test_circle_array_rejects_invalid_row_selection(selection, error) -> None:
+    circles = gm.GeometryArray([gm.Point(1, 2), None]).minimum_bounding_circle()
+    with pytest.raises(error):
+        circles[selection]
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'crs', 'unit', 'operation'),
+    [
+        ('POINT ZM (1 -0 7 13)', None, None, 'minimum_bounding_circle'),
+        ('POINT EMPTY', None, None, 'minimum_bounding_circle'),
+        ('MULTIPOINT ((0 0), (3 0), (1 2))', None, None, 'minimum_bounding_circle'),
+        ('MULTIPOINT ((-1e300 0), (1e300 0))', None, None, 'minimum_bounding_circle'),
+        ('MULTIPOINT ((-1e-300 0), (1e-300 0))', None, None, 'minimum_bounding_circle'),
+        ('POLYGON ((0 0, 4 0, 4 2, 0 2, 0 0))', None, None, 'maximum_inscribed_circle'),
+        ('POLYGON ((0 0, 1 0, 2 0, 0 0))', None, None, 'maximum_inscribed_circle'),
+        ('POINT ZM (10 20 7 13)', 4326, None, 'minimum_bounding_circle'),
+        ('MULTIPOINT ((10 20), (10.1 20.1))', 4326, None, 'minimum_bounding_circle'),
+        (
+            'MULTIPOINT ((10 20), (10.1 20), (10 20.1))',
+            4326,
+            None,
+            'minimum_bounding_circle',
+        ),
+        (
+            'MULTIPOINT ((10 20), (10.1 20), (10 20.1))',
+            4326,
+            'planar',
+            'minimum_bounding_circle',
+        ),
+        ('MULTIPOINT ((0 0), (3 0), (1 2))', 2227, 'meters', 'minimum_bounding_circle'),
+    ],
+)
+def test_circle_pickle_retains_solution(wkt, crs, unit, operation) -> None:
+    source = gm.from_wkt(wkt, crs=crs)
+    if crs == 4326:
+        source = source.with_epoch(2020.5)
+    circle = getattr(source, operation)(unit=unit)
+    payload = pickle.dumps(circle)
+    gm.crs_clear_cache()
+    restored = pickle.loads(payload)
+    assert restored == circle
+    assert restored.center == circle.center
+    assert restored.radius.hex() == circle.radius.hex()
+    assert restored.working_crs == circle.working_crs
+    assert restored.unit == circle.unit
+    for segments in (4, 9):
+        assert restored.to_polygon(quadrant_segments=segments) == circle.to_polygon(
+            quadrant_segments=segments
+        )
+
+
+def test_circle_array_pickle_retains_selected_and_missing_rows() -> None:
+    circles = gm.GeometryArray([
+        gm.Point(1, 2),
+        None,
+        gm.from_wkt('POINT EMPTY'),
+        gm.LineString([(0, 0), (3, 4)]),
+    ]).minimum_bounding_circle()[::-1]
+    restored = pickle.loads(pickle.dumps(circles))
+    assert restored == circles
+    assert restored.center == circles.center
+    assert_array_equal(restored.radius, circles.radius)
+    assert_array_equal(restored.is_missing, circles.is_missing)
+    assert restored.to_polygon() == circles.to_polygon()
 
 
 def test_circle_array_generic_alias_is_a_native_runtime_contract() -> None:
