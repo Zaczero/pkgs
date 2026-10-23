@@ -5,8 +5,11 @@ from __future__ import annotations
 import itertools
 import json
 import numbers
-import os  # ruff: ignore[typing-only-standard-library-import] - required by runtime get_type_hints
+import os
+import stat
+import tempfile
 from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from gometry._geoparquet_metadata import (
@@ -261,6 +264,8 @@ def to_geoparquet(
     path : str, path-like, or binary stream
         Output Parquet path or caller-owned binary writable stream. Text
         streams are not supported; the writer leaves streams open.
+        Local files are replaced atomically after a successful write. Streams
+        and remote filesystems may retain partial output if writing fails.
     attributes : pyarrow.Table or mapping, optional
         Aligned non-geometry columns to preserve beside the geometry column.
     encoding : {'wkb', 'geoarrow', 'geometry'}, default 'wkb'
@@ -362,7 +367,40 @@ def to_geoparquet(
     metadata = dict(table.schema.metadata or {})
     metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
     table = table.replace_schema_metadata(metadata)
-    _pyarrow_parquet().write_table(table, path, **kwargs)
+    _write_table(table, path, kwargs)
+
+
+def _write_table(table: Any, path: Any, options: dict[str, Any]) -> None:
+    from pyarrow import fs
+
+    filesystem = options.get('filesystem')
+    local_path = None
+    if isinstance(path, (str, os.PathLike)):
+        destination = os.fspath(path)
+        if filesystem is None and destination.startswith('file://'):
+            filesystem, destination = fs.FileSystem.from_uri(destination)
+        if (filesystem is None and '://' not in destination) or isinstance(
+            filesystem, fs.LocalFileSystem
+        ):
+            local_path = Path(destination).resolve()
+    if local_path is None:
+        _pyarrow_parquet().write_table(table, path, **options)
+        return
+
+    # Follow a destination symlink as an ordinary file write would.
+    mode = stat.S_IMODE(local_path.stat().st_mode) if local_path.exists() else None
+    with tempfile.TemporaryDirectory(
+        dir=local_path.parent, prefix=f'.{local_path.name}.'
+    ) as directory:
+        temporary = Path(directory) / local_path.name
+        with temporary.open('xb') as output:
+            stream_options = {
+                key: value for key, value in options.items() if key != 'filesystem'
+            }
+            _pyarrow_parquet().write_table(table, output, **stream_options)
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, local_path)
 
 
 def _dictionary_decode_column(pa: Any, column: Any) -> Any:
@@ -876,7 +914,7 @@ def from_geoparquet(
         else None
     )
     if native_columns or (
-        geo_metadata is not None and geo_metadata['version'] == '2.0.0'
+        geo_metadata is not None and geo_metadata['version'].startswith('2.')
     ):
         schema, geo_metadata = admit_native_columns(
             pa,
@@ -1019,7 +1057,7 @@ def from_geoparquet(
         epoch,
         field=geometry_field,
         layout=layout,
-        allow_m=geo_metadata['version'] == '2.0.0',
+        allow_m=geo_metadata['version'].startswith('2.'),
     )
     if rectangle is not None:
         from gometry import intersects

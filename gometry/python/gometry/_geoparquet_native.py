@@ -33,9 +33,13 @@ def logical_columns(parquet_schema: Any, schema: Any) -> dict[str, dict[str, Any
     return result
 
 
-def _logical_crs(logical: dict[str, Any], schema: Any) -> str | None:
+def _logical_crs(
+    logical: dict[str, Any], schema: Any, *, declared_unknown: bool = False
+) -> str | None:
     value = logical.get('crs', 'OGC:CRS84')
-    if value == 'srid:0':
+    # PyArrow 26 rewrites srid:0 as 0. Require the file's explicit unknown-CRS
+    # declaration before interpreting that otherwise invalid authority label.
+    if value == 'srid:0' or (value == '0' and declared_unknown):
         return None
     if value.startswith('srid:'):
         raise _metadata_error(
@@ -119,7 +123,13 @@ def _extension_metadata_frame(
             metadata.get('crs') == 'srid:0'
             and metadata.get('crs_type') in (None, 'authority_code')
         )
-        or (metadata.get('crs_type') == 'srid' and metadata.get('crs') == '0')
+        or (
+            (
+                metadata.get('crs') == '0'
+                or (type(metadata.get('crs')) is int and metadata['crs'] == 0)
+            )
+            and metadata.get('crs_type') in (None, 'authority_code', 'srid')
+        )
     ):
         if crs is not None:
             raise _metadata_error('Arrow unknown CRS conflicts with native Parquet CRS')
@@ -197,13 +207,17 @@ def admit_native_columns(
                 'uses straight source-chart edges. Explicitly convert the curves '
                 'and re-encode as GEOMETRY before reading'
             )
-        crs = _logical_crs(declaration, schema)
         if name not in metadata.get('columns', {}):
             raise _metadata_error(
                 f'native geometry column {name!r} is absent from geo metadata'
             )
         column_meta, encoding, declared_crs, epoch = _validate_column_metadata(
             metadata, name
+        )
+        crs = _logical_crs(
+            declaration,
+            schema,
+            declared_unknown='crs' in column_meta and column_meta['crs'] is None,
         )
         if encoding != 'WKB':
             raise _metadata_error('native Parquet GEOMETRY requires WKB encoding')

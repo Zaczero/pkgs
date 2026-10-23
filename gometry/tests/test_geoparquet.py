@@ -141,6 +141,77 @@ def test_to_geoparquet_from_geoparquet_roundtrip(
     _assert_roundtrip(geometries, restored)
 
 
+@pytest.mark.parametrize('destination', ['path', 'uri', 'filesystem'])
+def test_failed_overwrite_preserves_existing_file(tmp_path, destination) -> None:
+    import pyarrow as pa
+    from pyarrow import fs
+
+    path = tmp_path / 'data.parquet'
+    gm.GeometryArray([gm.Point(1, 2)]).to_geoparquet(path)
+    original = path.read_bytes()
+    target = path.as_uri() if destination == 'uri' else path
+    options = (
+        {'filesystem': fs.LocalFileSystem()} if destination == 'filesystem' else {}
+    )
+    with pytest.raises(pa.ArrowException, match=r'compression|Compression'):
+        gm.GeometryArray([gm.Point(3, 4)]).to_geoparquet(
+            target, compression='not-a-real-codec', **options
+        )
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_local_overwrite_preserves_symlink_and_permissions(tmp_path) -> None:
+    if os.name == 'nt':
+        pytest.skip('Unix symlink and mode behavior')
+    path = tmp_path / 'data.parquet'
+    alias = tmp_path / 'alias.parquet'
+    gm.GeometryArray([gm.Point(1, 2)]).to_geoparquet(path)
+    path.chmod(0o640)
+    alias.symlink_to(path)
+    gm.GeometryArray([gm.Point(3, 4)]).to_geoparquet(alias)
+    assert alias.is_symlink()
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert _read_geometry(path).to_wkt() == ['POINT (3 4)']
+
+
+@pytest.mark.parametrize('version', ['2.0.0', '2.0.1', '2.1.0'])
+def test_native_geoparquet_compatible_versions(parquet_path: str, version: str) -> None:
+    import pyarrow.parquet as pq
+
+    gm.GeometryArray([gm.Point(1, 2, m=3, crs=4326)]).to_geoparquet(
+        parquet_path, encoding='geometry'
+    )
+    table = pq.read_table(parquet_path)
+    metadata = dict(table.schema.metadata)
+    geo = json.loads(metadata[b'geo'])
+    geo['version'] = version
+    metadata[b'geo'] = json.dumps(geo).encode()
+    pq.write_table(table.replace_schema_metadata(metadata), parquet_path)
+    restored = _read_geometry(parquet_path)
+    assert restored.to_wkt() == ['POINT M (1 2 3)']
+    assert restored.crs == gm.CRS(4326)
+
+
+def test_native_unknown_crs_survives_pyarrow_rewrite(parquet_path: str) -> None:
+    import pyarrow.parquet as pq
+
+    gm.GeometryArray([gm.Point(1, 2)]).to_geoparquet(parquet_path, encoding='geometry')
+    table = pq.read_table(parquet_path)
+    pq.write_table(table, parquet_path)
+    restored = _read_geometry(parquet_path)
+    assert restored.to_wkt() == ['POINT (1 2)']
+    assert restored.crs is None
+
+
+def test_native_zero_crs_requires_an_explicit_unknown_declaration() -> None:
+    import pyarrow as pa
+    from gometry._geoparquet_native import _logical_crs
+
+    with pytest.raises(gm.ParseError, match='invalid native Parquet CRS'):
+        _logical_crs({'crs': '0'}, pa.schema([]))
+
+
 def test_scalar_geometry_writes_single_row(parquet_path: str) -> None:
     point = gm.Point(2, 3, crs=4326)
     gm.GeometryArray([point]).to_geoparquet(parquet_path)

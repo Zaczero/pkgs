@@ -43,7 +43,7 @@ _GEOMETRY_TYPES = frozenset({
 })
 _SEMVER_IDENTIFIER = r'(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
 _VERSION_PATTERN = re.compile(
-    rf'^1\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+    rf'^[12]\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
     rf'(?:-{_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*)?'
     r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
 )
@@ -204,9 +204,9 @@ def _parse_geo_metadata(schema: Any) -> Mapping[str, Any]:
     version = metadata.get('version')
     if not isinstance(version, str):
         raise _metadata_error('version is required and must be a string')
-    if version != '2.0.0' and _VERSION_PATTERN.fullmatch(version) is None:
+    if _VERSION_PATTERN.fullmatch(version) is None:
         raise _metadata_error(
-            f'unsupported GeoParquet version: {version!r}; expected 1.x or 2.0.0'
+            f'unsupported GeoParquet version: {version!r}; expected 1.x or 2.x'
         )
     return metadata
 
@@ -228,7 +228,7 @@ def _validate_column_metadata(
         raise _metadata_error(f'unsupported GeoParquet geometry encoding: {encoding!r}')
     geometry_types = column_metadata.get('geometry_types')
     allowed_types = _GEOMETRY_TYPES
-    if metadata.get('version') == '2.0.0':
+    if metadata.get('version', '').startswith('2.'):
         allowed_types |= {
             _geometry_type_base(kind) + suffix
             for kind in _GEOMETRY_TYPES
@@ -265,6 +265,6 @@ def _validate_column_metadata(
             column_name,
             bbox,
             allow_antimeridian=_crs_allows_antimeridian_bbox(crs),
-            allow_m=metadata.get('version') == '2.0.0',
+            allow_m=metadata.get('version', '').startswith('2.'),
         )
     return column_metadata, encoding, crs, epoch
