@@ -261,19 +261,19 @@ impl PySpatialIndex {
     }
 
     /// Compare live handles and geometries using mapping value semantics.
-    pub(crate) fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+    pub(crate) fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if !other.is_instance(&py.get_type::<PyMapping>())? {
-            return Ok(false);
+            return Ok(py.NotImplemented());
         }
         if other.len()? != self.__len__() {
-            return Ok(false);
+            return Ok(crate::broadcast::py_bool(py, false));
         }
         let values = PyDict::new(py);
         let geometries = py.detach(|| self.live_geometries())?;
         for (handle, geometry) in geometries {
             values.set_item(handle, crate::Typed(geometry).into_pyobject(py)?.unbind())?;
         }
-        values.eq(other)
+        Ok(crate::broadcast::py_bool(py, values.eq(other)?))
     }
 
     /// Whether ``handle`` is a live geometry handle.

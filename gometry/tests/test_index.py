@@ -54,6 +54,22 @@ def test_spatial_index_mapping_equality_is_live_value_based_and_unhashable() -> 
     assert index == {1: right}
 
 
+def test_spatial_index_equality_allows_reflected_comparison() -> None:
+    index = gm.SpatialIndex([gm.Point(1, 2)])
+
+    class IndexView:
+        __hash__ = None
+
+        def __eq__(self, other: object) -> bool:
+            return other is index
+
+    view = IndexView()
+    assert index.__eq__(view) is NotImplemented
+    assert index == view
+    assert view == index
+    assert index != object()
+
+
 def test_index_queries_and_joins_normalize_nullable_iterable_rows() -> None:
     first = gm.box(0, 0, 1, 1)
     second = gm.box(4, 4, 5, 5)
