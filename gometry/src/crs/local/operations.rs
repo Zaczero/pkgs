@@ -217,6 +217,7 @@ pub(crate) fn geodesic_by_identity(
             prepared.geographic_frame(),
         )?)?
     };
+    drop((original, plan));
     if matches!(restored, Shape::Point(_)) {
         return Ok(restored);
     }

@@ -344,6 +344,7 @@ fn point_set_minimum_rotated_rectangle(
                 .expect("hull ordinal belongs to chart sites")
         })
         .collect::<Vec<_>>();
+    drop((points, sites, hull));
     let coordinates = crate::geometry::minimum_area_rectangle_chart(&hull_sites, frame)?;
     Ok(Some(ChartedPointRectangle::ComputedRing { coordinates }))
 }

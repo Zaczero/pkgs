@@ -432,7 +432,7 @@ impl LocalExtent {
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
         let mut points = Vec::with_capacity(capacity);
-        for shape in &sources {
+        for shape in sources {
             let shape = shape.as_ref();
             let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
                 Cow::Borrowed(shape)
@@ -456,8 +456,10 @@ impl LocalExtent {
             ));
         }
 
-        let mut longitudes: Vec<f64> = points.iter().map(|(lon, _)| *lon).collect();
-        let (west, east, longitude) = circular_longitude_extent(&mut longitudes);
+        let (west, east, longitude) = {
+            let mut longitudes: Vec<f64> = points.iter().map(|(lon, _)| *lon).collect();
+            circular_longitude_extent(&mut longitudes)
+        };
         let (min_lat, max_lat) = points.iter().fold(
             (f64::INFINITY, f64::NEG_INFINITY),
             |(min_lat, max_lat), (_, lat)| (min_lat.min(*lat), max_lat.max(*lat)),
