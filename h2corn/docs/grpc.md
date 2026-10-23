@@ -14,8 +14,10 @@ Install h2corn and the
 [published Connect Python package](https://pypi.org/project/connectrpc/):
 
 ```console
-pip install h2corn connectrpc
+pip install h2corn connectrpc "protobuf-py<0.7"
 ```
+
+ConnectRPC currently requires the pre-0.7 `protobuf-py` module layout.
 
 Use CPython 3.11 or newer; see
 [Python compatibility and wheels](compatibility.md) for h2corn's runtime and
@@ -95,7 +97,7 @@ From the `h2corn/` package directory in a source checkout, install the example's
 dependencies and run it:
 
 ```console
-pip install h2corn connectrpc starlette asgi-lifespan
+pip install h2corn connectrpc "protobuf-py<0.7" starlette asgi-lifespan
 python -m examples.grpc.roundtrip
 ```
 

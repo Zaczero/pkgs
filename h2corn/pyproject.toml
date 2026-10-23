@@ -137,4 +137,7 @@ extend-select = ["non-capitalized-section-name", "missing-new-line-after-section
 convention = "google"
 
 [tool.uv]
+# ConnectRPC 0.12.1 imports the pre-0.7 protobuf.wkt modules. Remove once
+# ConnectRPC supports protobuf-py's relocated well-known types.
+constraint-dependencies = ["protobuf-py<0.7"]
 sources = { pyo3stubs = { path = "../pyo3stubs", editable = true }, benchroom = { path = "../benchroom", editable = true } }
