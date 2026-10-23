@@ -166,6 +166,7 @@ def minify_loader(
             return source, path, up_to_date
 
         source, lookup, placeholder_prefix = protected
+        del protected
         source = Minifier(**kwargs).minify(source)
 
         if lookup:
