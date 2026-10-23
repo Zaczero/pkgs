@@ -1,6 +1,8 @@
 import argparse
+import base64
 import dataclasses
 import os
+import pickle
 import sys
 import tomllib
 from pathlib import Path
@@ -13,6 +15,114 @@ from h2corn._config import config_options, tcp_bind_convenience
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class _NamedConfig(Config):
+    label: str = 'custom'
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class _NamedPolicy(RequestPolicy):
+    label: str = 'custom'
+
+
+@pytest.mark.parametrize(
+    'value',
+    [
+        Config(workers=3, backlog=1234),
+        _NamedConfig(workers=3, label='service'),
+        RequestPolicy(
+            path='/service/*',
+            max_request_body_size=123,
+            timeout_request_body_idle=7,
+            h2_timeout_response_stall=9,
+        ),
+        _NamedPolicy(
+            path='/service/*',
+            max_request_body_size=123,
+            timeout_request_body_idle=7,
+            h2_timeout_response_stall=9,
+            label='stream',
+        ),
+    ],
+)
+def test_config_pickle_preserves_named_options(value) -> None:
+    restored = pickle.loads(pickle.dumps(value))  # ruff: ignore[suspicious-pickle-usage] - Locally generated configuration.
+    assert type(restored) is type(value)
+    assert restored == value
+
+
+def test_config_pickle_named_state_is_independent_of_field_order() -> None:
+    from h2corn._config import _restore_config_v1, _restore_request_policy_v1
+
+    restored = _restore_config_v1({'backlog': 1234, 'workers': 3})
+    assert restored.backlog == 1234
+    assert restored.workers == 3
+    assert restored.bind == ('127.0.0.1:8000',)
+    policy = _restore_request_policy_v1({
+        'h2_timeout_response_stall': 9,
+        'path': '/service/*',
+        'timeout_request_body_idle': 7,
+        'max_request_body_size': 123,
+    })
+    assert policy.path == '/service/*'
+    assert policy.max_request_body_size == 123
+    assert policy.timeout_request_body_idle == 7
+    assert policy.h2_timeout_response_stall == 9
+
+
+def test_v1_config_pickle_preserves_released_option_names() -> None:
+    payload = (
+        'gASVrAUAAAAAAACMDmgyY29ybi5fY29uZmlnlIwSX3Jlc3RvcmVfY29uZmlnX3YxlJOUfZQojAlyb290X3BhdGiU'
+        'jACUjAhsaWZlc3BhbpSMBGF1dG+UjBh0aW1lb3V0X2xpZmVzcGFuX3N0YXJ0dXCUR0BOAAAAAAAAjBl0aW1lb3V0'
+        'X2xpZmVzcGFuX3NodXRkb3dulEdAPgAAAAAAAIwEYmluZJSMDjEyNy4wLjAuMTo4MDAwlIWUjA91ZHNfcGVybWlz'
+        'c2lvbnOUTowHYmFja2xvZ5RN0gSMCnJldXNlX3BvcnSUiYwIY2VydGZpbGWUTowHa2V5ZmlsZZROjAhjYV9jZXJ0'
+        'c5ROjAljZXJ0X3JlcXOUjARub25llIwDcGlklE6MBHVzZXKUTowFZ3JvdXCUTowFdW1hc2uUTowHd29ya2Vyc5RL'
+        'A4wPcnVudGltZV90aHJlYWRzlEsCjARsb29wlGgHjAxsb29wX3RocmVhZHOUSwGMDG1heF9yZXF1ZXN0c5RLAIwT'
+        'bWF4X3JlcXVlc3RzX2ppdHRlcpRLAIwadGltZW91dF93b3JrZXJfaGVhbHRoY2hlY2uUR0A+AAAAAAAAjAVodHRw'
+        'MZSIjARncnBjlImMCmFjY2Vzc19sb2eUiIwKbG9nX2Zvcm1hdJSMBHRleHSUjBZtYXhfY29uY3VycmVudF9zdHJl'
+        'YW1zlE0AAYwXbGltaXRfcmVxdWVzdF9oZWFkX3NpemWUSgAAEACMEmxpbWl0X3JlcXVlc3RfbGluZZRNAECMFGxp'
+        'bWl0X3JlcXVlc3RfZmllbGRzlEtkjBhsaW1pdF9yZXF1ZXN0X2ZpZWxkX3NpemWUTQCAjBdoMl9tYXhfaGVhZGVy'
+        'X2xpc3Rfc2l6ZZRKAAAQAIwYaDJfbWF4X2hlYWRlcl9ibG9ja19zaXpllEoAABAAjBloMl9tYXhfaW5ib3VuZF9m'
+        'cmFtZV9zaXpllEoAAAEAjB1oMl9pbml0aWFsX3N0cmVhbV93aW5kb3dfc2l6ZZRKAACAAIwhaDJfaW5pdGlhbF9j'
+        'b25uZWN0aW9uX3dpbmRvd19zaXpllEoAAIAAjBVtYXhfcmVxdWVzdF9ib2R5X3NpemWUSgAAAECMEHJlcXVlc3Rf'
+        'cG9saWNpZXOUKYwRbGltaXRfY29uY3VycmVuY3mUSwCMEWxpbWl0X2Nvbm5lY3Rpb25zlEsAjBF0aW1lb3V0X2hh'
+        'bmRzaGFrZZRHQBQAAAAAAACMGXRpbWVvdXRfZ3JhY2VmdWxfc2h1dGRvd26UR0A+AAAAAAAAjBJ0aW1lb3V0X2tl'
+        'ZXBfYWxpdmWUR0BeAAAAAAAAjBZ0aW1lb3V0X3JlcXVlc3RfaGVhZGVylEdAJAAAAAAAAIwZdGltZW91dF9yZXF1'
+        'ZXN0X2JvZHlfaWRsZZRHQE4AAAAAAACMGWgyX3RpbWVvdXRfcmVzcG9uc2Vfc3RhbGyUR0BOAAAAAAAAjBBoMl90'
+        'aW1lb3V0X3dyaXRllEdATgAAAAAAAIwad2Vic29ja2V0X21heF9tZXNzYWdlX3NpemWUSgAAAAGMHXdlYnNvY2tl'
+        'dF9wZXJfbWVzc2FnZV9kZWZsYXRllIiMF3dlYnNvY2tldF9waW5nX2ludGVydmFslEdATgAAAAAAAIwWd2Vic29j'
+        'a2V0X3BpbmdfdGltZW91dJRHQD4AAAAAAACMDXByb3h5X2hlYWRlcnOUiYwTZm9yd2FyZGVkX2FsbG93X2lwc5SM'
+        'CTEyNy4wLjAuMZSMAzo6MZSMBHVuaXiUh5SMEGZvcndhcmRlZF9maWVsZHOUjANmb3KUjAVwcm90b5SGlIwOcHJv'
+        'eHlfcHJvdG9jb2yUjANvZmaUjA1zZXJ2ZXJfaGVhZGVylGhJjAtkYXRlX2hlYWRlcpSIjBByZXNwb25zZV9oZWFk'
+        'ZXJzlCl1hZRSlC4='
+    )
+    restored = pickle.loads(base64.b64decode(payload))  # ruff: ignore[suspicious-pickle-usage] - Frozen trusted fixture.
+    assert restored.workers == 3
+    assert restored.backlog == 1234
+    assert restored.bind == ('127.0.0.1:8000',)
+
+
+def test_v1_request_policy_pickle_preserves_field_meanings() -> None:
+    payload = (
+        'gASVsQAAAAAAAACMDmgyY29ybi5fY29uZmlnlIwaX3Jlc3RvcmVfcmVxdWVzdF9wb2xpY3lfdjGUk5R9lCiMBHBh'
+        'dGiUjAovc2VydmljZS8qlIwVbWF4X3JlcXVlc3RfYm9keV9zaXpllEt7jBl0aW1lb3V0X3JlcXVlc3RfYm9keV9p'
+        'ZGxllEdAHAAAAAAAAIwZaDJfdGltZW91dF9yZXNwb25zZV9zdGFsbJRHQCIAAAAAAAB1hZRSlC4='
+    )
+    restored = pickle.loads(base64.b64decode(payload))  # ruff: ignore[suspicious-pickle-usage] - Frozen trusted fixture.
+    assert restored == RequestPolicy(
+        path='/service/*',
+        max_request_body_size=123,
+        timeout_request_body_idle=7,
+        h2_timeout_response_stall=9,
+    )
+
+
+def test_unknown_server_environment_variable_is_actionable() -> None:
+    with pytest.raises(ValueError, match='H2CORN_MAX_REQUEST_BODY_SIZ'):
+        Config.from_env({'H2CORN_MAX_REQUEST_BODY_SIZ': '17'})
+    assert Config.from_env({'OTHER_APPLICATION_OPTION': '17'}) == Config()
 
 
 def test_config_fields_are_exactly_the_documented_options() -> None:

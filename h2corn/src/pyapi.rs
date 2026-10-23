@@ -1668,7 +1668,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
-    fn extract_server_config_matches_python_stub() {
+    fn extract_server_config_matches_public_configuration() {
         Python::initialize();
         Python::attach(|py| {
             let config = config_stub(py);
@@ -1681,9 +1681,38 @@ mod tests {
             policy.setattr("max_request_body_size", 123_456).unwrap();
             policy.setattr("timeout_request_body_idle", 1.25).unwrap();
             policy.setattr("h2_timeout_response_stall", 2.5).unwrap();
+            let module = py.import("h2corn").expect("public h2corn package imports");
+            let policy = module
+                .getattr("RequestPolicy")
+                .unwrap()
+                .call(
+                    (),
+                    Some(
+                        policy
+                            .getattr("__dict__")
+                            .unwrap()
+                            .cast::<PyDict>()
+                            .unwrap(),
+                    ),
+                )
+                .expect("public request policy accepts the configuration");
             config
                 .setattr("request_policies", PyTuple::new(py, [policy]).unwrap())
                 .unwrap();
+            let config = module
+                .getattr("Config")
+                .unwrap()
+                .call(
+                    (),
+                    Some(
+                        config
+                            .getattr("__dict__")
+                            .unwrap()
+                            .cast::<PyDict>()
+                            .unwrap(),
+                    ),
+                )
+                .expect("public configuration accepts the native options");
 
             let extracted = PyConfig(&config)
                 .server_config(None)

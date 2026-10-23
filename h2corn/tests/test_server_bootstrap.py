@@ -3024,14 +3024,15 @@ def test_env_file_is_read_before_privileges_drop(
     from h2corn._cli import ImportSettings
 
     env_file = tmp_path / 'secrets.env'
-    env_file.write_text('H2CORN_DEMO_SECRET=from-file\n')
+    env_file.write_text('ENVDEMO_SECRET=from-file\n')
     (tmp_path / 'envdemo.py').write_text(
         'import os\n'
         'async def app(scope, receive, send):\n'
         '    return None\n'
-        "app.loaded = os.environ.get('H2CORN_DEMO_SECRET')\n"
+        "app.loaded = os.environ.get('ENVDEMO_SECRET')\n"
     )
-    monkeypatch.delenv('H2CORN_DEMO_SECRET', raising=False)
+    monkeypatch.setenv('ENVDEMO_SECRET', '')
+    monkeypatch.delenv('ENVDEMO_SECRET')
 
     settings = ImportSettings(target='envdemo:app', app_dir=tmp_path, env_file=env_file)
     # What serve_with_supervisor does before it forks.

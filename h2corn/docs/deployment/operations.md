@@ -434,6 +434,11 @@ line for log shipping.
 Numeric fields remain numbers. Timestamps come from the log collector
 (journald, Docker, or Kubernetes), rather than from the record.
 
+Within a major release, event names and existing field types, meanings, and
+units remain stable. New events and fields may be added; consumers should
+ignore fields and events they do not use. An incompatible log change follows
+the [upgrade policy](../compatibility.md#upgrading).
+
 [`--access-log`](../configuration.md#option-access_log) and `--log-format` are independent — [`--no-access-log`](../configuration.md#option-access_log)
 `--log-format json` keeps the diagnostics machine-readable while dropping the
 per-request records.

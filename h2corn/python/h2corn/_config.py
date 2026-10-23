@@ -509,6 +509,11 @@ class RequestPolicy:
     timeout_request_body_idle: float
     h2_timeout_response_stall: float
 
+    def __reduce__(self) -> tuple[object, tuple[Any, ...]]:
+        values = {item.name: getattr(self, item.name) for item in fields(self)}
+        args = (values,) if type(self) is RequestPolicy else (values, type(self))
+        return _restore_request_policy_v1, args
+
     def __post_init__(self) -> None:
         object.__setattr__(self, 'path', _request_policy_path(self.path))
         object.__setattr__(
@@ -879,6 +884,15 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
 def env_values(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     if env is None:
         env = os.environ
+    known = {option.env_var for option in config_options()} | {
+        CONFIG_PATH_ENV_VAR,
+        *(f'H2CORN_{name.upper()}' for name in CONVENIENCE_KEYS),
+    }
+    unknown = sorted(
+        name for name in env if name.startswith('H2CORN_') and name not in known
+    )
+    if unknown:
+        raise ValueError(f'unknown environment variables: {", ".join(unknown)}')
     values = {
         option.name: option.metadata.env_parse(raw)
         for option in config_options()
@@ -1523,6 +1537,11 @@ class Config:
                 'a stream window cannot exceed its connection window'
             )
 
+    def __reduce__(self) -> tuple[object, tuple[Any, ...]]:
+        values = {item.name: getattr(self, item.name) for item in fields(self)}
+        args = (values,) if type(self) is Config else (values, type(self))
+        return _restore_config_v1, args
+
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
         """
@@ -1531,7 +1550,8 @@ class Config:
         Each option's environment variable name is its field name in upper
         case, prefixed with `H2CORN_` (for example, `H2CORN_BIND`,
         `H2CORN_WORKERS`, `H2CORN_PROXY_HEADERS`). Variables that are not set
-        fall through to defaults; unrecognized variables are ignored.
+        fall through to defaults. Unknown `H2CORN_*` names raise `ValueError`;
+        variables outside that prefix are ignored.
 
         The convenience pair `H2CORN_HOST` / `H2CORN_PORT` is accepted only
         when `H2CORN_BIND` is unset.
@@ -1627,3 +1647,15 @@ class Config:
         with path.open('rb') as handle:
             data = tomllib.load(handle)
         return cls.from_mapping(data)
+
+
+def _restore_config_v1(
+    values: dict[str, Any], config_type: type[Config] = Config
+) -> Config:
+    return config_type(**values)
+
+
+def _restore_request_policy_v1(
+    values: dict[str, Any], policy_type: type[RequestPolicy] = RequestPolicy
+) -> RequestPolicy:
+    return policy_type(**values)
