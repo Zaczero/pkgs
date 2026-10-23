@@ -72,6 +72,7 @@ impl Mesh {
         let first = *order.get(count.wrapping_sub(3)).expect("seed hull site");
         let second = *next.get(first).expect("seed hull successor");
         let third = *next.get(second).expect("seed hull successor");
+        drop((order, previous, next));
         let capacity = count.wrapping_sub(2).wrapping_mul(3);
         let mut mesh = Self {
             vertices: Vec::with_capacity(capacity),

@@ -31,6 +31,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
+        drop(points);
         if open.len() < 3 {
             return carry_ordinates(
                 shape_from_open_hull(&open, Self::empty_polygon)?,
@@ -223,6 +224,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
+        drop(points);
         shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 
@@ -243,6 +245,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
+        drop(points);
         shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 

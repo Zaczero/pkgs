@@ -15,9 +15,9 @@ pub(super) fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
     // With no shared Q span, rows have no boundary chain to replay. Simplify
     // them in their geographic frame, then keep the group only if its shared
     // Q validation still passes.
-    let original: Vec<_> = rows.iter().map(|row| row.borrow().clone()).collect();
+    let original = || rows.iter().map(|row| row.borrow().clone()).collect();
     if !simplify_boundary {
-        return Ok(original);
+        return Ok(original());
     }
 
     let mut computed_edge_budget =
@@ -44,7 +44,7 @@ pub(super) fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
     )? {
         Ok(simplified)
     } else {
-        Ok(original)
+        Ok(original())
     }
 }
 

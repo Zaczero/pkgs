@@ -100,11 +100,12 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
         }
     }
 
-    let prepared = valid_coverage_rows(rows, "coverage_simplify")?.rows;
+    let mut prepared = valid_coverage_rows(rows, "coverage_simplify")?.rows;
 
     let mut all_segments = Vec::with_capacity(prepared.iter().map(|row| row.segments.len()).sum());
-    for row in &prepared {
+    for row in &mut prepared {
         all_segments.extend_from_slice(&row.segments);
+        row.segments = Vec::new();
     }
     let source_refs: Vec<&Shape> = prepared.iter().map(|row| row.shape).collect();
     let inventory = ExactSourceInventory::from_shapes(&source_refs)?;
@@ -123,6 +124,7 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
             partition.node_count(),
         )
     });
+    drop(source_refs);
     let views = partition.coverage_chain_views(inventory.source_operands())?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
     let mut chain_sources = vec![Vec::new(); views.chains.len()];
@@ -149,6 +151,7 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
             inventory.source_segments(),
         ));
     }
+    drop(chain_sources);
     let guard = TopologyGuard::new(
         &all_segments,
         all_segments

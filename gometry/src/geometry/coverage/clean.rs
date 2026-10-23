@@ -119,6 +119,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                 metric,
                 &mut work,
             )?;
+            drop(row_surface_areas);
             let labels_preserve_sources =
                 analysis.face_rows.iter().zip(&selection.owners).all(
                     |(source_rows, selected_row)| match source_rows.as_slice() {
@@ -146,6 +147,7 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                 StorageTarget::Array,
                 &mut work,
             )?;
+            drop((analysis, selection));
             match finish_geographic(
                 PublicationCall::new(
                     ProducerReceipt::ProducerDrawing(receipt),
@@ -174,19 +176,19 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
             }
         },
         crate::geometry::TopologyDomain::Cartesian => {
-            let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
             let prepared = coverage_rows(&snapped, gap_width)?;
             if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
                 return Ok(CoverageCleanOutput::Shapes(snapped));
             }
+            drop(prepared);
+            let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
             #[cfg(test)]
             drop(admission_phase);
             #[cfg(test)]
             let source_staging_phase = crate::test_support::allocation_phase(
                 crate::test_support::AllocationPhase::SourceStaging,
             );
-            let shape_refs: Vec<_> = snapped.iter().collect();
-            let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
+            let inventory = ExactSourceInventory::from_shapes(&snapped)?;
             let mut budget =
                 crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
             let mut partition = inventory.partition(&mut budget)?;
@@ -473,6 +475,7 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
         StorageTarget::Scalar,
         &mut work,
     )?;
+    drop((row_areas, assignment, analysis));
     match finish_geographic(
         PublicationCall::new(
             ProducerReceipt::ProducerDrawing(receipt),

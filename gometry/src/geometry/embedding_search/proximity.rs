@@ -400,6 +400,7 @@ where
         frontier_nodes = newly_reached;
     }
 
+    drop((all_bounds, frontier_seen, closure, frontier_nodes));
     work.charge_product_into_error(closure_nodes.len(), 1)?;
     let mut components: HashMap<usize, Vec<u32>> = try_hash_map_with_capacity(closure_nodes.len())?;
     for node in closure_nodes {
@@ -407,6 +408,7 @@ where
         work.charge_into_error(2)?;
         components.entry(root).or_default().push(node);
     }
+    drop(union);
     work.charge_product_into_error(components.len(), 1)?;
     let mut classes: Vec<_> = components.into_values().collect();
     for class in &mut classes {

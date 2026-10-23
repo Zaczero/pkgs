@@ -301,7 +301,6 @@ pub(super) fn rebuild_row(
 ) -> Result<(Shape, Option<CoverageEdgeRoles>)> {
     let capture_edge_roles = roots.is_some();
     let mut rebuild_ring = |ring: &CoordSeq| -> Result<RebuiltRing> {
-        let original: Vec<Point> = ring.iter_coords().collect();
         let source_range = source_ring_ranges.get(*source_ring_cursor).ok_or_else(|| {
             GeometryErrorKind::Invalid(
                 "coverage source ring is absent from the admitted inventory".into(),
@@ -311,9 +310,9 @@ pub(super) fn rebuild_row(
             .checked_add(1)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_range)?;
-        if original.len() < 4 {
-            let vertices = original
-                .into_iter()
+        if ring.len() < 4 {
+            let vertices = ring
+                .iter_coords()
                 .map(|point| RebuiltVertex { point, node: None })
                 .collect();
             let roles = capture_edge_roles.then(|| source_edge_intents(source_range));
@@ -321,14 +320,14 @@ pub(super) fn rebuild_row(
         }
         // Match collect_polygon_segments: elide stutter vertices so chain
         // lookups never probe zero-length edges absent from the exact partition.
-        let (_, open_ring) = original
-            .split_last()
-            .expect("ring with at least four coordinates is non-empty");
-        let mut open = open_ring.to_vec();
+        let mut open: Vec<_> = ring
+            .iter_coords()
+            .take(ring.len().saturating_sub(1))
+            .collect();
         dedup_consecutive_points(&mut open);
         if open.len() < 3 {
-            let vertices = original
-                .into_iter()
+            let vertices = ring
+                .iter_coords()
                 .map(|point| RebuiltVertex { point, node: None })
                 .collect();
             let roles = capture_edge_roles.then(|| source_edge_intents(source_range));
@@ -343,6 +342,7 @@ pub(super) fn rebuild_row(
                     .map(|point| (PointKey::new(point), point))
                     .collect()
             });
+        drop(open);
         let source_point = |point: XY| {
             source_point_by_key
                 .as_ref()
@@ -367,6 +367,7 @@ pub(super) fn rebuild_row(
                     .map(|&(span, reversed)| SourceAtom { span, reversed }),
             );
         }
+        drop(source_ordinals);
         let chain_at = |index: usize| {
             let atom = atoms
                 .get(index)
