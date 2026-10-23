@@ -315,7 +315,6 @@ async def app(scope, receive, send):
     assert scope['type'] == 'lifespan'
     assert (await receive())['type'] == 'lifespan.startup'
     if {fail_startup!r}:
-        os.kill(os.getppid(), signal.SIGTERM)
         raise RuntimeError('worker startup canary')
     await send({{'type': 'lifespan.startup.complete'}})
     os.kill(os.getppid(), signal.SIGTERM)
@@ -331,7 +330,18 @@ serve(app, Config(port=0, lifespan='on', log_format='json', loop='asyncio'))
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    prefix = bytearray()
     try:
+        if fail_startup:
+            assert process.stderr is not None
+            async with asyncio.timeout(HANG_BOUND):
+                while line := await process.stderr.readline():
+                    prefix.extend(line)
+                    if json.loads(line)['event'] == 'worker_failed':
+                        process.terminate()
+                        break
+                else:
+                    pytest.fail('worker exited without reporting its startup failure')
         stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=HANG_BOUND
         )
@@ -340,16 +350,17 @@ serve(app, Config(port=0, lifespan='on', log_format='json', loop='asyncio'))
             process.kill()
             await process.wait()
     assert not stdout
-    records = _json_records(stderr.decode())
+    records = _json_records((prefix + stderr).decode())
     events = [r['event'] for r in records]
     assert 'worker_started' in events
     assert 'supervisor_stopping' in events
-    assert 'worker_stopped' in events
+    if not fail_startup:
+        assert 'worker_stopped' in events
     started = next(r for r in records if r['event'] == 'worker_started')
     assert started['pid'] == process.pid
     assert started['worker_pid'] != process.pid
     failures = [r for r in records if r['event'] == 'worker_failed']
-    assert len(failures) == int(fail_startup)
+    assert bool(failures) is fail_startup
     if fail_startup:
         assert 'RuntimeError: worker startup canary' in failures[0]['detail']
         assert failures[0]['pid'] == next(

@@ -255,6 +255,21 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      CIBW_ARCHS: native
+      CIBW_BUILD: ${{ matrix.abi == 'abi3t' && 'cp315t-*' || '*' }}
+      CIBW_BUILD_FRONTEND: build[uv]
+      CIBW_INHERIT: "environment-linux; environment-macos"
+      CIBW_BEFORE_ALL_LINUX: >-
+        curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
+        sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path
+      CIBW_ENVIRONMENT_LINUX: >-
+        PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache
+      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
+      CIBW_ENVIRONMENT_PASS_LINUX: >-
+        IMPORT_NAME ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN
+        MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
+      MATURIN_PEP517_ARGS: ${{ matrix.abi == 'abi3t' && '--profile release-dist --features pyo3/abi3t-py315' || '--profile release-dist' }}
+      CIBW_TEST_COMMAND: ${{ fromJson(inputs.plan).wheel-test-command }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -314,21 +329,22 @@ jobs:
           package-dir: ${{ inputs.package }}
           output-dir: dist
         env:
-          CIBW_ARCHS: native
-          CIBW_BUILD: ${{ matrix.abi == 'abi3t' && 'cp315t-*' || '*' }}
-          CIBW_BUILD_FRONTEND: build[uv]
-          CIBW_INHERIT: "environment-linux; environment-macos"
-          CIBW_BEFORE_ALL_LINUX: >-
-            curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
-            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path
-          CIBW_ENVIRONMENT_LINUX: >-
-            PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache
-          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-          CIBW_ENVIRONMENT_PASS_LINUX: >-
-            IMPORT_NAME ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN
-            MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
-          MATURIN_PEP517_ARGS: ${{ matrix.abi == 'abi3t' && '--profile release-dist --features pyo3/abi3t-py315' || '--profile release-dist' }}
-          CIBW_TEST_COMMAND: ${{ fromJson(inputs.plan).wheel-test-command }}
+          CIBW_SKIP: ${{ matrix.pgo-build }}
+
+      - name: Build and qualify the PGO wheel
+        if: matrix.pgo-build != ''
+        shell: bash
+        run: python tools/pgo.py "$PACKAGE" release --output dist --work "$RUNNER_TEMP/pgo"
+
+      - name: Retain PGO inputs and evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && matrix.pgo-build != '' }}
+        with:
+          name: pgo-${{ inputs.package }}-${{ matrix.pgo-build }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pgo
+            !${{ runner.temp }}/pgo/collection/files
+          if-no-files-found: error
 
       - name: Test stable-ABI wheel on standard CPython
         if: matrix.abi == 'abi3t'

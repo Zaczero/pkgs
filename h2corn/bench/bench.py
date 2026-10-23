@@ -1545,7 +1545,7 @@ def main() -> int:
         )
         try:
             wheel = build_wheel(
-                Path(__file__).resolve().parents[2],
+                Path(__file__).resolve().parents[1],
                 args.build_wheel.resolve(),
             )
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:

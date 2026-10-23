@@ -144,6 +144,7 @@ def package_info(package: str) -> dict[str, Any]:
             'version-path': cargo_toml.as_posix(),
             'crate': cargo['name'],
             'wheel-test-command': wheel_test.strip(),
+            'pgo': pyproject.get('tool', {}).get('ci', {}).get('pgo'),
         }
 
     # Pure-Python with a static project.version (no hatch dynamic version path).

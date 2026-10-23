@@ -16,7 +16,6 @@ single favourable run.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import signal
 import subprocess
@@ -31,12 +30,13 @@ try:
         RESULTS_DIRECTORY,
         BenchmarkError,
         Scenario,
-        _run,
         bootstrap_trimmed_mean_ci,
         check_response,
+        ensure_large_upload_payload,
         ensure_static_file_payload,
         paired_comparison,
         rotations,
+        run_oha,
         running_server,
         terminate_process_group,
         trimmed_mean,
@@ -48,12 +48,13 @@ except ModuleNotFoundError:  # Direct ``python bench/instr.py`` execution.
         RESULTS_DIRECTORY,
         BenchmarkError,
         Scenario,
-        _run,
         bootstrap_trimmed_mean_ci,
         check_response,
+        ensure_large_upload_payload,
         ensure_static_file_payload,
         paired_comparison,
         rotations,
+        run_oha,
         running_server,
         terminate_process_group,
         trimmed_mean,
@@ -81,7 +82,6 @@ WARMUP_REQUESTS = 20_000
 MIN_ROUNDS = 4
 MAX_ROUNDS = 20
 TIME_BUDGET_SECONDS = 900.0
-LOAD_TIMEOUT_SECONDS = 120.0
 PERF_ATTACH_SETTLE_SECONDS = 0.05
 SEED = 20_260_730
 COUNTERS = ('instructions', 'cycles', 'branch-misses', 'cache-misses')
@@ -105,53 +105,20 @@ SCENARIOS = (
 )
 
 
-def oha_command(scenario: Scenario, requests: int) -> list[str]:
-    """Build the fixed-count raw-app load command for one supported scenario."""
-    contract = scenario.contract
-    if contract.driver != 'oha':
-        raise BenchmarkError(f'{scenario.type} does not use the fixed-count oha driver')
-    concurrency = scenario.concurrency or CONCURRENCY
-    command = [
-        'oha',
-        '-n',
-        str(requests),
-        '-c',
-        str(concurrency),
-        '-p',
-        str(scenario.http2_parallelism),
-        '--output-format',
-        'json',
-        '--http-version',
-        '2' if contract.protocol == '2' else '1.1',
-        '-m',
-        contract.method,
-    ]
-    if scenario.socket_path is not None:
-        command += ['--unix-socket', str(scenario.socket_path)]
-    command.append(contract.load_url())
-    return command
-
-
 def run_fixed_requests(scenario: Scenario, requests: int) -> int:
     """Run exactly ``requests`` successful responses and return their count."""
-    output = _run(oha_command(scenario, requests), LOAD_TIMEOUT_SECONDS)
-    try:
-        raw = json.loads(output)
-    except json.JSONDecodeError as error:
-        raise BenchmarkError('oha returned invalid JSON') from error
-
-    errors = raw.get('errorDistribution', {})
-    if not isinstance(errors, dict) or any(errors.values()):
-        raise BenchmarkError(f'oha reported request errors: {errors!r}')
-    statuses = raw.get('statusCodeDistribution', {})
-    if not isinstance(statuses, dict):
-        raise BenchmarkError(f'oha reported invalid statuses: {statuses!r}')
-    completed = sum(value for value in statuses.values() if isinstance(value, int))
-    if statuses != {'200': requests} or completed != requests:
-        raise BenchmarkError(
-            f'oha completed {completed}/{requests} successful requests: {statuses!r}'
-        )
-    return completed
+    if scenario.contract.request_body_path is not None:
+        ensure_large_upload_payload()
+    metrics = run_oha(
+        scenario.contract,
+        duration='1s',
+        concurrency=scenario.concurrency or CONCURRENCY,
+        http2_parallelism=scenario.http2_parallelism,
+        socket_path=scenario.socket_path,
+        port=scenario.port,
+        requests=requests,
+    )
+    return metrics['completed']
 
 
 def start_perf(worker_pids: Sequence[int]) -> subprocess.Popen[str]:

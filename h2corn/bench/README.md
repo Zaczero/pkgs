@@ -24,6 +24,12 @@ commands, process identities, load-generator output, sampled PSS, plots, and
 accessible tables. Each measured worker is checked against the installed
 artifacts, and each trial verifies its response contract before and after load.
 
+Wheel builds use the same `release-dist` builder and source receipts as
+[PGO](pgo/README.md). To evaluate a PGO wheel, install it and pass its path with
+`--wheel`; the harness verifies the installed bytes and retains its build receipt.
+It also records the current harness source independently, so an older baseline
+wheel can be compared without pretending it was built from the current checkout.
+
 ## Sampling and time budget
 
 Each scenario calibrates a common duration, then collects six paired

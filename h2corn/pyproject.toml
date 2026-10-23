@@ -58,6 +58,14 @@ uvloop = [
 ]
 
 [dependency-groups]
+pgo = [
+  "h2>=4.2.0",
+  "starlette>=0.46.0",
+  "trustme>=1.2.0",
+  "uvloop>=0.23.0; sys_platform != 'win32'",
+  "websockets>=16.0",
+]
+
 dev = [
   { include-group = "freethreaded" },
   "asgi-lifespan>=2.1.0",
@@ -123,8 +131,14 @@ exclude = ["**/__pycache__/**", "**/*.py[co]"]
 [tool.cibuildwheel]
 test-command = "python {package}/examples/embedded.py"
 
+[tool.ci.pgo]
+build = "cp315-manylinux_x86_64"
+target = "x86_64-unknown-linux-gnu"
+adapter = "bench.pgo.adapter"
+test-groups = ["freethreaded", "grpc-interop"]
+
 [tool.pyright]
-extraPaths = ["python"]
+extraPaths = ["python", "../tools"]
 include = ["bench", "python/h2corn", "tests"]
 pythonPlatform = "All"
 pythonVersion = "3.11"

@@ -39,6 +39,7 @@ mod tests {
     use super::websocket_accept;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute AWS-LC SHA1 FFI")]
     fn websocket_accept_matches_rfc_example() {
         assert_eq!(
             websocket_accept(b"dGhlIHNhbXBsZSBub25jZQ=="),

@@ -26,6 +26,8 @@ mod hpack;
 mod http;
 mod inline_fifo;
 mod log;
+#[cfg(h2corn_pgo_collect)]
+mod pgo;
 mod proxy_protocol;
 mod pyapi;
 mod pyloop;
@@ -48,6 +50,11 @@ use pyo3::prelude::*;
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn init_lib_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(h2corn_pgo_collect)]
+    {
+        m.add_function(wrap_pyfunction!(pgo::begin, m)?)?;
+        m.add_function(wrap_pyfunction!(pgo::finish, m)?)?;
+    }
     m.add_class::<pyapi::PreparedTls>()?;
     m.add_function(wrap_pyfunction!(pyapi::prepare_tls, m)?)?;
     m.add_function(wrap_pyfunction!(pyapi::emit_banner, m)?)?;

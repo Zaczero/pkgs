@@ -211,13 +211,14 @@ fn bounded_ready_scan_sleeps_after_all_file_reads_are_pending() {
             .unwrap();
         assert_eq!(writer.take_response_closes().len(), 65);
         let output = frames(&gate.lock().bytes);
-        assert_eq!(
-            output
+        for id in ids {
+            let body: Vec<u8> = output
                 .iter()
-                .filter(|frame| frame.0 == 0 && frame.3.as_ref() == b"owned")
-                .count(),
-            65
-        );
+                .filter(|frame| frame.0 == 0 && frame.2 == id.get())
+                .flat_map(|frame| frame.3.iter().copied())
+                .collect();
+            assert_eq!(body, b"owned", "stream {}", id.get());
+        }
         drop(writer);
     });
 }

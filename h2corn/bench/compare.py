@@ -87,7 +87,11 @@ class Variant:
 
     def command(self, scenario: Scenario, app: str) -> list[str]:
         socket_path = scenario.socket_path
-        target = f'unix:{socket_path}' if socket_path is not None else '127.0.0.1:8000'
+        target = (
+            f'unix:{socket_path}'
+            if socket_path is not None
+            else f'127.0.0.1:{scenario.port}'
+        )
         return [
             self.executable,
             app,

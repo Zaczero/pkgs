@@ -1088,7 +1088,7 @@ def run_oha(
     # At the deadline each in-flight request/stream is cut, and its connection
     # may also report a cancelled operation — so allow two per in-flight slot.
     # A stalled server produces orders of magnitude more than that.
-    _validate_oha(raw, 2 * concurrency * http2_parallelism)
+    _validate_oha(raw, 2 * concurrency * http2_parallelism if requests is None else 0)
     expected = (
         str(contract.request_body_path.stat().st_size).encode()
         if contract.request_body_path is not None
