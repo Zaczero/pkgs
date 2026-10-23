@@ -93,10 +93,17 @@ impl Groups {
             .expect("admitted float Groups window")
     }
 
-    pub(super) fn numeric_rows(&self) -> Vec<Option<Vec<f64>>> {
-        (0..self.rows.len())
-            .map(|row| (!self.row_is_missing(row)).then(|| self.float64_row_slice(row).to_vec()))
-            .collect()
+    pub(crate) fn first_nonfinite_numeric_row(&self) -> Option<usize> {
+        match &self.values {
+            GroupsValues::Float64(_) => (0..self.rows.len()).find(|&row| {
+                !self.row_is_missing(row)
+                    && !crate::geometry::column_all_finite(self.float64_row_slice(row))
+            }),
+            GroupsValues::Int64(_) => None,
+            GroupsValues::Geometry(_) | GroupsValues::Cells(_) => {
+                unreachable!("numeric Groups admitted before coordinate validation")
+            },
+        }
     }
 
     pub(super) fn parse_float64_row_item(item: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f64>>> {

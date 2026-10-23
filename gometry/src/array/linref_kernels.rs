@@ -209,15 +209,11 @@ pub(crate) fn line_interpolate_station_groups(
             positions.row_len(),
         )));
     }
-    for row in 0..array.len() {
-        if let Some(values) = positions.numeric_row(row)?
-            && !crate::geometry::column_all_finite(&values)
-        {
-            return Err(note_array_row(
-                GeometryError::new_err("at must be finite"),
-                row,
-            ));
-        }
+    if let Some(row) = positions.first_nonfinite_numeric_row() {
+        return Err(note_array_row(
+            GeometryError::new_err("at must be finite"),
+            row,
+        ));
     }
     line_interpolate_row_plan(
         py,

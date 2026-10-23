@@ -1272,29 +1272,22 @@ impl Groups {
         match &self.values {
             GroupsValues::Float64(_) => rows_to_list(
                 py,
-                self.numeric_rows()
-                    .into_iter()
-                    .map(|row| row.into_py_any(py)),
+                (0..self.rows.len()).map(|row| {
+                    if self.row_is_missing(row) {
+                        return Ok(py.None());
+                    }
+                    PyList::new(py, self.float64_row_slice(row))?.into_py_any(py)
+                }),
             ),
-            GroupsValues::Int64(_) => {
-                let rows = py.detach(|| {
-                    (0..self.rows.len())
-                        .map(|row| {
-                            if self.row_is_missing(row) {
-                                None
-                            } else {
-                                Some(self.int64_row_slice(row).to_vec())
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                });
-                rows_to_list(
-                    py,
-                    rows.into_iter().map(|row| {
-                        row.map_or_else(|| Ok(py.None()), |values| values.into_py_any(py))
-                    }),
-                )
-            },
+            GroupsValues::Int64(_) => rows_to_list(
+                py,
+                (0..self.rows.len()).map(|row| {
+                    if self.row_is_missing(row) {
+                        return Ok(py.None());
+                    }
+                    PyList::new(py, self.int64_row_slice(row))?.into_py_any(py)
+                }),
+            ),
             GroupsValues::Geometry(_) => rows_to_list(
                 py,
                 (0..self.rows.len()).map(|row| {
