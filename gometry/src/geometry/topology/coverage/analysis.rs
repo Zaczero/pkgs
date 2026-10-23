@@ -236,11 +236,11 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             coincident_pairs.insert(pair);
         }
     }
+    drop(row_span_counts);
 
     work.charge_product_into_error(row_bounds.len(), 1)?;
-    work.charge_product_into_error(span_bounds.len(), 1)?;
     let row_index = build_row_index(&row_bounds);
-    let span_index = build_span_index(&span_bounds);
+    drop(row_bounds);
     let mut invalid_edges = vec![false; source_edges.len()];
 
     for (span_index, rows_on_span) in span_rows.iter().enumerate() {
@@ -291,6 +291,7 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             }
         }
     }
+    drop((locations, row_index));
 
     mark_t_junction_edges(
         &node_edges,
@@ -299,8 +300,11 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         &mut invalid_edges,
         work,
     )?;
+    drop((node_edges, incident_spans));
 
     if gap_width > 0.0 {
+        work.charge_product_into_error(span_bounds.len(), 1)?;
+        let span_index = build_span_index(&span_bounds);
         mark_near_gap_edges(
             frame,
             gap_width,
