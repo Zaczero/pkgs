@@ -114,23 +114,7 @@ pub(crate) fn factors_at(
     radians: bool,
     state: &RuntimeState,
 ) -> Result<ProjectionFactors> {
-    let mut factors = factors_batch_with_state(
-        target,
-        &[longitude],
-        &[latitude],
-        AngularUnit::from_radians(radians),
-        state,
-    )?;
-    Ok(factors.remove(0))
-}
-
-fn factors_batch_with_state(
-    target: &str,
-    longitudes: &[f64],
-    latitudes: &[f64],
-    unit: AngularUnit,
-    state: &RuntimeState,
-) -> Result<Vec<ProjectionFactors>> {
+    let unit = AngularUnit::from_radians(radians);
     ensure_thread_caches_current(state);
     let target = normalize(target)?;
     CRS_FACTOR_CACHE.with(|cache| {
@@ -141,11 +125,7 @@ fn factors_batch_with_state(
             |item| item.definition.as_str() == target.as_ref(),
             || projection_factors_object(&target, state),
         )?;
-        longitudes
-            .iter()
-            .zip(latitudes)
-            .map(|(&longitude, &latitude)| entry.object.factors(longitude, latitude, unit))
-            .collect()
+        entry.object.factors(longitude, latitude, unit)
     })
 }
 
