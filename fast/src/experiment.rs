@@ -233,7 +233,7 @@ impl Result {
                     .first()
                     .and_then(|run| run.first())
                     .map(|invocation| invocation.run),
-                statistics::analyze(&Self::rows(&measured), margin),
+                statistics::analyze(&Self::rows(measured), margin),
             )
         };
         for invocation in &mut self.invocations {
@@ -276,10 +276,10 @@ impl Result {
         };
     }
 
-    fn rows(runs: &[Vec<&Invocation>]) -> Vec<Vec<u64>> {
-        runs.iter()
+    fn rows<'a>(runs: impl IntoIterator<Item = Vec<&'a Invocation>>) -> Vec<Vec<u64>> {
+        runs.into_iter()
             .map(|run| {
-                run.iter()
+                run.into_iter()
                     .map(|i| i.observation().expect("successful run").elapsed_ns)
                     .collect()
             })
@@ -612,17 +612,16 @@ impl Experiment<'_> {
                         break;
                     }
                 }
-                let pilot: Vec<_> = self
+                let pilot = self
                     .result
                     .complete_runs()
                     .filter(|(phase, _)| *phase == Phase::Pilot)
-                    .map(|(_, run)| run)
-                    .collect();
+                    .map(|(_, run)| run);
                 let additional = planner
                     .additional(
                         self.start.elapsed().as_secs_f64(),
                         &costs,
-                        &Result::rows(&pilot),
+                        &Result::rows(pilot),
                     )
                     .min(capacity.saturating_sub(self.next_run));
                 self.result.plan.planned_runs = costs
