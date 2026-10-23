@@ -121,7 +121,10 @@ impl Decoder {
                 let entry = self.decode_literal::<6>(src)?;
                 // Insert before any semantic callback so table state tracks
                 // successfully decoded bytes regardless of message validity.
-                self.table.insert(entry.clone(), entry.table_size());
+                self.table.insert(entry.table_size(), || {
+                    // Table lifetime must not pin a larger input header block.
+                    HpackField::copy_from_slices(entry.name(), entry.value())
+                });
                 Ok(Some(entry))
             },
             Representation::LiteralWithoutIndexing | Representation::LiteralNeverIndexed => {
@@ -352,6 +355,40 @@ mod tests {
             b"custom-header-value"[..]
         );
         assert!(decoder.buffer.capacity() >= HUFFMAN_ARENA_CAPACITY / 2);
+    }
+
+    #[test]
+    fn indexed_literal_does_not_retain_the_input_block_owner() {
+        use std::sync::Arc;
+
+        struct InputBlock {
+            bytes: Vec<u8>,
+            _lifetime: Arc<()>,
+        }
+
+        impl AsRef<[u8]> for InputBlock {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+
+        let lifetime = Arc::new(());
+        let released = Arc::downgrade(&lifetime);
+        let mut decoder = Decoder::new(256);
+        {
+            let mut block = Bytes::from_owner(InputBlock {
+                bytes: b"\x40\x01x\x01y".to_vec(),
+                _lifetime: lifetime,
+            });
+            decoder.decode_bytes(&mut block, |_| {}).unwrap();
+        }
+        assert!(released.upgrade().is_none());
+        let mut indexed = Bytes::from_static(b"\xbe");
+        let mut fields = Vec::new();
+        decoder
+            .decode_bytes(&mut indexed, |field| fields.push(field))
+            .unwrap();
+        assert_eq!(fields, vec![HpackField::from_static(b"x", b"y")]);
     }
 
     #[test]

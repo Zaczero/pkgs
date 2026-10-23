@@ -20,10 +20,9 @@ impl HpackField {
     }
 
     pub(crate) fn copy_from_slices(name: &[u8], value: &[u8]) -> Self {
-        Self {
-            name: Bytes::copy_from_slice(name),
-            value: Bytes::copy_from_slice(value),
-        }
+        let mut value = Bytes::from([name, value].concat());
+        let name = value.split_to(name.len());
+        Self { name, value }
     }
 
     pub(crate) const fn from_parts(name: Bytes, value: Bytes) -> Self {

@@ -61,7 +61,7 @@ impl Encoder {
 
     #[cfg(test)]
     pub(crate) fn table_size(&self) -> usize {
-        self.table.live().iter().map(|(_, size)| *size).sum()
+        self.table.live().map(|(_, size)| *size).sum()
     }
 
     #[cfg(test)]
@@ -133,7 +133,7 @@ impl Encoder {
             encode_literal(literal_name, value, LiteralMode::IncrementalIndexing, dst);
             let field = HpackField::copy_from_slices(name, value);
             let size = field.table_size();
-            self.table.insert(field, size);
+            self.table.insert(size, || field);
             return;
         }
 
@@ -158,7 +158,7 @@ fn find_dynamic(
     value: &[u8],
 ) -> (Option<usize>, Option<usize>) {
     let mut name_index = None;
-    for (offset, (entry, _)) in table.live().iter().rev().enumerate() {
+    for (offset, (entry, _)) in table.live().rev().enumerate() {
         if entry.name() != name {
             continue;
         }
