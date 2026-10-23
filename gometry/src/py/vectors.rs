@@ -1270,24 +1270,18 @@ impl Groups {
     /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.values {
-            GroupsValues::Float64(_) => rows_to_list(
+            GroupsValues::Float64(_) => PyList::new(
                 py,
-                (0..self.rows.len()).map(|row| {
-                    if self.row_is_missing(row) {
-                        return Ok(py.None());
-                    }
-                    PyList::new(py, self.float64_row_slice(row))?.into_py_any(py)
-                }),
-            ),
-            GroupsValues::Int64(_) => rows_to_list(
+                (0..self.rows.len())
+                    .map(|row| (!self.row_is_missing(row)).then(|| self.float64_row_slice(row))),
+            )?
+            .into_py_any(py),
+            GroupsValues::Int64(_) => PyList::new(
                 py,
-                (0..self.rows.len()).map(|row| {
-                    if self.row_is_missing(row) {
-                        return Ok(py.None());
-                    }
-                    PyList::new(py, self.int64_row_slice(row))?.into_py_any(py)
-                }),
-            ),
+                (0..self.rows.len())
+                    .map(|row| (!self.row_is_missing(row)).then(|| self.int64_row_slice(row))),
+            )?
+            .into_py_any(py),
             GroupsValues::Geometry(_) => rows_to_list(
                 py,
                 (0..self.rows.len()).map(|row| {
