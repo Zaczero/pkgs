@@ -278,10 +278,9 @@ where
             rank_by_variable: (0..self.points.len()).map(Some).collect(),
             orders_by_rank: Vec::new(),
         };
-        let assigned = candidates.clone();
         for &order in &self.orders {
-            let before = self.candidate_for_site(order.before, &class_state, &assigned)?;
-            let after = self.candidate_for_site(order.after, &class_state, &assigned)?;
+            let before = self.candidate_for_site(order.before, &class_state, &candidates)?;
+            let after = self.candidate_for_site(order.after, &class_state, &candidates)?;
             if !native_cut_order_holds(order.ascending, before, after) {
                 return Ok(GlobalCheck::Reject(vec![0]));
             }

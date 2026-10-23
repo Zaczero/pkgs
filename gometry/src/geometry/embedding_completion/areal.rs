@@ -164,9 +164,9 @@ fn stable_fan_rows(
                 })?;
             rotation.rotate_left(anchor);
         }
-        rotations.push(rotation);
+        rotations.push((vertex, rotation));
     }
-    Ok(vertices.iter().copied().zip(rotations).collect())
+    Ok(rotations)
 }
 
 fn stable_wall_face_keys(

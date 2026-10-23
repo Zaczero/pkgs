@@ -68,7 +68,6 @@ impl QFaceStructure {
         };
         let cut_interval_nodes = topology
             .cut_interval_boundary_nodes()
-            .into_iter()
             .map(|[start, end]| Ok([map_cut_node(start)?, map_cut_node(end)?]))
             .collect::<Result<Vec<_>>>()?;
         let isolated_nodes = global

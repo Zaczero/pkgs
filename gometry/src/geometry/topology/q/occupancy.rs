@@ -343,14 +343,12 @@ impl GlobalFaceRowOccupancy {
                     GeometryErrorKind::Invalid("Q dual arc has no collapsed-shell state".into())
                 })?;
                 if *pending {
-                    let seam_owners = span
-                        .owners
-                        .iter()
-                        .map(|owner| seam_boundary_owner(sources, sources.frame, owner))
-                        .collect::<Result<Vec<_>>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>();
+                    let mut seam_owners = Vec::new();
+                    for owner in &span.owners {
+                        if let Some(owner) = seam_boundary_owner(sources, sources.frame, owner)? {
+                            seam_owners.push(owner);
+                        }
+                    }
                     let seam_before = seam_owners
                         .iter()
                         .map(|&owner| state.seam_owner_interior(owner))

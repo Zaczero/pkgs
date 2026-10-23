@@ -24,10 +24,10 @@ pub(in crate::geometry::topology::q_embedding) fn assigned_emitted_ring(
     work.charge_into_error(
         u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let mut published_points = vertices
-        .iter()
-        .map(|vertex| vertex.point)
-        .collect::<Vec<_>>();
+    let mut published_points = chart_points;
+    for (point, vertex) in published_points.iter_mut().zip(vertices) {
+        *point = vertex.point;
+    }
     let first = *published_points
         .first()
         .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted ring has no vertices".into()))?;

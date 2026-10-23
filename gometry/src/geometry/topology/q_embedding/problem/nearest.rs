@@ -167,7 +167,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             )?;
             let values = variables
                 .iter()
-                .map(|&node| self.nearest_candidate(node))
+                .map(|&node| self.nearest_candidate(node).map(Some))
                 .collect::<Result<Vec<_>>>()?;
             if !failed_classes
                 .get(class_index)
@@ -180,10 +180,9 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                 budget.charge_into_error(
                     u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
-                let assigned = values.iter().copied().map(Some).collect::<Vec<_>>();
                 for rank in 0..variables.len() {
                     budget.charge_evaluations(1)?;
-                    let prefix = assigned.get(..=rank).ok_or_else(|| {
+                    let prefix = values.get(..=rank).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q nearest prefix is out of range".into())
                     })?;
                     if !<Self as Problem>::check_local(

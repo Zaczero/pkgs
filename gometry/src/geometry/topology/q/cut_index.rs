@@ -373,19 +373,15 @@ impl QCutIndex {
 
     pub(in crate::geometry::topology) fn interval_boundary_nodes(
         &self,
-    ) -> Vec<[Option<QNodeId>; 2]> {
-        self.intervals
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                let low = index
-                    .checked_sub(1)
-                    .and_then(|event| self.events.get(event))
-                    .map(|event| event.node);
-                let high = self.events.get(index).map(|event| event.node);
-                [low, high]
-            })
-            .collect()
+    ) -> impl ExactSizeIterator<Item = [Option<QNodeId>; 2]> + '_ {
+        self.intervals.iter().enumerate().map(|(index, _)| {
+            let low = index
+                .checked_sub(1)
+                .and_then(|event| self.events.get(event))
+                .map(|event| event.node);
+            let high = self.events.get(index).map(|event| event.node);
+            [low, high]
+        })
     }
 
     pub(in crate::geometry::topology::q) fn pole_interval_id(
@@ -658,7 +654,7 @@ impl HeapSize for QCutIndex {
 impl QuotientFaces {
     pub(in crate::geometry::topology) fn cut_interval_boundary_nodes(
         &self,
-    ) -> Vec<[Option<QNodeId>; 2]> {
+    ) -> impl ExactSizeIterator<Item = [Option<QNodeId>; 2]> + '_ {
         self.cut_index.interval_boundary_nodes()
     }
 }
