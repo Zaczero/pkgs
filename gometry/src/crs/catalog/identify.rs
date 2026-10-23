@@ -465,11 +465,8 @@ fn catalog_name_matches_uncached(
 ) -> Result<Vec<String>> {
     let name = cstring(name)?;
     let authority = options.authority.as_deref().map(cstring).transpose()?;
-    let types = options
-        .kind
-        .map(CrsObjectKind::to_proj)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let kind = options.kind.map(CrsObjectKind::to_proj);
+    let types = kind.as_slice();
     with_proj_context_at(state, |context| {
         // SAFETY: DOC-H. Typed context; strings and optional type slice live for
         // the call; returns caller-owned object list or null.

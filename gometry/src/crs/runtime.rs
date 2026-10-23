@@ -277,14 +277,15 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
         proj_sys::proj_log_level(context.as_ptr(), proj_sys::PJ_LOG_LEVEL_PJ_LOG_DEBUG);
         let values = config
             .search_paths
-            .clone()
+            .as_deref()
             .unwrap_or_default()
             // PROJ's writable cache is also a valid grid search location. It
             // must be installed in the context search list, not merely set as
             // the download/cache destination, so caller-supplied grids are
             // actually discoverable without a process-global environment var.
-            .into_iter()
-            .chain(config.user_writable_directory.clone())
+            .iter()
+            .chain(config.user_writable_directory.iter())
+            .map(String::as_str)
             .map(cstring)
             .collect::<Result<Vec<_>>>()?;
         if values.is_empty() {
