@@ -460,27 +460,24 @@ fn destination_many_array(
     let distances = distance.values.as_slice();
     let frame = array.frame.clone();
     let shapes = py.detach(move || {
-        array
-            .row_operation()
-            .rows_with_missing(|| Option::<Shape>::None)
-            .map(|row| match row {
-                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                crate::array::ArrayRow::Present(row) => {
-                    let logical = row.logical();
-                    row.row().try_with_shape(|shape| {
-                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
-                        let parameters =
-                            destination_row_at(bearings, distances, LogicalRowIndex::new(logical));
-                        point_destination(&geometry, parameters.bearing, parameters.distance, unit)
-                            .map(Some)
-                            .map_err(|err| crate::note_array_row(err, logical))
-                    })
-                },
-            })
-            .collect::<PyResult<Vec<_>>>()
+        let mut shapes = Vec::with_capacity(
+            array
+                .missing()
+                .map_or(array.len(), ValidityMask::present_count),
+        );
+        for row in array.row_operation().present_rows() {
+            let logical = row.logical();
+            shapes.push(row.row().try_with_shape(|shape| {
+                let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                let parameters =
+                    destination_row_at(bearings, distances, LogicalRowIndex::new(logical));
+                point_destination(&geometry, parameters.bearing, parameters.distance, unit)
+                    .map_err(|err| crate::note_array_row(err, logical))
+            })?);
+        }
+        Ok::<_, PyErr>(shapes)
     })?;
-    let present =
-        PyGeometryArray::from_shapes(shapes.into_iter().flatten().collect(), array.frame.clone())?;
+    let present = PyGeometryArray::from_shapes(shapes, array.frame.clone())?;
     Ok(array
         .scatter_present_result(present)?
         .into_pyobject(py)?
@@ -716,30 +713,24 @@ fn point_unary_geometry(
             let frame = output_frame.clone();
             let (bearings, distances) = point_op.parameters();
             let shapes = py.detach(move || {
-                array
-                    .row_operation()
-                    .rows_with_missing(|| Option::<Shape>::None)
-                    .map(|row| match row {
-                        crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                        crate::array::ArrayRow::Present(row) => {
-                            let logical = row.logical();
-                            row.row().try_with_shape(|shape| {
-                                let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
-                                let parameters = destination_row_at(
-                                    bearings,
-                                    distances,
-                                    LogicalRowIndex::new(logical),
-                                );
-                                fallback(&geometry, parameters)
-                                    .map(Some)
-                                    .map_err(|err| crate::note_array_row(err, logical))
-                            })
-                        },
-                    })
-                    .collect::<PyResult<Vec<_>>>()
+                let mut shapes = Vec::with_capacity(
+                    array
+                        .missing()
+                        .map_or(array.len(), ValidityMask::present_count),
+                );
+                for row in array.row_operation().present_rows() {
+                    let logical = row.logical();
+                    shapes.push(row.row().try_with_shape(|shape| {
+                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                        let parameters =
+                            destination_row_at(bearings, distances, LogicalRowIndex::new(logical));
+                        fallback(&geometry, parameters)
+                            .map_err(|err| crate::note_array_row(err, logical))
+                    })?);
+                }
+                Ok::<_, PyErr>(shapes)
             })?;
-            let present =
-                PyGeometryArray::from_shapes(shapes.into_iter().flatten().collect(), output_frame)?;
+            let present = PyGeometryArray::from_shapes(shapes, output_frame)?;
             Ok(array
                 .scatter_present_result(present)?
                 .into_pyobject(py)?
