@@ -91,7 +91,7 @@ fn ordinary_coverage_preparation_preserves_the_evaluation_balance() {
     assert!(!analysis.is_valid());
     analysis
         .assign_cleaning_faces(
-            &rows.each_ref().map(Shape::area),
+            Some(&rows.each_ref().map(Shape::area)),
             0.0,
             CoverageOverlapRule::MinIndex,
             None::<&crate::crs::GeodesicMetric>,
@@ -121,7 +121,7 @@ fn coverage_native_admission_debits_the_ordinary_accounts_budget() {
             .expect("ordinary source analysis");
     let assignment = analysis
         .assign_cleaning_faces(
-            &rows.each_ref().map(Shape::area),
+            Some(&rows.each_ref().map(Shape::area)),
             0.0,
             CoverageOverlapRule::MinIndex,
             None::<&crate::crs::GeodesicMetric>,

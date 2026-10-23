@@ -299,7 +299,7 @@ mod tests {
         let row_areas = rows.iter().map(Shape::area).collect::<Vec<_>>();
         analysis
             .assign_cleaning_faces(
-                &row_areas,
+                Some(&row_areas),
                 gap_width,
                 CoverageOverlapRule::MinIndex,
                 None::<&crate::crs::GeodesicMetric>,

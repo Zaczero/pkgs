@@ -754,7 +754,7 @@ fn geographic_coverage_clean_receipt() -> crate::error::Result<ProducerDrawingRe
     let areas = input.iter().map(Shape::area).collect::<Vec<_>>();
     let mut work = EvaluationBudget::new("coverage_clean", 0)?;
     let assignment = analysis.assign_cleaning_faces(
-        &areas,
+        Some(&areas),
         0.0,
         crate::geometry::CoverageOverlapRule::MinIndex,
         None::<&crate::crs::GeodesicMetric>,

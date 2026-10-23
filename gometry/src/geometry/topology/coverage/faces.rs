@@ -466,7 +466,7 @@ impl GeographicCoverageAnalysis {
 
     pub(crate) fn assign_cleaning_faces(
         &self,
-        row_surface_areas: &[f64],
+        row_surface_areas: Option<&[f64]>,
         gap_width: f64,
         overlap_rule: CoverageOverlapRule,
         metric: Option<&impl ChartMetric>,
@@ -476,9 +476,21 @@ impl GeographicCoverageAnalysis {
             return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
         }
         let row_count = self.topology.sources.row_count;
-        if row_surface_areas.len() != row_count {
+        if row_surface_areas.is_some_and(|areas| areas.len() != row_count) {
             return Err(GeometryErrorKind::Invalid(
                 "geographic coverage row surface areas are out of sync with the Q inventory".into(),
+            )
+            .into());
+        }
+        if row_surface_areas.is_none()
+            && self.has_overlapping_faces()
+            && matches!(
+                overlap_rule,
+                CoverageOverlapRule::MaxArea | CoverageOverlapRule::MinArea
+            )
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "geographic area ranking is missing its row surface areas".into(),
             )
             .into());
         }
@@ -542,7 +554,7 @@ impl GeographicCoverageAnalysis {
                     let metric = metrics.as_ref().and_then(|metrics| metrics.get(face));
                     Some(select_overlap_owner(
                         occupants,
-                        row_surface_areas,
+                        row_surface_areas.unwrap_or_default(),
                         overlap_rule,
                         metric,
                     )?)

@@ -218,7 +218,7 @@ fn geographic_scalar_coverage_receipt_rejects_two_live_rows() {
     let mut work = EvaluationBudget::new("coverage_clean", 0).expect("coverage work");
     let assignment = analysis
         .assign_cleaning_faces(
-            &rows.iter().map(Shape::area).collect::<Vec<_>>(),
+            Some(&rows.iter().map(Shape::area).collect::<Vec<_>>()),
             0.0,
             CoverageOverlapRule::MinIndex,
             None::<&crate::crs::GeodesicMetric>,

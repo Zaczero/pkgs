@@ -60,7 +60,7 @@ fn cleaning_assignments(
             .map(|shape| crate::crs::chart_shape_area(metric, shape, frame))
             .collect::<crate::error::Result<Vec<_>>>()?;
         analysis.assign_cleaning_faces(
-            &row_surface_areas,
+            Some(&row_surface_areas),
             gap_width,
             overlap_rule,
             Some(metric),
@@ -173,7 +173,7 @@ fn geographic_face_sweep_and_selector_charge_the_supplied_work_account() {
             EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
                 .expect("empty test budget");
         match analysis.assign_cleaning_faces(
-            &row_areas,
+            Some(&row_areas),
             1.0,
             CoverageOverlapRule::LongestBorder,
             Some(metric),
@@ -214,7 +214,7 @@ fn geographic_clean_labels_seam_overlap_without_absorbing_greenwich_rows() {
     let mut work = Unmetered;
     let assignment = analysis
         .assign_cleaning_faces(
-            &row_areas,
+            Some(&row_areas),
             0.0,
             CoverageOverlapRule::MinIndex,
             None::<&crate::crs::GeodesicMetric>,

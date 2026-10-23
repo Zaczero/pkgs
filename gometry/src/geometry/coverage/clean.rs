@@ -105,15 +105,17 @@ pub(crate) fn coverage_clean_output<S: std::borrow::Borrow<Shape>>(
                         "geographic area ranking is missing the operation's CRS metric".into(),
                     )
                 })?;
-                snapped
-                    .iter()
-                    .map(|shape| crate::crs::chart_shape_area(metric, shape, frame))
-                    .collect::<Result<Vec<_>>>()?
+                Some(
+                    snapped
+                        .iter()
+                        .map(|shape| crate::crs::chart_shape_area(metric, shape, frame))
+                        .collect::<Result<Vec<_>>>()?,
+                )
             } else {
-                vec![0.0; snapped.len()]
+                None
             };
             let selection = analysis.assign_cleaning_faces(
-                &row_surface_areas,
+                row_surface_areas.as_deref(),
                 gap_width,
                 overlaps,
                 metric,
@@ -447,12 +449,8 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
         }
         .into());
     }
-    let row_areas = coverage
-        .iter()
-        .map(|shape| shape.borrow().area())
-        .collect::<Vec<_>>();
     let mut assignment = analysis.assign_cleaning_faces(
-        &row_areas,
+        None,
         0.0,
         CoverageOverlapRule::MinIndex,
         None::<&crate::crs::GeodesicMetric>,
@@ -475,7 +473,7 @@ fn coverage_union_geographic<S: std::borrow::Borrow<Shape>>(
         StorageTarget::Scalar,
         &mut work,
     )?;
-    drop((row_areas, assignment, analysis));
+    drop((assignment, analysis));
     match finish_geographic(
         PublicationCall::new(
             ProducerReceipt::ProducerDrawing(receipt),
