@@ -271,6 +271,7 @@ fn normal_connection_join_reports_panics_and_keeps_cancellation_silent() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "Miri does not support SO_RCVBUF socket configuration")]
 async fn prefixed_io_forwards_vectored_tcp_write_progress_and_errors() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
