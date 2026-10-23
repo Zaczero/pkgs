@@ -4,6 +4,7 @@
 //! into great circles. H3 and S2 classifiers consume the resulting parent
 //! intervals and retain the unsplit affine source as their authority.
 //!
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 
 use h3o::Resolution;
@@ -736,16 +737,28 @@ impl PeriodicParityBuckets {
 }
 
 impl LiftedChain {
-    fn from_points(points: &[(f64, f64)], closed: bool) -> ExactResult<Self> {
+    fn from_points<I>(points: I, closed: bool) -> ExactResult<Self>
+    where
+        I: IntoIterator,
+        I::IntoIter: ExactSizeIterator + Clone,
+        I::Item: Borrow<(f64, f64)>,
+    {
+        let mut points = points.into_iter();
         let minimum = if closed { 4 } else { 2 };
-        if points.len() < minimum || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        if points.len() < minimum
+            || !points.clone().all(|point| {
+                let (x, y) = point.borrow();
+                x.is_finite() && y.is_finite()
+            })
+        {
             return Err(ExactFailure::Arithmetic);
         }
-        let (first_point, remaining_points) = points
-            .split_first()
-            .expect("the minimum chain length is at least two");
         let mut vertices = Vec::with_capacity(points.len());
-        let mut edges = Vec::with_capacity(remaining_points.len());
+        let first_point = points
+            .next()
+            .expect("the minimum chain length is at least two");
+        let first_point = first_point.borrow();
+        let mut edges = Vec::with_capacity(points.len());
         vertices.push(LiftedVertex {
             longitude: LiftedLongitude {
                 raw: first_point.0,
@@ -753,7 +766,8 @@ impl LiftedChain {
             },
             latitude: first_point.1,
         });
-        for &(longitude, latitude) in remaining_points {
+        for point in points {
+            let &(longitude, latitude) = point.borrow();
             let previous = exact(vertices.last().copied())?;
             let step = lifted_step(previous.longitude.raw, longitude)?;
             let turns = previous
@@ -797,6 +811,8 @@ impl LiftedChain {
         if closed {
             result.degree = Some(result.closure_degree()?.ok_or(ExactFailure::Arithmetic)?);
         }
+        result.vertices.shrink_to_fit();
+        result.edges.shrink_to_fit();
         Ok(result)
     }
 
@@ -2217,9 +2233,9 @@ impl GeographicCoverageSource {
             edges: Vec::new(),
             poles: Vec::new(),
         };
-        for input in &chains {
+        for input in chains {
             append_lifted_chain(
-                input,
+                &input,
                 &mut lifted,
                 &mut ring_fills,
                 &mut authority,
@@ -2955,14 +2971,20 @@ const fn combine_polygon_point_classes(
 /// authority edges, selection pieces, and a periodic ring roof can never be
 /// built from different topologies.
 fn append_lifted_chain(
-    input: &SourceChainInput,
+    input: &SourceChainInput<'_>,
     lifted: &mut Vec<LiftedChain>,
     ring_fills: &mut Vec<LiftedRingFill>,
     authority: &mut AuthorityCarrier,
     selection: &mut SelectionCarrier,
     unknown: &mut bool,
 ) -> crate::error::Result<()> {
-    let chain = match LiftedChain::from_points(&input.points, input.closed) {
+    let points = input
+        .points
+        .xs()
+        .iter()
+        .copied()
+        .zip(input.points.ys().iter().copied());
+    let chain = match LiftedChain::from_points(points, input.closed) {
         Ok(chain) => chain,
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
@@ -3093,10 +3115,10 @@ fn append_selection_planar_pole_witness(
 }
 
 #[derive(Debug)]
-struct SourceChainInput {
+struct SourceChainInput<'a> {
     component: usize,
     ring: usize,
-    points: Vec<(f64, f64)>,
+    points: &'a CoordSeq,
     closed: bool,
 }
 
@@ -3108,9 +3130,9 @@ struct SourcePointInput {
     latitude: f64,
 }
 
-fn collect_shape_chains(
-    shape: &Shape,
-    output: &mut Vec<SourceChainInput>,
+fn collect_shape_chains<'a>(
+    shape: &'a Shape,
+    output: &mut Vec<SourceChainInput<'a>>,
     points: &mut Vec<SourcePointInput>,
     component: &mut usize,
 ) {
@@ -3202,18 +3224,17 @@ fn push_point(
     });
 }
 
-fn push_chain(
-    coords: &CoordSeq,
+fn push_chain<'a>(
+    coords: &'a CoordSeq,
     closed: bool,
     component: usize,
     ring: usize,
-    output: &mut Vec<SourceChainInput>,
+    output: &mut Vec<SourceChainInput<'a>>,
 ) {
-    let points = coords.points().map(|point| (point.x, point.y)).collect();
     output.push(SourceChainInput {
         component,
         ring,
-        points,
+        points: coords,
         closed,
     });
 }

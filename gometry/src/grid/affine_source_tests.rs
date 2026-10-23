@@ -566,14 +566,14 @@ fn full_and_half_world_edges_preserve_the_written_direction() {
 #[test]
 fn closure_degree_accepts_both_antimeridian_alias_directions() {
     let positive = LiftedChain::from_points(
-        &[(-180.0, 0.0), (-90.0, 10.0), (0.0, 0.0), (180.0, 0.0)],
+        [(-180.0, 0.0), (-90.0, 10.0), (0.0, 0.0), (180.0, 0.0)],
         true,
     )
     .unwrap();
     assert_eq!(positive.degree, Some(1));
 
     let negative = LiftedChain::from_points(
-        &[(180.0, 0.0), (90.0, 10.0), (0.0, 0.0), (-180.0, 0.0)],
+        [(180.0, 0.0), (90.0, 10.0), (0.0, 0.0), (-180.0, 0.0)],
         true,
     )
     .unwrap();
@@ -840,7 +840,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
 #[test]
 fn direct_lift_identity_blocks_collinear_long_path_coalescing() {
     let chain =
-        LiftedChain::from_points(&[(0.0, 0.0), (100.0, 0.0), (-160.0, 0.0)], false).unwrap();
+        LiftedChain::from_points([(0.0, 0.0), (100.0, 0.0), (-160.0, 0.0)], false).unwrap();
     assert_eq!(chain.vertices.len(), 3);
     assert_eq!(chain.vertices[2].longitude.turns, 1);
 }
@@ -848,7 +848,7 @@ fn direct_lift_identity_blocks_collinear_long_path_coalescing() {
 #[test]
 fn direct_lift_identity_blocks_coalescing_across_a_full_world_edge() {
     let chain =
-        LiftedChain::from_points(&[(-180.0, 0.0), (180.0, 0.0), (-160.0, 0.0)], false).unwrap();
+        LiftedChain::from_points([(-180.0, 0.0), (180.0, 0.0), (-160.0, 0.0)], false).unwrap();
     assert_eq!(chain.vertices.len(), 3);
     assert!(matches!(chain.edges[0], LiftKind::FullPositive));
     assert_eq!(chain.vertices[2].longitude.turns, 1);
@@ -857,7 +857,7 @@ fn direct_lift_identity_blocks_coalescing_across_a_full_world_edge() {
 #[test]
 fn exact_collinear_middle_vertex_is_canonicalized_before_any_image() {
     let chain =
-        LiftedChain::from_points(&[(0.0, 10.0), (10.0, 10.0), (20.0, 10.0)], false).unwrap();
+        LiftedChain::from_points([(0.0, 10.0), (10.0, 10.0), (20.0, 10.0)], false).unwrap();
     assert_eq!(chain.vertices.len(), 2);
     assert_eq!(chain.edges.len(), 1);
     assert_eq!(chain.vertices[0].longitude.raw.to_bits(), 0.0_f64.to_bits());
@@ -870,7 +870,7 @@ fn exact_collinear_middle_vertex_is_canonicalized_before_any_image() {
 #[test]
 fn multiwinding_ring_keeps_degree_two_and_all_direct_preimages() {
     let chain = LiftedChain::from_points(
-        &[
+        [
             (170.0, 0.0),
             (-170.0, 0.0),
             (0.0, 0.0),
@@ -889,7 +889,7 @@ fn multiwinding_ring_keeps_degree_two_and_all_direct_preimages() {
 #[test]
 fn multiwinding_ring_keeps_negative_degree_two_and_all_direct_preimages() {
     let chain = LiftedChain::from_points(
-        &[
+        [
             (170.0, 0.0),
             (0.0, 0.0),
             (-170.0, 0.0),
@@ -1144,9 +1144,9 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_for_tall_edges_and_windi
 
 #[test]
 fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
-    LiftedChain::from_points(&[], true).unwrap_err();
-    LiftedChain::from_points(&[(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], true).unwrap_err();
-    LiftedChain::from_points(&[(0.0, 0.0), (1.0, f64::NAN)], false).unwrap_err();
+    LiftedChain::from_points(&[] as &[(f64, f64)], true).unwrap_err();
+    LiftedChain::from_points([(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], true).unwrap_err();
+    LiftedChain::from_points([(0.0, 0.0), (1.0, f64::NAN)], false).unwrap_err();
     ExactPlanarPoint::from_stored(f64::INFINITY, 0.0).unwrap_err();
 
     let source = polygon_source(
@@ -1450,7 +1450,7 @@ fn dense_collinear_chain_reduction_is_stack_safe() {
 #[test]
 fn incremental_reduction_preserves_seam_zigzags_and_full_turn_edges() {
     let seam = LiftedChain::from_points(
-        &[(-180.0, 0.0), (170.0, 0.0), (-170.0, 0.0), (180.0, 0.0)],
+        [(-180.0, 0.0), (170.0, 0.0), (-170.0, 0.0), (180.0, 0.0)],
         false,
     )
     .unwrap();
@@ -1464,7 +1464,7 @@ fn incremental_reduction_preserves_seam_zigzags_and_full_turn_edges() {
     );
 
     let full =
-        LiftedChain::from_points(&[(-180.0, 0.0), (180.0, 0.0), (-180.0, 0.0)], false).unwrap();
+        LiftedChain::from_points([(-180.0, 0.0), (180.0, 0.0), (-180.0, 0.0)], false).unwrap();
     assert_eq!(full.vertices.len(), 3);
     assert_eq!(full.edges.as_slice(), &[
         LiftKind::FullPositive,
@@ -1475,7 +1475,7 @@ fn incremental_reduction_preserves_seam_zigzags_and_full_turn_edges() {
 #[test]
 fn incremental_reduction_preserves_a_dense_multiwinding_closure_degree() {
     let chain = LiftedChain::from_points(
-        &[
+        [
             (170.0, 0.0),
             (180.0, 0.0),
             (-170.0, 0.0),
