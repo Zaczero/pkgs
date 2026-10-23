@@ -1,6 +1,6 @@
 use super::{
     Arc, Bounds, ElementBounds, GeometryArrayStorage, PackedColumns, PackedStorage, Py, PyAny,
-    PyGeometryArray, PyResult, Python, Shape, optional_float64_array, row_ord_extremes,
+    PyGeometryArray, PyResult, Python, Shape, float64_array, row_ord_extremes,
 };
 
 impl PyGeometryArray {
@@ -50,7 +50,7 @@ impl PyGeometryArray {
     /// When storage is packed, `ordinate` selects the contiguous
     /// ordinate column and `row_ord_extremes` reduces each row's window; `project`
     /// maps a row's `(low, high)` pair to the emitted value. Otherwise
-    /// `from_shape` recomputes per shape. Absent ordinate stays `None` (`nan`).
+    /// `from_shape` recomputes per shape. Absent ordinates publish as `nan`.
     fn extreme_lane(
         &self,
         py: Python<'_>,
@@ -63,23 +63,26 @@ impl PyGeometryArray {
                 && let Some(columns) = self.packed_columns()
             {
                 let Some(column) = ordinate(&columns) else {
-                    return Ok(vec![None; self.len()]);
+                    return Ok(vec![f64::NAN; self.len()]);
                 };
                 return Ok(columns.collect_rows::<_, Vec<_>>(|row| {
                     row.and_then(|row| row.vertex_window())
                         .and_then(|window| row_ord_extremes(column, window))
-                        .map(|(low, high)| project(low, high))
+                        .map_or(f64::NAN, |(low, high)| project(low, high))
                 }));
             }
             self.row_operation()
-                .rows_with_missing(|| None::<f64>)
+                .rows_with_missing(|| f64::NAN)
                 .map(|row| match row {
                     crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                    crate::array::ArrayRow::Present(row) => row.row().with_shape(&from_shape),
+                    crate::array::ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(&from_shape)
+                        .map(|value| value.unwrap_or(f64::NAN)),
                 })
                 .collect::<crate::error::Result<Vec<_>>>()
         })?;
-        optional_float64_array(py, values)
+        float64_array(py, values)
     }
 
     /// Return the published per-element bounds without initializing the cache.

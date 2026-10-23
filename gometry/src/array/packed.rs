@@ -22,7 +22,7 @@ use crate::geometry::storage::{
 #[cfg(test)]
 use crate::geometry::types::ShapeHeapMemo;
 use crate::geometry::{CoordSeqBuilder, storage};
-use crate::py::numpy::optional_float64_array;
+use crate::py::numpy::float64_array;
 
 /// Geometry-derived cache owners supplied to the computed-data constructor.
 /// Prepared/frame products deliberately do not live here: every computed
