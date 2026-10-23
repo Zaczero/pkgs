@@ -665,6 +665,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 .entry([start.0.min(end.0), start.0.max(end.0)])
                 .or_insert(chord_index);
         }
+        drop(live);
         for (emission_index, emission) in emissions.iter().enumerate() {
             for (item_index, nodes) in emission.items.iter().enumerate() {
                 let mapping = item_chords
@@ -679,6 +680,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 }
             }
         }
+        drop(chord_by_nodes);
         live_nodes.sort_unstable_by_key(|node| node.0);
         if movable_cache.len() < partition.node_count() {
             movable_cache.resize(partition.node_count(), None);
@@ -709,6 +711,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             &seed_nodes,
             &mut movable_cache,
         )?;
+        drop((search_chords, incident_chords, seed_nodes));
         let classes = proximity
             .classes
             .into_iter()
@@ -1184,6 +1187,8 @@ impl ExactPartition<'_> {
                     certify(self, &embedding, emissions, &segment_views, &mut collect)?;
                 let (mut seeds, movable_cache, has_unmovable_witness) =
                     collect.into_seed_state()?;
+                drop(segment_views);
+                drop(segments);
                 if has_unmovable_witness {
                     return Err(first_witness.into_error());
                 }
