@@ -1,5 +1,6 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 
 use crate::array::StreamingShapes;
 use crate::crs::frame::Frame;
@@ -115,18 +116,15 @@ impl BulkElement for String {
         let Some(mask) = missing else {
             return values.into_py_any(py);
         };
-        let rows: Vec<Py<PyAny>> = values
-            .into_iter()
-            .enumerate()
-            .map(|(row, value)| {
-                if mask.is_missing(row) {
-                    Ok(py.None())
-                } else {
-                    value.into_py_any(py)
-                }
-            })
-            .collect::<PyResult<_>>()?;
-        rows.into_py_any(py)
+        Ok(PyList::new(
+            py,
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(row, value)| (!mask.is_missing(row)).then_some(value)),
+        )?
+        .unbind()
+        .into())
     }
 }
 
