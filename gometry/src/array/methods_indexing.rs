@@ -48,9 +48,12 @@ pub(crate) fn numpy_fancy_index(
             )));
         }
         // NumPy bool storage can contain any nonzero byte; Rust bool requires 0 or 1.
-        let owned = owned_numpy_values::<u8>(index)?
-            .into_iter()
-            .map(|value| value != 0)
+        let array = native_numpy_array::<u8>(index)?;
+        let readonly = array.try_readonly()?;
+        let owned = readonly
+            .as_array()
+            .iter()
+            .map(|&value| value != 0)
             .collect();
         return Ok(Some(NumpyFancyIndex::Mask(owned)));
     }
@@ -87,17 +90,6 @@ where
     };
     // SAFETY: the C API returns a new reference or null; the helper handles both cases.
     unsafe { Bound::from_owned_ptr_or_err(py, ptr).map(|array| array.cast_into_unchecked()) }
-}
-
-/// Copy logical NumPy values through a C-level native-dtype cast.
-fn owned_numpy_values<T>(index: &Bound<'_, PyAny>) -> PyResult<Vec<T>>
-where
-    T: Copy + Element,
-{
-    let array = native_numpy_array::<T>(index)?;
-    let readonly = array.try_readonly()?;
-    let values = readonly.as_array();
-    Ok(values.iter().copied().collect())
 }
 
 pub(crate) fn numpy_integer_fancy_index<T>(
