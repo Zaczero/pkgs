@@ -208,6 +208,45 @@ def test_packed_origin_transforms_match_scalar_rows_bitwise(transform, array, or
     assert result.is_missing.tolist() == expected.is_missing.tolist()
 
 
+@pytest.mark.parametrize('axes', ['XY', 'XYZ', 'XYM', 'XYZM'])
+@pytest.mark.parametrize('selection', [slice(None), slice(1, 3), [2, 0, 2]])
+@pytest.mark.parametrize(
+    'transform',
+    [
+        lambda geometry: geometry.scale(1.5, 0.75, origin=(1.25, -0.5)),
+        lambda geometry: geometry.rotate(30.0, origin=(1.25, -0.5)),
+        lambda geometry: geometry.skew(12.5, -3.0, origin=(1.25, -0.5)),
+        lambda geometry: geometry.scale(1.0, 2.0, origin=(0.0, 0.0)),
+    ],
+    ids=['scale', 'rotate', 'skew', 'identity-x'],
+)
+def test_fixed_origin_point_selection_matches_scalar_bits(axes, selection, transform):
+    array = gm.points(
+        [-0.0, 1.0, -2.0, 8.0],
+        [3.0, -0.0, 7.0, -5.0],
+        z=[4.0, 5.0, 6.0, 7.0] if 'Z' in axes else None,
+        m=[8.0, 9.0, 10.0, 11.0] if 'M' in axes else None,
+    )[selection]
+    expected = _scalar_array(array, transform)
+    result = transform(array)
+    del array
+    assert _wkb_rows(result) == _wkb_rows(expected)
+
+
+@pytest.mark.parametrize('auxiliary_first', [False, True])
+def test_fixed_origin_points_report_first_invalid_row(auxiliary_first):
+    overflow = [sys.float_info.max, 0.0, 1.0]
+    invalid_z = [1.0, 2.0, math.nan]
+    errors = [invalid_z, overflow] if auxiliary_first else [overflow, invalid_z]
+    array = gm.points([1.0, 2.0, 3.0], [3.0, 4.0, 5.0], z=[5.0, 6.0, 7.0])
+    array = array.with_coordinates([[1.0, 2.0, 3.0], *errors])
+    with pytest.raises(
+        gm.InvalidGeometryError, match='coordinates must be finite'
+    ) as error:
+        array.scale(2.0, 2.0, origin=(0.0, 0.0))
+    assert error.value.__notes__ == ['while processing array element 1']
+
+
 def test_scale_array_uses_per_element_centroid():
     array = gm.GeometryArray([
         gm.Polygon([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]),

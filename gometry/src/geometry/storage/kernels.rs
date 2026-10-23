@@ -1151,6 +1151,18 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let axes = point_columns.coords().axes();
                 let capacity = rows.present_count();
                 storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
+                if let Some(coords) = point_columns.contiguous_coords()
+                    && coords.zs().is_none_or(crate::geometry::column_all_finite)
+                    && coords.ms().is_none_or(crate::geometry::column_all_finite)
+                    && let Ok(mut mapped) = coords.try_affine_about_origin(&transform)
+                {
+                    // A transformed point window must not retain the source's
+                    // unselected M coordinates after its XY columns are replaced.
+                    mapped.compact_m();
+                    return Ok(PackedColumnOutput::Points(mapped));
+                }
+                // Replay failed column evaluation in logical order so an earlier
+                // XY error still precedes a later invalid auxiliary ordinate.
                 let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
                 for (logical, physical) in rows.cursor() {
                     let Some(physical) = physical else {

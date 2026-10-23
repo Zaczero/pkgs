@@ -388,6 +388,21 @@ impl CoordSeq {
         })
     }
 
+    pub(crate) fn compact_m(&mut self) {
+        if let Some(column) = &self.ms
+            && !column.is_full_owner(self.len())
+        {
+            self.ms = Some(MColumn::Local {
+                owner: SharedSlice::from_vec(
+                    column
+                        .values(self.range.start as usize..self.range.end as usize)
+                        .to_vec(),
+                ),
+                offset: 0,
+            });
+        }
+    }
+
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice
     /// indexing). Prefer column access in hot loops; this is for the by-value
     /// `Point` interchange paths.
