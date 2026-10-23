@@ -144,6 +144,7 @@ class CompressionResponder:
                     headers.add_vary_header('Accept-Encoding')
                     headers['Content-Length'] = str(len(compressed_body))
                     message['body'] = compressed_body
+                    del body
                     pending = start_message
                     start_message = None
                     await send(pending)
