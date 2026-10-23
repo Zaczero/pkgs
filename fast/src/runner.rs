@@ -239,6 +239,8 @@ impl Runner {
         let events = observe.then(|| self.counters.attach(pid));
         let release_ns = start.elapsed().as_nanos() as u64;
         sys::release(&release_write)?;
+        // The forked child owns independent copies of the launch storage.
+        drop((argv, paths, env, argv_ptr, env_ptr, input));
         let mut launch_channel = File::from(release_write);
         let mut stderr = File::from(stderr_read);
         let mut exec_pipe = File::from(exec_read);
@@ -388,17 +390,18 @@ fn executable_paths(program: &OsStr) -> io::Result<Vec<CString>> {
     if program.is_empty() {
         return Err(io::Error::other("empty executable"));
     }
-    let paths = if program.as_bytes().contains(&b'/') {
-        vec![PathBuf::from(program)]
+    if program.as_bytes().contains(&b'/') {
+        Ok(vec![
+            CString::new(program.as_bytes()).map_err(io::Error::other)?,
+        ])
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into()))
-            .map(|directory| directory.join(program))
+            .map(|directory| {
+                CString::new(directory.join(program).as_os_str().as_bytes())
+                    .map_err(io::Error::other)
+            })
             .collect()
-    };
-    paths
-        .into_iter()
-        .map(|path| CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other))
-        .collect()
+    }
 }
 
 pub fn shell() -> io::Result<OsString> {

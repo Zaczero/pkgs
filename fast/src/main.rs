@@ -10,10 +10,12 @@ use clap::{CommandFactory as _, FromArgMatches as _};
 use fast::{random, runner, statistics};
 
 fn main() -> ExitCode {
-    let raw: Vec<_> = std::env::args_os().collect();
-    let cli = match parse_args(&raw) {
-        Ok(cli) => cli,
-        Err(error) => return output_status(error.print(), error.exit_code() as u8),
+    let cli = {
+        let raw: Vec<_> = std::env::args_os().collect();
+        match parse_args(&raw) {
+            Ok(cli) => cli,
+            Err(error) => return output_status(error.print(), error.exit_code() as u8),
+        }
     };
     match experiment::run(cli) {
         Ok((result, options)) => {

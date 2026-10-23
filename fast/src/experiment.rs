@@ -257,23 +257,19 @@ impl Result {
         let Some(margin) = check else {
             return;
         };
-        let comparisons: Vec<_> = self
+        let mut comparisons = self
             .analysis
             .comparisons
             .iter()
-            .filter(|c| c.denominator == Some(0))
-            .collect();
-        self.exit_code = if comparisons.is_empty() {
+            .filter(|c| c.denominator == Some(0));
+        self.exit_code = if comparisons.clone().next().is_none() {
             5
         } else if comparisons
-            .iter()
+            .clone()
             .any(|c| c.interval.is_some_and(|i| i.lower > 1.0 + margin))
         {
             4
-        } else if comparisons
-            .iter()
-            .all(|c| c.interval.is_some_and(|i| i.upper <= 1.0 + margin))
-        {
+        } else if comparisons.all(|c| c.interval.is_some_and(|i| i.upper <= 1.0 + margin)) {
             0
         } else {
             5

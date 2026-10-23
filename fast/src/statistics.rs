@@ -265,7 +265,7 @@ impl Planner {
     }
 }
 
-pub fn summarize(values: &[u64]) -> Summary {
+fn summarize(mut values: Vec<u64>) -> Summary {
     let mean = values.iter().map(|&x| u128::from(x)).sum::<u128>() as f64 / values.len() as f64;
     let variance = if values.len() > 1 {
         values
@@ -276,24 +276,30 @@ pub fn summarize(values: &[u64]) -> Summary {
     } else {
         0.0
     };
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
+    values.sort_unstable();
     Summary {
         mean_ns: mean,
         sd_ns: variance.sqrt(),
-        median_ns: median(&sorted.iter().map(|&x| x as f64).collect::<Vec<_>>()),
-        min_ns: *sorted.first().expect("nonempty observations"),
-        max_ns: *sorted.last().expect("nonempty observations"),
+        median_ns: sorted_median(&values, |&value| value as f64),
+        min_ns: *values.first().expect("nonempty observations"),
+        max_ns: *values.last().expect("nonempty observations"),
     }
 }
 
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_unstable_by(f64::total_cmp);
+    sorted_median(&sorted, |&value| value)
+}
+
+fn sorted_median<T, F>(sorted: &[T], value: F) -> f64
+where
+    F: Fn(&T) -> f64,
+{
     let (lower, upper) = sorted.split_at(sorted.len() / 2);
-    let upper = *upper.first().expect("nonempty values");
+    let upper = value(upper.first().expect("nonempty values"));
     if sorted.len().is_multiple_of(2) {
-        f64::midpoint(*lower.last().expect("even count"), upper)
+        f64::midpoint(value(lower.last().expect("even count")), upper)
     } else {
         upper
     }
@@ -387,7 +393,7 @@ pub fn analyze(rows: &[Vec<u64>], margin: Option<f64>) -> Analysis {
     let runs = rows.len();
     let columns = rows.first().map_or(0, Vec::len);
     let summaries: Vec<_> = (0..columns)
-        .map(|column| summarize(&rows.iter().map(|row| row[column]).collect::<Vec<_>>()))
+        .map(|column| summarize(rows.iter().map(|row| row[column]).collect()))
         .collect();
     let count = batch_count(runs);
     let limitation = match runs {
@@ -491,6 +497,26 @@ mod tests {
     fn arithmetic_mean_ratio_is_not_mean_of_ratios() {
         let result = analyze(&[vec![1, 4], vec![9, 6]], None);
         assert_eq!(result.comparisons[0].estimate, 1.0);
+    }
+
+    #[test]
+    fn summary_median_preserves_integer_conversion_and_midpoint() {
+        for (values, expected) in [
+            (vec![17], 17.0),
+            (vec![7, 3, 5], 5.0),
+            (vec![11, 1, 9, 3], 6.0),
+            (vec![0, u64::MAX], 9_223_372_036_854_776_000.0),
+            (
+                vec![0x0020_0000_0000_0001, 0x0020_0000_0000_0002],
+                9_007_199_254_740_992.0,
+            ),
+        ] {
+            let rows = values
+                .into_iter()
+                .map(|value| vec![value])
+                .collect::<Vec<_>>();
+            assert_eq!(analyze(&rows, None).summaries[0].median_ns, expected);
+        }
     }
 
     #[test]
