@@ -104,13 +104,9 @@ fn group_polygon_ring_plans(
     source: &Shape,
     ring_plans: Vec<Vec<usize>>,
 ) -> Result<Vec<Vec<Vec<usize>>>> {
-    let ring_counts: Vec<usize> = match source {
-        Shape::Polygon(polygon) => vec![polygon.rings().count()],
-        Shape::MultiPolygon(polygons) => polygons
-            .as_slice()
-            .iter()
-            .map(|polygon| polygon.rings().count())
-            .collect(),
+    let polygons = match source {
+        Shape::Polygon(polygon) => std::slice::from_ref(polygon),
+        Shape::MultiPolygon(polygons) => polygons.as_slice(),
         Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
@@ -123,9 +119,9 @@ fn group_polygon_ring_plans(
         },
     };
     let mut ring_plans = ring_plans.into_iter();
-    let polygons = ring_counts
-        .into_iter()
-        .map(|ring_count| {
+    let polygons = polygons
+        .iter()
+        .map(|polygon| {
             std::iter::repeat_with(|| {
                 ring_plans.next().ok_or_else(|| {
                     GeometryErrorKind::message(
@@ -133,7 +129,7 @@ fn group_polygon_ring_plans(
                     )
                 })
             })
-            .take(ring_count)
+            .take(polygon.rings().count())
             .collect::<Result<Vec<_>>>()
         })
         .collect::<Result<Vec<_>>>()?;

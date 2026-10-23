@@ -4,8 +4,8 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
-    Contact, CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation,
-    Point, PointKey, Polygon, Ring, Shape, ValidationIssue, XY, orientation, point_on_segment,
+    Contact, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation, Point,
+    PointKey, Polygon, Ring, Shape, ValidationIssue, XY, orientation, point_on_segment,
     ring_winding, same_point, segment_contact_exact, segment_cross_point, segments_intersect,
 };
 /// Whether a vertex-SUBSET simplification of a polygon kept its linework
@@ -35,20 +35,20 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     if !same_ring_structure {
         return Ok(false);
     }
-    let ring_pairs: Vec<(&CoordSeq, &CoordSeq)> = match (original, simplified) {
-        (Shape::Polygon(before), Shape::Polygon(after)) => before
-            .rings()
-            .map(Ring::coords)
-            .zip(after.rings().map(Ring::coords))
-            .collect(),
-        (Shape::MultiPolygon(before), Shape::MultiPolygon(after)) => before
-            .iter()
-            .flat_map(Polygon::rings)
-            .map(Ring::coords)
-            .zip(after.iter().flat_map(Polygon::rings).map(Ring::coords))
-            .collect(),
+    let (before, after) = match (original, simplified) {
+        (Shape::Polygon(before), Shape::Polygon(after)) => {
+            (std::slice::from_ref(before), std::slice::from_ref(after))
+        },
+        (Shape::MultiPolygon(before), Shape::MultiPolygon(after)) => {
+            (before.as_slice(), after.as_slice())
+        },
         _ => return Ok(false),
     };
+    let ring_pairs = before
+        .iter()
+        .flat_map(Polygon::rings)
+        .map(Ring::coords)
+        .zip(after.iter().flat_map(Polygon::rings).map(Ring::coords));
     let mut chains = LineworkChains::default();
     let mut chords: Vec<usize> = Vec::new();
     for (before, after) in ring_pairs {

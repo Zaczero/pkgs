@@ -839,8 +839,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
 
 #[test]
 fn direct_lift_identity_blocks_collinear_long_path_coalescing() {
-    let chain =
-        LiftedChain::from_points([(0.0, 0.0), (100.0, 0.0), (-160.0, 0.0)], false).unwrap();
+    let chain = LiftedChain::from_points([(0.0, 0.0), (100.0, 0.0), (-160.0, 0.0)], false).unwrap();
     assert_eq!(chain.vertices.len(), 3);
     assert_eq!(chain.vertices[2].longitude.turns, 1);
 }
@@ -856,8 +855,7 @@ fn direct_lift_identity_blocks_coalescing_across_a_full_world_edge() {
 
 #[test]
 fn exact_collinear_middle_vertex_is_canonicalized_before_any_image() {
-    let chain =
-        LiftedChain::from_points([(0.0, 10.0), (10.0, 10.0), (20.0, 10.0)], false).unwrap();
+    let chain = LiftedChain::from_points([(0.0, 10.0), (10.0, 10.0), (20.0, 10.0)], false).unwrap();
     assert_eq!(chain.vertices.len(), 2);
     assert_eq!(chain.edges.len(), 1);
     assert_eq!(chain.vertices[0].longitude.raw.to_bits(), 0.0_f64.to_bits());

@@ -58,9 +58,9 @@ fn source_line_ranges(source: LineSource<'_>) -> Result<Vec<Range<usize>>> {
 }
 
 fn polygon_source_ring_ranges(shape: &Shape) -> Result<Vec<Range<usize>>> {
-    let polygons: Vec<&Polygon> = match shape {
-        Shape::Polygon(polygon) => vec![polygon],
-        Shape::MultiPolygon(polygons) => polygons.iter().collect(),
+    let polygons: &[Polygon] = match shape {
+        Shape::Polygon(polygon) => std::slice::from_ref(polygon),
+        Shape::MultiPolygon(polygons) => polygons.as_slice(),
         Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
@@ -1678,15 +1678,14 @@ impl ExactSourceInventory {
             let edge_roles = computed_edges.get(polygon_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("published polygon edge roles are unknown".into())
             })?;
-            let published_rings = polygon.rings().collect::<Vec<_>>();
-            if old_rings.len() != edge_roles.len() || published_rings.len() != old_rings.len() {
+            if old_rings.len() != edge_roles.len() || polygon.rings().count() != old_rings.len() {
                 return Err(GeometryErrorKind::Invalid(
                     "published shell and hole rows do not match their source roles".into(),
                 )
                 .into());
             }
             for ((old_ring, roles), published_ring) in
-                old_rings.iter().zip(edge_roles).zip(published_rings)
+                old_rings.iter().zip(edge_roles).zip(polygon.rings())
             {
                 let source_trace = source_traces.next().ok_or_else(|| {
                     GeometryErrorKind::Invalid("polygon ring source trace is unknown".into())
