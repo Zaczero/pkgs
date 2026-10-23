@@ -24,6 +24,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["pyo3stubs"]
 
+[tool.ci]
+freethreaded-test-exclusion = """
+tree-sitter-rust 0.24.2 supplies only GIL-enabled ABI wheels and its source
+build fails on free-threaded CPython. Restore these tests when the parser
+provides a compatible build.
+"""
+
 [tool.mypy]
 strict = true
 

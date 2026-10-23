@@ -21,7 +21,6 @@ Usage (from repo root):
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import subprocess
@@ -58,14 +57,6 @@ OTHER_TEST_RUNNERS = {'macos': MACOS_TEST_RUNNER, 'windows': WINDOWS_TEST_RUNNER
 
 # Free-threaded wheels in cibuildwheel 4 start at CPython 3.14 (3.13t removed).
 MIN_FREETHREADED_MINOR = (3, 14)
-
-FREETHREADED_TEST_EXCLUSIONS = {
-    'pyo3stubs': (
-        'The only tree-sitter-rust 0.24.2 wheels are cp39-abi3, and its source '
-        'build fails on CPython 3.15t; restore this cell when a compatible '
-        'release is available.'
-    ),
-}
 
 NATIVE_BUILD_RUNNERS = [
     LINUX_TEST_RUNNER,
@@ -163,10 +154,7 @@ def satisfies_requires_python(requires_python: str, minor: Minor) -> bool:
     return minor >= floor
 
 
-def load_uv_catalog(catalog_path: Path | None = None) -> list[dict[str, Any]]:
-    if catalog_path is not None:
-        return json.loads(catalog_path.read_text())
-
+def load_uv_catalog() -> list[dict[str, Any]]:
     result = subprocess.run(
         [
             'uv',
@@ -360,7 +348,7 @@ def resolve_matrix(
     primary = max(stable_minors)
 
     has_rust = bool(info.get('crate'))
-    freethreaded_exclusion = FREETHREADED_TEST_EXCLUSIONS.get(package)
+    freethreaded_exclusion = info.get('freethreaded-test-exclusion')
 
     ft_linux = available_stable_cpython_minors(
         catalog_entries, freethreaded=True, os_name='linux'
@@ -409,7 +397,6 @@ def resolve_matrix(
         'import-name': info['import-name'],
         'publishable': info['publishable'],
         'crate': info.get('crate', ''),
-        'python-versions': [str(m) for m in stable_minors],
         'primary-python': str(primary),
         'test-matrix': test_matrix,
         'build-matrix': build_matrix,
@@ -421,17 +408,9 @@ def resolve_matrix(
     return plan
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        '--catalog',
-        type=Path,
-        default=None,
-        help='Optional uv python list JSON (for offline tests)',
-    )
-    args = parser.parse_args(argv)
+def main() -> None:
     selection = json.load(sys.stdin)
-    catalog = load_uv_catalog(args.catalog)
+    catalog = load_uv_catalog()
     plans = [
         {**item, 'plan': resolve_matrix(item['package'], catalog=catalog)}
         for item in selection

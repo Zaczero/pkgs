@@ -43,10 +43,9 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(file)
 
 
-def ci_package_sort_key(package: str) -> tuple[bool, bool, str]:
-    """Put critical-path native packages ahead of shorter matrix entries."""
+def ci_package_sort_key(package: str) -> tuple[bool, str]:
+    """Put native builds ahead of pure-Python matrix entries."""
     return (
-        package not in {'gometry', 'h2corn'},
         not (Path(package) / 'Cargo.toml').is_file(),
         package,
     )
@@ -111,6 +110,19 @@ def package_info(package: str) -> dict[str, Any]:
     requires_python = project.get('requires-python', '')
     publishable = package in list_packages('release')
     cargo_toml = path / 'Cargo.toml'
+    common = {
+        'publishable': publishable,
+        'package': package,
+        'freethreaded-group': freethreaded_group,
+        'requires-python': requires_python,
+    }
+    exclusion = (
+        pyproject.get('tool', {}).get('ci', {}).get('freethreaded-test-exclusion')
+    )
+    if exclusion is not None:
+        if not isinstance(exclusion, str) or not exclusion.strip():
+            fail(f'{package}: freethreaded-test-exclusion must explain the blocker')
+        common['freethreaded-test-exclusion'] = exclusion
 
     if cargo_toml.is_file():
         cargo = load_toml(cargo_toml)['package']
@@ -125,11 +137,8 @@ def package_info(package: str) -> dict[str, Any]:
         if isinstance(wheel_test, list):
             wheel_test = ' && '.join(wheel_test)
         return {
+            **common,
             'import-name': import_name,
-            'publishable': publishable,
-            'package': package,
-            'freethreaded-group': freethreaded_group,
-            'requires-python': requires_python,
             'type': 'python-rust',
             'version': cargo['version'],
             'version-path': cargo_toml.as_posix(),
@@ -160,22 +169,16 @@ def package_info(package: str) -> dict[str, Any]:
         else:
             import_name = Path(packages[0]).name
         return {
+            **common,
             'import-name': import_name,
-            'publishable': publishable,
-            'package': package,
-            'freethreaded-group': freethreaded_group,
-            'requires-python': requires_python,
             'type': 'python',
             'version': str(project['version']),
         }
 
     version_path = path / pyproject['tool']['hatch']['version']['path']
     return {
+        **common,
         'import-name': version_path.relative_to(path).parts[0],
-        'publishable': publishable,
-        'package': package,
-        'freethreaded-group': freethreaded_group,
-        'requires-python': requires_python,
         'type': 'python',
         'version': read_python_version(version_path),
         'version-path': version_path.as_posix(),
