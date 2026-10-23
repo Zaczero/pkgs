@@ -50,7 +50,13 @@ pub(crate) fn h3_dissolve(cells: Vec<CellIndex>) -> Result<Typed, CellArrayError
             .any(|edge| cells.as_slice().binary_search(&edge.destination()).is_ok())
     });
     if !any_adjacent {
-        return multipolygon_from_cell_shapes(canonical_cell_shapes(cells.as_slice())?);
+        let mut coordinates = CanonicalCoordinates::new(cells.as_slice().len().saturating_mul(2));
+        return multipolygon_from_cell_shapes(
+            cells
+                .as_slice()
+                .iter()
+                .map(|&cell| canonical_cell_shape(cell, &mut coordinates)),
+        );
     }
     if let Some(outline) = exterior_outline(&cells)?
         && let Some(output) = polygonize_outline(outline)?
@@ -66,11 +72,13 @@ fn exterior_outline(
     let mut coordinates = CanonicalCoordinates::new(0);
     let mut outline = Vec::with_capacity(cells.as_slice().len().saturating_mul(2));
     let mut points = Vec::with_capacity(4);
+    let mut exterior = Vec::with_capacity(6);
     for &cell in cells.as_slice() {
-        let exterior: Vec<_> = cell
-            .edges()
-            .filter(|edge| cells.as_slice().binary_search(&edge.destination()).is_err())
-            .collect();
+        exterior.clear();
+        exterior.extend(
+            cell.edges()
+                .filter(|edge| cells.as_slice().binary_search(&edge.destination()).is_err()),
+        );
         if exterior.is_empty() {
             continue;
         }

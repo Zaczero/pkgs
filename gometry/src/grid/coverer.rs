@@ -411,23 +411,20 @@ fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::
     // Cell membership uses XY only. Strip extra ordinates from this temporary
     // area model before either the singleton or union path; the source shapes
     // remain owned by the caller.
-    let polygons = polygons
+    let parts = polygons
         .into_iter()
         .map(|polygon| {
             if polygon.axes() == crate::geometry::CoordinateAxes::XY {
-                return Ok(polygon);
+                return Ok(Shape::Polygon(polygon));
             }
-            let Shape::Polygon(polygon) = Shape::Polygon(polygon).force_2d()? else {
-                unreachable!("force_2d preserves polygon kind")
-            };
-            Ok(polygon)
+            Shape::Polygon(polygon).force_2d()
         })
         .collect::<Result<Vec<_>, crate::error::Error>>()?;
-    if polygons.len() <= 1 {
-        return Ok(area_shape(polygons));
+    if parts.len() <= 1 {
+        return Ok(parts.into_iter().next());
     }
-    let parts: Vec<_> = polygons.into_iter().map(Shape::Polygon).collect();
     let dissolved = Shape::union_all(&parts, Strictness::Strict)?;
+    drop(parts);
     let mut polygons = Vec::new();
     collect_area(&dissolved, &mut polygons);
     Ok(area_shape(polygons))

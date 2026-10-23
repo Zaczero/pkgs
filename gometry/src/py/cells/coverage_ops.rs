@@ -85,12 +85,7 @@ where
         if !any_adjacent {
             // No shared edges: assemble a MultiPolygon of the per-cell
             // polygons directly — never pay union/polygonize.
-            let shapes = prepared
-                .as_slice()
-                .iter()
-                .copied()
-                .map(D::fallback_shape)
-                .collect::<Result<Vec<_>, CellArrayError>>()?;
+            let shapes = prepared.as_slice().iter().copied().map(D::fallback_shape);
             return multipolygon_from_cell_shapes(shapes);
         }
         let Some(capacity) = prepared.as_slice().len().checked_mul(2) else {
@@ -128,15 +123,12 @@ where
 
 /// Assemble one MultiPolygon (or single Polygon) from already-disjoint cell
 /// shapes — used when the dissolve pre-scan finds zero shared edges.
-pub(crate) fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> Result<Typed, CellArrayError> {
-    if shapes.is_empty() {
-        return Err(CellArrayError::Geometry(
-            "a coverage needs at least one cell to dissolve into a polygon".to_owned(),
-        ));
-    }
+pub(crate) fn multipolygon_from_cell_shapes(
+    shapes: impl ExactSizeIterator<Item = Result<Shape, CellArrayError>>,
+) -> Result<Typed, CellArrayError> {
     let mut polygons = Vec::with_capacity(shapes.len());
     for shape in shapes {
-        match shape {
+        match shape? {
             Shape::Polygon(polygon) => polygons.push(polygon),
             Shape::MultiPolygon(parts) => {
                 polygons.reserve(parts.len());
