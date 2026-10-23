@@ -83,14 +83,15 @@ class Report:
             raise ValueError('series must not be empty')
         if self.better not in {'lower', 'higher'}:
             raise ValueError(f"better must be 'lower' or 'higher', got {self.better!r}")
-        keys = [(item.case, item.name, item.x) for item in series]
         seen: set[tuple[str, str, float | None]] = set()
-        for key in keys:
+        for item in series:
+            key = (item.case, item.name, item.x)
             if key in seen:
                 raise ValueError(
                     f'series contains a duplicate (case, name, x) key, got {key!r}'
                 )
             seen.add(key)
+        del seen
         object.__setattr__(
             self,
             'results',
