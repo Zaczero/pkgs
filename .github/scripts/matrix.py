@@ -414,6 +414,7 @@ def resolve_matrix(
         'test-matrix': test_matrix,
         'build-matrix': build_matrix,
         'rust-toolchain': rust_toolchain_channel(package) if has_rust else '',
+        'wheel-test-command': info.get('wheel-test-command', ''),
     }
     if freethreaded_exclusion is not None:
         plan['freethreaded-test-exclusion'] = freethreaded_exclusion

@@ -120,6 +120,9 @@ module-name = "h2corn._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
 
+[tool.cibuildwheel]
+test-command = "python {package}/examples/embedded.py"
+
 [tool.pyright]
 extraPaths = ["python"]
 include = ["bench", "python/h2corn", "tests"]

@@ -1,6 +1,10 @@
 import argparse
+import io
 import os
 import re
+import subprocess
+import tarfile
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -111,8 +115,17 @@ def package_info(package: str) -> dict[str, Any]:
     if cargo_toml.is_file():
         cargo = load_toml(cargo_toml)['package']
         module_name = pyproject['tool']['maturin']['module-name']
+        import_name = module_name.split('.', maxsplit=1)[0]
+        wheel_test = (
+            pyproject
+            .get('tool', {})
+            .get('cibuildwheel', {})
+            .get('test-command', f'python -c "import {import_name}"')
+        )
+        if isinstance(wheel_test, list):
+            wheel_test = ' && '.join(wheel_test)
         return {
-            'import-name': module_name.split('.', maxsplit=1)[0],
+            'import-name': import_name,
             'publishable': publishable,
             'package': package,
             'freethreaded-group': freethreaded_group,
@@ -121,6 +134,7 @@ def package_info(package: str) -> dict[str, Any]:
             'version': cargo['version'],
             'version-path': cargo_toml.as_posix(),
             'crate': cargo['name'],
+            'wheel-test-command': wheel_test.strip(),
         }
 
     # Pure-Python with a static project.version (no hatch dynamic version path).
@@ -208,7 +222,14 @@ def write_outputs(outputs: Mapping[str, object]) -> None:
     if output_path is not None:
         with Path(output_path).open('a') as file:
             for key, value in outputs.items():
-                file.write(f'{key}={value}\n')
+                text = str(value)
+                if '\n' in text:
+                    delimiter = 'PKGS_OUTPUT'
+                    while delimiter in text.splitlines():
+                        delimiter += '_'
+                    file.write(f'{key}<<{delimiter}\n{text}\n{delimiter}\n')
+                else:
+                    file.write(f'{key}={text}\n')
 
 
 def command_list(args: argparse.Namespace) -> None:
@@ -250,6 +271,88 @@ def command_check(args: argparse.Namespace) -> None:
     write_outputs(info)
 
 
+def command_check_api(args: argparse.Namespace) -> None:
+    import griffe
+
+    require_release_package(args.package)
+    validate_version(args.version)
+    current = tuple(map(int, args.version.split('.')))
+    compatibility_series = current[:2] if current[0] == 0 else current[:1]
+    tags = subprocess.check_output(
+        ['git', 'tag', '--list', f'{args.package}/*'], text=True
+    ).splitlines()
+    candidates = []
+    for tag in tags:
+        version = tag.removeprefix(f'{args.package}/')
+        if VERSION_RE.fullmatch(version):
+            parsed = tuple(map(int, version.split('.')))
+            if (
+                parsed[: len(compatibility_series)] == compatibility_series
+                and parsed < current
+            ):
+                candidates.append((parsed, tag))
+    if not candidates:
+        series = '.'.join(map(str, compatibility_series))
+        print(f'{args.package}: no earlier release in {series}.x to compare')
+        return
+    previous = max(candidates)[1]
+    info = package_info(args.package)
+    metadata = load_toml(Path(args.package) / 'pyproject.toml')
+    source = metadata.get('tool', {}).get('maturin', {}).get('python-source', '.')
+    old_metadata = tomllib.loads(
+        subprocess.check_output(
+            ['git', 'show', f'{previous}:{args.package}/pyproject.toml'], text=True
+        )
+    )
+    old_source = (
+        old_metadata.get('tool', {}).get('maturin', {}).get('python-source', '.')
+    )
+    source_path = Path(args.package) / old_source
+    archive = subprocess.check_output([
+        'git',
+        'archive',
+        previous,
+        '--',
+        str(source_path),
+    ])
+    with tempfile.TemporaryDirectory(prefix='api-compat-') as directory:
+        with tarfile.open(fileobj=io.BytesIO(archive)) as files:
+            files.extractall(directory, filter='data')
+        old = griffe.load(
+            info['import-name'],
+            search_paths=[Path(directory) / source_path],
+            allow_inspection=False,
+            resolve_aliases=True,
+            resolve_external=False,
+        )
+        new = griffe.load(
+            info['import-name'],
+            search_paths=[Path(args.package) / source],
+            allow_inspection=False,
+            resolve_aliases=True,
+            resolve_external=False,
+        )
+        changes = list(griffe.find_breaking_changes(old, new))
+    breaking = []
+    for change in changes:
+        if (
+            isinstance(change, griffe.AttributeChangedValueBreakage)
+            and change.obj.name == '__version__'
+        ):
+            continue
+        if isinstance(change, griffe.AttributeChangedValueBreakage) and (
+            isinstance(change.old_value, griffe.ExprCall)
+            or isinstance(change.new_value, griffe.ExprCall)
+        ):
+            print(f'Review computed value change: {change.obj.path}')
+        else:
+            breaking.append(change)
+            print(change.explain(griffe.ExplanationStyle.GITHUB))
+    if breaking:
+        fail(f'{args.package}: {len(breaking)} public API breakages since {previous}')
+    print(f'{args.package}: public API is compatible with {previous}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
@@ -285,6 +388,11 @@ def main() -> None:
     check_parser.add_argument('package')
     check_parser.add_argument('version')
     check_parser.set_defaults(func=command_check)
+
+    api_parser = subparsers.add_parser('check-api')
+    api_parser.add_argument('package')
+    api_parser.add_argument('version')
+    api_parser.set_defaults(func=command_check_api)
 
     args = parser.parse_args()
     args.func(args)
