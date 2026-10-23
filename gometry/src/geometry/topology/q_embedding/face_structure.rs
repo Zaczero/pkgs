@@ -106,7 +106,7 @@ impl QFaceStructure {
 }
 pub(in crate::geometry::topology::q_embedding) fn rotation_row_matches(
     exact: &[QDartId],
-    emitted: &[QDartId],
+    emitted: impl ExactSizeIterator<Item = QDartId> + Clone,
 ) -> bool {
     if exact.len() != emitted.len() {
         return false;
@@ -114,21 +114,17 @@ pub(in crate::geometry::topology::q_embedding) fn rotation_row_matches(
     if exact.is_empty() {
         return true;
     }
-    let Some(rotation) = emitted.iter().position(|dart| exact.first() == Some(dart)) else {
+    let Some(rotation) = emitted
+        .clone()
+        .position(|dart| exact.first() == Some(&dart))
+    else {
         return false;
     };
-    for (index, dart) in exact.iter().enumerate() {
-        let Some(offset) = rotation.checked_add(index) else {
-            return false;
-        };
-        let Some(emitted_index) = offset.checked_rem(emitted.len()) else {
-            return false;
-        };
-        if emitted.get(emitted_index) != Some(dart) {
-            return false;
-        }
-    }
-    true
+    emitted
+        .cycle()
+        .skip(rotation)
+        .take(exact.len())
+        .eq(exact.iter().copied())
 }
 pub(in crate::geometry::topology::q_embedding) fn unique_nodes(
     nodes: impl IntoIterator<Item = QNodeId>,
@@ -181,7 +177,7 @@ pub(in crate::geometry::topology) fn face_structure_mismatch_nodes(
         let (&start, &end) = (row_offsets.first()?, row_offsets.get(1)?);
         let exact_row = exact.outgoing.get(start..end)?;
         let emitted_row = emitted.outgoing.get(start..end)?;
-        if !rotation_row_matches(exact_row, emitted_row) {
+        if !rotation_row_matches(exact_row, emitted_row.iter().copied()) {
             return exact
                 .outgoing_nodes
                 .get(row_index)

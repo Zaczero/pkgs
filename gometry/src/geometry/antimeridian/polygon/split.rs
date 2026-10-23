@@ -18,11 +18,14 @@ use crate::work::{Unmetered, Work};
     clippy::float_cmp,
     reason = "cap vertices are the exact literals ±90; any other latitude is real data"
 )]
-fn reject_fabricated_pole_ordinates(source: &Shape, polygons: &[Polygon]) -> Result<()> {
+fn reject_fabricated_pole_ordinates<'a>(
+    source: &Shape,
+    mut polygons: impl Iterator<Item = &'a Polygon>,
+) -> Result<()> {
     if source.axes() == CoordinateAxes::XY {
         return Ok(());
     }
-    let fabricated_pole_vertex = polygons.iter().any(|polygon| {
+    let fabricated_pole_vertex = polygons.any(|polygon| {
         std::iter::once(polygon.shell.coords())
             .chain(polygon.holes.iter().map(Ring::coords))
             .any(|ring| {
@@ -90,7 +93,7 @@ fn split_polygon_with_policy<M: ChartMetric>(
         .map(|(polygon, _)| polygon)
         .collect::<Vec<_>>();
     if pole_ordinates == PoleOrdinatePolicy::PreserveSource {
-        reject_fabricated_pole_ordinates(source, &polygons)?;
+        reject_fabricated_pole_ordinates(source, polygons.iter())?;
     }
     Ok(polygons)
 }
@@ -383,9 +386,8 @@ fn overlay_ring_lineage<M: ChartMetric>(
             })?
             .coords()
     };
-    let points = coordinates.iter_coords().collect::<Vec<_>>();
     let vertex_count = vertices.len();
-    if points.len() != vertex_count.saturating_add(1) {
+    if coordinates.len() != vertex_count.saturating_add(1) {
         return Err(GeometryErrorKind::Invalid(
             "overlay polygon source-node count does not match its ring".into(),
         )
@@ -393,7 +395,7 @@ fn overlay_ring_lineage<M: ChartMetric>(
     }
     let mut lineage_vertices = Vec::with_capacity(vertex_count);
     let mut output_points = Vec::with_capacity(vertex_count.saturating_add(1));
-    for (index, point) in points.iter().copied().take(vertex_count).enumerate() {
+    for (index, point) in coordinates.iter_coords().take(vertex_count).enumerate() {
         let previous = if index == 0 {
             vertex_count
                 .checked_sub(1)
@@ -492,12 +494,8 @@ fn overlay_ring_lineage<M: ChartMetric>(
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
         let restriction = if sources.is_empty() {
-            let start = points.get(index).copied().ok_or_else(|| {
-                GeometryErrorKind::Invalid("overlay output ring edge start is unavailable".into())
-            })?;
-            let end = points.get(next).copied().ok_or_else(|| {
-                GeometryErrorKind::Invalid("overlay output ring edge end is unavailable".into())
-            })?;
+            let start = coordinates.point_at(index);
+            let end = coordinates.point_at(next);
             restriction_for_edge(start, end)
         } else {
             None
@@ -570,10 +568,10 @@ fn overlay_parts_shape<M: ChartMetric>(
             )?),
         )),
         _ => Ok((
-            Shape::MultiPolygon(MultiPolygon::try_new(
-                axes,
-                polygons.into_iter().map(MultiMember::Value).collect(),
-            )?),
+            Shape::MultiPolygon(
+                MultiPolygon::from_dense(polygons)
+                    .expect("multiple output polygons have admitted common axes"),
+            ),
             super::super::lineage::ShapeLineage::MultiPolygon { members: lineages },
         )),
     }
@@ -700,17 +698,11 @@ fn split_polygon_core<M: ChartMetric>(
 
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
-        let shell_only = Polygon::new(
-            polygon.shell.clone(),
-            stationary_holes
-                .iter()
-                .map(|(hole, _)| hole.clone())
-                .collect(),
-        );
+        let (holes, hole_lineages): (Vec<_>, Vec<_>) = stationary_holes.into_iter().unzip();
+        let shell_only = Polygon::new(polygon.shell.clone(), holes);
         let shell_only_lineage = if let Some(source_lineage) = source_lineage {
-            let holes = stationary_holes
-                .iter()
-                .map(|(_, lineage)| lineage.clone())
+            let holes = hole_lineages
+                .into_iter()
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("captured stationary hole has no lineage".into())
@@ -809,16 +801,20 @@ fn split_polygon_core<M: ChartMetric>(
         }
 
         let polygons = polygons_from_shape(result)?;
-        let lineages = match result_lineage {
-            Some(lineage) => polygon_lineages(lineage, polygons.len())?
-                .into_iter()
-                .map(Some)
-                .collect(),
-            None => vec![None; polygons.len()],
-        };
-        let parts = polygons.into_iter().zip(lineages).collect::<Vec<_>>();
+        let mut lineages = result_lineage
+            .map(|lineage| polygon_lineages(lineage, polygons.len()))
+            .transpose()?
+            .map(Vec::into_iter);
+        let parts = polygons.into_iter().map(|polygon| {
+            let lineage = lineages.as_mut().map(|lineages| {
+                lineages
+                    .next()
+                    .expect("polygon lineage count matches output polygons")
+            });
+            (polygon, lineage)
+        });
         if overlay_mode != HoleOverlayMode::Quotient {
-            return Ok(parts);
+            return Ok(parts.collect());
         }
         let mut charted = Vec::new();
         for (polygon, lineage) in parts {
@@ -971,12 +967,8 @@ pub(super) fn split_polygon_with_lineage<M: ChartMetric>(
         metric_access,
         Some(catalog),
     )?;
-    let polygons = parts
-        .iter()
-        .map(|(polygon, _)| polygon.clone())
-        .collect::<Vec<_>>();
     if pole_ordinates == PoleOrdinatePolicy::PreserveSource {
-        reject_fabricated_pole_ordinates(source, &polygons)?;
+        reject_fabricated_pole_ordinates(source, parts.iter().map(|(polygon, _)| polygon))?;
     }
     parts
         .into_iter()

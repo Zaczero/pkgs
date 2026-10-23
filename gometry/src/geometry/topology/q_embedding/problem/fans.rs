@@ -109,7 +109,10 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
         budget.charge_into_error(
             u64::try_from(fan.darts.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        Ok(rotation_row_matches(&fan.darts, &candidate_order))
+        Ok(rotation_row_matches(
+            &fan.darts,
+            candidate_order.iter().copied(),
+        ))
     }
     fn source_variable_location(
         &self,

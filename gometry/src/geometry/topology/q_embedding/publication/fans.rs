@@ -193,6 +193,8 @@ pub(in crate::geometry::topology::q_embedding) fn assigned_producer_fan_order_ma
         )
         .map_err(|_| ResourceError::SizeOverflow)?,
     )?;
-    let actual: Vec<_> = rays.iter().map(|(dart, ..)| *dart).collect();
-    Ok(rotation_row_matches(expected, &actual))
+    Ok(rotation_row_matches(
+        expected,
+        rays.iter().map(|(dart, ..)| *dart),
+    ))
 }

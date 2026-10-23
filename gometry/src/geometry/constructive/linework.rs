@@ -250,13 +250,10 @@ impl Shape {
                 )]
                 let axes = polygons[0].axes();
                 if polygons.iter().all(|polygon| polygon.axes() == axes) {
-                    let members = polygons
-                        .into_iter()
-                        .map(crate::geometry::MultiMember::Value)
-                        .collect();
-                    Ok(Self::MultiPolygon(crate::geometry::MultiPolygon::try_new(
-                        axes, members,
-                    )?))
+                    Ok(Self::MultiPolygon(
+                        crate::geometry::MultiPolygon::from_dense(polygons)
+                            .expect("multiple polygons have admitted common axes"),
+                    ))
                 } else {
                     Self::geometry_collection(polygons.into_iter().map(Self::Polygon).collect())
                 }

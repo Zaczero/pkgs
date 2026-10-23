@@ -2,8 +2,8 @@ use super::validate::{collapsed_line_point, validate_line};
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    GeometryErrorKind, LineSeq, MultiLineString, MultiMember, MultiPoint, Polygon, RepairMethod,
-    Shape, SourceArcContext, polygon_parts_to_shape,
+    CoordSeq, GeometryErrorKind, LineSeq, MultiLineString, MultiMember, MultiPoint, Polygon,
+    RepairMethod, Shape, SourceArcContext, polygon_parts_to_shape,
 };
 
 pub(crate) fn line_repair(line: &LineSeq) -> Result<Shape> {
@@ -35,22 +35,20 @@ pub(crate) fn multiline_repair(lines: &MultiLineString) -> Result<Shape> {
         }
     }
 
-    let axes = lines.axes();
     let point_shape = match points.as_slice() {
         [] => None,
         [point] => Some(Shape::Point(*point)),
-        _ => Some(Shape::MultiPoint(MultiPoint::try_new(
-            axes,
-            points.into_iter().map(MultiMember::Value).collect(),
+        _ => Some(Shape::MultiPoint(MultiPoint::from_coordseq(
+            CoordSeq::try_from_points(&points)?,
         )?)),
     };
     let line_shape = match line_members.as_slice() {
         [] => None,
         [line] => Some(Shape::LineString(line.clone())),
-        _ => Some(Shape::MultiLineString(MultiLineString::try_new(
-            axes,
-            line_members.into_iter().map(MultiMember::Value).collect(),
-        )?)),
+        _ => Some(Shape::MultiLineString(
+            MultiLineString::from_dense(line_members)
+                .expect("repaired lines retain their multipart axes"),
+        )),
     };
 
     match (point_shape, line_shape) {

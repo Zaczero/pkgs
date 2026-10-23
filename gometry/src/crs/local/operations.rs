@@ -294,6 +294,7 @@ fn geodesic_local_shape(
     let fitting_shapes = [shape, &restored];
     let refit_local = PreparedLocalInput::select_local_frame(&fitting_shapes, source, state)
         .map_err(|error| crate::crs::preserve_resource_error(error, |_| exceeded()))?;
+    drop(restored);
     let refit = PreparedLocalInput::prepare_selected(
         shape,
         refit_local,
