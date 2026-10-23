@@ -8,13 +8,6 @@ Use [`serve()`][h2corn.serve] with a [`Config`][h2corn.Config] for the standard
 server entrypoint, or [`Server`][h2corn.Server] to embed one worker in an
 existing event loop.
 
-::: h2corn
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-      show_docstring: false
-      members: false
-
 | Page | Use it for |
 | --- | --- |
 | [Server entrypoints](server.md) | Start a standalone server or embed one in an event loop. |
