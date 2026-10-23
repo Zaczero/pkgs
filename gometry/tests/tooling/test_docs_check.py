@@ -67,7 +67,8 @@ def _expand():
     return _EXPAND
 
 
-def _load_griffe_model() -> griffe.Module:
+@pytest.fixture(scope='module')
+def griffe_model() -> griffe.Module:
     expand = _expand()
     loader = griffe.GriffeLoader(
         search_paths=[str(GOMETRY_ROOT / 'python')],
@@ -391,65 +392,54 @@ def _template_exists(environment: Environment, name: str) -> bool:
     return True
 
 
-def test_unresolved_public_type_span_is_flagged(tmp_path: Path) -> None:
-    """A tooltip span for a runtime public class must fail the built-site gate."""
-    check = _check()
-    # Minimal page set: gate still needs expected API pages; feed only one HTML
-    # under site/ and assert our unresolved-type rule fires regardless of
-    # missing-page noise from the generator inventory.
-    site = _write_site(
-        tmp_path,
-        {
-            'api/toplevel/coverage-polygonal/index.html': (
-                '<html><body>'
-                '<span title="gometry._lib.GeometryArray">GeometryArray</span>'
-                '</body></html>'
-            ),
-        },
-    )
-    errors = check.collect_errors(site)
-    unresolved = [e for e in errors if 'unresolved public type links' in e]
-    assert unresolved, f'expected unresolved-type failure, got: {errors[:5]}'
-    assert any('GeometryArray' in e for e in unresolved)
-
-
-def test_public_type_link_is_not_flagged(tmp_path: Path) -> None:
-    """A real anchor link to the public class must not trip the unresolved gate."""
-    check = _check()
-    site = _write_site(
-        tmp_path,
-        {
-            'ok.html': (
-                '<html><body>'
-                '<a href="geometryarray/#gometry.GeometryArray">GeometryArray</a>'
-                '</body></html>'
-            ),
-        },
-    )
-    errors = check.collect_errors(site)
-    assert not any('unresolved public type links' in e for e in errors)
-
-
-def test_rendered_see_also_links_target_public_symbols(tmp_path: Path) -> None:
-    check = _check()
-    page = (
-        '<html><body><details class="see-also"><p>'
-        '<a href="#gometry.Geometry.buffer">buffer</a>'
-        '</p></details></body></html>'
-    )
-    valid = _write_site(tmp_path / 'valid', {'api/shape/index.html': page})
-    valid_errors = check.collect_errors(valid)
-    assert not any('does not target a public API symbol' in e for e in valid_errors)
-
-    private_page = page.replace(
-        '#gometry.Geometry.buffer',
-        '#gometry._lib.Geometry.buffer',
-    )
-    invalid = _write_site(tmp_path / 'invalid', {'api/shape/index.html': private_page})
-    invalid_errors = check.collect_errors(invalid)
-    assert any('does not target a public API symbol' in e for e in invalid_errors), (
-        invalid_errors
-    )
+def test_rendered_references_target_public_symbols(
+    tmp_path: Path, subtests: pytest.Subtests
+) -> None:
+    cases = [
+        (
+            'api/unresolved/index.html',
+            '<span title="gometry._lib.GeometryArray">GeometryArray</span>',
+            ('unresolved public type links', 'GeometryArray'),
+        ),
+        (
+            'api/linked/index.html',
+            '<h2 id="gometry.GeometryArray">GeometryArray</h2>'
+            '<a href="#gometry.GeometryArray">GeometryArray</a>',
+            (),
+        ),
+        (
+            'api/see-also/index.html',
+            '<h2 id="gometry.Geometry.buffer">buffer</h2>'
+            '<details class="see-also"><p>'
+            '<a href="#gometry.Geometry.buffer">buffer</a></p></details>',
+            (),
+        ),
+        (
+            'api/private/index.html',
+            '<details class="see-also"><p>'
+            '<a href="#gometry._lib.Geometry.buffer">buffer</a></p></details>',
+            ('does not target a public API symbol',),
+        ),
+    ]
+    site = _write_site(tmp_path, {path: source for path, source, _ in cases})
+    errors = _check().collect_errors(site)
+    for path, _, expected in cases:
+        with subtests.test(page=path):
+            reference_errors = [
+                error
+                for error in errors
+                if error.startswith(f'{path}:')
+                and (
+                    'unresolved public type links' in error or 'See Also link' in error
+                )
+            ]
+            if expected:
+                assert any(
+                    all(fragment in error for fragment in expected)
+                    for error in reference_errors
+                ), reference_errors
+            else:
+                assert not reference_errors
 
 
 def test_rendered_signature_parser_keeps_tokens_and_parameter_kinds() -> None:
@@ -573,7 +563,9 @@ def test_built_form_audit_detects_missing_reordered_and_changed_forms() -> None:
         )
 
 
-def test_source_form_oracle_matches_real_constructor_and_function_output() -> None:
+def test_source_form_oracle_matches_real_constructor_and_function_output(
+    griffe_model: griffe.Module,
+) -> None:
     pytest.importorskip(
         'tree_sitter_rust',
         reason='tree-sitter-rust==0.24.2 has no CPython 3.14t wheel',
@@ -595,7 +587,7 @@ def test_source_form_oracle_matches_real_constructor_and_function_output() -> No
     assert 'gometry.GeometryCollection.__getitem__' in contracts.call_forms
     assert 'gometry.GeometryCollection.boundary' not in contracts.call_forms
 
-    pkg = _load_griffe_model()
+    pkg = griffe_model
     point = pkg.members['Point']
     from_wkb = pkg.members['from_wkb']
     getitem = pkg.members['GeometryArray'].members['__getitem__']
@@ -1364,13 +1356,15 @@ def test_doc_model_requires_quoted_literal_values_in_type_entries() -> None:
     assert errors == ['Geometry.buffer: enum values in a type field must be quoted']
 
 
-def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
+def test_griffe_canonicalizes_private_classes_to_public_paths(
+    griffe_model: griffe.Module,
+) -> None:
     """``_lib.X`` / ``_types.X`` become aliases of public ``gometry.X``.
 
     This is the root-cause fix for unresolved signature/numpydoc type links:
     annotation ``canonical_path`` must be the public anchor path.
     """
-    pkg = _load_griffe_model()
+    pkg = griffe_model
 
     lib = pkg.members['_lib']
     types = pkg.members['_types']
@@ -1420,8 +1414,10 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
     ), found
 
 
-def test_griffe_expands_private_aliases_from_their_source_identity() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_expands_private_aliases_from_their_source_identity(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     expand = _expand()
     lib = pkg.members['_lib']
     assert isinstance(lib, griffe.Module)
@@ -1491,10 +1487,10 @@ class Record(Base):
     assert str(source_method.overloads[0].parameters['value'].annotation) == 'int'
 
 
-def test_class_provenance_accepts_native_and_facade_owners_and_rejects_wrong_owner() -> (
-    None
-):
-    pkg = _load_griffe_model()
+def test_class_provenance_accepts_native_and_facade_owners_and_rejects_wrong_owner(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -1528,8 +1524,10 @@ def test_class_provenance_accepts_native_and_facade_owners_and_rejects_wrong_own
     assert 'gometry._types.Features' in error
 
 
-def test_exported_namedtuple_forms_match_runtime_and_construct() -> None:
-    pkg = _load_griffe_model()
+def test_exported_namedtuple_forms_match_runtime_and_construct(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -1738,8 +1736,10 @@ class Record(NamedTuple, Generic[ItemT]):
     assert actual != model._source_namedtuple_form(without_default, pkg, {})
 
 
-def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     cell_array = pkg.members['CellArray']
     assert isinstance(cell_array, griffe.Class)
 
@@ -1754,8 +1754,10 @@ def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> N
         assert '_CellGeometryProjection' not in str(attribute.annotation)
 
 
-def test_griffe_presents_circle_array_center_as_a_readonly_point_property() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_presents_circle_array_center_as_a_readonly_point_property(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     circle_array = pkg.members['CircleArray']
     assert isinstance(circle_array, griffe.Class)
 
@@ -1769,8 +1771,10 @@ def test_griffe_presents_circle_array_center_as_a_readonly_point_property() -> N
     assert '_CircleArrayCenterProjection' not in str(center.annotation)
 
 
-def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     cell_array = pkg.members['CellArray']
     assert isinstance(cell_array, griffe.Class)
 
@@ -1784,8 +1788,10 @@ def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists() -> Non
     assert '_CellTokenProjection' not in str(attribute.annotation)
 
 
-def test_griffe_presents_groups_descriptors_as_public_properties() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_presents_groups_descriptors_as_public_properties(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     geometry_array = pkg.members['GeometryArray']
     groups = pkg.members['Groups']
     assert isinstance(geometry_array, griffe.Class)
@@ -1840,7 +1846,9 @@ def _public_python_function_aliases(
     return aliases
 
 
-def test_griffe_canonicalizes_python_function_aliases_to_public_paths() -> None:
+def test_griffe_canonicalizes_python_function_aliases_to_public_paths(
+    griffe_model: griffe.Module,
+) -> None:
     """Python-defined facade aliases resolve to their public routes."""
     raw_loader = griffe.GriffeLoader(
         search_paths=[str(GOMETRY_ROOT / 'python')],
@@ -1850,7 +1858,7 @@ def test_griffe_canonicalizes_python_function_aliases_to_public_paths() -> None:
     aliases = _public_python_function_aliases(raw_pkg)
     assert aliases
 
-    pkg = _load_griffe_model()
+    pkg = griffe_model
 
     for name, (raw_alias, raw_target) in aliases.items():
         public = pkg.members[name]
@@ -1899,8 +1907,10 @@ def test_function_alias_materializer_ignores_broken_external_and_class_targets()
         assert isinstance(pkg.members[name], griffe.Alias)
 
 
-def test_griffe_preserves_all_accepted_forms_in_authored_order() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_preserves_all_accepted_forms_in_authored_order(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     doc_model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -1929,8 +1939,10 @@ def test_griffe_preserves_all_accepted_forms_in_authored_order() -> None:
         )
 
 
-def test_function_template_renders_every_accepted_form_once_in_order() -> None:
-    pkg = _load_griffe_model()
+def test_function_template_renders_every_accepted_form_once_in_order(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     check = _check()
     point = pkg.members['Point']
     geometry = pkg.members['Geometry']
@@ -2003,9 +2015,11 @@ def test_function_template_renders_every_accepted_form_once_in_order() -> None:
         assert tuple(item.form for item in mutated) != expected
 
 
-def test_function_template_keeps_ordinary_and_single_form_signatures() -> None:
+def test_function_template_keeps_ordinary_and_single_form_signatures(
+    griffe_model: griffe.Module,
+) -> None:
     check = _check()
-    pkg = _load_griffe_model()
+    pkg = griffe_model
     geometry = pkg.members['Geometry']
     assert isinstance(geometry, griffe.Class)
 
@@ -2024,8 +2038,10 @@ def test_function_template_keeps_ordinary_and_single_form_signatures() -> None:
     )
 
 
-def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
-    pkg = _load_griffe_model()
+def test_griffe_preserves_public_constructor_forms_in_authored_order(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     doc_model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -2077,8 +2093,10 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
         assert binding not in class_obj.members.values(), path
 
 
-def test_constructor_parameter_tables_report_each_row_applicability() -> None:
-    pkg = _load_griffe_model()
+def test_constructor_parameter_tables_report_each_row_applicability(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -2174,8 +2192,10 @@ def test_constructor_default_projection_keeps_differing_accepted_forms() -> None
     }
 
 
-def test_constructor_class_template_renders_the_source_ast_form_sequence() -> None:
-    pkg = _load_griffe_model()
+def test_constructor_class_template_renders_the_source_ast_form_sequence(
+    griffe_model: griffe.Module,
+) -> None:
+    pkg = griffe_model
     check = _check()
     doc_model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
