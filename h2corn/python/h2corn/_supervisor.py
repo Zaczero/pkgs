@@ -279,7 +279,7 @@ def _worker_entry(
             else None
         )
         try:
-            await server.serve_worker_fds(
+            await server._serve_worker_fds(
                 list(fds),
                 retire_trigger=(
                     (lambda: _send_control(_CONTROL_RETIRE))

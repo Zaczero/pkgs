@@ -999,7 +999,7 @@ async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
     await entered.wait()
     try:
         with pytest.raises(RuntimeError, match='active serve'):
-            await server.serve_worker_fds(
+            await server._serve_worker_fds(
                 [listener_fd],
                 quiesce_fd=quiesce_read if with_quiesce else None,
                 prepared_tls=prepare_tls(config),
@@ -1053,7 +1053,7 @@ async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) 
     server = Server(app, config)
     try:
         serving = asyncio.create_task(
-            server.serve_worker_fds(
+            server._serve_worker_fds(
                 [listener_fd], quiesce_fd=quiesce_fd, prepared_tls=prepare_tls(config)
             )
         )
@@ -1108,7 +1108,7 @@ async def test_worker_startup_failure_releases_owned_resources_once(
     monkeypatch.setattr(server, '_run_primary_startup', fail_startup)
 
     with pytest.raises(RuntimeError) as error:
-        await server.serve_worker_fds(
+        await server._serve_worker_fds(
             [11, 12], quiesce_fd=quiesce_fd, prepared_tls=prepare_tls(config)
         )
 
@@ -1307,7 +1307,7 @@ async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
     server = Server(app, config)
     try:
         with pytest.raises(RuntimeError, match='lease construction failed'):
-            await server.serve_worker_fds(
+            await server._serve_worker_fds(
                 listeners,
                 quiesce_fd=quiesce_fd.detach(),
                 prepared_tls=prepare_tls(config),

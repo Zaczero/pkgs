@@ -701,7 +701,7 @@ class Server:
         generation = self._claim_generation(self._serve_embedded)
         await self._await_generation(generation)
 
-    async def serve_worker_fds(
+    async def _serve_worker_fds(
         self,
         fds: Iterable[int],
         *,
@@ -1183,7 +1183,7 @@ class Server:
                 if quiesce_write_fd is not None:
                     os.close(quiesce_write_fd)
                 # A caller-supplied quiesce source is borrowed by serve_fds.
-                # Its owner is serve_worker_fds (or the internal pipe branch
+                # Its owner is _serve_worker_fds (or the internal pipe branch
                 # below), not this native lifecycle.
                 if internal_quiesce_write_fd is not None:
                     assert quiesce_fd is not None

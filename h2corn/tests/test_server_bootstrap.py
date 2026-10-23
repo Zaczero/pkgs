@@ -813,7 +813,7 @@ def test_worker_entry_imports_after_privilege_drop(
             self.config = config
             self.releasing = False
 
-        async def serve_worker_fds(self, *_args, **_kwargs):
+        async def _serve_worker_fds(self, *_args, **_kwargs):
             return None
 
         def shutdown(self):
@@ -875,7 +875,7 @@ def test_worker_ready_is_emitted_only_by_serve_fds_ready_callback(
             self.config = config
             self.releasing = False
 
-        async def serve_worker_fds(self, *_args, **kwargs):
+        async def _serve_worker_fds(self, *_args, **kwargs):
             assert _supervisor._CONTROL_READY not in messages
             assert kwargs['quiesce_fd'] == quiesce_read_fd
             os.close(quiesce_read_fd)
