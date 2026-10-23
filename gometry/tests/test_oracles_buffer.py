@@ -453,26 +453,17 @@ def test_sided_buffer_4096_vertex_sine_reproducer(side: str) -> None:
     result = line.buffer(2.0, side=side)
     assert result.is_valid
     assert result.geometry_type in ('Polygon', 'MultiPolygon')
-    source = shapely.from_wkt(line.to_wkt())
-    geos_distance = 2.0 if side == 'left' else -2.0
-    geos = shapely.buffer(
-        source,
-        geos_distance,
-        single_sided=True,
-        cap_style='flat',
-        join_style='round',
-        quad_segs=8,
-    )
     output = shapely.from_wkt(result.to_wkt())
-    relative_area = abs(result.area - geos.area) / geos.area
-    hausdorff = shapely.hausdorff_distance(output, geos, densify=0.25)
     exact_reference = _exact_sided_ring_reference(line, side, 'round')
     exact_relative_area = abs(result.area - exact_reference.area) / exact_reference.area
-    exact_hausdorff = shapely.hausdorff_distance(output, exact_reference, densify=0.25)
+    exact_hausdorff = (
+        0.0
+        if shapely.equals_exact(output, exact_reference, tolerance=0, normalize=True)
+        else shapely.hausdorff_distance(output, exact_reference, densify=0.25)
+    )
     assert shapely.is_valid(output)
     assert exact_relative_area <= 1e-12 and exact_hausdorff <= 1e-12, (
         f'{_GEOS_SIDED_BUFFER_EXCEPTIONS["sine-4096"]}; '
-        f'GEOS rel_area={relative_area}, Hausdorff={hausdorff}; '
         f'full-ring rel_area={exact_relative_area}, Hausdorff={exact_hausdorff}'
     )
 
