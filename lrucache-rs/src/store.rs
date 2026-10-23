@@ -69,14 +69,14 @@ impl Store {
             .filter(move |&idx| self.node(idx).hash == hash)
     }
 
-    pub(crate) fn indices(&self) -> Vec<u32> {
-        let mut indices = Vec::with_capacity(self.len());
+    pub(crate) fn indices(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         let mut idx = self.tail;
-        while idx != INVALID {
-            indices.push(idx);
+        std::iter::repeat_with(move || {
+            let current = idx;
             idx = self.node(idx).prev;
-        }
-        indices
+            current
+        })
+        .take(self.len())
     }
 
     pub(crate) fn touch(&mut self, idx: u32) {

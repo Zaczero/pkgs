@@ -248,7 +248,6 @@ impl LRUCache {
         let mut guard = self.inner.lock_py_attached(py);
         let retired = guard
             .indices()
-            .into_iter()
             .map(|slot| self.entry(py, slot))
             .collect::<Vec<_>>();
         guard.clear();
@@ -276,7 +275,6 @@ impl LRUCache {
         let guard = self.inner.lock_py_attached(py);
         guard
             .indices()
-            .into_iter()
             .map(|slot| self.entry(py, slot).pair.unbind())
             .collect()
     }

@@ -52,7 +52,7 @@ fn recency_changes_preserve_slab_links_and_revision_semantics() {
     }
     let indices = store.indices();
     assert_eq!(indices.len(), order.len());
-    for (&actual, expected) in indices.iter().zip([order[2], order[1], order[0]]) {
+    for (actual, expected) in indices.zip([order[2], order[1], order[0]]) {
         assert_eq!(actual, expected);
     }
 }
