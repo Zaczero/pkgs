@@ -13,6 +13,7 @@ from h2corn import Config, RequestPolicy, Server
 
 import hpack
 from tests._support import (
+    encode_h2_frame,
     h2_request,
     open_h2_connection,
     read_raw_h2_frames,
@@ -38,21 +39,6 @@ def _decode_h2_settings_payload(payload: bytes) -> dict[int, int]:
     }
 
 
-def _encode_h2_frame(
-    frame_type: int,
-    payload: bytes = b'',
-    *,
-    flags: int = 0,
-    stream_id: int = 0,
-) -> bytes:
-    return (
-        len(payload).to_bytes(3, 'big')
-        + bytes([frame_type, flags])
-        + (stream_id & 0x7FFF_FFFF).to_bytes(4, 'big')
-        + payload
-    )
-
-
 def _encode_h2_settings(
     settings: list[tuple[int, int]] | None = None,
     *,
@@ -66,7 +52,7 @@ def _encode_h2_settings(
             for setting_id, value in settings
         )
     )
-    return _encode_h2_frame(0x04, payload, flags=0x01 if ack else 0, stream_id=0)
+    return encode_h2_frame(0x04, payload, flags=0x01 if ack else 0, stream_id=0)
 
 
 async def _read_through_ping_ack(
@@ -75,19 +61,15 @@ async def _read_through_ping_ack(
     *,
     timeout: float = 3.0,
 ) -> list[tuple[int, int, int, bytes]]:
-    frames = []
-    while True:
-        header = await asyncio.wait_for(reader.readexactly(9), timeout=timeout)
-        length = int.from_bytes(header[:3], 'big')
-        frame_type = header[3]
-        flags = header[4]
-        stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-        frame_payload = await asyncio.wait_for(
-            reader.readexactly(length), timeout=timeout
-        )
-        frames.append((frame_type, flags, stream_id, frame_payload))
-        if frame_type == 0x06 and flags & 0x01 and frame_payload == payload:
-            return frames
+    frames = await read_raw_h2_frames(
+        reader,
+        timeout=timeout,
+        until=lambda frame: (
+            frame[0] == 0x06 and bool(frame[1] & 0x01) and frame[3] == payload
+        ),
+    )
+    assert frames[-1] == (0x06, 0x01, 0, payload), frames
+    return frames
 
 
 async def test_unknown_extension_frame_is_discarded_before_following_ping() -> None:
@@ -102,14 +84,14 @@ async def test_unknown_extension_frame_is_discarded_before_following_ping() -> N
         )
         try:
             payload = b'x' * SERVER_MAX_FRAME_SIZE
-            unknown = _encode_h2_frame(0xF0, payload)
+            unknown = encode_h2_frame(0xF0, payload)
             ping = b'unknown!'
             writer.write(unknown[:17])
             await writer.drain()
             for offset in range(17, len(unknown), 4096):
                 writer.write(unknown[offset : offset + 4096])
                 await writer.drain()
-            writer.write(_encode_h2_frame(0x06, ping))
+            writer.write(encode_h2_frame(0x06, ping))
             await writer.drain()
 
             frames = await _read_through_ping_ack(reader, ping)
@@ -211,9 +193,9 @@ async def _raw_h2_request_frames(
         encoder = hpack.Encoder()
         head = encoder.encode(headers, huffman=False)
         flags = 0x04 | (0x01 if trailers is None else 0)
-        payload = _encode_h2_frame(0x01, head, flags=flags, stream_id=1)
+        payload = encode_h2_frame(0x01, head, flags=flags, stream_id=1)
         if trailers is not None:
-            payload += _encode_h2_frame(
+            payload += encode_h2_frame(
                 0x01,
                 encoder.encode(trailers, huffman=False),
                 flags=0x05,
@@ -896,16 +878,17 @@ async def test_stream_window_overrun_resets_only_that_stream() -> None:
             (b':authority', authority),
             (b':path', b'/'),
         ])
-        writer.write(_encode_h2_frame(0x01, head, flags=0x04, stream_id=1))
+        writer.write(encode_h2_frame(0x01, head, flags=0x04, stream_id=1))
         # Ample connection credit, so only the stream window can be overrun.
-        writer.write(_encode_h2_frame(0x08, (131070).to_bytes(4, 'big'), stream_id=0))
+        writer.write(encode_h2_frame(0x08, (131070).to_bytes(4, 'big'), stream_id=0))
         await writer.drain()
         for _ in range(5):
-            writer.write(_encode_h2_frame(0x00, b'x' * 16384, stream_id=1))
+            writer.write(encode_h2_frame(0x00, b'x' * 16384, stream_id=1))
+        writer.write(encode_h2_frame(0x06, b'overrun!'))
         await writer.drain()
 
         try:
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=True)
+            frames = await _read_through_ping_ack(reader, b'overrun!')
         finally:
             writer.close()
             await writer.wait_closed()
@@ -959,8 +942,8 @@ async def test_refused_field_block_ends_the_connection_not_just_the_stream() -> 
             (b'x-demo', b'a' * 40),
         ])
         assert len(oversized) > 32 and len(follow_up) < 32
-        writer.write(_encode_h2_frame(0x01, oversized, flags=0x05, stream_id=1))
-        writer.write(_encode_h2_frame(0x01, follow_up, flags=0x05, stream_id=3))
+        writer.write(encode_h2_frame(0x01, oversized, flags=0x05, stream_id=1))
+        writer.write(encode_h2_frame(0x01, follow_up, flags=0x05, stream_id=3))
         await writer.drain()
 
         goaway_error = None
@@ -1005,7 +988,7 @@ async def test_generic_connect_is_rejected_with_501() -> None:
             (b':method', b'CONNECT'),
             (b':authority', authority),
         ])
-        writer.write(_encode_h2_frame(0x01, headers, flags=0x05, stream_id=1))
+        writer.write(encode_h2_frame(0x01, headers, flags=0x05, stream_id=1))
         await writer.drain()
 
         try:
@@ -1047,7 +1030,7 @@ async def test_generic_connect_without_port_resets_stream_before_app_dispatch() 
             (b':method', b'CONNECT'),
             (b':authority', b'example'),
         ])
-        writer.write(_encode_h2_frame(0x01, headers, flags=0x05, stream_id=1))
+        writer.write(encode_h2_frame(0x01, headers, flags=0x05, stream_id=1))
         await writer.drain()
         try:
             frames = await read_raw_h2_frames(reader, timeout=1, stop_at_goaway=False)
@@ -1100,8 +1083,8 @@ async def test_extended_connect_websocket_decodes_masked_h2_data_and_echoes() ->
             + bytes(byte ^ mask[index & 3] for index, byte in enumerate(payload))
         )
         writer.write(
-            _encode_h2_frame(0x01, headers, flags=0x04, stream_id=1)
-            + _encode_h2_frame(0x00, websocket_frame, stream_id=1)
+            encode_h2_frame(0x01, headers, flags=0x04, stream_id=1)
+            + encode_h2_frame(0x00, websocket_frame, stream_id=1)
         )
         await writer.drain()
 
@@ -1408,7 +1391,7 @@ async def test_client_must_send_settings_as_first_frame() -> None:
         reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
         writer.write(
             b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'
-            + _encode_h2_frame(0x06, b'\x00' * 8, stream_id=0)
+            + encode_h2_frame(0x06, b'\x00' * 8, stream_id=0)
         )
         await writer.drain()
         try:
@@ -1495,7 +1478,7 @@ async def test_invalid_ping_emits_goaway_after_valid_preface_and_settings() -> N
         writer.write(
             b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'
             + _encode_h2_settings([])
-            + _encode_h2_frame(0x06, b'\x00' * 8, stream_id=1)
+            + encode_h2_frame(0x06, b'\x00' * 8, stream_id=1)
         )
         await writer.drain()
         try:
@@ -1763,7 +1746,7 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
         idle_payload = bytes([len(idle_data)]) + idle_data if padded else b''
         for _ in range(4):
             writer.write(
-                _encode_h2_frame(
+                encode_h2_frame(
                     0x00,
                     idle_payload,
                     flags=0x08 if padded else 0,
@@ -1785,7 +1768,7 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
             end_stream=True,
         )
         writer.write(
-            _encode_h2_frame(0x00, b'late', stream_id=slow_stream_id)
+            encode_h2_frame(0x00, b'late', stream_id=slow_stream_id)
             + conn.data_to_send()
         )
         await writer.drain()
@@ -2165,8 +2148,8 @@ async def test_h2_header_block_size_limit_resets_stream() -> None:
         ])
         split_at = 16
         writer.write(
-            _encode_h2_frame(0x01, block[:split_at], flags=0x01, stream_id=1)
-            + _encode_h2_frame(0x09, block[split_at:], flags=0x04, stream_id=1)
+            encode_h2_frame(0x01, block[:split_at], flags=0x01, stream_id=1)
+            + encode_h2_frame(0x09, block[split_at:], flags=0x04, stream_id=1)
         )
         await writer.drain()
         try:
@@ -2206,7 +2189,7 @@ async def test_h2_single_frame_header_block_size_limit_ends_the_connection() -> 
             (b':path', b'/'),
             (b'x-demo', b'abcdefghijklmnopqrstuvwxyz0123456789'),
         ])
-        writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
+        writer.write(encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
         await writer.drain()
         try:
             frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
@@ -2252,7 +2235,7 @@ async def test_h2_header_field_limit_rejects_indexed_cookie_bomb() -> None:
             ),
             huffman=False,
         )
-        writer.write(_encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
+        writer.write(encode_h2_frame(0x01, block, flags=0x05, stream_id=1))
         await writer.drain()
         try:
             frames = await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
@@ -2317,7 +2300,7 @@ async def test_h2_abandoned_header_fragment_ends_the_connection() -> None:
             (b':path', b'/fast'),
             (b'x-marker', b'fast-value'),
         ])
-        writer.write(_encode_h2_frame(0x01, slow_block[:8], flags=0x01, stream_id=1))
+        writer.write(encode_h2_frame(0x01, slow_block[:8], flags=0x01, stream_id=1))
         await writer.drain()
 
         goaway_error = None
@@ -2538,15 +2521,21 @@ async def test_h2_inbound_frame_size_limit_ignores_larger_peer_setting() -> None
 
 
 async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
-    async def app(scope, receive, send):
-        await asyncio.sleep(2)
+    release = asyncio.Event()
 
-    config = Config(port=0, access_log=False)
+    async def app(scope, receive, send):
+        await release.wait()
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(port=0, access_log=False, lifespan='off')
     async with running_server(app, config) as server:
         reader, writer, _conn, authority = await open_h2_connection(
             port=server_port(server)
         )
-        await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
+        writer.write(encode_h2_frame(0x06, b'initial!'))
+        await writer.drain()
+        await _read_through_ping_ack(reader, b'initial!')
 
         block = hpack.Encoder().encode([
             (b':method', b'POST'),
@@ -2554,17 +2543,17 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
             (b':authority', authority),
             (b':path', b'/'),
         ])
-        padded_data = _encode_h2_frame(
+        padded_data = encode_h2_frame(
             0x00,
             bytes([255]) + (b'\0' * 255),
             flags=0x08,
             stream_id=1,
         )
         writer.write(
-            _encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
+            encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
             + (padded_data * 32_769)
         )
-        writer.write(_encode_h2_frame(0x06, b'padding!'))
+        writer.write(encode_h2_frame(0x06, b'padding!'))
         await writer.drain()
         try:
             # Fence on the PING rather than on silence: it is answered in
@@ -2574,6 +2563,7 @@ async def test_h2_padding_only_data_replenishes_flow_control_windows() -> None:
             # stay real, because an ACK says nothing about window replenishment.
             frames = await _read_through_ping_ack(reader, b'padding!', timeout=15)
         finally:
+            release.set()
             writer.close()
             await writer.wait_closed()
 
@@ -2623,11 +2613,9 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
             first_ping = b'credit-1'
             writer.write(
                 _encode_h2_settings(ack=True)
-                + _encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
-                + b''.join(
-                    _encode_h2_frame(0x00, chunk, stream_id=1) for _ in range(16)
-                )
-                + _encode_h2_frame(0x06, first_ping)
+                + encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
+                + b''.join(encode_h2_frame(0x00, chunk, stream_id=1) for _ in range(16))
+                + encode_h2_frame(0x06, first_ping)
             )
             await writer.drain()
             first_frames = await _read_through_ping_ack(reader, first_ping)
@@ -2636,7 +2624,7 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
             second_ping = b'credit-2'
             writer.write(
                 b''.join(
-                    _encode_h2_frame(
+                    encode_h2_frame(
                         0x00,
                         chunk,
                         flags=0x01 if index == 15 else 0,
@@ -2644,7 +2632,7 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
                     )
                     for index in range(16)
                 )
-                + _encode_h2_frame(0x06, second_ping)
+                + encode_h2_frame(0x06, second_ping)
             )
             await writer.drain()
             second_frames = await _read_through_ping_ack(reader, second_ping)
@@ -2695,9 +2683,9 @@ async def test_h2_backlogged_small_body_frames_are_coalesced_without_early_credi
             ping = b'bodybtch'
             writer.write(
                 _encode_h2_settings(ack=True)
-                + _encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
+                + encode_h2_frame(0x01, block, flags=0x04, stream_id=1)
                 + b''.join(
-                    _encode_h2_frame(
+                    encode_h2_frame(
                         0x00,
                         bytes([index]),
                         flags=0x01 if index == 39 else 0,
@@ -2705,7 +2693,7 @@ async def test_h2_backlogged_small_body_frames_are_coalesced_without_early_credi
                     )
                     for index in range(40)
                 )
-                + _encode_h2_frame(0x06, ping)
+                + encode_h2_frame(0x06, ping)
             )
             await writer.drain()
 
@@ -2785,12 +2773,12 @@ async def test_h2_priority_accepts_idle_self_dependency_without_reset() -> None:
             await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
             ping = b'prio-idl'
             writer.write(
-                _encode_h2_frame(
+                encode_h2_frame(
                     0x02,
                     (1).to_bytes(4, 'big') + b'\x00',
                     stream_id=1,
                 )
-                + _encode_h2_frame(0x06, ping)
+                + encode_h2_frame(0x06, ping)
             )
             await writer.drain()
             frames = await _read_through_ping_ack(reader, ping)
@@ -2816,7 +2804,6 @@ async def test_h2_malformed_priority_resets_only_its_stream() -> None:
             port=server_port(server)
         )
         try:
-            await read_raw_h2_frames(reader, timeout=0.2, stop_at_goaway=False)
             for stream_id, path in [(1, b'/one'), (3, b'/three')]:
                 conn.send_headers(
                     stream_id,
@@ -2830,10 +2817,11 @@ async def test_h2_malformed_priority_resets_only_its_stream() -> None:
                 )
             writer.write(
                 conn.data_to_send()
-                + _encode_h2_frame(0x02, b'\x00\x00\x00\x00', stream_id=1)
+                + encode_h2_frame(0x02, b'\x00\x00\x00\x00', stream_id=1)
+                + encode_h2_frame(0x06, b'priority')
             )
             await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2.0, stop_at_goaway=False)
+            frames = await _read_through_ping_ack(reader, b'priority')
             await asyncio.wait_for(stream_three_completed.wait(), timeout=2.0)
         finally:
             writer.close()
@@ -2873,7 +2861,7 @@ async def test_h2_malformed_priority_on_an_idle_stream_ends_the_connection() -> 
             # Stream 99 has never carried HEADERS, so it is idle.
             writer.write(
                 conn.data_to_send()
-                + _encode_h2_frame(0x02, b'\x00\x00\x00\x00', stream_id=99)
+                + encode_h2_frame(0x02, b'\x00\x00\x00\x00', stream_id=99)
             )
             await writer.drain()
             frames = await read_raw_h2_frames(reader, timeout=2.0)
@@ -2934,7 +2922,7 @@ async def test_h2_fixed_length_violation_on_a_live_stream_ends_the_connection(
                 end_stream=True,
             )
             writer.write(
-                conn.data_to_send() + _encode_h2_frame(frame_type, payload, stream_id=1)
+                conn.data_to_send() + encode_h2_frame(frame_type, payload, stream_id=1)
             )
             await writer.drain()
             frames = await read_raw_h2_frames(reader, timeout=2.0, stop_at_goaway=False)
@@ -3212,8 +3200,8 @@ async def test_uppercase_header_resets_stream_without_breaking_hpack_table() -> 
                 huffman=False,
             )
             writer.write(
-                _encode_h2_frame(0x01, bad_block, flags=0x05, stream_id=1)
-                + _encode_h2_frame(0x01, good_block, flags=0x05, stream_id=3)
+                encode_h2_frame(0x01, bad_block, flags=0x05, stream_id=1)
+                + encode_h2_frame(0x01, good_block, flags=0x05, stream_id=3)
             )
             await writer.drain()
 
@@ -3299,8 +3287,8 @@ async def test_hpack_static_dynamic_and_never_indexed_match_python_reference() -
             # Never-indexed must not collapse to a single-byte dynamic index.
             assert second[-1:] != bytes([0xBE]) or b'authorization' not in second
             writer.write(
-                _encode_h2_frame(0x01, first, flags=0x05, stream_id=1)
-                + _encode_h2_frame(0x01, second, flags=0x05, stream_id=3)
+                encode_h2_frame(0x01, first, flags=0x05, stream_id=1)
+                + encode_h2_frame(0x01, second, flags=0x05, stream_id=3)
             )
             await writer.drain()
 
@@ -3367,7 +3355,7 @@ async def test_header_budget_then_bad_hpack_is_compression_error() -> None:
             )
             # Indexed representation with index 0 is never valid HPACK.
             block.append(0x80)
-            writer.write(_encode_h2_frame(0x01, bytes(block), flags=0x05, stream_id=1))
+            writer.write(encode_h2_frame(0x01, bytes(block), flags=0x05, stream_id=1))
             await writer.drain()
             frames = await read_raw_h2_frames(reader, timeout=0.5, stop_at_goaway=False)
         finally:
@@ -3380,645 +3368,3 @@ async def test_header_budget_then_bad_hpack_is_compression_error() -> None:
         == int(h2.errors.ErrorCodes.COMPRESSION_ERROR)
         for frame_type, _flags, _stream_id, payload in frames
     )
-
-
-async def test_fragmented_trailers_one_continuation_delivers_request_end() -> None:
-    """Trailers split HEADERS + one CONTINUATION complete the request cleanly."""
-    bodies: list[bytes] = []
-
-    async def app(scope, receive, send):
-        body = bytearray()
-        more_body = True
-        while more_body:
-            event = await receive()
-            assert event['type'] == 'http.request'
-            body.extend(event.get('body', b''))
-            more_body = event.get('more_body', False)
-        bodies.append(bytes(body))
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'POST'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/trailers'),
-                    (b'content-length', b'4'),
-                ],
-                huffman=False,
-            )
-            trailers = encoder.encode([(b'x-checksum', b'abcd')], huffman=False)
-            assert len(trailers) >= 2
-            split_at = max(1, len(trailers) // 2)
-            writer.write(
-                _encode_h2_frame(0x01, head, flags=0x04, stream_id=1)
-                + _encode_h2_frame(0x00, b'data', flags=0x00, stream_id=1)
-                + _encode_h2_frame(0x01, trailers[:split_at], flags=0x01, stream_id=1)
-                + _encode_h2_frame(0x09, trailers[split_at:], flags=0x04, stream_id=1)
-            )
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert bodies == [b'data']
-    assert not any(frame_type == 0x03 for frame_type, *_ in frames)
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-    decoder = hpack.Decoder()
-    assert any(
-        frame_type == 0x01
-        and stream_id == 1
-        and dict(decoder.decode(payload, raw=True)).get(b':status') == b'200'
-        for frame_type, _flags, stream_id, payload in frames
-    )
-
-
-async def test_fragmented_trailers_several_continuations_delivers_request_end() -> None:
-    """Trailers spanning several CONTINUATION frames still end the request."""
-    done = asyncio.Event()
-
-    async def app(scope, receive, send):
-        more_body = True
-        while more_body:
-            event = await receive()
-            assert event['type'] == 'http.request'
-            more_body = event.get('more_body', False)
-        done.set()
-        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b''})
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'POST'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/multi'),
-                ],
-                huffman=False,
-            )
-            trailers = encoder.encode(
-                [(b'x-a', b'1'), (b'x-b', b'2'), (b'x-c', b'3')],
-                huffman=False,
-            )
-            assert len(trailers) >= 3
-            third = len(trailers) // 3
-            writer.write(
-                _encode_h2_frame(0x01, head, flags=0x04, stream_id=1)
-                + _encode_h2_frame(0x00, b'z', flags=0x00, stream_id=1)
-                + _encode_h2_frame(0x01, trailers[:third], flags=0x01, stream_id=1)
-                + _encode_h2_frame(
-                    0x09, trailers[third : 2 * third], flags=0x00, stream_id=1
-                )
-                + _encode_h2_frame(0x09, trailers[2 * third :], flags=0x04, stream_id=1)
-            )
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert done.is_set()
-    assert not any(frame_type == 0x03 for frame_type, *_ in frames)
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-
-
-async def test_fragmented_trailers_without_end_stream_resets_stream_keeps_hpack() -> (
-    None
-):
-    """Missing END_STREAM is a stream error only after the full block is decoded."""
-    seen: list[str] = []
-
-    async def app(scope, receive, send):
-        if scope['type'] != 'http':
-            return
-        seen.append(scope['path'])
-        # Do not block on body completion: a trailer PROTOCOL_ERROR finalizes
-        # the stream; the HPACK property is the follow-up request.
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'POST'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/first'),
-                ],
-                huffman=False,
-            )
-            trailers = encoder.encode(
-                [(b'x-shared', b'reused-value')],
-                huffman=False,
-            )
-            split_at = max(1, len(trailers) // 2)
-            # END_STREAM is intentionally absent from the trailer HEADERS.
-            writer.write(
-                _encode_h2_frame(0x01, head, flags=0x04, stream_id=1)
-                + _encode_h2_frame(0x00, b'x', flags=0x00, stream_id=1)
-                + _encode_h2_frame(0x01, trailers[:split_at], flags=0x00, stream_id=1)
-                + _encode_h2_frame(0x09, trailers[split_at:], flags=0x04, stream_id=1)
-            )
-            await writer.drain()
-
-            reset_code = None
-            while reset_code is None:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-                payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x03 and stream_id == 1:
-                    reset_code = int.from_bytes(payload[:4], 'big')
-                assert frame_type != 0x07, (
-                    'connection must survive a stream-local trailer error'
-                )
-
-            follow = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/second'),
-                    (b'x-shared', b'reused-value'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, follow, flags=0x05, stream_id=3))
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert reset_code == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-    assert '/second' in seen
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-
-
-async def test_trailer_budget_rejection_then_dynamic_index_reuse() -> None:
-    """Trailer field-count reject still inserts; the next stream may index them."""
-    seen: list[str] = []
-
-    async def app(scope, receive, send):
-        if scope['type'] != 'http':
-            return
-        seen.append(scope['path'])
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(port=0, access_log=False, limit_request_fields=2)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'POST'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/trailers'),
-                ],
-                huffman=False,
-            )
-            trailers = encoder.encode(
-                [
-                    (b'x-a', b'1'),
-                    (b'x-b', b'2'),
-                    (b'x-c', b'3'),
-                    (b'x-shared', b'reused'),
-                ],
-                huffman=False,
-            )
-            writer.write(
-                _encode_h2_frame(0x01, head, flags=0x04, stream_id=1)
-                + _encode_h2_frame(0x00, b'x', flags=0x00, stream_id=1)
-                + _encode_h2_frame(0x01, trailers, flags=0x05, stream_id=1)
-            )
-            await writer.drain()
-
-            reset_code = None
-            while reset_code is None:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-                payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x03 and stream_id == 1:
-                    reset_code = int.from_bytes(payload[:4], 'big')
-                assert frame_type != 0x07
-
-            follow = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/next'),
-                    (b'x-shared', b'reused'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, follow, flags=0x05, stream_id=3))
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert reset_code == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-    assert '/next' in seen
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-
-
-async def test_refused_new_stream_insertion_then_successful_indexed_request() -> None:
-    """A concurrency-refused block is still decoded so later streams can index it."""
-    release = asyncio.Event()
-    seen: list[str] = []
-
-    async def app(scope, receive, send):
-        seen.append(scope['path'])
-        if scope['path'] == '/hold':
-            await release.wait()
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(port=0, access_log=False, max_concurrent_streams=1)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            hold = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/hold'),
-                ],
-                huffman=False,
-            )
-            refused = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/refused'),
-                    (b'x-shared', b'from-refused'),
-                ],
-                huffman=False,
-            )
-            writer.write(
-                _encode_h2_frame(0x01, hold, flags=0x05, stream_id=1)
-                + _encode_h2_frame(0x01, refused, flags=0x05, stream_id=3)
-            )
-            await writer.drain()
-
-            reset_code = None
-            while reset_code is None:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-                payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x03 and stream_id == 3:
-                    reset_code = int.from_bytes(payload[:4], 'big')
-                assert frame_type != 0x07
-
-            release.set()
-            # Drain stream 1 response so the concurrency slot frees.
-            while True:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-                _payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x01 and stream_id == 1:
-                    break
-
-            follow = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/indexed'),
-                    (b'x-shared', b'from-refused'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, follow, flags=0x05, stream_id=5))
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            release.set()
-            writer.close()
-            await writer.wait_closed()
-
-    assert reset_code == int(h2.errors.ErrorCodes.REFUSED_STREAM)
-    assert '/indexed' in seen
-    assert '/refused' not in seen
-    # Application dispatch of /indexed is the HPACK-alignment signal: a
-    # drifted decoder would GOAWAY(COMPRESSION_ERROR) before the app ran.
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-    assert not any(
-        frame_type == 0x03 and stream_id == 5
-        for frame_type, _f, stream_id, _p in frames
-    )
-
-
-async def test_tracked_rejected_stream_insertion_then_successful_request() -> None:
-    """HEADERS on a request-closed stream still feed HPACK before STREAM_CLOSED."""
-    seen: list[str] = []
-    first_done = asyncio.Event()
-    first_release = asyncio.Event()
-
-    async def app(scope, receive, send):
-        if scope['type'] != 'http':
-            return
-        seen.append(scope['path'])
-        if scope['path'] == '/closed':
-            event = await receive()
-            assert event['type'] == 'http.request'
-            assert not event.get('more_body', False)
-            first_done.set()
-            await first_release.wait()
-            return
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/closed'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, head, flags=0x05, stream_id=1))
-            await writer.drain()
-            await asyncio.wait_for(first_done.wait(), timeout=5)
-
-            late = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/late'),
-                    (b'x-shared', b'from-tracked'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, late, flags=0x05, stream_id=1))
-            await writer.drain()
-
-            reset_code = None
-            while reset_code is None:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                stream_id = int.from_bytes(header[5:9], 'big') & 0x7FFF_FFFF
-                payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x03 and stream_id == 1:
-                    reset_code = int.from_bytes(payload[:4], 'big')
-                assert frame_type != 0x07
-
-            follow = encoder.encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/after'),
-                    (b'x-shared', b'from-tracked'),
-                ],
-                huffman=False,
-            )
-            writer.write(_encode_h2_frame(0x01, follow, flags=0x05, stream_id=3))
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=False)
-        finally:
-            first_release.set()
-            writer.close()
-            await writer.wait_closed()
-
-    assert reset_code == int(h2.errors.ErrorCodes.STREAM_CLOSED)
-    assert '/after' in seen
-    assert not any(frame_type == 0x07 for frame_type, *_ in frames)
-
-
-@pytest.mark.parametrize(
-    (
-        'interrupting_type',
-        'interrupting_payload',
-        'interrupting_flags',
-        'interrupting_stream_id',
-    ),
-    [
-        pytest.param(0x00, b'x', 0x01, 1, id='data'),
-        pytest.param(
-            0xF0, b'x' * SERVER_MAX_FRAME_SIZE, 0x00, 0, id='unknown-extension'
-        ),
-    ],
-)
-async def test_non_continuation_interrupts_header_block(
-    interrupting_type: int,
-    interrupting_payload: bytes,
-    interrupting_flags: int,
-    interrupting_stream_id: int,
-) -> None:
-    async def app(scope, receive, send):
-        raise AssertionError('interrupted header block must not reach the app')
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            block = hpack.Encoder().encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/'),
-                ],
-                huffman=False,
-            )
-            writer.write(
-                _encode_h2_frame(0x01, block[:8], flags=0x01, stream_id=1)
-                + _encode_h2_frame(
-                    interrupting_type,
-                    interrupting_payload,
-                    flags=interrupting_flags,
-                    stream_id=interrupting_stream_id,
-                )
-            )
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=True)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert any(
-        frame_type == 0x07
-        and int.from_bytes(payload[4:8], 'big')
-        == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-        for frame_type, _flags, _stream_id, payload in frames
-    )
-
-
-async def test_wrong_stream_continuation_is_connection_protocol_error() -> None:
-    async def app(scope, receive, send):
-        raise AssertionError('mismatched CONTINUATION must not reach the app')
-
-    config = Config(port=0, access_log=False)
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            block = hpack.Encoder().encode(
-                [
-                    (b':method', b'GET'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/'),
-                ],
-                huffman=False,
-            )
-            writer.write(
-                _encode_h2_frame(0x01, block[:8], flags=0x01, stream_id=1)
-                + _encode_h2_frame(0x09, block[8:], flags=0x04, stream_id=3)
-            )
-            await writer.drain()
-            frames = await read_raw_h2_frames(reader, timeout=2, stop_at_goaway=True)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    assert any(
-        frame_type == 0x07
-        and int.from_bytes(payload[4:8], 'big')
-        == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
-        for frame_type, _flags, _stream_id, payload in frames
-    )
-
-
-async def test_header_timeout_on_tracked_trailers_ends_the_connection() -> None:
-    """A stalled trailer block cancels the owning application and ends the connection."""
-    cancelled = asyncio.Event()
-    second_started = asyncio.Event()
-    # Gate a concurrent stream while the first is open so a double-counted
-    # pending trailer would refuse stream 3 under max_concurrent_streams=1.
-    first_body_seen = asyncio.Event()
-
-    async def app(scope, receive, send):
-        if scope['type'] != 'http':
-            return
-        if scope['path'] == '/first':
-            try:
-                while True:
-                    event = await receive()
-                    if event.get('type') == 'http.disconnect':
-                        cancelled.set()
-                        return
-                    if event['type'] == 'http.request':
-                        if event.get('body'):
-                            first_body_seen.set()
-                        if not event.get('more_body', False):
-                            break
-            except Exception:
-                cancelled.set()
-                return
-            try:
-                await asyncio.sleep(30)
-            except Exception:
-                cancelled.set()
-            return
-        second_started.set()
-        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-        await send({'type': 'http.response.body', 'body': b'ok'})
-
-    config = Config(
-        port=0,
-        access_log=False,
-        timeout_request_header=0.05,
-        max_concurrent_streams=1,
-    )
-    async with running_server(app, config) as server:
-        reader, writer, _conn, authority = await open_h2_connection(
-            port=server_port(server)
-        )
-        try:
-            encoder = hpack.Encoder()
-            head = encoder.encode(
-                [
-                    (b':method', b'POST'),
-                    (b':scheme', b'http'),
-                    (b':authority', authority),
-                    (b':path', b'/first'),
-                ],
-                huffman=False,
-            )
-            trailers = encoder.encode([(b'x-trail', b'v')], huffman=False)
-            writer.write(
-                _encode_h2_frame(0x01, head, flags=0x04, stream_id=1)
-                + _encode_h2_frame(0x00, b'x', flags=0x00, stream_id=1)
-            )
-            await writer.drain()
-            await asyncio.wait_for(first_body_seen.wait(), timeout=5)
-            # Partial trailers keep the block open; timeout must finalize the app.
-            writer.write(_encode_h2_frame(0x01, trailers[:1], flags=0x01, stream_id=1))
-            await writer.drain()
-
-            goaway_error = None
-            while goaway_error is None:
-                header = await asyncio.wait_for(reader.readexactly(9), timeout=5)
-                length = int.from_bytes(header[:3], 'big')
-                frame_type = header[3]
-                payload = await asyncio.wait_for(reader.readexactly(length), timeout=5)
-                if frame_type == 0x07:
-                    goaway_error = int.from_bytes(payload[4:8], 'big')
-
-            assert await asyncio.wait_for(cancelled.wait(), timeout=2)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    # `trailers` was encoded on the same encoder as `head`, so the peer's
-    # dynamic table already holds an entry the server's decoder never saw.
-    # A trailer block is a field block like any other: abandoning it half
-    # delivered desynchronizes the connection-wide compression context, so the
-    # connection ends rather than the stream.
-    assert goaway_error == int(h2.errors.ErrorCodes.COMPRESSION_ERROR)

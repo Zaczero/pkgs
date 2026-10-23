@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -80,14 +81,33 @@ async def open_h2_connection(
     return reader, writer, conn, authority
 
 
+def encode_h2_frame(
+    frame_type: int,
+    payload: bytes = b'',
+    *,
+    flags: int = 0,
+    stream_id: int = 0,
+) -> bytes:
+    return (
+        len(payload).to_bytes(3, 'big')
+        + bytes([frame_type, flags])
+        + (stream_id & 0x7FFF_FFFF).to_bytes(4, 'big')
+        + payload
+    )
+
+
 async def read_raw_h2_frames(
     reader: asyncio.StreamReader,
     *,
     timeout: float = 5.0,
     stop_at_goaway: bool = True,
+    until: Callable[[tuple[int, int, int, bytes]], bool] | None = None,
 ) -> list[tuple[int, int, int, bytes]]:
     """Read raw HTTP/2 frames as ``(type, flags, stream_id, payload)`` tuples
-    until GOAWAY (optional), peer close, or ``timeout`` of inactivity.
+    until the requested frame, GOAWAY (optional), peer close, or inactivity.
+
+    A requested frame must arrive within ``timeout``; an observation without
+    a completion predicate instead returns the frames seen before inactivity.
     """
     frames = []
     try:
@@ -101,10 +121,34 @@ async def read_raw_h2_frames(
                 reader.readexactly(length), timeout=timeout
             )
             frames.append((frame_type, flags, stream_id, payload))
+            if until is not None and until(frames[-1]):
+                return frames
             if stop_at_goaway and frame_type == 0x07:
                 return frames
     except (asyncio.IncompleteReadError, TimeoutError):
+        if until is not None:
+            raise
         return frames
+
+
+async def read_raw_h2_stream(
+    reader: asyncio.StreamReader, stream_id: int
+) -> list[tuple[int, int, int, bytes]]:
+    """Read through a response's END_STREAM, retaining intervening frames."""
+    frames = await read_raw_h2_frames(
+        reader,
+        until=lambda frame: (
+            frame[2] == stream_id
+            and (
+                frame[0] == 0x03 or (frame[0] in (0x00, 0x01) and bool(frame[1] & 0x01))
+            )
+        ),
+    )
+    frame_type, flags, received_stream, _ = frames[-1]
+    assert received_stream == stream_id and frame_type in (0x00, 0x01) and flags & 1, (
+        f'stream {stream_id} did not complete: {frames}'
+    )
+    return frames
 
 
 async def read_h2_response(
