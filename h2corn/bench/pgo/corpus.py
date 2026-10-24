@@ -146,6 +146,8 @@ def exchange(leaf: Leaf, index: int) -> client.Exchange:
             if leaf.forwarded
             else '192.0.2.10'
             if leaf.proxy
+            else ''
+            if leaf.unix
             else '127.0.0.1',
         ),
         ('x-pgo-client-cert', 'required' if leaf.mtls else 'none'),

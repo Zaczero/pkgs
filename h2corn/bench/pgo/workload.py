@@ -154,8 +154,9 @@ async def application(scope, receive, send):
     mode, number = scope['path'].strip('/').split('/')
     index = int(number)
     headers = dict(scope['headers'])
-    if expected_client := headers.get(b'x-pgo-client'):
-        assert scope['client'][0] == expected_client.decode()
+    if (expected_client := headers.get(b'x-pgo-client')) is not None:
+        peer = scope.get('client')
+        assert (peer[0] if peer is not None else '') == expected_client.decode()
     if scope['scheme'] == 'https':
         tls = scope['extensions']['tls']
         assert tls['tls_version'] in {0x0303, 0x0304}
