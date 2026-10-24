@@ -1,0 +1,725 @@
+{
+  "distribution": {
+    "location": "/tmp/opencode/task829/package",
+    "metadata": {
+      "path": "/tmp/opencode/task829/package/gometry-1.0.0.dist-info/METADATA",
+      "sha256": "19470fe7b50f9710e76a9a3e44e847a98c57dce3a71cbdbd4f57ff98930662d1",
+      "size_bytes": 8418
+    },
+    "name": "gometry",
+    "record": {
+      "path": "/tmp/opencode/task829/package/gometry-1.0.0.dist-info/RECORD",
+      "sha256": "aec71c51a1885a6db682e3ffff4e5af0497b34449c30e25cd2e3db0cbdb519b8",
+      "size_bytes": 2101
+    },
+    "record_available": true,
+    "version": "1.0.0"
+  },
+  "harness_commit": "d801b232c419ac2eb3da7d5f2f24c3d9a0cb980b",
+  "interpreter_binary": {
+    "path": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+    "sha256": "610b28e9e2a4c0dc26e80c0f2b4f9601c379b955cce23755a75212fa984d36ce",
+    "size_bytes": 33871032
+  },
+  "kind": "gometry-benchmark-admission",
+  "runtime": {
+    "distribution_files": [
+      "LICENSE-APACHE.md",
+      "LICENSE-MIT.md",
+      "LICENSE-THIRD-PARTY.md",
+      "gometry-1.0.0.dist-info/METADATA",
+      "gometry-1.0.0.dist-info/RECORD",
+      "gometry-1.0.0.dist-info/WHEEL",
+      "gometry-1.0.0.dist-info/licenses/LICENSE-APACHE.md",
+      "gometry-1.0.0.dist-info/licenses/LICENSE-MIT.md",
+      "gometry-1.0.0.dist-info/licenses/LICENSE-THIRD-PARTY.md",
+      "gometry/__init__.py",
+      "gometry/_arrow.py",
+      "gometry/_cpu.py",
+      "gometry/_from_pandas.py",
+      "gometry/_geopandas.py",
+      "gometry/_geoparquet.py",
+      "gometry/_geoparquet_bbox.py",
+      "gometry/_geoparquet_metadata.py",
+      "gometry/_geoparquet_native.py",
+      "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+      "gometry/_lib.pyi",
+      "gometry/_optional.py",
+      "gometry/_pandas.py",
+      "gometry/_polars.py",
+      "gometry/_types.py",
+      "gometry/_viz.py",
+      "gometry/py.typed"
+    ],
+    "distribution_metadata_sha256": "19470fe7b50f9710e76a9a3e44e847a98c57dce3a71cbdbd4f57ff98930662d1",
+    "distribution_version": "1.0.0",
+    "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+    "extension_path": "/tmp/opencode/task829/package/gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+    "extension_sha256": "2ac2d4789f4df43c4b41ccf79e85d7106daffc541465fecb8ea97fac239b73d4",
+    "facade_path": "/tmp/opencode/task829/package/gometry/__init__.py",
+    "interpreter": {
+      "cache_tag": "cpython-315",
+      "executable": "/tmp/opencode/task806-gometry-bench/venv/bin/python",
+      "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+      "gil_disabled": false,
+      "implementation": "CPython",
+      "prefix": "/tmp/opencode/task806-gometry-bench/venv",
+      "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+      "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+    },
+    "package_dir": "/tmp/opencode/task829/package/gometry",
+    "package_root": "/tmp/opencode/task829/package",
+    "python_members": {
+      "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+      "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+      "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+      "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+      "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+      "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+      "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+      "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+      "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+      "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+      "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+      "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+      "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+      "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+      "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+      "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "receipt": {
+      "build": {
+        "interpreter": {
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/task806-gometry-bench/venv/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "implementation": "CPython",
+          "pid": 1424686,
+          "prefix": "/tmp/opencode/task806-gometry-bench/venv",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "profile": "release-dist",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "kind": "gometry-benchmark-wheel",
+      "package_root": "/tmp/opencode/task829/package",
+      "prepared_inputs": {
+        "LICENSE-APACHE.md": "a26cd272d7231b71cc16d315f9d6f26ca5d54fbc869024e6a7a190e3a557a402",
+        "LICENSE-MIT.md": "fba4830e0411c9417068f87ba66e6b2982c2d50c61c8609e3766c47b90862989",
+        "LICENSE-THIRD-PARTY.md": "c6a310e10d17946f8a9f204f4616f16be2e36886a0c721a60d89392550bf6317",
+        "README.md": "16a617e76bfd8b5db2a4bf5233c3e4225bd7e11c937285ec68e7bcf7c5daca23",
+        "python/gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd"
+      },
+      "python_members": {
+        "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+        "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+        "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+        "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+        "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+        "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+        "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+        "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+        "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+        "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+        "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+        "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+        "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+        "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+        "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+        "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "source": {
+        "cargo": {
+          "lock_normalized_sha256": "dda21035abdcf6f252c3f23eb55578994a02f88e5f118810368f4697f2fabd5c",
+          "lock_preimage_sha256": "0b8be1ab2d2f1899d7e14ceacc1f34535d75c037852f62518ed1638c594f3540",
+          "required_sources": [
+            {
+              "features": [
+                "accurate"
+              ],
+              "name": "geographiclib-rs",
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "0.2.7"
+            },
+            {
+              "features": [],
+              "name": "cmake",
+              "source": null,
+              "version": "0.1.58"
+            },
+            {
+              "features": [
+                "std"
+              ],
+              "name": "h3o",
+              "source": null,
+              "version": "0.11.0"
+            },
+            {
+              "features": [],
+              "name": "numpy",
+              "source": null,
+              "version": "0.30.0"
+            },
+            {
+              "features": [
+                "inventory",
+                "macros",
+                "multiple-pymethods",
+                "nightly",
+                "pyo3-macros"
+              ],
+              "name": "pyo3",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "default",
+                "resolve-config"
+              ],
+              "name": "pyo3-build-config",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "default"
+              ],
+              "name": "pyo3-ffi",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "multiple-pymethods"
+              ],
+              "name": "pyo3-macros",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [],
+              "name": "pyo3-macros-backend",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "bundled_proj",
+                "tiff"
+              ],
+              "name": "proj-sys",
+              "source": null,
+              "version": "0.27.0"
+            },
+            {
+              "features": [],
+              "name": "gometry-libtiff-sys",
+              "source": null,
+              "version": "0.1.0"
+            },
+            {
+              "features": [],
+              "name": "cmake-flags",
+              "source": null,
+              "version": "0.1.0"
+            }
+          ]
+        },
+        "commit": "d801b232c419ac2eb3da7d5f2f24c3d9a0cb980b",
+        "filename": "gometry-1.0.0.tar.gz",
+        "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+        "native_source_inputs_sha256": "8f67fbbdac827ab30a75a271c87e408e9b37ec455ea45c72af3d199010e1cf15",
+        "python_members": {
+          "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+          "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+          "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+          "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+          "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+          "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+          "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+          "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+          "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+          "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+          "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+          "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+          "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+          "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+          "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+          "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+        },
+        "sha256": "e3c4ca0ae6a8fd1ceb97ef503a9e564d18afd0a8f3efc720bd60eefbde84090c",
+        "source_inputs_format": "sha256-path-nul-content-nul-v1",
+        "source_inputs_sha256": "3464654f19fcf88ec1b4fe710e43626580827d0805737c0a7ea12dd5fbf542d1",
+        "toolchain": {
+          "cargo": "cargo 1.101.0-nightly (3960fa69b 2026-10-12)",
+          "channel": "nightly",
+          "maturin": "1.15.0",
+          "maturin_pep517_args": "--locked --profile release-dist",
+          "rustc": "rustc 1.101.0-nightly (1a2c4797e 2026-10-21)\nbinary: rustc\ncommit-hash: 1a2c4797ef2570bd76ca5dee34449169bc7dc457\ncommit-date: 2026-10-21\nhost: x86_64-unknown-linux-gnu\nrelease: 1.101.0-nightly\nLLVM version: 23.1.4"
+        },
+        "version": "1.0.0"
+      },
+      "wheel": {
+        "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+        "extension_sha256": "2ac2d4789f4df43c4b41ccf79e85d7106daffc541465fecb8ea97fac239b73d4",
+        "filename": "gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+        "sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e"
+      }
+    },
+    "root": "/home/user/Source/pkgs/gometry",
+    "runtime_selection": null,
+    "target_policy": {
+      "architecture": "x86_64",
+      "cflags": [
+        "-march=x86-64-v2"
+      ],
+      "cxxflags": [
+        "-march=x86-64-v2"
+      ],
+      "platform_family": "linux-gnu",
+      "raw_target_arch": "x86_64",
+      "rustflags": [
+        "-C",
+        "target-cpu=x86-64-v2"
+      ],
+      "target": "x86_64-unknown-linux-gnu",
+      "target_policy": "x86-64-v2"
+    },
+    "wheel": {
+      "member_sha256": {
+        "LICENSE-APACHE.md": "a26cd272d7231b71cc16d315f9d6f26ca5d54fbc869024e6a7a190e3a557a402",
+        "LICENSE-MIT.md": "fba4830e0411c9417068f87ba66e6b2982c2d50c61c8609e3766c47b90862989",
+        "LICENSE-THIRD-PARTY.md": "c6a310e10d17946f8a9f204f4616f16be2e36886a0c721a60d89392550bf6317",
+        "gometry-1.0.0.dist-info/METADATA": "19470fe7b50f9710e76a9a3e44e847a98c57dce3a71cbdbd4f57ff98930662d1",
+        "gometry-1.0.0.dist-info/RECORD": "aec71c51a1885a6db682e3ffff4e5af0497b34449c30e25cd2e3db0cbdb519b8",
+        "gometry-1.0.0.dist-info/WHEEL": "8bc00beaaa815aaecabe437ec1ff4a1d4db511b0c7fdffb1ee10720e2355a6cf",
+        "gometry-1.0.0.dist-info/licenses/LICENSE-APACHE.md": "a26cd272d7231b71cc16d315f9d6f26ca5d54fbc869024e6a7a190e3a557a402",
+        "gometry-1.0.0.dist-info/licenses/LICENSE-MIT.md": "fba4830e0411c9417068f87ba66e6b2982c2d50c61c8609e3766c47b90862989",
+        "gometry-1.0.0.dist-info/licenses/LICENSE-THIRD-PARTY.md": "c6a310e10d17946f8a9f204f4616f16be2e36886a0c721a60d89392550bf6317",
+        "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+        "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+        "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+        "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+        "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+        "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+        "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+        "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+        "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+        "gometry/_lib.cpython-315-x86_64-linux-gnu.so": "2ac2d4789f4df43c4b41ccf79e85d7106daffc541465fecb8ea97fac239b73d4",
+        "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+        "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+        "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+        "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+        "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+        "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+        "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "native": {
+        "extension": {
+          "architecture": "x86_64",
+          "format": "ELF",
+          "glibc_versions": [
+            "GLIBC_2.14",
+            "GLIBC_2.17",
+            "GLIBC_2.18",
+            "GLIBC_2.2.5",
+            "GLIBC_2.25",
+            "GLIBC_2.27",
+            "GLIBC_2.28",
+            "GLIBC_2.29",
+            "GLIBC_2.3",
+            "GLIBC_2.3.2",
+            "GLIBC_2.3.4",
+            "GLIBC_2.30",
+            "GLIBC_2.32",
+            "GLIBC_2.33",
+            "GLIBC_2.34",
+            "GLIBC_2.35",
+            "GLIBC_2.38",
+            "GLIBC_2.4",
+            "GLIBC_2.43",
+            "GLIBC_2.44"
+          ],
+          "libc": "gnu",
+          "machine": 62,
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libstdc++.so.6"
+          ]
+        },
+        "libraries": {}
+      },
+      "path": "/tmp/opencode/task829/artifacts/gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+      "python_members": [
+        "gometry/__init__.py",
+        "gometry/_arrow.py",
+        "gometry/_cpu.py",
+        "gometry/_from_pandas.py",
+        "gometry/_geopandas.py",
+        "gometry/_geoparquet.py",
+        "gometry/_geoparquet_bbox.py",
+        "gometry/_geoparquet_metadata.py",
+        "gometry/_geoparquet_native.py",
+        "gometry/_lib.pyi",
+        "gometry/_optional.py",
+        "gometry/_pandas.py",
+        "gometry/_polars.py",
+        "gometry/_types.py",
+        "gometry/_viz.py",
+        "gometry/py.typed"
+      ],
+      "record": "gometry-1.0.0.dist-info/RECORD",
+      "sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e",
+      "signatures": [],
+      "tags": [
+        "cp315-cp315-linux_x86_64"
+      ]
+    }
+  },
+  "subject": {
+    "kind": "wheel",
+    "path": "/tmp/opencode/task829/artifacts/gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+    "profile": "release-dist",
+    "receipt_sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e",
+    "runtime_receipt": {
+      "build": {
+        "interpreter": {
+          "cache_tag": "cpython-315",
+          "executable": "/tmp/opencode/task806-gometry-bench/venv/bin/python",
+          "ext_suffix": ".cpython-315-x86_64-linux-gnu.so",
+          "gil_disabled": false,
+          "implementation": "CPython",
+          "pid": 1424686,
+          "prefix": "/tmp/opencode/task806-gometry-bench/venv",
+          "resolved_executable": "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15",
+          "version": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
+        },
+        "profile": "release-dist",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "kind": "gometry-benchmark-wheel",
+      "prepared_inputs": {
+        "LICENSE-APACHE.md": "a26cd272d7231b71cc16d315f9d6f26ca5d54fbc869024e6a7a190e3a557a402",
+        "LICENSE-MIT.md": "fba4830e0411c9417068f87ba66e6b2982c2d50c61c8609e3766c47b90862989",
+        "LICENSE-THIRD-PARTY.md": "c6a310e10d17946f8a9f204f4616f16be2e36886a0c721a60d89392550bf6317",
+        "README.md": "16a617e76bfd8b5db2a4bf5233c3e4225bd7e11c937285ec68e7bcf7c5daca23",
+        "python/gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd"
+      },
+      "python_members": {
+        "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+        "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+        "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+        "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+        "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+        "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+        "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+        "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+        "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+        "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+        "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+        "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+        "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+        "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+        "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+        "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "source": {
+        "cargo": {
+          "lock_normalized_sha256": "dda21035abdcf6f252c3f23eb55578994a02f88e5f118810368f4697f2fabd5c",
+          "lock_preimage_sha256": "0b8be1ab2d2f1899d7e14ceacc1f34535d75c037852f62518ed1638c594f3540",
+          "required_sources": [
+            {
+              "features": [
+                "accurate"
+              ],
+              "name": "geographiclib-rs",
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "0.2.7"
+            },
+            {
+              "features": [],
+              "name": "cmake",
+              "source": null,
+              "version": "0.1.58"
+            },
+            {
+              "features": [
+                "std"
+              ],
+              "name": "h3o",
+              "source": null,
+              "version": "0.11.0"
+            },
+            {
+              "features": [],
+              "name": "numpy",
+              "source": null,
+              "version": "0.30.0"
+            },
+            {
+              "features": [
+                "inventory",
+                "macros",
+                "multiple-pymethods",
+                "nightly",
+                "pyo3-macros"
+              ],
+              "name": "pyo3",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "default",
+                "resolve-config"
+              ],
+              "name": "pyo3-build-config",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "default"
+              ],
+              "name": "pyo3-ffi",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "multiple-pymethods"
+              ],
+              "name": "pyo3-macros",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [],
+              "name": "pyo3-macros-backend",
+              "source": null,
+              "version": "0.30.1"
+            },
+            {
+              "features": [
+                "bundled_proj",
+                "tiff"
+              ],
+              "name": "proj-sys",
+              "source": null,
+              "version": "0.27.0"
+            },
+            {
+              "features": [],
+              "name": "gometry-libtiff-sys",
+              "source": null,
+              "version": "0.1.0"
+            },
+            {
+              "features": [],
+              "name": "cmake-flags",
+              "source": null,
+              "version": "0.1.0"
+            }
+          ]
+        },
+        "commit": "d801b232c419ac2eb3da7d5f2f24c3d9a0cb980b",
+        "filename": "gometry-1.0.0.tar.gz",
+        "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+        "native_source_inputs_sha256": "8f67fbbdac827ab30a75a271c87e408e9b37ec455ea45c72af3d199010e1cf15",
+        "python_members": {
+          "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+          "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+          "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+          "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+          "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+          "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+          "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+          "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+          "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+          "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+          "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+          "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+          "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+          "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+          "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+          "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+        },
+        "sha256": "e3c4ca0ae6a8fd1ceb97ef503a9e564d18afd0a8f3efc720bd60eefbde84090c",
+        "source_inputs_format": "sha256-path-nul-content-nul-v1",
+        "source_inputs_sha256": "3464654f19fcf88ec1b4fe710e43626580827d0805737c0a7ea12dd5fbf542d1",
+        "toolchain": {
+          "cargo": "cargo 1.101.0-nightly (3960fa69b 2026-10-12)",
+          "channel": "nightly",
+          "maturin": "1.15.0",
+          "maturin_pep517_args": "--locked --profile release-dist",
+          "rustc": "rustc 1.101.0-nightly (1a2c4797e 2026-10-21)\nbinary: rustc\ncommit-hash: 1a2c4797ef2570bd76ca5dee34449169bc7dc457\ncommit-date: 2026-10-21\nhost: x86_64-unknown-linux-gnu\nrelease: 1.101.0-nightly\nLLVM version: 23.1.4"
+        },
+        "version": "1.0.0"
+      },
+      "wheel": {
+        "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+        "extension_sha256": "2ac2d4789f4df43c4b41ccf79e85d7106daffc541465fecb8ea97fac239b73d4",
+        "filename": "gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+        "sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e"
+      }
+    },
+    "source": {
+      "cargo": {
+        "lock_normalized_sha256": "dda21035abdcf6f252c3f23eb55578994a02f88e5f118810368f4697f2fabd5c",
+        "lock_preimage_sha256": "0b8be1ab2d2f1899d7e14ceacc1f34535d75c037852f62518ed1638c594f3540",
+        "required_sources": [
+          {
+            "features": [
+              "accurate"
+            ],
+            "name": "geographiclib-rs",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "version": "0.2.7"
+          },
+          {
+            "features": [],
+            "name": "cmake",
+            "source": null,
+            "version": "0.1.58"
+          },
+          {
+            "features": [
+              "std"
+            ],
+            "name": "h3o",
+            "source": null,
+            "version": "0.11.0"
+          },
+          {
+            "features": [],
+            "name": "numpy",
+            "source": null,
+            "version": "0.30.0"
+          },
+          {
+            "features": [
+              "inventory",
+              "macros",
+              "multiple-pymethods",
+              "nightly",
+              "pyo3-macros"
+            ],
+            "name": "pyo3",
+            "source": null,
+            "version": "0.30.1"
+          },
+          {
+            "features": [
+              "default",
+              "resolve-config"
+            ],
+            "name": "pyo3-build-config",
+            "source": null,
+            "version": "0.30.1"
+          },
+          {
+            "features": [
+              "default"
+            ],
+            "name": "pyo3-ffi",
+            "source": null,
+            "version": "0.30.1"
+          },
+          {
+            "features": [
+              "multiple-pymethods"
+            ],
+            "name": "pyo3-macros",
+            "source": null,
+            "version": "0.30.1"
+          },
+          {
+            "features": [],
+            "name": "pyo3-macros-backend",
+            "source": null,
+            "version": "0.30.1"
+          },
+          {
+            "features": [
+              "bundled_proj",
+              "tiff"
+            ],
+            "name": "proj-sys",
+            "source": null,
+            "version": "0.27.0"
+          },
+          {
+            "features": [],
+            "name": "gometry-libtiff-sys",
+            "source": null,
+            "version": "0.1.0"
+          },
+          {
+            "features": [],
+            "name": "cmake-flags",
+            "source": null,
+            "version": "0.1.0"
+          }
+        ]
+      },
+      "commit": "d801b232c419ac2eb3da7d5f2f24c3d9a0cb980b",
+      "filename": "gometry-1.0.0.tar.gz",
+      "native_source_inputs_format": "sha256-path-nul-content-nul-v1",
+      "native_source_inputs_sha256": "8f67fbbdac827ab30a75a271c87e408e9b37ec455ea45c72af3d199010e1cf15",
+      "python_members": {
+        "gometry/__init__.py": "b59793d264c8c4debd2e98c0f5f4b7566597f0f8f72fcbb2c7f9e9e6fd770d9d",
+        "gometry/_arrow.py": "89a7b80b8230fb2028d1e64755a3d82c7312c48a00880d50710a4664cf1825cc",
+        "gometry/_cpu.py": "6726705534a66f595f40ed3f0a2cea19dd1d7dc9bd1a1bbd433da966f76a7def",
+        "gometry/_from_pandas.py": "86f7e3ebac57c14d9d840e9acc6ce5af608fb50b89e2f7a6d05f0c0014009ff6",
+        "gometry/_geopandas.py": "89564a65bff2066eee82f5dd0e84447252ce37a7c3050587162ed4f917c43130",
+        "gometry/_geoparquet.py": "0cbbbfad4404de0b42485a891d2a84694c3a076337090f84cd0a69691bf848a6",
+        "gometry/_geoparquet_bbox.py": "b85b325a2b5dcaa0dc50be91bce1e949dac64b8e830de5c69a4110da89610e50",
+        "gometry/_geoparquet_metadata.py": "daed8c53610387d3bb65c842fbf555a7cd8a304e52cb583b07819148b60ffc98",
+        "gometry/_geoparquet_native.py": "3ed99493180bdf8258db7a7f57efbf185d75e2d3b4f324f039abf5968aeeebee",
+        "gometry/_lib.pyi": "59b23e8b107b42375f16d0b10c0ca85fdbcfe985dce1d2fc3256175e72e4d2dd",
+        "gometry/_optional.py": "69b689d09bffbc66f0966733fc33f17c6c8a1c69f8ff475e87fc055f2f2b632e",
+        "gometry/_pandas.py": "47db0e4255a27a72f97aa381bdd49b9c75ad09f581075a6abb2f6db37d789b71",
+        "gometry/_polars.py": "e429d478f67292c3f2c97d9672fb4e534cb674780b59d16a33ca61743abe3469",
+        "gometry/_types.py": "82b11ac432b6adb074bbb582b4b4582a06424cb7a231c98cd3f47f8446fe9259",
+        "gometry/_viz.py": "422995c7e043bf94346f63f45e2eeb96edec74caff7666c3af9ab4afcca6ba5f",
+        "gometry/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "sha256": "e3c4ca0ae6a8fd1ceb97ef503a9e564d18afd0a8f3efc720bd60eefbde84090c",
+      "source_inputs_format": "sha256-path-nul-content-nul-v1",
+      "source_inputs_sha256": "3464654f19fcf88ec1b4fe710e43626580827d0805737c0a7ea12dd5fbf542d1",
+      "toolchain": {
+        "cargo": "cargo 1.101.0-nightly (3960fa69b 2026-10-12)",
+        "channel": "nightly",
+        "maturin": "1.15.0",
+        "maturin_pep517_args": "--locked --profile release-dist",
+        "rustc": "rustc 1.101.0-nightly (1a2c4797e 2026-10-21)\nbinary: rustc\ncommit-hash: 1a2c4797ef2570bd76ca5dee34449169bc7dc457\ncommit-date: 2026-10-21\nhost: x86_64-unknown-linux-gnu\nrelease: 1.101.0-nightly\nLLVM version: 23.1.4"
+      },
+      "version": "1.0.0"
+    },
+    "wheels": [
+      {
+        "extension_member": "gometry/_lib.cpython-315-x86_64-linux-gnu.so",
+        "extension_sha256": "2ac2d4789f4df43c4b41ccf79e85d7106daffc541465fecb8ea97fac239b73d4",
+        "filename": "gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+        "sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e"
+      }
+    ]
+  },
+  "uv_lock": {
+    "path": "/home/user/Source/pkgs/gometry/uv.lock",
+    "sha256": "53a2af1ddd9870cc8251e67273bfb8e525fff56c9e5351acce251d1dc7c4a598",
+    "size_bytes": 824980
+  },
+  "wheel_archive": {
+    "path": "/tmp/opencode/task829/artifacts/gometry-1.0.0-cp315-cp315-linux_x86_64.whl",
+    "sha256": "215c5dda922b6a1adb3bd1154819727d74ea0a97fc478fb1ea7cd54a3435161e",
+    "size_bytes": 15421236
+  }
+}

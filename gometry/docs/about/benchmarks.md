@@ -32,20 +32,12 @@ process blocks.
 
 ## Methodology {#what-the-run-measures}
 
-Every release workload first runs six independent paired process blocks, with
-the libraries alternating which runs first. After that first look, an unresolved
-comparison may extend to twelve blocks if the collection budget permits.
-Resolved or sufficiently precise
-comparisons stop at six. Each block times calls in batches of at least 1 ms
-after warm-up; its result is the median per call. Before timing, both outputs
-are checked for equivalent rows, types, coordinates, and topology. The external
-oracle and four resource probes run independently of throughput confidence.
+Each workload uses six to twelve paired measurements after warm-up, alternating
+which library runs first. Outputs are checked for equivalent rows, types,
+coordinates, and topology before timing.
 
-Labels use the ordinary median of per-block comparator/gometry duration ratios
-and an exact median order interval. The first and second looks allocate error
-probabilities of 1/32 and 3/160, respectively, for at least 95% coverage across
-the permitted looks for each comparison. A 3% practical-equivalence margin
-classifies the interval:
+Ratios summarize paired call times. Labels use confidence intervals with at
+least 95% coverage and a 3% practical-equivalence margin:
 
 | Label | Meaning |
 | --- | --- |
@@ -53,13 +45,8 @@ classifies the interval:
 | Similar | The entire interval is within the margin. |
 | Inconclusive | The interval is too wide or crosses a decision boundary. |
 
-Interval precision is a stopping rule, not an equivalence claim; an interval
-crossing one is not by itself evidence that the implementations are equal. The
-raw measurements record the block count and inference for each operation.
-
-Measurements ran on CPU 31 with the powersave governor and external CPU
-contention. The 32-CPU host's one-minute load average was 10.12 before timing
-and 9.04 afterward. The raw data includes these conditions and the block spread.
+Measurements used one pinned CPU with the powersave governor and concurrent
+host activity.
 
 --8<-- "benches/results/current/summary.md:environment"
 

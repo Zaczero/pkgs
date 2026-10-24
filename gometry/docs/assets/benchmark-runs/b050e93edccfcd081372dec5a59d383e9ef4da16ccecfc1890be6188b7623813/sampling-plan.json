@@ -1,0 +1,3426 @@
+{
+  "artifact_type": "gometry-benchmark-sampling-plan",
+  "benchmark_evidence": {
+    "admission_sha256": "8ad30ea0a55f4298fc29a1bb66123135bfa449fe111ff395df3717519c84447d",
+    "identities": {}
+  },
+  "initial_look": 6,
+  "maximum_look": 12,
+  "operations": {
+    "gometry.area/10k_projected_buildings": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-11-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-11-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-11-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-11-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-11-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-11-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-11-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.area/10k_projected_buildings",
+      "pair_id": "competitors-pair-11"
+    },
+    "gometry.bounds/10k_projected_buildings": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-21-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-21-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-21-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-21-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-21-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-21-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-21-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.bounds/10k_projected_buildings",
+      "pair_id": "competitors-pair-21"
+    },
+    "gometry.buffer/10k_projected_points": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-14-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-14-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-14-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-14-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-14-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-14-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-14-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.buffer/10k_projected_points",
+      "pair_id": "competitors-pair-14"
+    },
+    "gometry.chart_edge_area/217_countries": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-28-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-28-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-28-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-28-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-28-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-28-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-28-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pyproj.chart_edge_area_reference/217_countries",
+      "pair_id": "competitors-pair-28"
+    },
+    "gometry.chart_edge_length/1034_exteriors_16135_vertices": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-29-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-29-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-29-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-29-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-29-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-29-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-29-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pyproj.chart_edge_length_reference/1034_exteriors_16135_vertices",
+      "pair_id": "competitors-pair-29"
+    },
+    "gometry.contains/coordinate/scaling=prepared-point-in-polygon/probe-count=100k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-63-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-63-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-63-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-63-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-63-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-63-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-63-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.contains_xy.prepared/scaling=prepared-point-in-polygon/probe-count=100k",
+      "pair_id": "competitors-pair-63"
+    },
+    "gometry.contains/coordinate/scaling=prepared-point-in-polygon/probe-count=10k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-62-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-62-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-62-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-62-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-62-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-62-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-62-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.contains_xy.prepared/scaling=prepared-point-in-polygon/probe-count=10k",
+      "pair_id": "competitors-pair-62"
+    },
+    "gometry.contains/coordinate/scaling=prepared-point-in-polygon/probe-count=1k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-61-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-61-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-61-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-61-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-61-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-61-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-61-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.contains_xy.prepared/scaling=prepared-point-in-polygon/probe-count=1k",
+      "pair_id": "competitors-pair-61"
+    },
+    "gometry.contains/coordinate_100k_probes_1316_vertex_polygon": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-09-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-09-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-09-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-09-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-09-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-09-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-09-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.contains_xy.prepared/100k_probes_1316_vertex_polygon",
+      "pair_id": "competitors-pair-09"
+    },
+    "gometry.coords.matrix_and_index/100k_vertices": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-04-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-04-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-04-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-04-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-04-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-04-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-04-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.get_coordinates/100k_vertices_with_index",
+      "pair_id": "competitors-pair-04"
+    },
+    "gometry.coverage_union_all/10k_edge_matched_parcels": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-18-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-18-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-18-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-18-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-18-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-18-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-18-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.coverage_union_all/10k_edge_matched_parcels",
+      "pair_id": "competitors-pair-18"
+    },
+    "gometry.crs_transform/10k_epsg4326_to3857": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-25-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-25-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-25-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-25-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-25-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-25-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-25-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pyproj.Transformer.transform/10k_epsg4326_to3857",
+      "pair_id": "competitors-pair-25"
+    },
+    "gometry.destination.geodesic/10k_wgs84": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-27-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-27-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-27-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-27-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-27-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-27-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-27-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pyproj.Geod.fwd+Shapely.points+GeoPandas.GeoSeries/10k_wgs84",
+      "pair_id": "competitors-pair-27"
+    },
+    "gometry.distance.geodesic/10k_wgs84_pairs": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-26-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-26-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-26-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-26-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-26-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-26-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-26-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pyproj.Geod.inv/10k_wgs84_pairs",
+      "pair_id": "competitors-pair-26"
+    },
+    "gometry.dwithin/pairwise_10k_50pct_matches": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-10-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-10-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-10-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-10-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-10-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-10-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-10-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.dwithin/pairwise_10k_50pct_matches",
+      "pair_id": "competitors-pair-10"
+    },
+    "gometry.from_arrow/100k_mixed_10pct_missing": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-02-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-02-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-02-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-02-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-02-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-02-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-02-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "geopandas.GeoSeries.from_arrow/100k_mixed_10pct_missing",
+      "pair_id": "competitors-pair-02"
+    },
+    "gometry.from_geojson/217_countries_2_26mb": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-07-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-07-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-07-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-07-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-07-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-07-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-07-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.from_geojson/217_countries_2_26mb",
+      "pair_id": "competitors-pair-07"
+    },
+    "gometry.from_wkb.batch/10k_mixed_ewkb": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-01-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-01-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-01-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-01-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-01-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-01-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-01-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.from_wkb.batch/10k_mixed_ewkb",
+      "pair_id": "competitors-pair-01"
+    },
+    "gometry.from_wkt.batch/10k_realistic_mixed_wkt": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-06-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-06-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-06-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-06-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-06-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-06-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-06-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.from_wkt.batch/10k_realistic_mixed_wkt",
+      "pair_id": "competitors-pair-06"
+    },
+    "gometry.geohash_encode/10k_precision6": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-30-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-30-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-30-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-30-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-30-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-30-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-30-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "pygeohash.encode/10k_precision6",
+      "pair_id": "competitors-pair-30"
+    },
+    "gometry.h3_compact/32260_to_1732_cells": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-32-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-32-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-32-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-32-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-32-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-32-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-32-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "h3.numpy_int.compact_cells/32260_to_1732_cells",
+      "pair_id": "competitors-pair-32"
+    },
+    "gometry.h3_cover.center/BR_res5_32260_cells": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-31-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-31-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-31-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-31-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-31-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-31-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-31-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "h3.numpy_int.h3shape_to_cells/BR_res5_32260_cells",
+      "pair_id": "competitors-pair-31"
+    },
+    "gometry.index.build/10k_polygons": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-41-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-41-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-41-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-41-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-41-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-41-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-41-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree/10k_polygons",
+      "pair_id": "competitors-pair-41"
+    },
+    "gometry.index.candidates/1k_queries_10k_polygons": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-36-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-36-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-36-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-36-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-36-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-36-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-36-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/1k_queries_10k_polygons",
+      "pair_id": "competitors-pair-36"
+    },
+    "gometry.index.candidates/scaling=spatial-index-cardinality/indexed-polygons=10k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-44-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-44-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-44-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-44-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-44-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-44-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-44-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-cardinality/indexed-polygons=10k",
+      "pair_id": "competitors-pair-44"
+    },
+    "gometry.index.candidates/scaling=spatial-index-cardinality/indexed-polygons=1k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-42-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-42-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-42-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-42-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-42-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-42-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-42-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-cardinality/indexed-polygons=1k",
+      "pair_id": "competitors-pair-42"
+    },
+    "gometry.index.candidates/scaling=spatial-index-cardinality/indexed-polygons=5k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-43-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-43-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-43-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-43-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-43-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-43-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-43-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-cardinality/indexed-polygons=5k",
+      "pair_id": "competitors-pair-43"
+    },
+    "gometry.index.candidates/scaling=spatial-index-result-amplification/candidate-pairs-per-query=1": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-48-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-48-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-48-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-48-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-48-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-48-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-48-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-result-amplification/candidate-pairs-per-query=1",
+      "pair_id": "competitors-pair-48"
+    },
+    "gometry.index.candidates/scaling=spatial-index-result-amplification/candidate-pairs-per-query=10": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-49-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-49-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-49-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-49-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-49-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-49-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-49-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-result-amplification/candidate-pairs-per-query=10",
+      "pair_id": "competitors-pair-49"
+    },
+    "gometry.index.candidates/scaling=spatial-index-result-amplification/candidate-pairs-per-query=100": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-50-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-50-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-50-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-50-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-50-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-50-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-50-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-result-amplification/candidate-pairs-per-query=100",
+      "pair_id": "competitors-pair-50"
+    },
+    "gometry.index.candidates/scaling=spatial-index-selectivity/queries-with-a-match=10pct": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-46-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-46-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-46-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-46-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-46-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-46-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-46-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-selectivity/queries-with-a-match=10pct",
+      "pair_id": "competitors-pair-46"
+    },
+    "gometry.index.candidates/scaling=spatial-index-selectivity/queries-with-a-match=1pct": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-45-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-45-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-45-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-45-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-45-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-45-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-45-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-selectivity/queries-with-a-match=1pct",
+      "pair_id": "competitors-pair-45"
+    },
+    "gometry.index.candidates/scaling=spatial-index-selectivity/queries-with-a-match=50pct": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-47-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-47-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-47-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-47-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-47-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-47-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-47-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query/scaling=spatial-index-selectivity/queries-with-a-match=50pct",
+      "pair_id": "competitors-pair-47"
+    },
+    "gometry.index.join.within/10k_pois_217_countries": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-35-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-35-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-35-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-35-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-35-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-35-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-35-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query.within/10k_pois_217_countries",
+      "pair_id": "competitors-pair-35"
+    },
+    "gometry.index.nearest/1k_queries_10k_polygons_k1": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-37-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-37-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-37-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-37-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-37-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-37-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-37-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1",
+      "pair_id": "competitors-pair-37"
+    },
+    "gometry.index.query.intersects/256_rectangles_10k_geographic_mixed": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-40-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-40-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-40-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-40-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-40-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-40-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-40-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query.intersects/256_rectangles_10k_geographic_mixed",
+      "pair_id": "competitors-pair-40"
+    },
+    "gometry.index.query.intersects/256_rectangles_10k_mixed": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-39-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-39-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-39-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-39-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-39-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-39-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-39-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query.intersects/256_rectangles_10k_mixed",
+      "pair_id": "competitors-pair-39"
+    },
+    "gometry.index.query.intersects/256_rectangles_10k_packed_points": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-38-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-38-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-38-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-38-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-38-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-38-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-38-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query.intersects/256_rectangles_10k_packed_points",
+      "pair_id": "competitors-pair-38"
+    },
+    "gometry.intersection.holes/scaling=overlay-hole-count/holes=1k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-57-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-57-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-57-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-57-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-57-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-57-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-57-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersection.holes/scaling=overlay-hole-count/holes=1k",
+      "pair_id": "competitors-pair-57"
+    },
+    "gometry.intersection.holes/scaling=overlay-hole-count/holes=250": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-56-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-56-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-56-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-56-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-56-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-56-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-56-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersection.holes/scaling=overlay-hole-count/holes=250",
+      "pair_id": "competitors-pair-56"
+    },
+    "gometry.intersection.holes/scaling=overlay-hole-count/holes=4k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-58-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-58-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-58-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-58-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-58-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-58-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-58-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersection.holes/scaling=overlay-hole-count/holes=4k",
+      "pair_id": "competitors-pair-58"
+    },
+    "gometry.intersection/10k_realistic_linework_categories": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-22-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-22-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-22-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-22-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-22-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-22-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-22-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersection/10k_realistic_linework_categories",
+      "pair_id": "competitors-pair-22"
+    },
+    "gometry.intersection/pairwise_1k_irregular_polygons": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-15-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-15-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-15-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-15-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-15-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-15-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-15-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersection/pairwise_1k_irregular_polygons",
+      "pair_id": "competitors-pair-15"
+    },
+    "gometry.intersects/12k_irregular_polygon_point_array": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-08-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-08-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-08-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-08-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-08-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-08-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-08-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersects/12k_irregular_polygon_point_array",
+      "pair_id": "competitors-pair-08"
+    },
+    "gometry.intersects/pairwise_1k_irregular_polygons": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-16-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-16-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-16-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-16-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-16-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-16-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-16-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.intersects/pairwise_1k_irregular_polygons",
+      "pair_id": "competitors-pair-16"
+    },
+    "gometry.is_valid/10k_mixed_polygons_20pct_invalid": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-19-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-19-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-19-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-19-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-19-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-19-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-19-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.is_valid/10k_mixed_polygons_20pct_invalid",
+      "pair_id": "competitors-pair-19"
+    },
+    "gometry.join.within/10k_pois_217_countries": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-34-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-34-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-34-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-34-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-34-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-34-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-34-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.STRtree.query.one_shot.within/10k_pois_217_countries",
+      "pair_id": "competitors-pair-34"
+    },
+    "gometry.length/10k_roads_100k_vertices": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-12-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-12-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-12-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-12-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-12-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-12-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-12-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.length/10k_roads_100k_vertices",
+      "pair_id": "competitors-pair-12"
+    },
+    "gometry.point_on_surface/10k_concave_holed_buildings": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-23-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-23-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-23-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-23-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-23-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-23-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-23-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.point_on_surface/10k_concave_holed_buildings",
+      "pair_id": "competitors-pair-23"
+    },
+    "gometry.points/10k_numpy_xy": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-05-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-05-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-05-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-05-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-05-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-05-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-05-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.points/10k_numpy_xy",
+      "pair_id": "competitors-pair-05"
+    },
+    "gometry.repair.linework/1k_invalid_polygons": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-20-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-20-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-20-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-20-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-20-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-20-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-20-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.make_valid.linework/1k_invalid_polygons",
+      "pair_id": "competitors-pair-20"
+    },
+    "gometry.simplify.dp/10k_roads_100k_vertices": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-13-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-13-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-13-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-13-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-13-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-13-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-13-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.simplify.dp/10k_roads_100k_vertices",
+      "pair_id": "competitors-pair-13"
+    },
+    "gometry.tile_cover.bbox/BR_z10_15340_tiles": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-33-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-33-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-33-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-33-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-33-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-33-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-33-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "mercantile.tiles/BR_z10_15340_tiles",
+      "pair_id": "competitors-pair-33"
+    },
+    "gometry.tile_cover.bbox/scaling=grid-cover-output-count/grid-output-count=3960": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-60-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-60-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-60-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-60-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-60-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-60-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-60-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "mercantile.tiles/scaling=grid-cover-output-count/grid-output-count=3960",
+      "pair_id": "competitors-pair-60"
+    },
+    "gometry.tile_cover.bbox/scaling=grid-cover-output-count/grid-output-count=990": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-59-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-59-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-59-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-59-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-59-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-59-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-59-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "mercantile.tiles/scaling=grid-cover-output-count/grid-output-count=990",
+      "pair_id": "competitors-pair-59"
+    },
+    "gometry.to_crs.masked/200k_points_10pct_missing": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-24-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-24-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-24-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-24-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-24-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-24-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-24-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "geopandas.GeoSeries.to_crs/200k_points_10pct_missing",
+      "pair_id": "competitors-pair-24"
+    },
+    "gometry.to_wkb.batch/10k_mixed_ewkb": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-03-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-03-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-03-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-03-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-03-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-03-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-03-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.to_wkb.batch/10k_mixed_ewkb",
+      "pair_id": "competitors-pair-03"
+    },
+    "gometry.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=16k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-55-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-55-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-55-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-55-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-55-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-55-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-55-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=16k",
+      "pair_id": "competitors-pair-55"
+    },
+    "gometry.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=1k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-53-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-53-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-53-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-53-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-53-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-53-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-53-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=1k",
+      "pair_id": "competitors-pair-53"
+    },
+    "gometry.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=4k": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-54-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-54-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-54-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-54-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-54-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-54-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-54-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all.disjoint/scaling=overlay-disjoint-input-count/input-geometries=4k",
+      "pair_id": "competitors-pair-54"
+    },
+    "gometry.union_all/1024_service_areas": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-17-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-17-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-17-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-17-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-17-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-17-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-17-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all/1024_service_areas",
+      "pair_id": "competitors-pair-17"
+    },
+    "gometry.union_all/scaling=overlay-input-count/input-geometries=256": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-52-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-52-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-52-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-52-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-52-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-52-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-52-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all/scaling=overlay-input-count/input-geometries=256",
+      "pair_id": "competitors-pair-52"
+    },
+    "gometry.union_all/scaling=overlay-input-count/input-geometries=64": {
+      "blocks": [
+        {
+          "block_id": "competitors-pair-51-block-01-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-02-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-51-block-03-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-04-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-51-block-05-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-06-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-51-block-07-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-08-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-51-block-09-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-10-ba",
+          "lead": "ba"
+        },
+        {
+          "block_id": "competitors-pair-51-block-11-ab",
+          "lead": "ab"
+        },
+        {
+          "block_id": "competitors-pair-51-block-12-ba",
+          "lead": "ba"
+        }
+      ],
+      "competitor": "shapely.union_all/scaling=overlay-input-count/input-geometries=64",
+      "pair_id": "competitors-pair-51"
+    }
+  },
+  "policy": {
+    "confidence": 0.95,
+    "error_probabilities": [
+      0.03125,
+      0.01875
+    ],
+    "looks": [
+      6,
+      12
+    ],
+    "precision_ratio": 1.1
+  },
+  "schema_version": 1
+}

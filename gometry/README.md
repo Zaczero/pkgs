@@ -86,10 +86,9 @@ print(type(mask).__name__, mask.tolist())  # ndarray [True, False]
 
 ## Benchmarks
 
-Median times for 1,000 bounding-box candidate queries (Gometry / Shapely): 85.19
-/ 69.18 µs at 1,000 indexed polygons, 95.47 / 98.05 µs at 5,000 (inconclusive),
-and 95.22 / 111.39 µs at 10,000. Measured in six paired process blocks on an
-AMD Ryzen 9 5950X with CPython 3.15.0.
+For 1,000 bounding-box candidate queries, gometry is slower than Shapely with
+1,000 indexed polygons and faster with 10,000; the comparison at 5,000 is
+inconclusive.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-spatial-index-cardinality-dark.svg">
