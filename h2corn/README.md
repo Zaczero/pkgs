@@ -89,8 +89,7 @@ Moving an existing deployment? See the
 
 **9.7–30× the throughput** of the compared Uvicorn, Hypercorn, and Gunicorn
 configurations in the one-worker HTTP/1.1 GET benchmark. All serve the same
-Starlette application with standard asyncio; Uvicorn and Gunicorn use their
-pure-Python HTTP/1.1 parsers.
+Starlette application using standard asyncio.
 
 <picture>
   <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="bench/results/plots/benchmark_http_1_get_1_worker-loopback-narrow-dark.svg">

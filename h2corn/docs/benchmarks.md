@@ -1,157 +1,80 @@
 ---
-description: How h2corn cross-server benchmarks are measured and what workloads they cover.
+description: h2corn throughput, latency, and memory compared with other Python server stacks.
 hide:
   - navigation
 ---
 
 # Benchmarks
 
-**h2corn delivered 9.7–30× the throughput of the compared servers** in the one-worker HTTP/1.1 GET
-comparison, using standard asyncio and pure-Python parsers for Uvicorn and Gunicorn.
-
-These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
-same Starlette application over loopback.
-Results cover throughput, latency, and memory. h2corn uses its profile-guided
-`release-dist` wheel. Headline ratios are medians of paired trial ratios.
+**h2corn delivered 9.7–30× the throughput of the compared servers** in the
+one-worker HTTP/1.1 GET comparison. All serve the same Starlette application
+over loopback; h2corn uses its profile-guided `release-dist` wheel.
 
 **Connect on h2corn delivered 1.5–3.0× the throughput of grpc.aio** in six
-of eight gRPC workloads. Upload and download comparisons remained inconclusive
-after twelve paired blocks.
-These results compare Connect hosted by h2corn and Hypercorn, grpc.aio, and a
-selected grpclib subset, using common Python handlers and protobuf codecs over
-direct loopback HTTP/2. They measure these complete stacks, not the host
-server in isolation.
+of eight gRPC workloads. Upload and download remained inconclusive. These
+compare complete stacks using common Python handlers and protobuf codecs,
+not the host server in isolation.
 
 --8<-- "bench/results/_generated/benchmark-results.md"
 
-## HTTP methodology {#measurement-method}
+## Reading the results {#measurement-method}
 
-Connections go directly to each server, without a reverse proxy or TLS.
-Each trial checks status, content type, response body, and worker readiness
-before and after load, including a second HTTP/1.1 request on a persistent
-connection when the server keeps it open. Failed response checks produce a
-`failed` cell, with diagnostics retained in the raw evidence.
-All servers use standard asyncio. HTTP/1.1 uses Uvicorn's h11 parser and
-Gunicorn's Python HTTP parser. HTTP/2 uses cleartext prior knowledge.
-Requested limits and effective peer SETTINGS are retained in the raw evidence.
-TCP listeners are shared by inheritance and have `TCP_NODELAY` enabled for
-every server. Hypercorn's per-connection request-retirement limit is raised
-beyond the trial workload.
+Rates are medians; dots show individual trials and whiskers their observed
+range. Headline ratios use paired trials. Each scenario uses six fresh-start
+blocks, extended to twelve for gRPC upload and download, with server order
+rotated on an unpinned, shared host. Paired comparisons report 95% intervals;
+host drift still limits their interpretation. “Inconclusive” does not mean equal.
 
-Each time-window scenario is calibrated in one verified serving process per
-server, using successive 0.5, 1, 2, and 4 second windows. Calibration stops
-when adjacent rates agree within 10%; every server in that scenario then uses
-the longest selected duration. A scenario that remains unstable at four
-seconds is marked calibration-limited, and its comparisons are inconclusive.
-WebSocket scenarios start at one second, the shortest run k6 accepts. A window
-that ends before any request completes moves calibration to the next window;
-a server fails calibration only if the four-second window completes nothing.
+Latency curves show medians of per-trial percentiles under closed-loop load,
+not production arrival-rate guarantees. Memory is sampled peak proportional
+set size (PSS) across the supervisor and workers; short peaks can be missed.
+Responses are checked, and failed or unstable comparisons are identified
+in the detailed results.
 
-Calibration follows the correctness probe without a separate load warmup.
-Measured trials use a 0.25-second warmup (one second for WebSocket) and six or
-twelve fresh-start paired blocks per scenario. Server order is rotated and CPU
-placement is unpinned.
+HTTP tests use standard asyncio, direct connections without TLS or a proxy,
+Uvicorn's h11 parser, and Gunicorn's Python HTTP parser. HTTP/2 uses cleartext
+prior knowledge.
 
-Comparisons use paired production-block throughput ratios and
-distribution-free order-statistic intervals for the common median of
-independent paired-block ratios. Six blocks use the minimum and maximum ratios;
-twelve use the second-smallest and second-largest. Error allocations of 1/32
-and 3/160 bound the probability that either interval misses the common median
-by 5%, per comparison. The inference requires independent blocks with a common
-median; restarting processes does not remove persistent host drift.
+The [benchmark source](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench),
+[raw results](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw),
+and [trial evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/evidence)
+provide exact commands, calibration rules, configurations, and observations.
 
-A scenario stops at six blocks when every surviving comparison resolves a
-direction or has an upper/lower interval ratio at most 1.10. The latter is a
-reporting-precision goal, not equivalence. Unresolved scenarios may extend to
-twelve if the collection budget permits. Otherwise they finish as budget-limited, with
-inconclusive comparisons. At twelve, remaining uncertainty stays inconclusive.
-An interval containing one never establishes a tie. The HTTP figures use six
-blocks; gRPC upload and download use twelve, and the other gRPC rows use six.
+### HTTP workload notes {#workloads-and-limits}
 
-Each comparison records its method and achieved coverage. Rates are medians; dots show
-individual blocks and whiskers show their observed range. Latencies are
-medians of per-trial percentiles. Clients use closed-loop load.
+- Multiplexed HTTP/2 uses ten concurrent streams on one connection.
+- Static files are 128 KiB Starlette `FileResponse` objects, using
+  [`http.response.pathsend`](asgi.md#sending-a-file) where supported.
+  Gunicorn 26.2.0 fails the reused-connection check, so its file results are
+  reported as failed.
+- Streaming downloads yield eight 16 KiB chunks. Streaming POSTs upload 1 KiB
+  and receive three chunks with 20 ms of application delay.
+- WebSocket trials connect, echo one text message, and disconnect: they measure
+  session turnover, not sustained message throughput.
 
-Peak proportional set size (PSS) is the maximum sampled simultaneous sum
-across unique supervisor and worker processes in measured blocks. PSS shares
-mapped-page cost between processes. Sampling includes initial and final readings plus
-one-second readings during measured load; short peaks can fall between samples.
+## gRPC setup {#grpc-measurement-method}
 
-The [raw scenario records](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw)
-and [per-trial evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/evidence)
-retain the commands, observations, and identities behind the figures.
+Each stack uses one serving process, standard asyncio, one HTTP/2 client
+connection, and no message compression. TLS rows terminate TLS 1.3 directly
+at each server. The same Go client drives every stack.
 
-### Workloads {#workloads-and-limits}
+Unary and Upload report complete RPCs/second; Download and Duplex report
+response messages/second. Latency percentiles use histogram upper bounds with
+one-percent buckets.
 
-- HTTP/1.1 and HTTP/2 GETs, including a multiplexed HTTP/2 case with ten
-  concurrent streams on one connection.
-- GET over Unix domain sockets.
-- A 128 KiB Starlette `FileResponse`, using the ASGI
-  [`http.response.pathsend`](asgi.md#sending-a-file) extension where supported.
-  Gunicorn 26.2.0 stops answering file responses on a reused HTTP/1.1
-  connection: its first connection serves two and each later connection one.
-  Its static-file cells are therefore reported as failed.
-- Streaming downloads that yield eight 16 KiB chunks.
-- POSTs that upload 1 KiB, then receive three response chunks with 20 ms of
-  application delay.
-- HTTP/1.1 WebSocket sessions that connect, echo one text message, and
-  disconnect. They measure session turnover, not sustained message throughput.
+### gRPC workload notes {#grpc-workloads}
 
-## gRPC methodology {#grpc-measurement-method}
+U0, U32, and U64K are unary calls with 0-byte, 32-byte, and 64 KiB payloads.
+Upload and Download transfer sixteen 64 KiB messages per RPC; Duplex exchanges
+64 messages of 256 bytes in each direction. TLS rows repeat U32 and Duplex.
+The grpclib comparison covers U32, U64K, and Duplex.
 
-The gRPC family uses the same adaptive calibration, bounded production
-looks, and paired-median intervals described in the HTTP methodology. Its 27
-supported cells use one serving process and one standard
-asyncio loop per server, with one HTTP/2 client connection per trial. Five
-grpclib cells are intentionally not selected. Compression is identity. TLS
-rows connect directly to each server; all measured TLS connections negotiated
-TLS 1.3 with TLS_AES_128_GCM_SHA256.
+### Known gRPC failures {#grpc-qualification}
 
-Calibration reuses the verified serving process across windows. Each
-production block starts a fresh process, opens a new client connection, and
-completes a control RPC before measurement. Closed-loop load verifies every
-response, message count, and final gRPC status; invalid or unfinished work is
-retained as a failure rather than credited as throughput.
+All 27 selected positive-work cases passed qualification. Cancellation passed
+for h2corn and grpc.aio but failed to settle within its bound on Hypercorn.
+Released Connect failed the reserved-flag, truncated-suffix, and expired-deadline
+checks. Throughput results do not imply that these error paths conform.
 
-The Go client uses a common `GOMAXPROCS=16` for every stack and row.
-
-Bars show median rates; dots and whiskers show individual production blocks
-and their observed range. These intervals describe this host and workload,
-not all deployments. Latency curves show medians of per-trial histogram
-percentile upper bounds, with one-percent buckets. PSS is the maximum
-one-second sampled simultaneous process sum and can miss shorter peaks.
-
-Unary and Upload rows report complete RPCs per second. Download and Duplex
-report verified response messages per second. Their detailed tables also
-report complete RPC rates and the actual median completed RPC count per
-trial, which can be fractional when an even number of blocks is used.
-
-### gRPC workloads {#grpc-workloads}
-
-| Row | Payload bytes per message | Messages per RPC | Concurrent RPCs |
-| --- | --- | --- | --- |
-| U0 | 0 | 1 | 1 |
-| U32 | 32 | 1 | 64 |
-| U64K | 65,536 | 1 | 16 |
-| Upload | 65,536 | 16 requests, 1 response | 8 |
-| Download | 65,536 | 1 request, 16 responses | 8 |
-| Duplex | 256 | 64 requests and responses | 8 |
-| TLS-U32 | 32 | 1 | 64 |
-| TLS-Duplex | 256 | 64 requests and responses | 8 |
-
-Upload's payload size applies to request chunks; its response acknowledges
-the received chunk and byte counts. Download's payload size applies to
-response messages.
-
-### gRPC qualification and evidence {#grpc-qualification}
-
-All 27 selected positive-work cells passed qualification. The separate
-suspended-handler cancellation check passed for h2corn and grpc.aio but
-failed to settle within its bound on Hypercorn. Released Connect also
-failed the reserved-flag, truncated-suffix, and expired-deadline witnesses
-shown in the qualification table. Positive-work throughput does not imply
-that these error paths conform.
-
-The [gRPC records, plots, and evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/grpc)
-retain artifact identities, trial commands, verified counts, process
-measurements, and qualification outcomes.
+The [gRPC records and evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/grpc)
+retain exact configurations, verified counts, and failure details.

@@ -231,11 +231,6 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
         ) as handle:
             handle.write(plot_path.read_bytes())
 
-    servers = tuple(
-        dict.fromkeys(
-            name for record in records.values() for name in record['requested_servers']
-        )
-    )
     environment = next(iter(records.values()))
     sections: list[str] = [
         f'## {title}Environment\n\n',
@@ -247,43 +242,7 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
         )
         + '.\n\n',
     ]
-    if qualification := environment.get('qualification'):
-        sections.extend((
-            f'## {title}Qualification\n\n',
-            '| Scope | Case | Stack | Outcome |\n',
-            '| --- | --- | --- | --- |\n',
-        ))
-        sections.extend(
-            f'| Host | {cell["case"]} | {cell["server"]} | {cell["status"]} |\n'
-            for cell in qualification['cells']
-            if cell['case'] == 'Cancellation'
-        )
-        sections.extend(
-            f'| Application | {cell["case"]} | Connect | {cell["status"]} |\n'
-            for cell in qualification['framework']
-        )
-        sections.append('\n')
-    sections.extend((
-        f'## {title}Results\n\n',
-        '| Workload | ' + ' | '.join(servers) + ' |\n',
-        '| --- | ' + ' | '.join('---' for _ in servers) + ' |\n',
-    ))
-    for path, record in records.items():
-        states = [
-            'timed'
-            if name in record.get('aggregate', {})
-            else 'failed'
-            if name in record.get('failures', {})
-            else 'not selected'
-            if name in record.get('not_selected', {})
-            else 'unsupported'
-            for name in servers
-        ]
-        sections.append(
-            f'| [{record["scenario"]}](#result-{path.stem}) '
-            '| ' + ' | '.join(states) + ' |\n',
-        )
-    sections.append('\n')
+    sections.append(f'## {title}Results\n\n')
     for raw_path, record in records.items():
         scenario = record.get('scenario', raw_path.stem)
         sections.append(f'<a id="result-{raw_path.stem}"></a>\n\n')
