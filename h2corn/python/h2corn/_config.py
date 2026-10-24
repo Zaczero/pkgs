@@ -485,11 +485,15 @@ class RequestPolicy:
 
     A matching rule takes precedence over the native gRPC streaming defaults
     and replaces all three global values; it does not inherit individual values
-    from `Config`. Native gRPC admission is controlled by `Config.grpc`; when
+    from `Config`.
+
+    Native gRPC admission is controlled by `Config.grpc`; when
     disabled, native gRPC requests receive HTTP 415 even if a path rule matches.
     When enabled, unmatched native gRPC requests have no request-body size
     limit or idle timeout, while the HTTP/2 response-stall timeout still
-    follows `Config`. Native gRPC is recognized from case-insensitive
+    follows `Config`.
+
+    Native gRPC is recognized from case-insensitive
     `application/grpc` and `application/grpc+<valid non-empty subtype>` media
     types; parameters are ignored. Connect and gRPC-Web media types remain
     ordinary HTTP.
@@ -1090,7 +1094,15 @@ class Config:
     )
     loop_threads: int = _option(
         default=1,
-        doc="Number of Python event-loop threads per worker, balanced round-robin. Requires a free-threaded (no-GIL) interpreter; ignored on GIL builds. Secondary loops require the built-in asyncio or uvloop factory (the default 'auto' resolves to one); multiple loop threads are rejected when embedded in a custom loop. Each loop runs its own ASGI lifespan and state. Composes with workers — keep workers x loop_threads at or below the core count.",
+        doc=(
+            'Number of Python event-loop threads per worker, balanced round-robin. '
+            'Requires a free-threaded (no-GIL) interpreter; ignored on GIL builds.\n\n'
+            'Secondary loops require the built-in asyncio or uvloop factory '
+            "(the default 'auto' resolves to one); multiple loop threads are "
+            'rejected when embedded in a custom loop.\n\n'
+            'Each loop runs its own ASGI lifespan and state. Composes with workers '
+            '— keep workers x loop_threads at or below the core count.'
+        ),
         env_parse=int,
         converter=_bounded_int('loop_threads', minimum=1),
         cli_type=int,
@@ -1135,12 +1147,13 @@ class Config:
             'Whether to admit native gRPC requests identified by the '
             'case-insensitive `application/grpc` and '
             '`application/grpc+<valid non-empty subtype>` Content-Type media '
-            'types. Parameters are ignored. When disabled, native gRPC requests receive HTTP 415 '
+            'types. Parameters are ignored.\n\n'
+            'When disabled, native gRPC requests receive HTTP 415 '
             'before ASGI dispatch, even if a request policy matches. When '
             'enabled, unmatched native gRPC requests have no request-body size '
             'cap or idle timeout; a matching request policy can set explicit '
             'limits. HTTP/2 response-stall and write timeouts remain active. '
-            'Connect and gRPC-Web media types remain ordinary HTTP. '
+            'Connect and gRPC-Web media types remain ordinary HTTP.\n\n'
             'This controls protocol admission, not network authentication; use '
             'a dedicated RPC listener and network policy when gRPC should be '
             'isolated.'
@@ -1269,23 +1282,26 @@ class Config:
         doc=(
             'Ordered path-specific body and HTTP/2 response-stall policies. '
             'Each rule supplies all three values; the first exact path or '
-            'terminal `/*` subtree match replaces the global values. Native '
+            'terminal `/*` subtree match replaces the global values.\n\n'
+            '**Protocol behavior.** Native '
             'gRPC admission is controlled by `grpc`; when disabled, gRPC '
             'requests receive HTTP 415 even if a path rule matches. When '
             'enabled, unmatched native gRPC requests have no request-body size '
             'limit or idle timeout. Connect and gRPC-Web requests use the '
             'global values unless a path rule matches. '
             'The global HTTP/2 response-stall timeout still applies to RPC '
-            'responses. Paths are raw ASCII '
+            'responses.\n\n'
+            '**Path matching.** Paths are raw ASCII '
             'URI paths without query or fragment text and match case-sensitively '
             'before the query, without percent-decoding or `root_path` changes. '
             '`/*` matches every normal HTTP path. Rules apply to HTTP/1 and '
-            'HTTP/2; WebSockets keep their dedicated policy. Use `0` to disable '
-            'an individual limit or timer. `H2CORN_REQUEST_POLICIES` accepts a '
-            'TOML array of inline tables; repeat `--request-policy` with one '
-            'TOML inline table per rule. Python construction uses a tuple of '
-            '[`RequestPolicy`][h2corn.RequestPolicy] records. Explicit CLI rules '
-            'replace the inherited table as a whole. Config validation rejects '
+            'HTTP/2; WebSockets keep their dedicated policy.\n\n'
+            '**Input forms:**\n\n'
+            '- Environment: `H2CORN_REQUEST_POLICIES` accepts a TOML array of inline tables.\n'
+            '- CLI: repeat `--request-policy` with one TOML inline table per rule. '
+            'Explicit CLI rules replace the inherited table as a whole.\n'
+            '- Python: pass a tuple of [`RequestPolicy`][h2corn.RequestPolicy] records.\n\n'
+            'Use `0` to disable an individual limit or timer. Config validation rejects '
             'timeout values outside the runtime monotonic-clock range.'
         ),
         env_parse=_parse_request_policies_toml,

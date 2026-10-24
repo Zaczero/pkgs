@@ -102,10 +102,14 @@ key may stay `root:root` mode `0600`.
 
 The supervisor reads the certificate chain, private key, and client CA bundle
 once at startup. It does not watch PEM paths, and `SIGHUP` only reloads the
-application. Rotate a direct-TLS certificate by writing complete files beside
+application.
+
+Rotate a direct-TLS certificate by writing complete files beside
 the old ones, setting ownership and permissions, atomically renaming them,
 running `h2corn` [`--check-config`](../configuration.md#command-check_config) with the same TLS options, and restarting the
-supervisor. The preflight catches parse and permission errors; a full restart
+supervisor.
+
+The preflight catches parse and permission errors; a full restart
 follows service-manager stop/start behavior and may have downtime. A rolling
 application reload preserves the old worker until its replacement is ready.
 
