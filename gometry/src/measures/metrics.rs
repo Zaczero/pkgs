@@ -332,10 +332,14 @@ fn snap_output(
 /// open segment, whose segment distance is at or below ``tolerance``, and
 /// whose distance from both endpoints is greater than ``tolerance`` is
 /// inserted at its reference X/Y. Insertions follow segment order; equal
-/// projections are ordered by reference X/Y. Snapped source vertices retain
+/// projections are ordered by reference X/Y.
+///
+/// Snapped source vertices retain
 /// their own Z/M. Inserted geographic vertices keep the reference X/Y and use
 /// the source edge's ellipsoidal arclength at the exact projection parameter;
-/// Cartesian vertices interpolate along the source segment. Consecutive line
+/// Cartesian vertices interpolate along the source segment.
+///
+/// Consecutive line
 /// coordinates with identical X/Y are emitted once,
 /// keeping the first. If that leaves only one coordinate, the snapped start
 /// and end are retained as two endpoints, which may share X/Y. Closed rings

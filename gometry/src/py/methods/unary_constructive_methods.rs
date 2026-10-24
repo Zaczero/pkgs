@@ -393,11 +393,13 @@ method_doc! {
 The returned Circle retains its center and radius independently of polygon
 resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
 ``circle.to_polygon(quadrant_segments=16)`` for a contained polygonal realization.
+
 Planar/projected input certifies the global inradius gap against ``tolerance``;
 the radius is the downward-rounded clearance at the retained representable center.
 Geographic metric input solves in one retained local projection: the guarantee
 applies there, rather than to the ellipsoid or restored source-coordinate polygon.
 The center is returned in the source CRS and retains the source coordinate epoch.
+
 Empty input has an empty center and NaN radius. A nonempty polygon with no
 filled interior has its stored-bounds midpoint and radius zero.
 
@@ -476,9 +478,12 @@ ellipsoidal geodesic and half its inverse distance; a single site has radius zer
 This numerical solution remains available across global extents. Its polygon
 uses the geographic Point.buffer local-projection approximation and may raise
 CRSError when that realization exceeds the projection's accuracy domain.
+
 Other geographic input uses one retained local-projection disk, an approximation
 rather than an ellipsoidal optimum. Source-chart edges may be refined before
-the projected support calculation. Geographic radii are in meters; centers and
+the projected support calculation.
+
+Geographic radii are in meters; centers and
 polygons are in the source CRS.
 The center retains the source coordinate epoch. A zero-radius center selected
 from an input site preserves the first source point's ordinates and spelling;
@@ -933,24 +938,33 @@ Groups
     (@pre) => {
         r"Random points on the geometry. The sample space is its highest
 dimension: area weighted for areal input, length
-weighted for lineal input, and equal weight across point atoms. Geographic
+weighted for lineal input, and equal weight across point atoms.
+
+Geographic
 lines follow each retained longitude branch, while geographic areas are split
 into seam- and pole-aware chart parts before sampling. Geographic defaults are
 uniform in ellipsoid surface area and arclength on the straight source-chart
 edges, not in a local projection or along geodesic replacement edges.
+
 ``unit='planar'`` instead uses native chart measure; for example, a
 degree-based 170° to -170° line follows its retained +20° path, contributing
 20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
-chart area, not the complementary raw-coordinate span. Each logical
+chart area, not the complementary raw-coordinate span.
+
+Each logical
 member contributes separately, so overlapping members retain their sampling
 multiplicity. A zero-area polygon falls back to its linework, and zero-length
-linework falls back to vertices, like centroid. An integer ``seed`` reproduces
+linework falls back to vertices, like centroid.
+
+An integer ``seed`` reproduces
 the same points for the same input and measure. Array rows draw distinct streams derived
 from ``seed`` and the row index, and a scalar geometry IS row 0 — so
-        ``arr.sample_points(n, seed=s)[0]`` and
-        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
-        sample and yields no points. Results retain the input CRS and coordinate
-        epoch. Sampled points are new XY locations, so they have no source Z/M.
+``arr.sample_points(n, seed=s)[0]`` and
+``arr[0].sample_points(n, seed=s)`` agree.
+
+An empty geometry has nothing to sample and yields no points. Results retain
+the input CRS and coordinate epoch. Sampled points are new XY locations, so
+they have no source Z/M.
 
 Parameters
 ----------"
@@ -1017,12 +1031,16 @@ geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
 come back as multiple parts
 whose edges follow the seam — each side keeping its own seam sign — so the
 result remains a coordinate-planar longitude/latitude chart for topology.
+
 Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
 follow ellipsoidal arclength along the retained source edge. An authored
 full-period edge is retained with quarter witnesses before its longitudes are
 canonicalized. The two seam aliases and a displacement of multiple periods do
-not imply a full-period edge. When a seam split needs polar closure, it follows
+not imply a full-period edge.
+
+When a seam split needs polar closure, it follows
 the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+
 Geometries that do not cross are returned unchanged. A split
 ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
 ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
@@ -1114,7 +1132,9 @@ method_doc! {
 sites and a supplied clip polygon use a CRS-native chart for seam crossings;
 publication retains chart cuts and polar-cap edge roles without a preliminary
 ``split_antimeridian``. The construction is planar in longitude/latitude
-coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+coordinates, not a geodesic or spherical Voronoi diagram.
+
+Collinear vertices
 divide the clip region into strips at their
 perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
 padded and envelope frames of a lone vertex, or the envelope of a horizontal
@@ -1206,16 +1226,20 @@ max_area : float, optional
     Positive finite maximum triangle area in coordinate space. Geographic
     CRSs use squared native angular units, projected CRSs use squared native
     linear units, and CRS-free inputs use squared raw coordinate units. Valid
-    with ``method='constrained'``. Setting either option enables
+    with ``method='constrained'``.
+
+    Setting either option enables
     refinement;
     without either option, duplicate XY sites use their first source
     occurrence and triangle corners preserve the selected source ordinates.
     Refinement inserts Steiner vertices and therefore returns uniform XY.
+
     Refinement processes the worst triangle first: angle violations by
     circumradius-to-shortest-edge ratio, then by area when ``max_area`` is
     also set; triangles meeting the angle target follow in descending area.
     Equal priorities use sorted numeric XY corners. Refinement is independent
     of insertion order and input ring rotation or reversal.
+
     Each boundary Steiner vertex is the nearest binary64 coordinate pair to
     its exact position on the source edge, so the triangles cover the source
     polygon up to that rounding.
@@ -1268,15 +1292,21 @@ max_area : float or sequence of float, optional
     Maximum triangle area in coordinate space; each value must be positive
     and finite. Geographic CRSs use squared native angular units, projected
     CRSs use squared native linear units, and CRS-free inputs use squared raw
-    coordinate units. Valid only with ``method='constrained'``. Setting
+    coordinate units. Valid only with ``method='constrained'``.
+
+    Setting
     either option enables refinement;
-    inserted Steiner vertices return uniform XY. Scalar and array rows use
+    inserted Steiner vertices return uniform XY.
+
+    Scalar and array rows use
     quality-first refinement: angle violations by circumradius-to-shortest-edge
     ratio, then area when both options are set; triangles meeting the angle
     target follow in descending area. Equal priorities use sorted numeric XY
     corners. Refinement is independent of insertion order and input ring
     rotation or reversal. Scalar and array rows use
-    the same first-occurrence source-site and ordinate policy. Each boundary
+    the same first-occurrence source-site and ordinate policy.
+
+    Each boundary
     Steiner vertex is the nearest binary64 coordinate pair to its exact
     position on the source edge, so the triangles cover the source polygon
     up to that rounding.

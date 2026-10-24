@@ -184,9 +184,13 @@ method_doc! {
 Geographic validity reads exact quotient topology, so period aliases and seam
 cuts do not depend on their stored longitude spelling. An out-of-domain
 latitude is reported as ``latitude_out_of_range``; geographic operations that
-require coordinate admission still raise. For quotient-topology issues, the
+require coordinate admission still raise.
+
+For quotient-topology issues, the
 location is a canonical coordinate of the issue's contact set, chosen
-deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+deterministically by minimum latitude then longitude.
+
+Projected and CRS-free geometry uses ordinary
 planar OGC validity. A nonempty LineString with fewer than two distinct XY
 positions is invalid and reports ``line_collapsed``.";
     scalar: r"

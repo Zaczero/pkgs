@@ -103,10 +103,14 @@ print(panels([
     the input and the result, as
     [`estimate_local_crs()`][gometry.Geometry.estimate_local_crs] does, reprojects, runs the
     planar constructive kernel at the requested meter distance, then
-    reprojects back to the source CRS. It is intended for city-scale features
+    reprojects back to the source CRS.
+
+    It is intended for city-scale features
     and modest radii; distortion grows when the
     geometry spans many UTM zones, sits far from the anchor, or the buffer
-    radius is large relative to the feature. For continent-scale work or a
+    radius is large relative to the feature.
+
+    For continent-scale work or a
     strict accuracy budget, reproject to an appropriate projected CRS first
     (or tile the operation) instead of relying on the automatic local frame. If a
     specific accuracy budget matters, choose and validate the projected frame
@@ -187,7 +191,9 @@ collection) and the other has higher dimension, `intersection` returns the
 covered points and `difference(points, other)` returns the uncovered points.
 `union` and `symmetric_difference` add only uncovered points to the
 higher-dimensional geometry; `difference(geometry, points)` leaves a
-higher-dimensional geometry unchanged. The retained higher-dimensional part
+higher-dimensional geometry unchanged.
+
+The retained higher-dimensional part
 preserves its stored line and polygon coordinates, including ring start,
 orientation, collinear vertices, and Z/M values. Ordinates on absorbed points do
 not rewrite it. Call [`normalize()`][gometry.Geometry.normalize]
@@ -229,10 +235,13 @@ coordinate, or rounding would make an edge touch a vertex it must miss. The
 operation searches the nearest coordinate and its adjacent binary64
 values for the constructed vertices in conflict. It publishes only an
 assignment that preserves incidence, cyclic order, and faces, and verifies
-that assignment before returning it. Each moved coordinate stays within 1.5
+that assignment before returning it.
+
+Each moved coordinate stays within 1.5
 times the larger spacing to its neighboring binary64 values on that axis. A
 stored vertex, or an exactly representable constructed coordinate, never
 moves. Geographic overlay output does not move a vertex onto a seam or pole.
+
 Z/M values are evaluated at the exact constructed vertex. On geographic source
 edges, eligible ordinates follow ellipsoidal arclength along the retained
 straight chart edge, including across later cuts; see
@@ -242,13 +251,17 @@ If no topology-preserving assignment fits the overlay's coordinate choices,
 it raises `OverflowError` with
 `code == 'output_unrepresentable'` instead of returning geometry with changed
 topology. This does not rule out every possible binary64 drawing of the
-mathematical result. For a geographic overlay, exhausting the
+mathematical result.
+
+For a geographic overlay, exhausting the
 bounded work budget raises [`ResourceLimitError`][gometry.ResourceLimitError] with
 `code == 'work_limit'` and `operation` naming the call. No geometry is returned;
 the error means the operation stopped before it could finish its checked
 construction, not that no valid output exists.
 Simplify the operands or [`snap`][gometry.snap] near-coincident borders to a
-common tolerance first. Overlaying a published result again is a new operation
+common tolerance first.
+
+Overlaying a published result again is a new operation
 on its rounded coordinates and is not promised to reproduce the first result.
 
 ### Dissolving many geometries: `union_all`
@@ -410,9 +423,13 @@ print(before_after(with_vertices(noisy), with_vertices(snapped),
 [`segmentize`][gometry.Geometry.segmentize] has two explicit constraints. Pass a
 positional `max_length` when every output segment must be no longer than that
 distance, or pass `fraction=` to split each input edge into equal-arclength
-pieces (`fraction=0.25` produces four). By default, geographic vertices stay on
+pieces (`fraction=0.25` produces four).
+
+By default, geographic vertices stay on
 the stored straight longitude/latitude edges, preserving their shape. See
-[CRS, units & measurement](crs.md) for the `max_length` metric. The `max_length`
+[CRS, units & measurement](crs.md) for the `max_length` metric.
+
+The `max_length`
 path guarantees that no output segment exceeds the requested distance and
 preserves every original vertex. When binary64 rounding would otherwise break
 that guarantee, it emits additional vertices so the result still satisfies the
@@ -574,9 +591,12 @@ shortest-geodesic midpoint and half the ellipsoidal distance. These numerical
 results remain available even for globally separated points. Their
 `.to_polygon()` uses the existing geographic point-buffer approximation and can
 raise `CRSError` when no sufficiently accurate local projection fits the
-realization. A single site has radius zero and realizes as its center `Point`.
+realization.
+
+A single site has radius zero and realizes as its center `Point`.
 Selected zero-radius source points retain their Z/M and stored coordinate
 spelling; computed centers and positive-radius polygons are XY.
+
 For these ellipsoidal disks, `.unit` is `"meters"` and `.working_crs` is `None`
 because no Cartesian frame defines the solution. Other geographic bounding
 circles use a retained local-projection support disk.
@@ -595,30 +615,41 @@ Indexing, iteration, and geometry projections retain that distinction.
 [`triangulate`][gometry.Geometry.triangulate] makes the triangulation choice
 explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
-keeps input edges as constraints. [`voronoi`][gometry.Geometry.voronoi] returns
+keeps input edges as constraints.
+
+[`voronoi`][gometry.Geometry.voronoi] returns
 clipped cells by default; pass `output='edges'` for the internal Voronoi edges,
-which exclude the clip polygon's exterior boundary. Geographic Voronoi charts
+which exclude the clip polygon's exterior boundary.
+
+Geographic Voronoi charts
 both its sites and supplied clip polygon in the CRS-native longitude frame;
 Delaunay charts its input sites. Seam-crossing inputs do not require a
 preliminary [`split_antimeridian`][gometry.Geometry.split_antimeridian].
-Voronoi results preserve chart cuts and polar-cap boundaries. Delaunay is
+Voronoi results preserve chart cuts and polar-cap boundaries.
+
+Delaunay is
 a planar point-site triangulation, not a spherical mesh; use constrained
 triangulation when a polygon boundary or selected polar cap must remain part of
 the result. Geographic constrained triangulation carries seam constraints and
 closes only the pole selected by the polygon. All three remain planar
 longitude/latitude constructions, not geodesic operations.
 `method='earcut'` follows the polygon's stored XY ring, so split a geographic
-polygon first when it crosses the seam or encloses a pole. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
+polygon first when it crosses the seam or encloses a pole.
+
+[`Geometry.polygonize()`][gometry.Geometry.polygonize]
 polygonizes that geometry's own linework, automatically splitting crossings
 and overlaps. [`polygonize_all`][gometry.polygonize_all] pools all supplied
 geometries' linework into one graph before polygonization, so a ring can close
 across inputs; its default form returns one [`GeometryArray`][gometry.GeometryArray]
-of polygons. The row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
+of polygons.
+
+The row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
 returns [`Groups`][gometry.Groups], one polygon array per input row; missing
 rows yield `None` groups and present empty rows yield empty groups.
 [`GeometryArray.build_area()`][gometry.GeometryArray.build_area] likewise
 builds one areal result per input row without pooling linework between rows;
 missing rows remain missing.
+
 For BuildArea fill across several geometry values, combine the linework into
 one [`GeometryCollection`][gometry.GeometryCollection] before calling
 `build_area()`; `polygonize_all` is the pooled polygonizer and returns polygon

@@ -42,8 +42,10 @@ at : float or sequence of float, optional
     One location or many explicit distance-basis locations. Under
     ``basis='m'``, pass one stored M value for a scalar result or a sequence of
     stored M values for one line; an array accepts one M value per row.
+
     For an array, numeric ``Groups`` supplies a separate sequence of explicit
     locations per route, for either basis. Group count must match array length.
+
     Empty station groups produce empty point groups; missing routes or station
     groups produce missing groups. Empty routes yield one empty point per station.
     A plain numeric sequence stays flat, including an empty sequence; only
@@ -206,7 +208,9 @@ multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
 uses ellipsoidal arclength along straight source-chart edges on geographic CRSs
 and planar distance otherwise; ``unit='planar'`` always uses Cartesian
 coordinate space. Coordinates are never moved. Geographic length, perimeter,
-and LRS use the same chart-edge model with CRS-aware units. Z is preserved;
+and LRS use the same chart-edge model with CRS-aware units.
+
+Z is preserved;
 existing M requires ``overwrite=True``. Every stored vertex is retained; a
 zero-length X/Y segment has equal M values at both ends. Empty linework returns
 the same empty with an M axis.

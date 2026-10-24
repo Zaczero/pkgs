@@ -458,8 +458,12 @@ edge on the ellipsoid. ``path='geodesic'`` or ``path='rhumb'`` instead places
 new vertices along the shortest ellipsoidal route or the constant-bearing route
 between each pair of endpoints. The result remains a polyline with straight
 longitude/latitude edges, so its length approaches the selected route length as
-the pieces get shorter. Projected geometries use native linear units, and
-CRS-free geometries use raw coordinate units. Every original vertex survives
+the pieces get shorter.
+
+Projected geometries use native linear units, and
+CRS-free geometries use raw coordinate units.
+
+Every original vertex survives
 unchanged — this operation only inserts. Consecutive equal-X/Y vertices with
 distinct active Z/M ordinates remain in their stored order; their zero-length
 segments are not subdivided.

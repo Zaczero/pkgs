@@ -43,7 +43,9 @@ use crate::py::vectors::Groups;
 /// column.
 ///
 /// Index with an integer for the typed cell object or `None` for a missing row;
-/// slice or mask for a new `CellArray`. Build from an iterable containing
+/// slice or mask for a new `CellArray`.
+///
+/// Build from an iterable containing
 /// typed cell objects and `None`; the grid is inferred from the first concrete
 /// cell. Raw ids for H3, S2, and Tile and tokens for any grid may accompany a
 /// typed cell of the same grid. Geohash cells use tokens, not integer ids. For

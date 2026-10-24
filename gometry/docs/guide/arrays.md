@@ -124,7 +124,9 @@ share one row-selection rule. An integer or integer-like object implementing
 one element. A slice, one-dimensional
 integer array, integer sequence, or boolean mask selects a container of the same
 family. NumPy selectors with rank greater than one raise `TypeError` because
-these row containers have one dimension. Type checkers preserve the result when
+these row containers have one dimension.
+
+Type checkers preserve the result when
 an ndarray's rank is known; if its
 annotation uses a variable-length tuple of integer dimensions, the result is a
 scalar-or-container union. If NumPy types the shape as `Any`, annotate the
@@ -363,7 +365,9 @@ infers the grid type: `gm.CellArray([cell_a, cell_b])`. Raw integer IDs, string 
 NumPy arrays, buffers, and empty inputs have no reliable type evidence, so make the grid
 explicit with `type=gm.H3Cell` (or the corresponding S2/geohash/tile class). Mixed
 cell classes and an explicit `type` that disagrees with a cell object are errors.
+
 Construction preserves input order and duplicates; `CellArray` is a sequence, not a set.
+
 Bulk cell factories preserve missing input rows as `None`. Missing rows are
 included by slicing, reversing, and fancy indexing; `None in cells`,
 `cells.count(None)`, and `cells.index(None)` follow normal Python sequence
@@ -390,11 +394,15 @@ H3 topological vertices and directed edges are not cells: [`H3Cell.vertices`][go
 [`H3VertexArray`][gometry.H3VertexArray] and [`H3Cell.edges`][gometry.H3Cell.edges] returns [`H3EdgeArray`][gometry.H3EdgeArray]. Those arrays keep the same
 sequence and uint64 id-column ergonomics but only expose valid topology operations such
 as [`vertices.point`][gometry.H3VertexArray.point], [`edges.origin`][gometry.H3EdgeArray.origin], [`edges.destination`][gometry.H3EdgeArray.destination], [`edges.line`][gometry.H3EdgeArray.line], and
-[`edges.length`][gometry.H3EdgeArray.length]. Bulk point→cell construction uses the prefixed plural builders —
+[`edges.length`][gometry.H3EdgeArray.length].
+
+Bulk point→cell construction uses the prefixed plural builders —
 [`gm.h3_cells`][gometry.h3_cells], [`gm.s2_cells`][gometry.s2_cells], and the geohash/tile twins. Grid cover
 factories return `CellArray` for one geometry and [`Groups`][gometry.Groups] of `CellArray` for geometry
 arrays; hierarchy transforms on that set may return `CellArray` when the engine can keep
-a packed id column. For exact membership, keep the source geometry separately and use
+a packed id column.
+
+For exact membership, keep the source geometry separately and use
 free predicates such as [`gm.covers`][gometry.covers] or [`gm.contains`][gometry.contains].
 
 ## Groups (ragged results) {#groups-ragged-csr}
@@ -441,13 +449,16 @@ print("offsets:", groups.offsets.tolist())
 can share backing, while gathered values may be materialized. A slice whose
 first row is source row zero can share its offsets; a slice starting later
 returns rebased offsets. `Groups.counts` is materialized from adjacent offsets.
+
 Index hits use read-only `int64` value and offset arrays; geometry-valued ragged
 results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
+
 [`GeometryArray.parts`][gometry.GeometryArray.parts] and other ragged array
 operations return one group per source row. A missing source row is `None`;
 a present empty geometry is an empty group. `Groups.is_missing` identifies the
 missing rows while `offsets` continues to map each source row to its flat
 payload. `Groups.to_list()` preserves missing rows as `None`.
+
 Coordinate extraction is the flat numeric exception: `geom.coords` exposes one
 vertex stream; convert it with NumPy for a matrix and read `view.row_index` when
 source-row indexes are needed.

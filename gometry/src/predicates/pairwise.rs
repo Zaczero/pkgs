@@ -42,20 +42,25 @@ fn shortest_line_array_output(
 /// ``nearest_points`` as a connecting ``LineString`` — degenerate when the
 /// geometries touch. Planar and projected metrics accept any geometry pair, not
 /// only points, and the witness is the closest approach, so an endpoint may
-/// land on an edge interior rather than a vertex. On a geographic CRS,
+/// land on an edge interior rather than a vertex.
+///
+/// On a geographic CRS,
 /// point-to-point separation uses ellipsoidal geodesics. Shape edges are
 /// straight in the CRS-native periodic longitude/latitude chart: admitted
 /// ordinary edges use their shortest periodic step, while an explicitly stored
 /// full-period circle edge retains its full turn. See the [CRS guide's
 /// polar-ring and full-turn-edge rules](../../guide/crs.md#polar-rings-and-full-turn-edges).
 /// Filled polygon interiors participate.
+///
 /// The returned line follows the chart-edge model. With the CRS-aware
 /// geographic metric, its ellipsoidal length is no shorter than the witness
 /// separation in exact geometry, subject to binary64 rounding. If
 /// ``unit='planar'`` overrides the metric, measure the line with the same
 /// ``unit`` when comparing lengths. Publication may add vertices to preserve
 /// the computed chart edge; do not assume the line always stores exactly two
-/// coordinates. An empty operand yields
+/// coordinates.
+///
+/// An empty operand yields
 /// ``LINESTRING EMPTY`` (the output-type sentinel, like
 /// ``distance``'s ``inf``). Output ordinates are the operands' common axes (an
 /// XYZM line versus an XY point gives an XY line). See ``nearest_points`` for
@@ -486,9 +491,12 @@ pub(crate) fn frechet_distance(
 /// longitude/latitude chart, using short-way longitude across the antimeridian;
 /// filled polygon interiors participate. Planar and projected metrics accept
 /// any geometry pair, not only points (the witness on a polygon/line may be an
-/// edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
+/// edge-interior point). The connecting line is ``shortest_line``.
+///
+/// An empty operand yields
 /// ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
 /// common axes so it matches ``shortest_line``'s endpoints exactly.
+///
 /// Equal-distance witnesses prefer an interior projection over a point or
 /// endpoint, then source order. Geographic metrics apply this order only to
 /// equal evaluated backend distances; analytic branches retain their available

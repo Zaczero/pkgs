@@ -344,6 +344,7 @@ impl PyGeometry {
     /// is simple exactly when it is ``is_valid`` — so holes outside the
     /// shell, nested holes, or a disconnected interior make it not simple
     /// even with no ring self-crossing. Collections are never simple.
+    ///
     /// Geographic simplicity uses the CRS longitude quotient, so periodic
     /// aliases and seam cuts do not depend on their stored spelling. Geographic
     /// coordinate-admission failures still raise; projected and CRS-free
@@ -362,6 +363,7 @@ impl PyGeometry {
     /// out-of-domain latitude returns ``False`` and is reported by ``validate``;
     /// geographic operations that require coordinate admission still raise.
     /// Projected and CRS-free geometry uses ordinary planar OGC validity.
+    ///
     /// A nonempty LineString needs at least two distinct XY positions;
     /// consecutive repeats remain valid when another position is present.
     /// ``True`` exactly when `validate` finds no issue; call

@@ -485,21 +485,27 @@ print('samples:', [point.to_wkt() for point in samples])
 With CRS-aware units (the default on a geographic CRS), linework edges are
 straight in the CRS's longitude/latitude chart and LRS measures the ellipsoidal
 arclength of the retained chart-straight source edge, rather than geodesic
-distance between each pair of vertices. `line_locate` minimizes against those
+distance between each pair of vertices.
+
+`line_locate` minimizes against those
 same chart edges. When backend distances compare equal, it returns the interior
 projection before a point or endpoint, then uses route order. This ranks
 available measurements, not an exact geodesic continuum minimum. Repeated
 support and self-crossings can have several stations at one location, so
 locate/interpolate is not a unique inverse there.
+
 An independently interpolated point has canonical longitude, while a
 `line_substring` cut stays in the retained source edge's lifted chart.
+
 `unit='planar'` instead uses Cartesian distance in the stored coordinate space.
 Planar distance-basis locate uses the exactly nearest segment; exact ties prefer
 an interior projection over an endpoint, then the first segment in route order,
 matching planar proximity.
 
 Zero-length X/Y segments consume no distance, but their stored vertices remain
-on the route. Interpolation at an interior prefix shared by a zero-length run
+on the route.
+
+Interpolation at an interior prefix shared by a zero-length run
 selects its first stored vertex; normalized `0.0` and `1.0` select the first
 and last stored vertices, including when the whole route has zero length.
 `line_substring` includes active-distinct stored vertices in its inclusive
@@ -513,22 +519,31 @@ the next part's nearest point.
 On the distance basis, `line_interpolate` accepts a sequence of locations or
 `count=` for evenly spaced samples. With `basis='m'`, a scalar line accepts one
 stored measure for a `Point` or a measure sequence for a `GeometryArray[Point]`;
-an array receiver accepts one measure per line row. An array receiver returns
+an array receiver accepts one measure per line row.
+
+An array receiver returns
 row-aligned points for one location per row or [`Groups`][gometry.Groups] when
-each row has its own sample count or explicit station sequence. Construct
+each row has its own sample count or explicit station sequence.
+
+Construct
 numeric groups from a flat NumPy payload and CSR offsets, for example
 `gm.Groups(np.array([0, 5, 10, 2, 8]), [0, 3, 5])`, and pass them as `at`;
 each route uses its corresponding stations, under either distance or M basis.
+
 Plain numeric `at` sequences remain flat, including `[]`; use `Groups` to request
 grouped output even for zero routes.
 An empty station row produces an empty group, a missing station row or route
 produces a missing group, and an empty route produces one empty point per
-station. `normalized` and `unit` belong only to the
+station.
+
+`normalized` and `unit` belong only to the
 distance basis, so a measured route never silently mixes two coordinate
 systems. On the distance basis, `unit` selects the route metric even when
 `normalized=True`:
 fractions are measured along that selected route, so changing `unit` can change
-the resulting position. `count=` also uses fractions of the selected metric and
+the resulting position.
+
+`count=` also uses fractions of the selected metric and
 accepts `unit=`, but rejects `normalized=True` because the count already defines
 fractional sample positions.
 
@@ -547,12 +562,16 @@ Within each edge, M varies linearly with arclength. For increasing endpoint
 measures, a requested `m` selects the arclength fraction
 `(m - m0) / (m1 - m0)`; equal endpoint measures remain constant.
 Z is carried at that same fraction, and `line_locate(..., basis='m')`
-converts the nearest point's arclength fraction back to M. On a geographic
+converts the nearest point's arclength fraction back to M.
+
+On a geographic
 CRS this is ellipsoidal arclength of the retained chart-straight source edge;
 the fraction is generally different from its longitude/latitude parameter.
 For example, a WGS 84 meridian from latitude −10° to 10° with endpoint
 measures 100 and 300 places M=150 at latitude approximately
-−5.00037949475414°, not −5°. Distance-basis interpolation and substring use
+−5.00037949475414°, not −5°.
+
+Distance-basis interpolation and substring use
 the same Z/M carry rule; `interpolate_m` assigns vertex measures by cumulative
 edge arclength without moving X/Y/Z.
 
@@ -562,7 +581,9 @@ Empty linework has no positions, so every
 form answers it instead of raising: `line_locate` returns `nan`,
 `line_interpolate` returns `POINT EMPTY`, `line_substring` returns
 `LINESTRING EMPTY`, and `interpolate_m` returns the empty geometry with an M
-axis. A `POINT EMPTY` query locates to `nan`. Missing or non-monotonic M is
+axis. A `POINT EMPTY` query locates to `nan`.
+
+Missing or non-monotonic M is
 different: both scalar and array calls raise
 [`InvalidGeometryError`][gometry.InvalidGeometryError], because they asked for
 measures the geometry does not have. Array failures identify the original input
@@ -674,17 +695,23 @@ derivable and drop only the axis that cannot be sourced:
   that edge's original endpoints by ellipsoidal arclength of the retained
   chart-straight source edge on its CRS ellipsoid, not by its chart parameter
   or a later cut fragment. This includes vertices inserted at the antimeridian
-  for GeoJSON serialization. Source vertices retain their stored ordinate bits;
-  when sources disagree, Z and M resolve independently and only a conflicting
-  or unavailable axis is dropped. A planar `unit=` choice for a nearest witness
-  does not change how its geographic source-edge ordinates are carried. A
-  computed point with no sourceable edge has no source Z/M. Recursive
-  subdivision retains original input-edge traces through later cuts, including
-  seam vertices (±180° in EPSG:4326). On a certified zero-length source edge,
-  an interior sample retains an axis only when both endpoint values have
-  identical bits; a disagreement follows the operation's per-axis conflict
-  policy. Exact source endpoints keep their own values. A nonzero edge whose
-  measured length underflows to zero raises a metric error.
+  for GeoJSON serialization.
+
+    Source vertices retain their stored ordinate bits; when sources disagree,
+    Z and M resolve independently and only a conflicting or unavailable axis
+    is dropped. A planar `unit=` choice for a nearest witness does not change
+    how its geographic source-edge ordinates are carried.
+
+    A computed point with no sourceable edge has no source Z/M. Recursive
+    subdivision retains original input-edge traces through later cuts,
+    including seam vertices (±180° in EPSG:4326).
+
+    On a certified zero-length source edge, an interior sample retains an
+    axis only when both endpoint values have identical bits; a disagreement
+    follows the operation's per-axis conflict policy. Exact source endpoints
+    keep their own values. A nonzero edge whose measured length underflows
+    to zero raises a metric error.
+
 - A degenerate [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle]
   that follows geographic source-edge support carries resolvable Z/M by the
   same original-edge arclength rule. A computed areal rectangle is a new

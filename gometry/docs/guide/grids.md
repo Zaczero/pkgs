@@ -82,12 +82,18 @@ Every cell class shares one uniform surface — [`.token`][gometry.Cell.token], 
 [`.neighbors`][gometry.Cell.neighbors], [`.area`][gometry.Cell.area], [`.parent(...)`][gometry.Cell.parent], [`.children(...)`][gometry.Cell.children], and
 cell-hierarchy [`.contains(...)`][gometry.Cell.contains] / [`.intersects(...)`][gometry.Cell.intersects] — captured by the
 `gm.Cell` protocol, so grid-system-agnostic
-code type-checks against any of them. Each cell class is constructed directly —
+code type-checks against any of them.
+
+Each cell class is constructed directly —
 `H3Cell(value)` / `S2Cell(value)` / [`Tile(value)`][gometry.Tile] — accepting a cell object,
-a numeric id (where the system has one), or a token string. H3 topological
+a numeric id (where the system has one), or a token string.
+
+H3 topological
 vertices and directed edges are separate scalar identities ([`H3Vertex(value)`][gometry.H3Vertex],
 [`H3Edge(value)`][gometry.H3Edge]) with fixed arrays ([`H3VertexArray`][gometry.H3VertexArray], [`H3EdgeArray`][gometry.H3EdgeArray]) because
-they do not have cell hierarchy or area/polygon operations. Each system adds
+they do not have cell hierarchy or area/polygon operations.
+
+Each system adds
 its own vocabulary on top: [`H3Cell.resolution`][gometry.H3Cell.resolution],
 [`.grid_disk(k)`][gometry.H3Cell.grid_disk] / [`.grid_ring(k)`][gometry.H3Cell.grid_ring] / [`.grid_path(...)`][gometry.H3Cell.grid_path]; [`S2Cell.level`][gometry.S2Cell.level].
 Arbitrary [`CellArray`][gometry.CellArray] sets roll up and down with
@@ -327,10 +333,14 @@ All four grid factories accept a **WGS 84 lon/lat interchange domain** (and
 transform supported projected input into that domain first). The grids themselves
 are not one model: H3 is an icosahedral discrete global grid, S2 a spherical
 cube, geohash a lon/lat rectangle hierarchy, and tiles the Web Mercator XYZ
-scheme. If you hand `gm.h3_cover` / `gm.s2_cover` a geometry in a supported
+scheme.
+
+If you hand `gm.h3_cover` / `gm.s2_cover` a geometry in a supported
 projected CRS, gometry transforms it to WGS 84 lon/lat first. WGS 84 and CRS-free
 lon/lat pass through; other supported frames are reprojected before cover keys
-are generated. This normalization is a grid-factory boundary: do not pass native
+are generated.
+
+This normalization is a grid-factory boundary: do not pass native
 radian or grad values as bare WGS 84 coordinates. Attach the source CRS to a
 geometry and let the factory transform it first.
 

@@ -7,7 +7,9 @@ description: CRS declaration and transformation in gometry — units for area, l
 A coordinate reference system (CRS) says what your numbers
 *mean*: whether `(21.0, 52.0)` is "21 degrees east, 52 degrees north on the
 [WGS 84](https://epsg.org/crs_4326/WGS-84.html) ellipsoid" or "21 meters east of
-some local origin." The CRS is also gometry's metric selector: by default,
+some local origin."
+
+The CRS is also gometry's metric selector: by default,
 geographic shape area, length, and linear referencing use the ellipsoid along
 straight longitude/latitude chart edges, while point-to-point distances follow
 geodesics. `unit='planar'` explicitly selects Cartesian measurement in stored
@@ -62,10 +64,14 @@ already present.
 A geometry's *frame* is its CRS plus an optional coordinate epoch. Geographic
 measurements use ellipsoidal arclength of retained chart-straight source edges
 and ellipsoidal area bounded by those edges, while point-to-point distances use
-geodesics. Topology remains a coordinate-plane X/Y operation: in a geographic
+geodesics.
+
+Topology remains a coordinate-plane X/Y operation: in a geographic
 CRS it resolves longitude aliases, seam spellings, and pole longitudes in the
 CRS-native frame before construction. A seam split uses straight edges in an
-unwrapped longitude/latitude chart; it does not construct geodesic edges. Metric
+unwrapped longitude/latitude chart; it does not construct geodesic edges.
+
+Metric
 constructive operations use CRS-native distance inputs but can construct in a
 local projection. Coordinate edits operate on stored coordinates; planar
 constructive operations use stored coordinates or a method-specific geographic
@@ -92,14 +98,19 @@ distance is metres, but the produced outline is a local-projection approximation
   or mixing epochs on the same CRS — raises
   [`CRSMismatchError`][gometry.CRSMismatchError] up front; nothing is silently
   reinterpreted. Reproject ([`to_crs`][gometry.Geometry.to_crs]) or relabel ([`with_crs`][gometry.Geometry.with_crs], if the metadata is
-  what's wrong) first. Two labels that name the *same* frame and differ only in
-  axis order — `EPSG:4326` and `OGC:CRS84`, or a projected CRS in N/E versus E/N
-  — are accepted everywhere: predicates, measures, overlays, and equally when
-  building a [`GeometryArray`][gometry.GeometryArray], concatenating, filling missing rows, or inserting
-  into a [`SpatialIndex`][gometry.SpatialIndex]. The result keeps the left operand's (or the receiver's,
-  or the first item's) label. What is *not* accepted is a genuine difference:
-  `EPSG:2180` and `EPSG:2177` share datum, ellipsoid and units yet place the
-  same coordinate about 3000 km apart, so they still raise.
+  what's wrong) first.
+
+    Two labels that name the *same* frame and differ only in axis order —
+    `EPSG:4326` and `OGC:CRS84`, or a projected CRS in N/E versus E/N — are
+    accepted everywhere: predicates, measures, overlays, and equally when
+    building a [`GeometryArray`][gometry.GeometryArray], concatenating, filling
+    missing rows, or inserting into a [`SpatialIndex`][gometry.SpatialIndex].
+    The result keeps the left operand's (or the receiver's, or the first item's) label.
+
+    What is *not* accepted is a genuine difference: `EPSG:2180` and
+    `EPSG:2177` share datum, ellipsoid and units yet place the same coordinate
+    about 3000 km apart, so they still raise.
+
 - **Derived geometries inherit the input frame** — every constructive result
   ([`buffer`][gometry.Geometry.buffer], [`centroid`][gometry.Geometry.centroid], [`simplify`][gometry.Geometry.simplify], overlays, …) carries the CRS *and* epoch of
   its inputs, so metadata never silently drops out of a pipeline.
@@ -268,7 +279,9 @@ metrics and topology.
 
 Geographic topology distinguishes an explicit one-period edge between ordinary
 longitude spellings from the two spellings of the seam. For example, `0 → 360`
-degrees is a full circle, while `-180 → 180` is the same seam point. A ring's
+degrees is a full circle, while `-180 → 180` is the same seam point.
+
+A ring's
 signed chart turn determines whether its unmarked boundary winds once around a
 pole. A once-winding ring is unambiguous when its latitude range stays in one
 closed hemisphere and extends beyond the equator: touching the equator is
@@ -354,17 +367,23 @@ print(f"city area: {city.area/1e6:.0f} km²")
 
 For geographic shape area and length, each stored edge is straight in the
 longitude/latitude chart. A constant-latitude edge therefore follows its
-parallel, rather than the shortest geodesic between its endpoints. WKT records
+parallel, rather than the shortest geodesic between its endpoints.
+
+WKT records
 vertices without specifying an edge interpolation rule. GeoJSON follows RFC
 7946's straight Cartesian interpolation in its WGS 84 longitude/latitude
 coordinate system; it has no geodesic or rhumb-line edge option. RFC 7946
 [§3.1.1](https://www.rfc-editor.org/rfc/rfc7946.html#section-3.1.1) defines
 linearly interpolated positions and applies the same rule to the optional third
-ordinate (height). Gometry instead inserts Z using the ellipsoidal
+ordinate (height).
+
+Gometry instead inserts Z using the ellipsoidal
 arclength fraction of the retained chart-straight source edge. Therefore a Z
 inserted before GeoJSON export can differ from one inserted later by a consumer
 interpolating the exported segment, even when both insertions use the same
-longitude/latitude position. To represent a geodesic, rhumb line, or path
+longitude/latitude position.
+
+To represent a geodesic, rhumb line, or path
 defined in another projected frame, **sample that path into intermediate
 vertices before writing GeoJSON**. The serialized segments remain straight
 between those samples. Ordinary densify interpolates the stored chart edge and
@@ -377,12 +396,16 @@ For geographic shape pairs, [`distance`][gometry.distance],
 [`shortest_line`][gometry.shortest_line] measure support along straight paths in
 the longitude/latitude chart. `Polygon` and `MultiPolygon` operands use their
 filled interiors: an interior point or overlapping pair has zero distance,
-while disjoint shapes are measured boundary-to-boundary. `shortest_line`
+while disjoint shapes are measured boundary-to-boundary.
+
+`shortest_line`
 connects the nearest witnesses as a chart-edge line. With the geographic
 ellipsoidal metric, its chart-edge length is no shorter than their geodesic
 separation, subject to binary64 rounding; the result may include extra vertices
 to preserve the chart edge. Use the same `unit=` when comparing its length with
-`distance`. Continuous geographic
+`distance`.
+
+Continuous geographic
 `hausdorff_distance` ranges over point and linework supports only; filled
 polygon operands raise [`CRSError`][gometry.CRSError]. Use
 [`polygon.boundary()`][gometry.Geometry.boundary] when the question is
@@ -394,9 +417,12 @@ floating-point approximation. By default its relative error is at most
 `1e-9`. Pass a positive, finite scalar `max_error` to replace that default
 with an absolute bound in the final result units. A projected result uses
 native linear units by default or metres with `unit='meters'`, so an absolute bound
-follows the same choice. The geographic path uses a fixed radius-scaled
+follows the same choice.
+
+The geographic path uses a fixed radius-scaled
 algorithmic gap rather than a per-call certificate; supplying `max_error` to it
 raises instead of implying one.
+
 Neither error contract blurs set equality:
 planar Hausdorff returns zero exactly for equal closed supports, while a
 positive distance smaller than the effective error bound remains positive. If
@@ -614,6 +640,7 @@ For an empty operand, `distance`, `hausdorff_distance` and
 `frechet_distance` return `inf`, while `nearest_points` and `shortest_line`
 return the output-type empty (`(POINT EMPTY, POINT EMPTY)` and
 `LINESTRING EMPTY`), so a single empty row never aborts a vectorized call.
+
 Planar Hausdorff polygon operands are filled closed regions: interiors belong
 to the set and holes do not. A mixed-dimensional collection uses the union of
 its members; a zero-area polygon contributes only its closed ring boundary.
@@ -672,6 +699,7 @@ or array whose full extent must fit. It prefers a datum-aware
 [UTM](https://en.wikipedia.org/wiki/Universal_Transverse_Mercator_coordinate_system)
 or UPS authority CRS, then a local conformal CRS, and accepts a candidate only
 when estimated linear scale error stays within 0.1% over the extent.
+
 Geographic constructive operations keep this frame-admission check and may
 refine source-chart edges to control the projected input chord deviation before
 their planar kernels run. That input-refinement budget is separate from the
@@ -769,25 +797,32 @@ print(panels(
 
 On a geographic CRS, the physical seam is represented by the CRS-native periodic
 longitude axis. It is ±180° for EPSG:4326, ±200 grads for EPSG:4807, and ±π for
-a radian frame with Greenwich as its prime meridian. gometry's **topology** ops —
+a radian frame with Greenwich as its prime meridian.
+
+gometry's **topology** ops —
 predicates, relate, overlay,
 centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds,
 distance/[`dwithin`][gometry.dwithin], the
 spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — interpret
-coordinates using the CRS's periodic longitude and pole identities. Operations that
+coordinates using the CRS's periodic longitude and pole identities.
+
+Operations that
 construct split output insert affine X/Y crossings into straight edges in the
 unwrapped longitude/latitude chart; see
 [Z/M under operations](geometry.md#zm-under-operations) for how inserted
 ordinates follow their source edges. Authored full-period edges keep their path
-through quarter witnesses. Geographic shape measures
+through quarter witnesses.
+
+Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding.
 Point-to-point [`distance`][gometry.distance] continues to use the shortest
 geodesic across the seam; shape distance measures chart-edge supports.
 Geographic area measures the polygon's lon/lat chart interior, including
 regions larger than half the ellipsoid, independent of ring order.
+
 At the seam, a collinear shared span with polygon interiors on opposite sides
 is a chart cut regardless of whether members use east/east, west/west, or
 east/west seam spellings; it does not count for validity or simplicity, while
@@ -933,6 +968,7 @@ Dynamic reference frames (ITRF, the WGS 84 realizations, current national datums
 keep moving with the tectonic plates, so a coordinate is only fully defined
 together with the **decimal year** it was observed — its *coordinate epoch*.
 gometry carries that as first-class metadata, [`geom.epoch`][gometry.Geometry.epoch], distinct from Z and M.
+
 A coordinate epoch dates a CRS realization, so it is **only meaningful with a CRS**:
 gometry enforces `epoch ⟹ crs` at every entry point.
 Geometry frames admit epochs for CRSs based on a dynamic datum or the WGS 84

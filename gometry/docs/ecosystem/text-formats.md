@@ -158,7 +158,9 @@ does not reproject it. A CRS-free geometry is an explicit assumption that its
 coordinates already have OGC:CRS84 semantics: output validates longitude in
 `[-180, 180]` and latitude in `[-90, 90]`, and splits antimeridian-crossing
 geometry according to RFC 7946. CRS-free projected or other planar coordinates
-must be transformed or written with another format. On read, the default
+must be transformed or written with another format.
+
+On read, the default
 `crs='OGC:CRS84'` records these semantics; pass `crs=None` only when you
 intentionally want to discard the CRS metadata.
 
@@ -240,7 +242,9 @@ exposing `__geo_interface__`. GeoJSON is WGS 84 lon/lat by specification
 ([RFC 7946](https://www.rfc-editor.org/info/rfc7946) / OGC:CRS84), so decoded
 geometry declares `OGC:CRS84` by default (matching GeoParquet); pass
 `crs=4326` for EPSG:4326, `crs=None` to opt out, or `crs=4979` for a
-WGS84-family 3D frame. A `FeatureCollection` is a feature *set*: by default it
+WGS84-family 3D frame.
+
+A `FeatureCollection` is a feature *set*: by default it
 decodes to a [`GeometryArray`][gometry.GeometryArray], one geometry per feature.
 Set `features=True` on the same reader to return [`Features`][gometry.Features]
 with the aligned properties and IDs.
@@ -300,7 +304,9 @@ epoch, and M constraints as
 `properties` (and optional `ids`). Its geometry members are JSON-ready. The mapping is
 suitable for `json.dumps` **only when every property value is JSON-serializable**
 (strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
-Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
+Python objects in `properties` raise `TypeError` at dump time.
+
+`to_geojson` honors
 the WGS84 contract on the way out too: reproject with [`to_crs(4326)`][gometry.Geometry.to_crs] first if your
 geometry is in another frame.
 For CRS-free geometry, the same contract assumes that the stored coordinates
@@ -318,10 +324,14 @@ Pickle applies to durable public value and container types: [`Geometry`][gometry
 [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
 [`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
 [`S2Cell`][gometry.S2Cell].
-Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
+Their CRS, epoch, and Z/M metadata remain intact through pickle.
+
+The same value
 protocol supports [`multiprocessing`](https://docs.python.org/3/library/multiprocessing.html),
 [`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
-storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepcopy`](https://docs.python.org/3/library/copy.html#copy.deepcopy) use it as well. Spatial indexes and prepared
+storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepcopy`](https://docs.python.org/3/library/copy.html#copy.deepcopy) use it as well.
+
+Spatial indexes and prepared
 geometries serialize durable input state and rebuild derived acceleration
 structures when loaded. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
 view, preserving its selected layout and flattened row indexes; iterator types

@@ -453,11 +453,13 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 /// `diagnostics=True` returns those same polygons together with cut edges,
 /// dangles, and invalid rings grouped by source row. Missing source rows are
 /// `None` groups; present rows with no diagnostic linework are empty groups.
+///
 /// For geographic input, polygon faces and diagnostic lines use the same
 /// classification, so an edge of a returned face is not also reported as an
 /// invalid ring. A closed polar-cap ring with no leftover linework returns a
 /// polygon with empty cut-edge, dangle, and invalid-ring groups. Planar inputs
 /// retain their planar diagnostic classification.
+///
 /// `GeometryArray.polygonize()` instead preserves one result group per input
 /// row, so use this function when different rows' edges should close together.
 ///

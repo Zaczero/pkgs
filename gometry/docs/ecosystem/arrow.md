@@ -98,7 +98,9 @@ require explicit conversion before import.
 ### Spatial reads
 
 The 1.1 writer includes a per-row bbox covering; native geometry uses Parquet's
-row-group geospatial statistics. Read a spatial subset with
+row-group geospatial statistics.
+
+Read a spatial subset with
 `gm.from_geoparquet(path, bbox=(xmin, ymin, xmax, ymax))`. The rectangle uses the
 selected column's CRS, includes boundary contact, and can cross the geographic
 longitude seam. Coverings or statistics prune candidate reads, then exact
@@ -191,11 +193,14 @@ Homogeneous **XY / XYZ / XYM / XYZM** point, multipoint, linestring,
 multilinestring, polygon, and multipolygon arrays without explicit empty
 multipart members use the native GeoArrow coordinate layout with separated
 `x`/`y`/`z`/`m` children. Gometry exports may
-share immutable gometry-owned buffers with a consumer. Import does not retain
+share immutable gometry-owned buffers with a consumer.
+
+Import does not retain
 shared views of foreign memory. PyArrow arrays, chunked arrays, tables, record
 batches, and record batch readers are copied through PyArrow.
 Other capsule providers use the dependency-free Arrow C interface; their
 selected geometry buffers are copied before validation and decoding.
+
 Mixed geometry types, mixed coordinate axes, and geometry
 collections fall back to GeoArrow **WKB** encoding to retain their structure. The
 PyArrow export path also uses WKB when explicit multipart member slots cannot

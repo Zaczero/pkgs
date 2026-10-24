@@ -68,19 +68,24 @@ print("source-row index:", row_index.tolist())
 Per-axis columns can borrow storage when the carried layout permits it;
 `np.asarray(coords, dtype=np.float64)` materializes a dense
 `(N, dims)` matrix and always copies, with `NaN` for absent Z/M.
+
 [`coords.to_dict()`][gometry.Coordinates.to_dict] returns
 read-only ndarray columns such as `{'x': ndarray, 'y': ndarray}` for direct
 Pandas/Polars construction. It omits Z/M when the view does not carry those
 axes; mixed views include their union and use `NaN` where a row lacks an axis.
+
 Use `coords.select('XY')`, `coords.select('XYZ')`, `coords.select('XYM')`, or
 `coords.select('XYZM')` to choose a fixed coordinate-view layout. The selected
 layout governs iteration, nested output, column access, ndarray/dict exports,
 and equality without changing the geometry. Excluded Z/M columns contain `NaN`.
 Nested output preserves missing geometry rows as `None`.
+
 For a flattened `GeometryArray.coords` view, use
 [`.row_index`][gometry.Coordinates.row_index] to map each coordinate back to
 its source geometry row. The matrix includes every carried axis; use
-`coords.select('XY')` before conversion when a fixed layout is needed. For a
+`coords.select('XY')` before conversion when a fixed layout is needed.
+
+For a
 foreign iterable, first use `gm.GeometryArray(values).coords`; this admits the
 same row formats as the array constructor.
 
@@ -92,8 +97,11 @@ one rank-2 coordinate matrix. Its shape is `(N, 2)` for XY, `(N, 3)` for XYZ
 or XYM, or `(N, 4)` for XYZM, and `N` must match the receiver's coordinate
 count (or the flattened present-row count for an array). The matrix width must
 match the receiver's axes. A rank other than 2, an unsupported width, or a
-row-count mismatch raises an error. The matrix is converted to native float64
+row-count mismatch raises an error.
+
+The matrix is converted to native float64
 values, so this is a validated replacement input rather than a zero-copy view.
+
 Keyword columns can instead replace selected ordinates; their scalar-broadcast,
 flattened ordering, omission, and dimension-removal rules are described in
 [Z and M under operations](../guide/geometry.md#zm-under-operations).

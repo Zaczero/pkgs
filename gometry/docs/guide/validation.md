@@ -89,19 +89,26 @@ are all `None`; they carry detail when topology validation finds a problem.
 Geographic validity recognizes longitude aliases, the antimeridian, and poles,
 including pole-enclosing shells and holes. Shared seam edges with polygon
 interiors on opposite sides are chart cuts; overlapping interiors on the same
-side remain invalid. Coordinate-domain checks also apply:
+side remain invalid.
+
+Coordinate-domain checks also apply:
 an out-of-range latitude reports `latitude_out_of_range`, and a once-winding
 unmarked ring whose latitude range does not identify one pole reports
 `ambiguous_full_turn_ring`. `is_valid` returns `False` for either issue without
 raising, and `GeometryArray.is_valid` writes `False` for the affected row.
-`validate` reports the issue without raising. Geographic operations still raise
+`validate` reports the issue without raising.
+
+Geographic operations still raise
 `InvalidGeometryError` for unsupported coordinates. `repair` raises the same
 exception when it cannot reconstruct an out-of-domain coordinate.
+
 For quotient-topology issues, the witness is a canonical coordinate of the
 issue's contact set, chosen deterministically by minimum latitude then longitude.
+
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
 planar coordinates. Attaching a geographic frame supplies its periodic longitude
 seam and pole, while a planar frame has no identified seam.
+
 `is_valid`, [`is_simple`][gometry.Geometry.is_simple], [`is_ring`][gometry.Geometry.is_ring], `validate`, [`require`][gometry.require], and
 [`self_intersections`][gometry.Geometry.self_intersections] all use the same
 geographic frame. `repair` validates the quotient result before returning it,
@@ -212,7 +219,9 @@ particular dimensionality.
 `gm.require` is the single boundary API: it accepts an
 existing geometry or an external geometry-like object, returns the geometry
 with its coordinate values unchanged on success, and raises the matching
-specific exception otherwise. With `crs=`, it stamps CRS-free coordinates,
+specific exception otherwise.
+
+With `crs=`, it stamps CRS-free coordinates,
 relabels an operationally equivalent existing CRS to the requested spelling,
 and rejects a conflicting frame with [`CRSMismatchError`][gometry.CRSMismatchError].
 When `crs` is omitted or `None`, an existing CRS is preserved. Coordinate

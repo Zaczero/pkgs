@@ -1319,6 +1319,7 @@ class Geometry:
         is simple exactly when it is ``is_valid`` — so holes outside the
         shell, nested holes, or a disconnected interior make it not simple
         even with no ring self-crossing. Collections are never simple.
+
         Geographic simplicity uses the CRS longitude quotient, so periodic
         aliases and seam cuts do not depend on their stored spelling. Geographic
         coordinate-admission failures still raise; projected and CRS-free
@@ -1336,6 +1337,7 @@ class Geometry:
         out-of-domain latitude returns ``False`` and is reported by ``validate``;
         geographic operations that require coordinate admission still raise.
         Projected and CRS-free geometry uses ordinary planar OGC validity.
+
         A nonempty LineString needs at least two distinct XY positions;
         consecutive repeats remain valid when another position is present.
         ``True`` exactly when `validate` finds no issue; call
@@ -1882,7 +1884,9 @@ class Geometry:
         uses ellipsoidal arclength along straight source-chart edges on geographic CRSs
         and planar distance otherwise; ``unit='planar'`` always uses Cartesian
         coordinate space. Coordinates are never moved. Geographic length, perimeter,
-        and LRS use the same chart-edge model with CRS-aware units. Z is preserved;
+        and LRS use the same chart-edge model with CRS-aware units.
+
+        Z is preserved;
         existing M requires ``overwrite=True``. Every stored vertex is retained; a
         zero-length X/Y segment has equal M values at both ends. Empty linework returns
         the same empty with an M axis.
@@ -2172,16 +2176,20 @@ class Geometry:
             Positive finite maximum triangle area in coordinate space. Geographic
             CRSs use squared native angular units, projected CRSs use squared native
             linear units, and CRS-free inputs use squared raw coordinate units. Valid
-            with ``method='constrained'``. Setting either option enables
+            with ``method='constrained'``.
+
+            Setting either option enables
             refinement;
             without either option, duplicate XY sites use their first source
             occurrence and triangle corners preserve the selected source ordinates.
             Refinement inserts Steiner vertices and therefore returns uniform XY.
+
             Refinement processes the worst triangle first: angle violations by
             circumradius-to-shortest-edge ratio, then by area when ``max_area`` is
             also set; triangles meeting the angle target follow in descending area.
             Equal priorities use sorted numeric XY corners. Refinement is independent
             of insertion order and input ring rotation or reversal.
+
             Each boundary Steiner vertex is the nearest binary64 coordinate pair to
             its exact position on the source edge, so the triangles cover the source
             polygon up to that rounding.
@@ -2989,8 +2997,10 @@ class Geometry:
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
+
             For an array, numeric ``Groups`` supplies a separate sequence of explicit
             locations per route, for either basis. Group count must match array length.
+
             Empty station groups produce empty point groups; missing routes or station
             groups produce missing groups. Empty routes yield one empty point per station.
             A plain numeric sequence stays flat, including an empty sequence; only
@@ -3090,11 +3100,13 @@ class Geometry:
         The returned Circle retains its center and radius independently of polygon
         resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
         ``circle.to_polygon(quadrant_segments=16)`` for a contained polygonal realization.
+
         Planar/projected input certifies the global inradius gap against ``tolerance``;
         the radius is the downward-rounded clearance at the retained representable center.
         Geographic metric input solves in one retained local projection: the guarantee
         applies there, rather than to the ellipsoid or restored source-coordinate polygon.
         The center is returned in the source CRS and retains the source coordinate epoch.
+
         Empty input has an empty center and NaN radius. A nonempty polygon with no
         filled interior has its stored-bounds midpoint and radius zero.
 
@@ -3169,9 +3181,12 @@ class Geometry:
         This numerical solution remains available across global extents. Its polygon
         uses the geographic Point.buffer local-projection approximation and may raise
         CRSError when that realization exceeds the projection's accuracy domain.
+
         Other geographic input uses one retained local-projection disk, an approximation
         rather than an ellipsoidal optimum. Source-chart edges may be refined before
-        the projected support calculation. Geographic radii are in meters; centers and
+        the projected support calculation.
+
+        Geographic radii are in meters; centers and
         polygons are in the source CRS.
         The center retains the source coordinate epoch. A zero-radius center selected
         from an input site preserves the first source point's ordinates and spelling;
@@ -3496,8 +3511,12 @@ class Geometry:
         new vertices along the shortest ellipsoidal route or the constant-bearing route
         between each pair of endpoints. The result remains a polyline with straight
         longitude/latitude edges, so its length approaches the selected route length as
-        the pieces get shorter. Projected geometries use native linear units, and
-        CRS-free geometries use raw coordinate units. Every original vertex survives
+        the pieces get shorter.
+
+        Projected geometries use native linear units, and
+        CRS-free geometries use raw coordinate units.
+
+        Every original vertex survives
         unchanged — this operation only inserts. Consecutive equal-X/Y vertices with
         distinct active Z/M ordinates remain in their stored order; their zero-length
         segments are not subdivided.
@@ -3584,7 +3603,9 @@ class Geometry:
         sites and a supplied clip polygon use a CRS-native chart for seam crossings;
         publication retains chart cuts and polar-cap edge roles without a preliminary
         ``split_antimeridian``. The construction is planar in longitude/latitude
-        coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+        coordinates, not a geodesic or spherical Voronoi diagram.
+
+        Collinear vertices
         divide the clip region into strips at their
         perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
         padded and envelope frames of a lone vertex, or the envelope of a horizontal
@@ -3636,12 +3657,16 @@ class Geometry:
         come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
+
         Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
         follow ellipsoidal arclength along the retained source edge. An authored
         full-period edge is retained with quarter witnesses before its longitudes are
         canonicalized. The two seam aliases and a displacement of multiple periods do
-        not imply a full-period edge. When a seam split needs polar closure, it follows
+        not imply a full-period edge.
+
+        When a seam split needs polar closure, it follows
         the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+
         Geometries that do not cross are returned unchanged. A split
         ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
         ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
@@ -3795,24 +3820,33 @@ class Geometry:
     ) -> GeometryArray[Point]:
         """Random points on the geometry. The sample space is its highest
         dimension: area weighted for areal input, length
-        weighted for lineal input, and equal weight across point atoms. Geographic
+        weighted for lineal input, and equal weight across point atoms.
+
+        Geographic
         lines follow each retained longitude branch, while geographic areas are split
         into seam- and pole-aware chart parts before sampling. Geographic defaults are
         uniform in ellipsoid surface area and arclength on the straight source-chart
         edges, not in a local projection or along geodesic replacement edges.
+
         ``unit='planar'`` instead uses native chart measure; for example, a
         degree-based 170° to -170° line follows its retained +20° path, contributing
         20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
-        chart area, not the complementary raw-coordinate span. Each logical
+        chart area, not the complementary raw-coordinate span.
+
+        Each logical
         member contributes separately, so overlapping members retain their sampling
         multiplicity. A zero-area polygon falls back to its linework, and zero-length
-        linework falls back to vertices, like centroid. An integer ``seed`` reproduces
+        linework falls back to vertices, like centroid.
+
+        An integer ``seed`` reproduces
         the same points for the same input and measure. Array rows draw distinct streams derived
         from ``seed`` and the row index, and a scalar geometry IS row 0 — so
-                ``arr.sample_points(n, seed=s)[0]`` and
-                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
-                sample and yields no points. Results retain the input CRS and coordinate
-                epoch. Sampled points are new XY locations, so they have no source Z/M.
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree.
+
+        An empty geometry has nothing to sample and yields no points. Results retain
+        the input CRS and coordinate epoch. Sampled points are new XY locations, so
+        they have no source Z/M.
 
         Parameters
         ----------
@@ -4185,9 +4219,13 @@ class Geometry:
         Geographic validity reads exact quotient topology, so period aliases and seam
         cuts do not depend on their stored longitude spelling. An out-of-domain
         latitude is reported as ``latitude_out_of_range``; geographic operations that
-        require coordinate admission still raise. For quotient-topology issues, the
+        require coordinate admission still raise.
+
+        For quotient-topology issues, the
         location is a canonical coordinate of the issue's contact set, chosen
-        deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+        deterministically by minimum latitude then longitude.
+
+        Projected and CRS-free geometry uses ordinary
         planar OGC validity. A nonempty LineString with fewer than two distinct XY
         positions is invalid and reports ``line_collapsed``.
 
@@ -8346,7 +8384,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         uses ellipsoidal arclength along straight source-chart edges on geographic CRSs
         and planar distance otherwise; ``unit='planar'`` always uses Cartesian
         coordinate space. Coordinates are never moved. Geographic length, perimeter,
-        and LRS use the same chart-edge model with CRS-aware units. Z is preserved;
+        and LRS use the same chart-edge model with CRS-aware units.
+
+        Z is preserved;
         existing M requires ``overwrite=True``. Every stored vertex is retained; a
         zero-length X/Y segment has equal M values at both ends. Empty linework returns
         the same empty with an M axis.
@@ -8709,15 +8749,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Maximum triangle area in coordinate space; each value must be positive
             and finite. Geographic CRSs use squared native angular units, projected
             CRSs use squared native linear units, and CRS-free inputs use squared raw
-            coordinate units. Valid only with ``method='constrained'``. Setting
+            coordinate units. Valid only with ``method='constrained'``.
+
+            Setting
             either option enables refinement;
-            inserted Steiner vertices return uniform XY. Scalar and array rows use
+            inserted Steiner vertices return uniform XY.
+
+            Scalar and array rows use
             quality-first refinement: angle violations by circumradius-to-shortest-edge
             ratio, then area when both options are set; triangles meeting the angle
             target follow in descending area. Equal priorities use sorted numeric XY
             corners. Refinement is independent of insertion order and input ring
             rotation or reversal. Scalar and array rows use
-            the same first-occurrence source-site and ordinate policy. Each boundary
+            the same first-occurrence source-site and ordinate policy.
+
+            Each boundary
             Steiner vertex is the nearest binary64 coordinate pair to its exact
             position on the source edge, so the triangles cover the source polygon
             up to that rounding.
@@ -9785,8 +9831,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One location or many explicit distance-basis locations. Under
             ``basis='m'``, pass one stored M value for a scalar result or a sequence of
             stored M values for one line; an array accepts one M value per row.
+
             For an array, numeric ``Groups`` supplies a separate sequence of explicit
             locations per route, for either basis. Group count must match array length.
+
             Empty station groups produce empty point groups; missing routes or station
             groups produce missing groups. Empty routes yield one empty point per station.
             A plain numeric sequence stays flat, including an empty sequence; only
@@ -9895,11 +9943,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         The returned Circle retains its center and radius independently of polygon
         resolution. Read ``circle.center`` and ``circle.radius`` directly, or call
         ``circle.to_polygon(quadrant_segments=16)`` for a contained polygonal realization.
+
         Planar/projected input certifies the global inradius gap against ``tolerance``;
         the radius is the downward-rounded clearance at the retained representable center.
         Geographic metric input solves in one retained local projection: the guarantee
         applies there, rather than to the ellipsoid or restored source-coordinate polygon.
         The center is returned in the source CRS and retains the source coordinate epoch.
+
         Empty input has an empty center and NaN radius. A nonempty polygon with no
         filled interior has its stored-bounds midpoint and radius zero.
 
@@ -9982,9 +10032,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         This numerical solution remains available across global extents. Its polygon
         uses the geographic Point.buffer local-projection approximation and may raise
         CRSError when that realization exceeds the projection's accuracy domain.
+
         Other geographic input uses one retained local-projection disk, an approximation
         rather than an ellipsoidal optimum. Source-chart edges may be refined before
-        the projected support calculation. Geographic radii are in meters; centers and
+        the projected support calculation.
+
+        Geographic radii are in meters; centers and
         polygons are in the source CRS.
         The center retains the source coordinate epoch. A zero-radius center selected
         from an input site preserves the first source point's ordinates and spelling;
@@ -10339,8 +10392,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         new vertices along the shortest ellipsoidal route or the constant-bearing route
         between each pair of endpoints. The result remains a polyline with straight
         longitude/latitude edges, so its length approaches the selected route length as
-        the pieces get shorter. Projected geometries use native linear units, and
-        CRS-free geometries use raw coordinate units. Every original vertex survives
+        the pieces get shorter.
+
+        Projected geometries use native linear units, and
+        CRS-free geometries use raw coordinate units.
+
+        Every original vertex survives
         unchanged — this operation only inserts. Consecutive equal-X/Y vertices with
         distinct active Z/M ordinates remain in their stored order; their zero-length
         segments are not subdivided.
@@ -10443,7 +10500,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         sites and a supplied clip polygon use a CRS-native chart for seam crossings;
         publication retains chart cuts and polar-cap edge roles without a preliminary
         ``split_antimeridian``. The construction is planar in longitude/latitude
-        coordinates, not a geodesic or spherical Voronoi diagram. Collinear vertices
+        coordinates, not a geodesic or spherical Voronoi diagram.
+
+        Collinear vertices
         divide the clip region into strips at their
         perpendicular bisectors, and a lone vertex owns the whole clip polygon; the
         padded and envelope frames of a lone vertex, or the envelope of a horizontal
@@ -10558,12 +10617,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
         come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
+
         Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
         follow ellipsoidal arclength along the retained source edge. An authored
         full-period edge is retained with quarter witnesses before its longitudes are
         canonicalized. The two seam aliases and a displacement of multiple periods do
-        not imply a full-period edge. When a seam split needs polar closure, it follows
+        not imply a full-period edge.
+
+        When a seam split needs polar closure, it follows
         the ring's enclosed pole; a pole-free band does not acquire a polar cap.
+
         Geometries that do not cross are returned unchanged. A split
         ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
         ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
@@ -10813,24 +10876,33 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Groups[GeometryArray[Point] | None]:
         """Random points on the geometry. The sample space is its highest
         dimension: area weighted for areal input, length
-        weighted for lineal input, and equal weight across point atoms. Geographic
+        weighted for lineal input, and equal weight across point atoms.
+
+        Geographic
         lines follow each retained longitude branch, while geographic areas are split
         into seam- and pole-aware chart parts before sampling. Geographic defaults are
         uniform in ellipsoid surface area and arclength on the straight source-chart
         edges, not in a local projection or along geodesic replacement edges.
+
         ``unit='planar'`` instead uses native chart measure; for example, a
         degree-based 170° to -170° line follows its retained +20° path, contributing
         20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
-        chart area, not the complementary raw-coordinate span. Each logical
+        chart area, not the complementary raw-coordinate span.
+
+        Each logical
         member contributes separately, so overlapping members retain their sampling
         multiplicity. A zero-area polygon falls back to its linework, and zero-length
-        linework falls back to vertices, like centroid. An integer ``seed`` reproduces
+        linework falls back to vertices, like centroid.
+
+        An integer ``seed`` reproduces
         the same points for the same input and measure. Array rows draw distinct streams derived
         from ``seed`` and the row index, and a scalar geometry IS row 0 — so
-                ``arr.sample_points(n, seed=s)[0]`` and
-                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
-                sample and yields no points. Results retain the input CRS and coordinate
-                epoch. Sampled points are new XY locations, so they have no source Z/M.
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree.
+
+        An empty geometry has nothing to sample and yields no points. Results retain
+        the input CRS and coordinate epoch. Sampled points are new XY locations, so
+        they have no source Z/M.
 
         Parameters
         ----------
@@ -11403,9 +11475,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Geographic validity reads exact quotient topology, so period aliases and seam
         cuts do not depend on their stored longitude spelling. An out-of-domain
         latitude is reported as ``latitude_out_of_range``; geographic operations that
-        require coordinate admission still raise. For quotient-topology issues, the
+        require coordinate admission still raise.
+
+        For quotient-topology issues, the
         location is a canonical coordinate of the issue's contact set, chosen
-        deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+        deterministically by minimum latitude then longitude.
+
+        Projected and CRS-free geometry uses ordinary
         planar OGC validity. A nonempty LineString with fewer than two distinct XY
         positions is invalid and reports ``line_collapsed``.
 
@@ -13987,7 +14063,9 @@ class CellArray(Sequence[_CellT_co]):
     column.
 
     Index with an integer for the typed cell object or `None` for a missing row;
-    slice or mask for a new `CellArray`. Build from an iterable containing
+    slice or mask for a new `CellArray`.
+
+    Build from an iterable containing
     typed cell objects and `None`; the grid is inferred from the first concrete
     cell. Raw ids for H3, S2, and Tile and tokens for any grid may accompany a
     typed cell of the same grid. Geohash cells use tokens, not integer ids. For
@@ -17705,10 +17783,14 @@ def snap(
     open segment, whose segment distance is at or below ``tolerance``, and
     whose distance from both endpoints is greater than ``tolerance`` is
     inserted at its reference X/Y. Insertions follow segment order; equal
-    projections are ordered by reference X/Y. Snapped source vertices retain
+    projections are ordered by reference X/Y.
+
+    Snapped source vertices retain
     their own Z/M. Inserted geographic vertices keep the reference X/Y and use
     the source edge's ellipsoidal arclength at the exact projection parameter;
-    Cartesian vertices interpolate along the source segment. Consecutive line
+    Cartesian vertices interpolate along the source segment.
+
+    Consecutive line
     coordinates with identical X/Y are emitted once,
     keeping the first. If that leaves only one coordinate, the snapped start
     and end are retained as two endpoints, which may share X/Y. Closed rings
@@ -19582,9 +19664,12 @@ def nearest_points(
     longitude/latitude chart, using short-way longitude across the antimeridian;
     filled polygon interiors participate. Planar and projected metrics accept
     any geometry pair, not only points (the witness on a polygon/line may be an
-    edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
+    edge-interior point). The connecting line is ``shortest_line``.
+
+    An empty operand yields
     ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
     common axes so it matches ``shortest_line``'s endpoints exactly.
+
     Equal-distance witnesses prefer an interior projection over a point or
     endpoint, then source order. Geographic metrics apply this order only to
     equal evaluated backend distances; analytic branches retain their available
@@ -19694,20 +19779,25 @@ def shortest_line(
     ``nearest_points`` as a connecting ``LineString`` — degenerate when the
     geometries touch. Planar and projected metrics accept any geometry pair, not
     only points, and the witness is the closest approach, so an endpoint may
-    land on an edge interior rather than a vertex. On a geographic CRS,
+    land on an edge interior rather than a vertex.
+
+    On a geographic CRS,
     point-to-point separation uses ellipsoidal geodesics. Shape edges are
     straight in the CRS-native periodic longitude/latitude chart: admitted
     ordinary edges use their shortest periodic step, while an explicitly stored
     full-period circle edge retains its full turn. See the [CRS guide's
     polar-ring and full-turn-edge rules](../../guide/crs.md#polar-rings-and-full-turn-edges).
     Filled polygon interiors participate.
+
     The returned line follows the chart-edge model. With the CRS-aware
     geographic metric, its ellipsoidal length is no shorter than the witness
     separation in exact geometry, subject to binary64 rounding. If
     ``unit='planar'`` overrides the metric, measure the line with the same
     ``unit`` when comparing lengths. Publication may add vertices to preserve
     the computed chart edge; do not assume the line always stores exactly two
-    coordinates. An empty operand yields
+    coordinates.
+
+    An empty operand yields
     ``LINESTRING EMPTY`` (the output-type sentinel, like
     ``distance``'s ``inf``). Output ordinates are the operands' common axes (an
     XYZM line versus an XY point gives an XY line). See ``nearest_points`` for
@@ -20999,11 +21089,13 @@ def polygonize_all(
     `diagnostics=True` returns those same polygons together with cut edges,
     dangles, and invalid rings grouped by source row. Missing source rows are
     `None` groups; present rows with no diagnostic linework are empty groups.
+
     For geographic input, polygon faces and diagnostic lines use the same
     classification, so an edge of a returned face is not also reported as an
     invalid ring. A closed polar-cap ring with no leftover linework returns a
     polygon with empty cut-edge, dangle, and invalid-ring groups. Planar inputs
     retain their planar diagnostic classification.
+
     `GeometryArray.polygonize()` instead preserves one result group per input
     row, so use this function when different rows' edges should close together.
 

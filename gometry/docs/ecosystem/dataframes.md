@@ -27,6 +27,7 @@ uv add "gometry[geopandas]"
 `GeometryArray.to_pandas()` constructs a Series backed by gometry's concrete
 extension array. The Series and gometry array share immutable geometry storage,
 so `gm.from_pandas()` returns that native column without a WKB round trip.
+
 `from_pandas()` also imports ordinary object Series whose rows are Geometry
 objects, WKB buffers, GeoJSON mappings, or objects exposing
 `__geo_interface__`. That path constructs geometry rows rather than sharing
