@@ -33,3 +33,12 @@ accepted = [
   "MPL-2.0",
   "0BSD",
 ]
+
+# The official Rust bindings share the allocator's repository-root license.
+[mimalloc.clarify]
+license = "MIT"
+files = [{ path = "../../LICENSE", checksum = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9" }]
+
+[mimalloc-sys.clarify]
+license = "MIT"
+files = [{ path = "../../../LICENSE", checksum = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9" }]
