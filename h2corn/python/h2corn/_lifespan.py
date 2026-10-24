@@ -314,7 +314,7 @@ class PreparedApplication:
             return True
         # Publishing startup completion commits resources even when the
         # startup waiter is cancelled before it can observe the message.
-        if startup_pending and self._runner._active:
+        if startup_pending:
             try:
                 await await_with_timeout(
                     self._runner.shutdown(),

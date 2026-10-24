@@ -69,8 +69,7 @@ pgo = [
 
 dev = [
   { include-group = "freethreaded" },
-  "asgi-lifespan>=2.1.0",
-  "connectrpc>=0.12.1",
+  { include-group = "grpc-interop" },
   "markdownify>=1",
   "matplotlib>=3.10.8",
   "mkdocs-gen-files>=0.5",
