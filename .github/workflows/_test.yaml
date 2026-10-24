@@ -171,6 +171,11 @@ jobs:
         shell: bash
         run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
 
+      - name: Package before-build hook
+        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
+        shell: bash
+        run: bash "$PACKAGE/tools/ci_before_build.sh"
+
       - name: Package before-test hook
         if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
         shell: bash
@@ -355,6 +360,11 @@ jobs:
             fi
           fi
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Package before-build hook
+        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
+        shell: bash
+        run: bash "$PACKAGE/tools/ci_before_build.sh"
 
       - uses: pypa/cibuildwheel@b9e566a2b284570af229f6c2a33673410d0389a3 # v4.3.4
         if: fromJson(inputs.plan).crate != ''
