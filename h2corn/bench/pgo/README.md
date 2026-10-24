@@ -5,14 +5,17 @@ CPython 3.15, targeting the x86-64 manylinux wheel. The shared
 [distribution builder](../../../tools/pgo.md) owns builds, profile validation,
 merging, and release integration.
 
-The corpus is a chosen synthetic operation mix, not a claim about observed
-deployment traffic. It gives HTTP application traffic most of the weight while
-retaining distinct transfer, streaming, file, WebSocket, RPC, and failure paths:
+The corpus represents plaintext proxy hops, encrypted internal hops with and
+without client certificates, and direct public TLS termination. Its synthetic
+weights prioritize ordinary serving traffic while covering transfers, streaming,
+files, WebSockets, RPCs, and error paths.
 
 | Workload family | Useful-operation share |
 | --- | ---: |
-| Plain HTTP application traffic, Unix sockets, and PROXY protocol | 59.4% |
-| TLS application traffic, including mutual TLS | 16% |
+| Plaintext proxy traffic, including Unix sockets and PROXY protocol | 32% |
+| TLS proxy traffic with server authentication | 16% |
+| Mutual-TLS proxy traffic | 8% |
+| Direct TLS application traffic, including mutual TLS | 19.4% |
 | Uploads and downloads | 10% |
 | Server-sent events | 3% |
 | Files and ranges | 4% |
@@ -23,24 +26,19 @@ retaining distinct transfer, streaming, file, WebSocket, RPC, and failure paths:
 | gRPC unary, client-streaming, server-streaming, and duplex calls | 4% |
 | Application failures | 0.198% |
 
-`corpus.py` defines the leaves, denominators, and expected native subsystems.
-Requests, completed event records, and echoed WebSocket messages are the useful
-units; each RPC leaf counts completed calls while preserving its per-call
-message count. The mixture includes synchronous and asynchronous Starlette
-endpoints, asyncio and uvloop, one and multiple workers, variable headers and
-bodies, HTTP TLS 1.2 and 1.3 with verified session resumption, secure WebSocket
-handshakes, and pipe and regular-file
-logging sinks. Connections remain open until graceful drain where necessary to
-include completed native logging work.
+`corpus.py` defines the workloads, useful-work denominators, and expected native
+subsystems. Weights normalize by verified HTTP requests, event records, WebSocket
+messages, or complete RPCs with their message sequences intact. Each WebSocket
+session exchanges 64 messages; the denial share corresponds to about four
+rejected handshakes per hundred accepted sessions. These are chosen workload
+shares, not observed deployment frequencies or CPU-time percentages.
 
-The weights normalize by useful work, not elapsed training time or leaf count.
-Ordinary HTTP receives 75.4% of that mix. WebSocket message shares are split
-across WS/WSS and plain/compressed sessions; each session exchanges 64 messages.
-The denial share therefore represents roughly four rejected handshakes per
-hundred accepted sessions, rather than competing with messages as though each
-message opened a connection. Streaming RPC weights count complete calls with
-their message sequences intact. Larger calls naturally contribute more native
-execution; these shares are not percentages of CPU time.
+The application mix includes synchronous and asynchronous Starlette endpoints,
+asyncio and uvloop, one and multiple workers, and variable headers and bodies.
+Encrypted proxy hops exercise forwarded identity and PROXY protocol over TLS;
+mutual-TLS handlers verify the client certificate in the ASGI scope. HTTP TLS
+1.2 and 1.3 exercise session resumption. Access logging uses both pipes and
+regular files, with completed logging work included before graceful shutdown.
 
 All advertised ASGI extensions have explicit serving paths: file and range
 workloads exercise `pathsend` and `zerocopysend`; HTTP/1 and gRPC workloads

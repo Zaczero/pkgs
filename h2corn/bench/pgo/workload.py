@@ -153,8 +153,16 @@ async def application(scope, receive, send):
             completed += 1
     mode, number = scope['path'].strip('/').split('/')
     index = int(number)
+    headers = dict(scope['headers'])
+    if expected_client := headers.get(b'x-pgo-client'):
+        assert scope['client'][0] == expected_client.decode()
     if scope['scheme'] == 'https':
-        assert scope['extensions']['tls']['tls_version'] in {0x0303, 0x0304}
+        tls = scope['extensions']['tls']
+        assert tls['tls_version'] in {0x0303, 0x0304}
+        if expected_certificate := headers.get(b'x-pgo-client-cert'):
+            assert bool(tls['client_cert_chain']) == (
+                expected_certificate == b'required'
+            )
 
     async def identified(message):
         if message['type'] == 'http.response.start':

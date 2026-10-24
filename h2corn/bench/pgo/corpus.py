@@ -36,6 +36,7 @@ class Leaf:
     unix: bool = False
     proxy: str = ''
     mtls: bool = False
+    forwarded: bool = False
 
     @property
     def units(self) -> int:
@@ -69,20 +70,32 @@ class Leaf:
 
 # Weights describe chosen useful-operation shares, not deployment observations.
 LEAVES = (
-    Leaf('proxy-h1-text', '18', 'web', 'h1', 10000, workers=2, log='text'),
-    Leaf('proxy-h1-json', '7.2', 'web', 'h1', 4000, workers=2, log='json'),
-    Leaf('proxy-h1-off', '8.4', 'web', 'h1', 6000, workers=2),
+    Leaf(
+        'proxy-h1-text', '12', 'web', 'h1', 10000, workers=2, log='text', forwarded=True
+    ),
+    Leaf(
+        'proxy-h1-json', '4', 'web', 'h1', 4000, workers=2, log='json', forwarded=True
+    ),
+    Leaf('proxy-h1-off', '4', 'web', 'h1', 6000, workers=2, forwarded=True),
     Leaf('failure-h1', '0.098', 'failure', 'h1', 256),
     Leaf('failure-h2', '0.1', 'failure', 'h2', 256),
-    Leaf('proxy-v1', '1', 'web', 'h1', 2000, proxy='v1'),
-    Leaf('proxy-h1-uds', '1', 'web', 'h1', 2000, unix=True),
-    Leaf('proxy-h2', '22.8', 'web', 'h2', 16000, log='json', loop='uvloop'),
-    Leaf('proxy-v2', '1', 'web', 'h2', 2000, proxy='v2'),
-    Leaf('tls13-h1', '7.2', 'web', 'h1', 8000, tls='1.3', log='text'),
-    Leaf('tls13-h2', '6.2', 'web', 'h2', 8000, tls='1.3', log='text'),
+    Leaf('proxy-v1', '0.5', 'web', 'h1', 2000, proxy='v1'),
+    Leaf('proxy-h1-uds', '1', 'web', 'h1', 2000, unix=True, forwarded=True),
+    Leaf(
+        'proxy-h2', '10', 'web', 'h2', 16000, log='json', loop='uvloop', forwarded=True
+    ),
+    Leaf('proxy-v2', '0.5', 'web', 'h2', 2000, proxy='v2'),
+    Leaf('proxy-tls-h1', '6', 'web', 'h1', 4000, tls='1.3', forwarded=True),
+    Leaf('proxy-tls-h2', '9', 'web', 'h2', 8000, tls='1.3', forwarded=True, log='json'),
+    Leaf('proxy-v1-tls', '0.5', 'web', 'h1', 2000, tls='1.3', proxy='v1'),
+    Leaf('proxy-v2-tls', '0.5', 'web', 'h2', 2000, tls='1.3', proxy='v2'),
+    Leaf('proxy-mtls-h1', '3', 'web', 'h1', 2000, tls='1.3', mtls=True, forwarded=True),
+    Leaf('proxy-mtls-h2', '5', 'web', 'h2', 4000, tls='1.3', mtls=True, forwarded=True),
+    Leaf('tls13-h1', '8', 'web', 'h1', 8000, tls='1.3', log='text'),
+    Leaf('tls13-h2', '9', 'web', 'h2', 8000, tls='1.3', log='text'),
     Leaf('mtls-h2', '1', 'web', 'h2', 2000, tls='1.3', mtls=True),
-    Leaf('tls12-h1', '0.8', 'web', 'h1', 2000, tls='1.2'),
-    Leaf('tls12-h2', '0.8', 'web', 'h2', 2000, tls='1.2'),
+    Leaf('tls12-h1', '0.7', 'web', 'h1', 2000, tls='1.2'),
+    Leaf('tls12-h2', '0.7', 'web', 'h2', 2000, tls='1.2'),
     Leaf('upload-h1', '2.5', 'upload', 'h1', 256),
     Leaf('upload-h2-tls', '2.5', 'upload', 'h2', 256, tls='1.3'),
     Leaf('download-h1', '2.5', 'download', 'h1', 256),
@@ -126,6 +139,15 @@ def exchange(leaf: Leaf, index: int) -> client.Exchange:
         ('cookie', f'session={index // 128}'),
         ('accept', 'application/octet-stream'),
         ('x-forwarded-for', '192.0.2.1'),
+        (
+            'x-pgo-client',
+            '192.0.2.1'
+            if leaf.forwarded
+            else '192.0.2.10'
+            if leaf.proxy
+            else '127.0.0.1',
+        ),
+        ('x-pgo-client-cert', 'required' if leaf.mtls else 'none'),
     )
     if kind == 'early-hint':
         return client.Exchange(
@@ -366,7 +388,7 @@ def collect(root: Path, leaves: tuple[Leaf, ...] = LEAVES) -> Path:
             'log_format': 'json' if leaf.log == 'off' else leaf.log,
             'grpc': leaf.kind.startswith('grpc-'),
             'forwarded_allow_ips': ['127.0.0.1', 'unix'],
-            'proxy_headers': leaf.name.startswith('proxy-') and not leaf.proxy,
+            'proxy_headers': leaf.forwarded,
             'proxy_protocol': leaf.proxy or 'off',
         }
         if leaf.kind == 'upload' and leaf.protocol == 'h2':
