@@ -181,10 +181,18 @@ def test_estimated_polar_crs_matches_pyproj_oracle() -> None:
         assert crs.is_projected
         assert crs.name == gm.CRS(actual).info['name']
         assert [axis.abbrev.lower() for axis in crs.axis_info] == ['e', 'n']
-        expected_xy = pyproj.Transformer.from_crs(4326, crs, always_xy=True).transform(
-            lon, lat
+        transformer = pyproj.Transformer.from_crs(4326, crs, always_xy=True)
+        # Northing subtracts two meridian distances at Earth-radius scale.
+        # Budget binary64 series roundoff at that scale, including FMA's
+        # residual against the separately rounded origin, rather than at zero.
+        tolerance = 32 * math.ulp(crs.ellipsoid.semi_major_metre)
+        assert gm.crs_transform(4326, actual, lon, lat) == pytest.approx(
+            (0.0, 0.0), rel=0, abs=tolerance
         )
-        assert gm.crs_transform(4326, actual, lon, lat) == pytest.approx(expected_xy)
+        for x, y in [(lon, lat), (lon + 0.1, lat), (lon, lat * 0.999)]:
+            assert gm.crs_transform(4326, actual, x, y) == pytest.approx(
+                transformer.transform(x, y), rel=0, abs=tolerance
+            )
 
 
 def test_estimated_local_crs_is_projected_across_domains() -> None:
