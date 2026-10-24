@@ -282,7 +282,6 @@ jobs:
           enable-cache: true
           cache-suffix: ${{ inputs.package }}
           save-cache: false
-          python-version: ${{ fromJson(inputs.plan).primary-python }}
           working-directory: ${{ inputs.package }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0

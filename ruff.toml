@@ -1,8 +1,8 @@
 target-version = "py311"
 preview = true
 
-# Vendored upstream sources keep their own style and lint policy.
-extend-exclude = ["vendor"]
+# Vendored and generated sources keep their producer's style and lint policy.
+extend-exclude = ["vendor", "h2corn/examples/grpc/gen"]
 force-exclude = true
 
 [per-file-target-version]
