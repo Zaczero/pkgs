@@ -17,6 +17,7 @@ import h2.config
 import h2.connection
 import h2.events
 import h2.settings
+import h11
 
 if TYPE_CHECKING:
     import ssl
@@ -31,6 +32,8 @@ class Exchange:
     status: int = 200
     grpc: bool = False
     slow: bool = False
+    early_hints: tuple[bytes, ...] = ()
+    trailers: tuple[tuple[bytes, bytes], ...] = ()
 
 
 @dataclass
@@ -40,6 +43,7 @@ class Pending:
     headers: dict = field(default_factory=dict)
     trailers: dict = field(default_factory=dict)
     received: bytearray = field(default_factory=bytearray)
+    early_hints: list[bytes] = field(default_factory=list)
 
 
 @dataclass
@@ -233,6 +237,14 @@ def http2(
             for event in connection.receive_data(data):
                 if isinstance(event, h2.events.ResponseReceived):
                     active[event.stream_id].headers = dict(event.headers)
+                elif isinstance(event, h2.events.InformationalResponseReceived):
+                    if dict(event.headers).get(b':status') != b'103':
+                        raise RuntimeError(
+                            'H2 informational response is not an early hint'
+                        )
+                    active[event.stream_id].early_hints.extend(
+                        value for key, value in event.headers if key == b'link'
+                    )
                 elif isinstance(event, h2.events.TrailersReceived):
                     active[event.stream_id].trailers = dict(event.headers)
                 elif isinstance(event, h2.events.DataReceived):
@@ -249,6 +261,11 @@ def http2(
                     if (
                         pending.headers.get(b':status') != str(exchange.status).encode()
                         or pending.received != exchange.expected
+                        or tuple(pending.early_hints) != exchange.early_hints
+                        or any(
+                            pending.trailers.get(key) != value
+                            for key, value in exchange.trailers
+                        )
                         or (
                             exchange.grpc
                             and pending.trailers.get(b'grpc-status') != b'0'
@@ -265,6 +282,61 @@ def http2(
         if tls_state is not None:
             tls_state.session = cast('ssl.SSLSocket', sock).session
         sock.sendall(connection.data_to_send())
+    return counts
+
+
+def http1_trailers(
+    port: int | Path,
+    exchanges: list[Exchange],
+    context: ssl.SSLContext | None,
+    connections: Connections,
+    *,
+    proxy: str = '',
+    tls_state: TlsState | None = None,
+) -> dict[int, int]:
+    counts = {}
+    sock = connections.retain(connect(port, context, 'h1', proxy, tls_state))
+    connection = h11.Connection(h11.CLIENT)
+    for exchange in exchanges:
+        sock.sendall(
+            connection.send(
+                h11.Request(
+                    method='GET',
+                    target=exchange.path,
+                    headers=[('host', 'localhost'), *exchange.headers],
+                )
+            )
+        )
+        sock.sendall(connection.send(h11.EndOfMessage()))
+        response = None
+        body = bytearray()
+        while True:
+            event = connection.next_event()
+            if event is h11.NEED_DATA:
+                data = sock.recv(65536)
+                if not data:
+                    raise RuntimeError('H1 peer closed before its trailers')
+                connection.receive_data(data)
+            elif isinstance(event, h11.Response):
+                response = event
+            elif isinstance(event, h11.Data):
+                body.extend(event.data)
+            elif isinstance(event, h11.EndOfMessage):
+                if (
+                    response is None
+                    or response.status_code != exchange.status
+                    or body != exchange.expected
+                    or tuple(event.headers) != exchange.trailers
+                ):
+                    raise RuntimeError(f'H1 trailer response mismatch: {exchange.path}')
+                pid = int(dict(response.headers)[b'x-worker'])
+                counts[pid] = counts.get(pid, 0) + 1
+                connection.start_next_cycle()
+                break
+            else:
+                raise RuntimeError(f'unexpected H1 trailer response event: {event}')
+    if tls_state is not None:
+        tls_state.session = cast('ssl.SSLSocket', sock).session
     return counts
 
 

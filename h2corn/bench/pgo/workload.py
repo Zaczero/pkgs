@@ -18,6 +18,10 @@ if TYPE_CHECKING:
 
 SEED = b'h2corn-pgo-v1-training'
 FILE_SIZES = (65536, 131072, 2097152, 8388608)
+EARLY_HINTS = (
+    b'</app.css>; rel=preload; as=style',
+    b'</app.js>; rel=preload; as=script',
+)
 
 
 def payload(index: int, size: int) -> bytes:
@@ -113,6 +117,25 @@ async def application(scope, receive, send):
                 return
     if scope['type'] == 'websocket':
         await receive()
+        if scope['scheme'] == 'wss':
+            assert scope['extensions']['tls']['tls_version'] == 0x0304
+        if scope['path'].startswith('/deny/'):
+            assert 'websocket.http.response' in scope['extensions']
+            index = int(scope['path'].rsplit('/', 1)[1])
+            body = payload(index, 512)
+            await send({
+                'type': 'websocket.http.response.start',
+                'status': 403,
+                'headers': [(b'x-worker', str(os.getpid()).encode())],
+            })
+            await send({
+                'type': 'websocket.http.response.body',
+                'body': body[:128],
+                'more_body': True,
+            })
+            await send({'type': 'websocket.http.response.body', 'body': body[128:]})
+            completed += 1
+            return
         await send({
             'type': 'websocket.accept',
             'headers': [(b'x-worker', str(os.getpid()).encode())],
@@ -130,6 +153,8 @@ async def application(scope, receive, send):
             completed += 1
     mode, number = scope['path'].strip('/').split('/')
     index = int(number)
+    if scope['scheme'] == 'https':
+        assert scope['extensions']['tls']['tls_version'] in {0x0303, 0x0304}
 
     async def identified(message):
         if message['type'] == 'http.response.start':
@@ -142,7 +167,31 @@ async def application(scope, receive, send):
             }
         await send(message)
 
-    if mode in {'web', 'sync', 'events'}:
+    if mode == 'early-hint':
+        assert 'http.response.early_hint' in scope['extensions']
+        await identified({'type': 'http.response.start', 'status': 200})
+        await send({'type': 'http.response.early_hint', 'links': EARLY_HINTS})
+        await send({'type': 'http.response.body', 'body': payload(index, 512)})
+    elif mode == 'trailers':
+        assert 'http.response.trailers' in scope['extensions']
+        body = payload(index, 512)
+        await identified({
+            'type': 'http.response.start',
+            'status': 200,
+            'trailers': True,
+            'headers': [(b'trailer', b'x-checksum, x-finished')],
+        })
+        await send({'type': 'http.response.body', 'body': body})
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-checksum', hashlib.sha256(body).hexdigest().encode())],
+            'more_trailers': True,
+        })
+        await send({
+            'type': 'http.response.trailers',
+            'headers': [(b'x-finished', b'yes')],
+        })
+    elif mode in {'web', 'sync', 'events'}:
         await framework(scope, receive, identified)
     elif mode in {'file', 'range'}:
         size = FILE_SIZES[index % len(FILE_SIZES)]

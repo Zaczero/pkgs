@@ -14,6 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import trustme
+from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect
 
 from bench.pgo import client, workload
@@ -39,7 +40,11 @@ class Leaf:
     @property
     def units(self) -> int:
         return self.operations * (
-            64 if self.kind.startswith('ws') else 32 if self.kind == 'events' else 1
+            64
+            if self.kind in {'ws', 'ws-deflate'}
+            else 32
+            if self.kind == 'events'
+            else 1
         )
 
     @property
@@ -49,10 +54,16 @@ class Leaf:
             families.append('6rustls')
         if self.kind == 'file':
             families.append('pathsend')
-        if self.kind.startswith('ws'):
+        if self.kind in {'ws', 'ws-deflate'}:
             families.append('WebSocketCodec')
         if self.kind == 'ws-deflate':
             families.append('PerMessageDeflateEnabled')
+        if self.kind == 'ws-denial':
+            families.append('drive_denial_response')
+        if self.kind == 'early-hint':
+            families.append('encode_early_hint')
+        if self.kind == 'trailers':
+            families.append('response_trailers')
         return families
 
 
@@ -60,12 +71,12 @@ class Leaf:
 LEAVES = (
     Leaf('proxy-h1-text', '18', 'web', 'h1', 10000, workers=2, log='text'),
     Leaf('proxy-h1-json', '7.2', 'web', 'h1', 4000, workers=2, log='json'),
-    Leaf('proxy-h1-off', '8.6', 'web', 'h1', 6000, workers=2),
-    Leaf('failure-h1', '0.1', 'failure', 'h1', 256),
+    Leaf('proxy-h1-off', '8.4', 'web', 'h1', 6000, workers=2),
+    Leaf('failure-h1', '0.098', 'failure', 'h1', 256),
     Leaf('failure-h2', '0.1', 'failure', 'h2', 256),
     Leaf('proxy-v1', '1', 'web', 'h1', 2000, proxy='v1'),
     Leaf('proxy-h1-uds', '1', 'web', 'h1', 2000, unix=True),
-    Leaf('proxy-h2', '23', 'web', 'h2', 16000, log='json', loop='uvloop'),
+    Leaf('proxy-h2', '22.8', 'web', 'h2', 16000, log='json', loop='uvloop'),
     Leaf('proxy-v2', '1', 'web', 'h2', 2000, proxy='v2'),
     Leaf('tls13-h1', '7.2', 'web', 'h1', 8000, tls='1.3', log='text'),
     Leaf('tls13-h2', '6.2', 'web', 'h2', 8000, tls='1.3', log='text'),
@@ -82,8 +93,16 @@ LEAVES = (
     Leaf('file-h1-uds', '0.4', 'file', 'h1', 256, unix=True),
     Leaf('file-h2', '1.2', 'file', 'h2', 512, log='json'),
     Leaf('file-h2-tls', '0.8', 'file', 'h2', 512, tls='1.3', log='json', file_log=True),
-    Leaf('ws-plain', '1.5', 'ws', 'h1', 128, workers=2),
-    Leaf('ws-deflate', '1.5', 'ws-deflate', 'h1', 128, workers=2),
+    Leaf('early-hint-h2', '0.1', 'early-hint', 'h2', 1024),
+    Leaf('early-hint-h2-tls', '0.1', 'early-hint', 'h2', 1024, tls='1.3'),
+    Leaf('trailers-h1', '0.1', 'trailers', 'h1', 1024),
+    Leaf('trailers-h1-tls', '0.1', 'trailers', 'h1', 1024, tls='1.3'),
+    Leaf('ws-plain', '0.75', 'ws', 'h1', 128, workers=2),
+    Leaf('ws-deflate', '0.75', 'ws-deflate', 'h1', 128, workers=2),
+    Leaf('wss-plain', '0.75', 'ws', 'h1', 128, workers=2, tls='1.3'),
+    Leaf('wss-deflate', '0.75', 'ws-deflate', 'h1', 128, workers=2, tls='1.3'),
+    Leaf('ws-denial', '0.001', 'ws-denial', 'h1', 128),
+    Leaf('wss-denial', '0.001', 'ws-denial', 'h1', 128, tls='1.3'),
     *(
         Leaf(
             f'{kind}-{transport}', str(Fraction(weight) / 2), kind, 'h2', count, tls=tls
@@ -108,6 +127,25 @@ def exchange(leaf: Leaf, index: int) -> client.Exchange:
         ('accept', 'application/octet-stream'),
         ('x-forwarded-for', '192.0.2.1'),
     )
+    if kind == 'early-hint':
+        return client.Exchange(
+            f'/{kind}/{index}',
+            b'',
+            workload.payload(index, 512),
+            early_hints=workload.EARLY_HINTS,
+        )
+    if kind == 'trailers':
+        expected = workload.payload(index, 512)
+        return client.Exchange(
+            f'/{kind}/{index}',
+            b'',
+            expected,
+            (('te', 'trailers'),),
+            trailers=(
+                (b'x-checksum', client.digest(expected)),
+                (b'x-finished', b'yes'),
+            ),
+        )
     if kind == 'failure':
         return (
             client.Exchange(f'/fail/{index}', b'', b'', status=500)
@@ -163,14 +201,43 @@ def exchange(leaf: Leaf, index: int) -> client.Exchange:
 
 
 def websocket(
-    port: int, leaf: Leaf, index: int
+    port: int, leaf: Leaf, index: int, context: ssl.SSLContext | None
 ) -> tuple[dict[int, int], client.TlsState | None]:
-    with connect(
-        f'ws://127.0.0.1:{port}/echo',
-        compression='deflate' if leaf.kind == 'ws-deflate' else None,
-        open_timeout=60,
-        close_timeout=60,
-    ) as connection:
+    path = f'/deny/{index}' if leaf.kind == 'ws-denial' else '/echo'
+    state = None
+    try:
+        connection = connect(
+            f'{"wss" if context else "ws"}://localhost:{port}{path}',
+            ssl=context,
+            compression='deflate' if leaf.kind == 'ws-deflate' else None,
+            proxy=None,
+            open_timeout=60,
+            close_timeout=60,
+        )
+    except InvalidStatus as error:
+        response = error.response
+        if (
+            leaf.kind != 'ws-denial'
+            or response.status_code != 403
+            or response.body != workload.payload(index, 512)
+        ):
+            raise
+        return {int(response.headers['x-worker']): 1}, None
+    if leaf.kind == 'ws-denial':
+        connection.close()
+        raise RuntimeError('WebSocket denial unexpectedly accepted the connection')
+    if context is not None:
+        secure = connection.socket
+        if (
+            not isinstance(secure, ssl.SSLSocket)
+            or secure.selected_alpn_protocol() != 'http/1.1'
+        ):
+            connection.close()
+            raise RuntimeError('WSS did not negotiate HTTP/1.1 TLS')
+        resumed = secure.session_reused
+        assert resumed is not None
+        state = client.TlsState(full=int(not resumed), resumed=int(resumed))
+    with connection:
         assert connection.response is not None
         pid = int(connection.response.headers['x-worker'])
         for message in range(64):
@@ -190,14 +257,20 @@ def websocket(
                 raise TimeoutError('WebSocket pong missing')
             if message % 8 == 7:
                 time.sleep(0.005)
-    return {pid: 64}, None
+    return {pid: 64}, state
 
 
 def batch(
     leaf, port, context, connections, start: int, stop: int
 ) -> tuple[dict[int, int], client.TlsState | None]:
     exchanges = [exchange(leaf, index) for index in range(start, stop)]
-    function = client.http1 if leaf.protocol == 'h1' else client.http2
+    function = (
+        client.http1_trailers
+        if leaf.kind == 'trailers'
+        else client.http1
+        if leaf.protocol == 'h1'
+        else client.http2
+    )
     state = client.TlsState() if context is not None else None
     batch_size = 128 if leaf.kind == 'web' else 16
     # One of four connection cohorts reconnects with its freshly received ticket.
@@ -256,6 +329,7 @@ def collect(root: Path, leaves: tuple[Leaf, ...] = LEAVES) -> Path:
         'dependencies': {
             name: importlib.metadata.version(name)
             for name in (
+                'h11',
                 'h2',
                 'hpack',
                 'hyperframe',
@@ -330,7 +404,7 @@ def collect(root: Path, leaves: tuple[Leaf, ...] = LEAVES) -> Path:
             if leaf.kind.startswith('ws'):
                 assert isinstance(port, int)
                 futures = [
-                    clients.submit(websocket, port, leaf, index)
+                    clients.submit(websocket, port, leaf, index, context)
                     for index in range(leaf.operations)
                 ]
             else:
@@ -357,10 +431,10 @@ def collect(root: Path, leaves: tuple[Leaf, ...] = LEAVES) -> Path:
                 for pid, total in completed.items():
                     counts[pid] = counts.get(pid, 0) + total
         record = reconcile(leaf_root, counts, leaf.workers)
-        expected = leaf.operations * (64 if leaf.kind.startswith('ws') else 1)
+        expected = leaf.operations * (64 if leaf.kind in {'ws', 'ws-deflate'} else 1)
         if sum(counts.values()) != expected:
             raise RuntimeError(f'{leaf.name}: incomplete useful work')
-        if leaf.tls and not handshakes['resumed']:
+        if leaf.tls and not leaf.kind.startswith('ws') and not handshakes['resumed']:
             raise RuntimeError(f'{leaf.name}: TLS session resumption was not exercised')
         units = expected * (32 if leaf.kind == 'events' else 1)
         record.update(

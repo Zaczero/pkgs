@@ -59,6 +59,7 @@ uvloop = [
 
 [dependency-groups]
 pgo = [
+  "h11>=0.16.0",
   "h2>=4.2.0",
   "starlette>=0.46.0",
   "trustme>=1.2.0",
