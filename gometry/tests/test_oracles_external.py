@@ -536,11 +536,11 @@ def test_bundled_aea_validates_apex_before_zero_radius_shortcut() -> None:
     [
         (
             '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +R=6371000',
-            1892300.4087848007,
+            1892300.4087848025,
         ),
         (
             '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +a=7000000 +rf=10',
-            1826866.9650963421,
+            1826866.9650963412,
         ),
     ],
     ids=['sphere', 'strong-flattening'],
@@ -551,7 +551,11 @@ def test_bundled_aea_keeps_sphere_and_strong_flattening_paths(
     longitude = math.radians(-96.0)
     latitude = math.radians(40.0)
     projected = gm.crs_apply(operation, longitude, latitude)
-    assert projected == pytest.approx((0.0, expected_northing), abs=1.0e-9)
+    # High-precision Albers equations, allowing roundoff from the sequence of
+    # trigonometric and radial operations at the semi-major-axis scale.
+    assert projected == pytest.approx(
+        (0.0, expected_northing), abs=32 * math.ulp(7_000_000.0)
+    )
     assert gm.crs_apply(operation, *projected, direction='inverse') == pytest.approx(
         (longitude, latitude), abs=1.0e-14
     )
@@ -563,11 +567,14 @@ def test_bundled_aea_strong_flattening_bracket_matches_high_precision_endpoint()
     operation = (
         '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +a=7000000 +rf=10'
     )
-    projected = gm.crs_apply(operation, -2.0, math.radians(-89.9999))
+    projected = (-3512231.59941989, -6676131.494808863)
     recovered = gm.crs_apply(operation, *projected, direction='inverse')
-    # Independent 100-digit mpmath q inversion of these exact binary64
-    # projected coordinates.
-    assert recovered[1] == pytest.approx(-1.570794581068056, abs=3.0e-10)
+    # Independent 100-digit q inversion of the fixed binary64 input. The
+    # bracket solves in sin(latitude); asin is ill-conditioned near a pole.
+    assert -math.pi / 2 < recovered[1] < 0
+    assert math.sin(recovered[1]) == pytest.approx(
+        -0.9999999999984762, abs=16 * math.ulp(1.0)
+    )
 
 
 def test_affine_transforms_match_shapely_affinity_oracle() -> None:

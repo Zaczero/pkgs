@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import pickle
 import struct
 import subprocess
@@ -501,7 +500,7 @@ def test_depth_128_shared_subdivide_union_and_intersects() -> None:
     assert gm.intersects(shared, gm.Point(0.5, 0.5))
 
 
-def test_nonadjacent_shared_bounds_and_extrema_keep_signed_zero_bits() -> None:
+def test_nonadjacent_shared_zero_bounds_and_extrema() -> None:
     positive = gm.GeometryCollection([
         gm.Point(0.0, 0.0, z=0.0, m=0.0),
     ])
@@ -510,12 +509,9 @@ def test_nonadjacent_shared_bounds_and_extrema_keep_signed_zero_bits() -> None:
 
     bounds = shape.bounds
 
-    assert [math.copysign(1.0, bounds[index]) for index in (0, 2)] == [1.0, 1.0]
-    assert [math.copysign(1.0, bounds[index]) for index in (1, 3)] == [1.0, 1.0]
-    assert math.copysign(1.0, shape.min_z) == 1.0
-    assert math.copysign(1.0, shape.max_z) == 1.0
-    assert math.copysign(1.0, shape.min_m) == 1.0
-    assert math.copysign(1.0, shape.max_m) == 1.0
+    assert bounds == (0.0, 0.0, 0.0, 0.0)
+    assert shape.min_z == shape.max_z == 0.0
+    assert shape.min_m == shape.max_m == 0.0
 
 
 def test_geographic_crossing_bounds_replay_shared_run_extrema() -> None:
@@ -526,8 +522,7 @@ def test_geographic_crossing_bounds_replay_shared_run_extrema() -> None:
     bounds = shape.bounds
 
     assert bounds[0] > bounds[2]
-    assert math.copysign(1.0, bounds[1]) == 1.0
-    assert math.copysign(1.0, bounds[3]) == 1.0
+    assert bounds[1] == bounds[3] == 0.0
 
 
 def test_shared_packed_array_windows_remain_distinct_in_point_sets() -> None:

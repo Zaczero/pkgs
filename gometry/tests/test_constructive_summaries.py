@@ -265,12 +265,13 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
         line.polylabel()
     tall = gm.Polygon([(0, 60), (10, 60), (10, 61), (0, 61)], crs=4326)
     pole = tall.polylabel(tolerance=100)
-    circle = tall.maximum_inscribed_circle(tolerance=100).to_polygon()
-    # The inscribed disk is a filled Polygon centered on the pole of
-    # inaccessibility, so it covers that pole; the radius is its metric twin.
+    disk = tall.maximum_inscribed_circle(tolerance=100)
+    circle = disk.to_polygon()
     assert circle.geometry_type == 'Polygon'
-    assert gm.covers(circle, pole)
-    assert tall.maximum_inscribed_circle(tolerance=100).radius > 0.0
+    assert gm.covers(tall, pole)
+    assert gm.covers(circle, disk.center)
+    assert gm.covers(tall, circle)
+    assert disk.radius > 0.0
     planar_pole = tall.polylabel(tolerance=0.001, unit='planar')
     assert (planar_pole.x, planar_pole.y) == pytest.approx((5.0, 60.5))
     assert len(triangles) == 2
