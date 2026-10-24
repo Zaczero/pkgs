@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.metadata
 import json
@@ -14,8 +15,8 @@ from fractions import Fraction
 from pathlib import Path
 
 import trustme
+from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
-from websockets.sync.client import connect
 
 from bench.pgo import client, workload
 from bench.pgo.collection import reconcile, server
@@ -222,13 +223,13 @@ def exchange(leaf: Leaf, index: int) -> client.Exchange:
     )
 
 
-def websocket(
+async def websocket(
     port: int, leaf: Leaf, index: int, context: ssl.SSLContext | None
 ) -> tuple[dict[int, int], client.TlsState | None]:
     path = f'/deny/{index}' if leaf.kind == 'ws-denial' else '/echo'
     state = None
     try:
-        connection = connect(
+        connection = await connect(
             f'{"wss" if context else "ws"}://localhost:{port}{path}',
             ssl=context,
             compression='deflate' if leaf.kind == 'ws-deflate' else None,
@@ -246,20 +247,17 @@ def websocket(
             raise
         return {int(response.headers['x-worker']): 1}, None
     if leaf.kind == 'ws-denial':
-        connection.close()
+        await connection.close()
         raise RuntimeError('WebSocket denial unexpectedly accepted the connection')
     if context is not None:
-        secure = connection.socket
-        if (
-            not isinstance(secure, ssl.SSLSocket)
-            or secure.selected_alpn_protocol() != 'http/1.1'
-        ):
-            connection.close()
+        secure = connection.transport.get_extra_info('ssl_object')
+        if secure is None or secure.selected_alpn_protocol() != 'http/1.1':
+            await connection.close()
             raise RuntimeError('WSS did not negotiate HTTP/1.1 TLS')
         resumed = secure.session_reused
         assert resumed is not None
         state = client.TlsState(full=int(not resumed), resumed=int(resumed))
-    with connection:
+    async with connection:
         assert connection.response is not None
         pid = int(connection.response.headers['x-worker'])
         for message in range(64):
@@ -272,14 +270,26 @@ def websocket(
             )
             body = workload.payload(index * 64 + message, size)
             value = body if message % 10 < 3 else body.hex()
-            connection.send(value)
-            if connection.recv(timeout=60) != value:
+            await connection.send(value)
+            if await asyncio.wait_for(connection.recv(), timeout=60) != value:
                 raise RuntimeError('WebSocket echo mismatch')
-            if message % 16 == 15 and not connection.ping().wait(60):
-                raise TimeoutError('WebSocket pong missing')
+            if message % 16 == 15:
+                await asyncio.wait_for(await connection.ping(), timeout=60)
             if message % 8 == 7:
-                time.sleep(0.005)
+                await asyncio.sleep(0.005)
     return {pid: 64}, state
+
+
+async def websocket_sessions(port: int, leaf: Leaf, context: ssl.SSLContext | None):
+    slots = asyncio.Semaphore(32)
+
+    async def session(index: int):
+        async with slots:
+            return await websocket(port, leaf, index, context)
+
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(session(index)) for index in range(leaf.operations)]
+    return [task.result() for task in tasks]
 
 
 def batch(
@@ -419,34 +429,31 @@ def collect(root: Path, leaves: tuple[Leaf, ...] = LEAVES) -> Path:
             server(
                 leaf_root, config, files=files, pipe=not leaf.file_log, unix=leaf.unix
             ) as port,
-            ThreadPoolExecutor(
-                max_workers=32 if leaf.protocol == 'h1' else 4
-            ) as clients,
         ):
             if leaf.kind.startswith('ws'):
                 assert isinstance(port, int)
-                futures = [
-                    clients.submit(websocket, port, leaf, index, context)
-                    for index in range(leaf.operations)
-                ]
+                outcomes = asyncio.run(websocket_sessions(port, leaf, context))
             else:
                 batch_size = (
                     128 if leaf.kind == 'web' else 2 if leaf.kind == 'failure' else 16
                 )
-                futures = [
-                    clients.submit(
-                        batch,
-                        leaf,
-                        port,
-                        context,
-                        connections,
-                        start,
-                        min(start + batch_size, leaf.operations),
-                    )
-                    for start in range(0, leaf.operations, batch_size)
-                ]
-            for future in futures:
-                completed, state = future.result()
+                with ThreadPoolExecutor(
+                    max_workers=32 if leaf.protocol == 'h1' else 4
+                ) as clients:
+                    futures = [
+                        clients.submit(
+                            batch,
+                            leaf,
+                            port,
+                            context,
+                            connections,
+                            start,
+                            min(start + batch_size, leaf.operations),
+                        )
+                        for start in range(0, leaf.operations, batch_size)
+                    ]
+                    outcomes = [future.result() for future in futures]
+            for completed, state in outcomes:
                 if state is not None:
                     handshakes['full'] += state.full
                     handshakes['resumed'] += state.resumed
