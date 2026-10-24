@@ -903,6 +903,10 @@ def test_groups_materialize_one_shot_row_needles_once() -> None:
         groups.count([RaisingIndex()])
 
 
+@pytest.mark.skipif(
+    sys.platform == 'win32',
+    reason='uses POSIX interval timers to interrupt a GIL-holding native iterator',
+)
 def test_native_python_iterator_checks_signals() -> None:
     script = textwrap.dedent(
         """
