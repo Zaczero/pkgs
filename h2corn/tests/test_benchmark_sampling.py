@@ -372,7 +372,7 @@ def test_publication_rejects_a_fabricated_precision_stop(collect_scenario):
         bench.assert_publishable([root])
 
 
-def test_failed_framework_oracle_stops_before_production(tmp_path):
+def test_failed_framework_oracle_is_retained_for_reporting(tmp_path):
     class FailedFramework:
         @staticmethod
         async def qualify_framework():
@@ -392,10 +392,10 @@ def test_failed_framework_oracle_stops_before_production(tmp_path):
         package_versions={},
     )
 
-    with pytest.raises(BenchmarkError, match='framework qualification failed'):
-        _calibrate_rpc_qualification(
-            profile, FailedFramework, deadline=time.monotonic() + 100
-        )
+    _calibrate_rpc_qualification(
+        profile, FailedFramework, deadline=time.monotonic() + 100
+    )
 
     retained = json.loads((tmp_path / 'qualification.json').read_text())
     assert retained['framework'][0]['status'] == 'failed'
+    assert profile.qualification == retained

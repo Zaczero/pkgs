@@ -93,8 +93,10 @@ uv run --no-sync python bench/bench.py --family grpc --qualify-only \
 ```
 
 Qualification checks complete responses, status and metadata, duplex progress,
-handler settlement after cancellation, and framework input validation. HTTP
-200 alone is not success. `--rpc-cases U32 Duplex` selects a smaller diagnostic
+handler settlement after cancellation, and framework input validation. Failed
+error-path probes are retained and disclosed separately from valid-request
+throughput; they do not exclude the released comparator from that measurement.
+HTTP 200 alone is not success. `--rpc-cases U32 Duplex` selects a smaller diagnostic
 subset. The full matrix includes zero-serialized, tiny and bulk unary messages,
 upload, download, duplex, and verified TLS workloads. Streaming plots use
 verified response messages per second; upload and unary plots use complete RPCs

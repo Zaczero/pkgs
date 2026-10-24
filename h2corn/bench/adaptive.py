@@ -382,8 +382,6 @@ def _calibrate_rpc_qualification(
     profile.qualification = qualification
     write_json(profile.directory / 'identity.json', profile.identity)
     write_json(profile.directory / 'qualification.json', qualification)
-    if any(cell['status'] != 'passed' for cell in framework):
-        raise BenchmarkError('gRPC application framework qualification failed')
 
 
 def _suite_cost_plan(
