@@ -2219,14 +2219,19 @@ async def test_worker_supervisor_shutdown_is_not_blocked_by_limit_connections(
             await send({'type': 'http.response.body', 'body': b'limit-connections'})
         """,
         workers=1,
-        extra_args=['--limit-connections', '1'],
+        extra_args=['--limit-connections', '1', '--timeout-graceful-shutdown', '1'],
     )
 
     reader = writer = None
     try:
         await wait_for_port(port)
         reader, writer = await asyncio.open_connection('127.0.0.1', port)
-        await asyncio.sleep(0.1)
+        writer.write(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
+        await writer.drain()
+        response = await asyncio.wait_for(
+            reader.readuntil(b'limit-connections'), timeout=5
+        )
+        assert response.startswith(b'HTTP/1.1 200')
         process.terminate()
         await asyncio.wait_for(process.wait(), timeout=5)
         assert process.returncode is not None

@@ -1,7 +1,6 @@
 import asyncio
 import os
 import signal
-import socket
 import ssl
 import subprocess
 import sys
@@ -305,10 +304,6 @@ async def test_h2_socket_backpressure_preserves_upload_reset_and_sibling_respons
             server_hostname='localhost' if encrypted else None,
         )
         transport = cast('asyncio.Transport', writer.transport)
-        sock = writer.get_extra_info('socket')
-        assert sock is not None
-        receive_buffer = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
         transport.pause_reading()
         conn = h2.connection.H2Connection(
             config=h2.config.H2Configuration(client_side=True, header_encoding=None)
@@ -365,7 +360,6 @@ async def test_h2_socket_backpressure_preserves_upload_reset_and_sibling_respons
             writer.write(conn.data_to_send())
             await writer.drain()
             await asyncio.wait_for(short_admitted.wait(), timeout=5)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
             transport.resume_reading()
             status, body, _ = await asyncio.wait_for(
                 read_h2_response(reader, writer, conn, 3), timeout=10

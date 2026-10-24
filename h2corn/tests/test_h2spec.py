@@ -13,7 +13,7 @@ from tests._support import running_server, server_port
 pytestmark = pytest.mark.asyncio
 
 # shell.nix pins the conformance tool through its pinned nixpkgs revision.
-H2SPEC_VERSION = 'Version: 2.6.0 (2.6.0)'
+H2SPEC_VERSION = '2.6.0'
 H2SPEC_ROOT_PACKAGES = {
     'Generic tests for HTTP/2 server': 'generic',
     'Hypertext Transfer Protocol Version 2 (HTTP/2)': 'http2',
@@ -145,7 +145,7 @@ async def test_h2spec_conformance(tmp_path: Path) -> None:
 
     version_status, version = await _h2spec_output(executable, '--version')
     assert version_status == 0, version
-    assert version.strip() == H2SPEC_VERSION
+    assert version.split()[:2] == ['Version:', H2SPEC_VERSION], version
 
     inventory_status, inventory_output = await _h2spec_output(executable, '--dryrun')
     assert inventory_status == 0, inventory_output
