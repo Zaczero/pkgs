@@ -29,7 +29,7 @@ def make_config(tmp_path: Path, **overrides: object) -> StubConfig:
     if src_text is not None:
         src_root = tmp_path / 'src'
         src_root.mkdir(exist_ok=True)
-        (src_root / 'lib.rs').write_text(str(src_text))
+        (src_root / 'lib.rs').write_text(str(src_text), newline='')
     defaults: dict[str, object] = {
         'module': 'fakepkg._lib',
         'stub_path': stub_path,

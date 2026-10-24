@@ -491,7 +491,7 @@ def _doc_line(node: Node) -> str | None:
     child, a plain one does not.
     """
     inner = _first(node, 'doc_comment')
-    return None if inner is None else _text(inner).rstrip('\n').removeprefix(' ')
+    return None if inner is None else _text(inner).rstrip('\r\n').removeprefix(' ')
 
 
 def _attribute(node: Node) -> Attr | None:

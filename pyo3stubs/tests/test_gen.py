@@ -349,7 +349,8 @@ def test_cpython_boilerplate_never_reaches_the_stub():
     assert runtime_doc_for_stub('make', object.__new__) is not None
 
 
-def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
+@pytest.mark.parametrize('newline', ['\n', '\r\n'], ids=('lf', 'crlf'))
+def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path, newline):
     """The `#[new]`'s `///` is the only place the prose exists — read it there."""
     from pyo3stubs.rust_scan import constructor_doc_sources
 
@@ -374,6 +375,7 @@ def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
         '    fn new(size: usize) -> Self { Self }\n'  # ruff: ignore[missing-f-string-syntax] - Rust fixture.
         '}\n'
     )
+    src = src.replace('\n', newline)
     cfg = make_config(tmp_path, src_text=src)
     expected_doc = """\
 Build a widget of the requested size.
