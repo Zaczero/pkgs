@@ -14,6 +14,7 @@
 #endif
 
 extern "C" PJ_CONTEXT *gometry_proj_context_create() noexcept;
+extern "C" void gometry_proj_clear_database_cache() noexcept;
 extern "C" int gometry_proj_context_enable_default_angular_units(
     PJ_CONTEXT *context) noexcept;
 extern "C" double
@@ -29,6 +30,10 @@ extern "C" PJ_CONTEXT *gometry_proj_context_create() noexcept {
     } catch (...) {
         return nullptr;
     }
+}
+
+extern "C" void gometry_proj_clear_database_cache() noexcept {
+    pj_clear_sqlite_cache();
 }
 
 extern "C" int gometry_proj_context_enable_default_angular_units(

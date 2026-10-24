@@ -57,6 +57,8 @@ unsafe extern "C" {
     /// The returned pointer is uniquely owned when non-null and must be
     /// released with `proj_context_destroy` exactly once.
     pub fn gometry_proj_context_create() -> *mut PJ_CONTEXT;
+    /// Release pooled database handles; live contexts retain their shared owners.
+    pub safe fn gometry_proj_clear_database_cache();
     /// Enable the immutable default angular-unit policy for this fresh context.
     ///
     /// This must be called before resolving a CRS-to-CRS operation. Contexts

@@ -177,7 +177,7 @@ pub(crate) fn configure_runtime(
     });
     *state = Arc::clone(&updated);
     drop(state);
-    ensure_thread_caches_current(&updated);
+    finish_runtime_update(&updated);
     Ok((*updated.config).clone())
 }
 
@@ -217,7 +217,7 @@ pub(crate) fn clear_cache() {
         *state = Arc::clone(&updated);
         updated
     };
-    ensure_thread_caches_current(&updated);
+    finish_runtime_update(&updated);
 }
 
 pub(crate) fn reset_runtime_config() -> Result<RuntimeConfig> {
@@ -230,8 +230,15 @@ pub(crate) fn reset_runtime_config() -> Result<RuntimeConfig> {
     });
     *state = Arc::clone(&updated);
     drop(state);
-    ensure_thread_caches_current(&updated);
+    finish_runtime_update(&updated);
     Ok((*updated.config).clone())
+}
+
+fn finish_runtime_update(state: &RuntimeState) {
+    ensure_thread_caches_current(state);
+    // Context destruction alone leaves PROJ's global SQLite pool holding files.
+    // Its mutex-protected clear releases only pool owners, not live contexts.
+    proj_sys::gometry_proj_clear_database_cache();
 }
 
 pub(crate) static PROJ_STATE: OnceLock<RwLock<Arc<RuntimeState>>> = OnceLock::new();

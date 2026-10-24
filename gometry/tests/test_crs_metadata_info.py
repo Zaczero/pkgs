@@ -5,6 +5,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 import json
 import math
 import re
+import sys
 from typing import Any, cast
 
 import gometry as gm
@@ -1146,6 +1147,22 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
         # runtime reset releases PROJ's current-thread database handle.
         shutil.rmtree(path)
     assert gm.CRS(4326).info['name'] == 'WGS 84'
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='inspects live file descriptors')
+def test_crs_reset_releases_pooled_database_handles(tmp_path) -> None:
+    import psutil
+
+    path = _copy_proj_db_with_4326_name(tmp_path, 'POOLED_DATABASE')
+    database = str(path / 'proj.db')
+    process = psutil.Process()
+    try:
+        gm.crs_configure(search_paths=str(path))
+        assert gm.CRS(4326).info['name'] == 'POOLED_DATABASE'
+        assert database in {file.path for file in process.open_files()}
+    finally:
+        gm.crs_reset()
+    assert database not in {file.path for file in process.open_files()}
 
 
 def test_crs_receiver_identify_is_memoised_and_invalidates_on_clear() -> None:
