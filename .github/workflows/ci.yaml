@@ -183,6 +183,7 @@ jobs:
 
     env:
       CARGO_PACKAGE: ${{ matrix.crate }}
+      PACKAGE: ${{ matrix.package }}
       RUSTUP_TOOLCHAIN: ${{ needs.detect.outputs.rust-toolchain }}
 
     steps:
@@ -205,7 +206,13 @@ jobs:
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check crate and doctests
+      - name: Package before-build hook
+        if: hashFiles(format('{0}/tools/ci_before_build.sh', matrix.package)) != ''
+        shell: bash
+        run: bash "$PACKAGE/tools/ci_before_build.sh"
+
+      - name: Check crate targets
+        id: check
         shell: bash
         run: |
           set -euo pipefail
@@ -215,9 +222,17 @@ jobs:
           doctests="$(cargo metadata --locked --no-deps --format-version 1 |
             jq --arg package "$CARGO_PACKAGE" \
               'any(.packages[] | select(.name == $package) | .targets[]; .doctest)')"
-          if [[ "$doctests" == true ]]; then
-            cargo test --locked -p "$CARGO_PACKAGE" --doc
-          fi
+          echo "doctests=$doctests" >> "$GITHUB_OUTPUT"
+
+      - name: Package before-test hook
+        if: steps.check.outputs.doctests == 'true' && hashFiles(format('{0}/tools/ci_before_test.sh', matrix.package)) != ''
+        shell: bash
+        run: bash "$PACKAGE/tools/ci_before_test.sh"
+
+      - name: Test doctests
+        if: steps.check.outputs.doctests == 'true'
+        shell: bash
+        run: PYO3_PYTHON="$(command -v python)" cargo test --locked -p "$CARGO_PACKAGE" --doc
 
   test-kani:
     name: kani (${{ matrix.package }})
@@ -234,6 +249,7 @@ jobs:
     env:
       KANI_VERSION: "0.68.0"
       CARGO_PACKAGE: ${{ matrix.crate }}
+      PACKAGE: ${{ matrix.package }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -263,6 +279,11 @@ jobs:
           cargo kani setup
           # Keep Kani's exact rustc, but use current Cargo for workspace manifest features.
           cp --remove-destination "$(rustup which cargo)" "$HOME/.kani/kani-$KANI_VERSION/toolchain/bin/cargo"
+
+      - name: Package before-build hook
+        if: hashFiles(format('{0}/tools/ci_before_build.sh', matrix.package)) != ''
+        shell: bash
+        run: bash "$PACKAGE/tools/ci_before_build.sh"
 
       - name: Verify first-party Rust harnesses
         shell: bash
