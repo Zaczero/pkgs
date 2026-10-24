@@ -72,7 +72,7 @@ async def main():
         server.shutdown()
     await asyncio.gather(*serving)
 
-asyncio.run(main())
+asyncio.run(main(), debug=False)
 """
     with log_path.open('wb') as stderr:
         process = await asyncio.create_subprocess_exec(
@@ -432,7 +432,7 @@ async def main():
         server.shutdown()
         await task
 
-asyncio.run(main())
+asyncio.run(main(), debug=False)
 """
     process = await asyncio.create_subprocess_exec(
         sys.executable,
