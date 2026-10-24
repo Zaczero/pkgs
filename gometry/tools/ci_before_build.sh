@@ -10,7 +10,7 @@ case "${RUNNER_OS:-Linux}" in
   macOS) brew install sqlite ;;
   Linux)
     if command -v dnf >/dev/null; then
-      dnf install --yes sqlite
+      dnf install -y sqlite
     elif command -v apk >/dev/null; then
       apk add sqlite
     else
