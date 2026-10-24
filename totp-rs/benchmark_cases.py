@@ -1,5 +1,7 @@
 """Workload identities shared by the TOTP runner and report generator."""
 
+from typing import TypedDict
+
 ALGORITHMS = (
     ('sha1', b'12345678901234567890'),
     ('sha256', b'12345678901234567890123456789012'),
@@ -10,8 +12,16 @@ ALGORITHMS = (
 )
 
 
-def case_definitions(impl: str) -> tuple[dict[str, str | None], ...]:
-    cases: list[dict[str, str | None]] = []
+class CaseDefinition(TypedDict):
+    name: str
+    group: str
+    operation: str
+    algorithm: str | None
+    label: str
+
+
+def case_definitions(impl: str) -> tuple[CaseDefinition, ...]:
+    cases: list[CaseDefinition] = []
     for algorithm, _raw_secret in ALGORITHMS:
         display_algorithm = algorithm.upper().replace('SHA', 'SHA-')
         for operation, label in (
