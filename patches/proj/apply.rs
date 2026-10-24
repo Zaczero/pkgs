@@ -68,6 +68,27 @@ fn remove_pinned_source_section(
 pub(super) fn apply_pinned_semantic_patches(
     source_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    for (before, after) in [
+        (
+            "    double Zb;     /* Radius vector in polar coord. systems  */",
+            "    double Cn0;    /* Rectifying latitude of the origin */",
+        ),
+        (
+            "        xy.y = Q->Qn * Cn + Q->Zb; /* Northing */",
+            "        xy.y = Q->Qn * (Cn - Q->Cn0); /* Northing relative to the origin */",
+        ),
+        (
+            "    double Cn = (xy.y - Q->Zb) / Q->Qn;",
+            "    double Cn = xy.y / Q->Qn + Q->Cn0;",
+        ),
+        (
+            "    /* Origin northing minus true northing at the origin latitude */\n    /* i.e. true northing = N - P->Zb                         */\n    Q->Zb = -Q->Qn * pj_auxlat_convert(Z, Q->gtu, PROJ_ETMERC_ORDER);",
+            "    /* Subtract the origin before scaling: a fused product must not\n     * cancel against a separately rounded product at the origin. */\n    Q->Cn0 = pj_auxlat_convert(Z, Q->gtu, PROJ_ETMERC_ORDER);",
+        ),
+    ] {
+        replace_pinned_source(source_dir, "src/projections/tmerc.cpp", before, after)?;
+    }
+
     replace_pinned_source(
         source_dir,
         "src/conversions/unitconvert.cpp",

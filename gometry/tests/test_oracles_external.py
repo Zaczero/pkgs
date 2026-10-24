@@ -182,17 +182,36 @@ def test_estimated_polar_crs_matches_pyproj_oracle() -> None:
         assert crs.name == gm.CRS(actual).info['name']
         assert [axis.abbrev.lower() for axis in crs.axis_info] == ['e', 'n']
         transformer = pyproj.Transformer.from_crs(4326, crs, always_xy=True)
-        # Northing subtracts two meridian distances at Earth-radius scale.
-        # Budget binary64 series roundoff at that scale, including FMA's
-        # residual against the separately rounded origin, rather than at zero.
-        tolerance = 32 * math.ulp(crs.ellipsoid.semi_major_metre)
-        assert gm.crs_transform(4326, actual, lon, lat) == pytest.approx(
-            (0.0, 0.0), rel=0, abs=tolerance
-        )
-        for x, y in [(lon, lat), (lon + 0.1, lat), (lon, lat * 0.999)]:
+        assert gm.crs_transform(4326, actual, lon, lat) == (0.0, 0.0)
+        # Away from the origin, allow nanometre-scale binary64 projection
+        # roundoff; the independent meridian references below check accuracy.
+        for x, y in [(lon + 0.1, lat), (lon, lat * 0.999)]:
             assert gm.crs_transform(4326, actual, x, y) == pytest.approx(
-                transformer.transform(x, y), rel=0, abs=tolerance
+                transformer.transform(x, y), rel=0, abs=1e-8
             )
+
+
+@pytest.mark.parametrize(
+    ('origin', 'latitude', 'northing'),
+    [
+        (89.0, 89.000000001, 0.00011169404169574707),
+        (89.0, 88.999999999, -0.00011169404169574638),
+        (89.0, 89.00001, 1.1169363567755863),
+        (89.0, 88.5, -55846.71752807018),
+        (-89.0, -89.000000001, -0.00011169404169574707),
+        (23.0, 23.00001, 1.107440091208067),
+        (45.0, 45.5, 55568.33153882624),
+    ],
+)
+def test_tmerc_origin_relative_northing_matches_meridian_integral(
+    origin: float, latitude: float, northing: float
+) -> None:
+    operation = f'+proj=tmerc +lat_0={origin} +lon_0=0 +k=1 +ellps=WGS84'
+    # Independent 80-digit integral of the WGS84 meridional radius of curvature,
+    # using the exact binary64 degree inputs. Ten nanometres covers argument
+    # conversion and projection-series roundoff, including near-zero northings.
+    projected = gm.crs_apply(operation, 0.0, math.radians(latitude))
+    assert projected == pytest.approx((0.0, northing), rel=0, abs=1e-8)
 
 
 def test_estimated_local_crs_is_projected_across_domains() -> None:

@@ -45,18 +45,18 @@ pub(in crate::crs) struct Tmerc;
 #[derive(Clone, Copy, Debug)]
 pub(in crate::crs) struct Setup {
     pub(super) series: PoderEngsager,
-    pub(super) y_origin: f64,
+    pub(super) cn_origin: f64,
     pub(super) a_qn: f64,
     pub(super) inv_a_qn: f64,
 }
 
 pub(super) fn tmerc_setup(ellipsoid: Ellipsoid, params: TmercParams) -> Setup {
     let series = poder_engsager(ellipsoid, params.k0);
-    let zb = origin_northing_offset(&series, params.lat_0_deg);
+    let cn_origin = origin_rectifying_latitude(&series, params.lat_0_deg);
     let a_qn = ellipsoid.a * series.qn;
     Setup {
         series,
-        y_origin: ellipsoid.a * zb,
+        cn_origin,
         a_qn,
         inv_a_qn: 1.0 / a_qn,
     }
@@ -93,14 +93,14 @@ fn finalize_tmerc(params: TmercParams) -> Option<TmercParams> {
     (params.k0 > 0.0).then_some(params)
 }
 
-fn origin_northing_offset(series: &PoderEngsager, lat_0_deg: f64) -> f64 {
+fn origin_rectifying_latitude(series: &PoderEngsager, lat_0_deg: f64) -> f64 {
     if lat_0_deg == 0.0 {
         return 0.0;
     }
     let lat_0 = lat_0_deg.to_radians();
     let (sin_2, cos_2) = (2.0 * lat_0).sin_cos();
     let z = gatg(&series.cbg, lat_0, cos_2, sin_2);
-    -series.qn * (z + clens(&series.gtu, 2.0 * z))
+    z + clens(&series.gtu, 2.0 * z)
 }
 
 pub(super) const fn poder_engsager(ellipsoid: Ellipsoid, k0: f64) -> PoderEngsager {
@@ -240,7 +240,7 @@ pub(super) fn geographic_to_tmerc_unframed(
         ));
     }
     let easting = setup.a_qn * ce;
-    let northing = setup.a_qn * cn + setup.y_origin;
+    let northing = setup.a_qn * (cn - setup.cn_origin);
     if !easting.is_finite() || !northing.is_finite() {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
@@ -252,7 +252,7 @@ pub(super) fn tmerc_to_geographic_unframed(
     northing: f64,
     setup: &Setup,
 ) -> Result<(f64, f64)> {
-    let cn = (northing - setup.y_origin) * setup.inv_a_qn;
+    let cn = northing * setup.inv_a_qn + setup.cn_origin;
     let ce = easting * setup.inv_a_qn;
     if ce.abs() > ETMERC_DOMAIN {
         return Err(GeometryErrorKind::projection_domain(
@@ -436,8 +436,8 @@ mod tests {
         assert!((x - 500_000.0).abs() < 1e-3);
         assert!(
             (y - 55_541.950_175_844_83).abs() < 1e-3,
-            "y={y} y_origin={}",
-            projected.setup.y_origin
+            "y={y} cn_origin={}",
+            projected.setup.cn_origin
         );
         let (lon, lat) = projected.inverse_xy(x, y).unwrap();
         assert!((lon - (-72.5)).abs() < 1e-6, "lon={lon}");
