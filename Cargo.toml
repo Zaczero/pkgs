@@ -26,18 +26,18 @@ anstream = "1.0"
 libc = "0.2"
 libm = "0.2.16"
 mimalloc = { version = "0.1.52", default-features = false, features = ["local_dynamic_tls"] }
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 pyo3 = { path = "vendor/pyo3/pyo3", version = "0.30.1", features = ["nightly"] }
 pyo3-build-config = { path = "vendor/pyo3/pyo3-build-config", version = "0.30.1" }
-rstest = { version = "0.27.0", default-features = false }
+rstest = { version = "0.28.0", default-features = false }
 serde = "1.0"
 serde_json = "1.0"
 sha2 = "0.11.1"
 thiserror = "2.0"
 
 [patch.crates-io]
-# The released core passes references through futex varargs; remove this pin
-# when a release includes the upstream integer-pointer and provenance fixes.
+# Tokio still uses parking_lot 0.12. Retain its core's futex/provenance fixes
+# until Tokio adopts 0.13 or a 0.9 core release includes them.
 parking_lot_core = { git = "https://github.com/Amanieu/parking_lot", rev = "94d1070a4eceb15002a6fc236556f6a2db50cc5a" }
 
 [workspace.lints.cargo]

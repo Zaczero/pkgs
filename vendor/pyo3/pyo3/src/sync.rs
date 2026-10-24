@@ -757,9 +757,9 @@ pub(crate) mod mutex_ext_sealed {
     #[cfg(feature = "arc_lock")]
     impl<R, T> Sealed<T> for alloc::sync::Arc<lock_api::Mutex<R, T>> {}
     #[cfg(feature = "lock_api")]
-    impl<R, G, T> Sealed<T> for lock_api::ReentrantMutex<R, G, T> {}
+    impl<R: lock_api::RawMutex, G, T> Sealed<T> for lock_api::ReentrantMutex<R, G, T> {}
     #[cfg(feature = "arc_lock")]
-    impl<R, G, T> Sealed<T> for alloc::sync::Arc<lock_api::ReentrantMutex<R, G, T>> {}
+    impl<R: lock_api::RawMutex, G, T> Sealed<T> for alloc::sync::Arc<lock_api::ReentrantMutex<R, G, T>> {}
 }
 
 mod rwlock_ext_sealed {
