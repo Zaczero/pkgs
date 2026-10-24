@@ -19,6 +19,7 @@ env:
   PACKAGE_TYPE: ${{ fromJson(inputs.plan).type }}
   IMPORT_NAME: ${{ fromJson(inputs.plan).import-name }}
   CARGO_PACKAGE: ${{ fromJson(inputs.plan).crate }}
+  RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
   PYTHONDEVMODE: "1"
   SCCACHE_VERSION: v0.18.0
 
@@ -246,7 +247,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     env:
-      RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       CIBW_ARCHS: native
