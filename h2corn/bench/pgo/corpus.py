@@ -65,7 +65,7 @@ class Leaf:
         if self.kind == 'early-hint':
             families.append('encode_early_hint')
         if self.kind == 'trailers':
-            families.append('response_trailers')
+            families.append('trailer_field_name_is_forbidden')
         return families
 
 
