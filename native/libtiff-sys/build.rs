@@ -12,8 +12,7 @@ fn main() -> BuildResult {
     let workspace_root = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").expect("Cargo provides CARGO_MANIFEST_DIR"),
     )
-    .join("../..")
-    .canonicalize()?;
+    .join("../..");
     let libtiff = workspace_root.join("vendor/libtiff/source");
     let pin = workspace_root.join("vendor/libtiff/libtiff.pin");
     println!("cargo:rerun-if-changed={}", libtiff.display());
