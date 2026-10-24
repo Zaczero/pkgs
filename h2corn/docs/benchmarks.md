@@ -8,7 +8,7 @@ hide:
 
 **h2corn delivered 9.7–30× the throughput of the compared servers** in the
 one-worker HTTP/1.1 GET comparison. All serve the same Starlette application
-over loopback; h2corn uses its profile-guided `release-dist` wheel.
+over loopback; h2corn uses its profile-guided release wheel.
 
 **Connect on h2corn delivered 1.5–3.0× the throughput of grpc.aio** in six
 of eight gRPC workloads. Upload and download remained inconclusive. These
@@ -71,8 +71,8 @@ The grpclib comparison covers U32, U64K, and Duplex.
 
 ### Known gRPC failures {#grpc-qualification}
 
-All 27 selected positive-work cases passed qualification. Cancellation passed
-for h2corn and grpc.aio but failed to settle within its bound on Hypercorn.
+Valid-request checks passed for all measured workloads. Cancellation passed
+for h2corn and grpc.aio but timed out on Hypercorn.
 Released Connect failed the reserved-flag, truncated-suffix, and expired-deadline
 checks. Throughput results do not imply that these error paths conform.
 

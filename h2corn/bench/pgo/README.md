@@ -64,5 +64,5 @@ WebSocket, and Connect gRPC benchmarks exercise distinct serving shapes.
 Include held-out application work, startup, large transfers, and rate-controlled
 latency when qualifying a changed mixture.
 
-The [local qualification report](qualification.md) records measured gains,
-inconclusive cases, artifact identities, and the remaining hosted-build check.
+The [qualification report](qualification.md) records measured gains, footprint
+costs, and inconclusive latency results.

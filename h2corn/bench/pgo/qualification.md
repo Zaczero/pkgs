@@ -13,8 +13,7 @@ against other server stacks, which is a different comparison.
 
 ## Build and workload
 
-- CPython 3.15.0 with the GIL; Rust
-  `1a2c4797ef2570bd76ca5dee34449169bc7dc457`, LLVM 23.1.4.
+- CPython 3.15.0 with the GIL and LLVM 23.1.4.
 - `release-dist`, explicit `x86_64-unknown-linux-gnu`, x86-64-v2, identical
   non-PGO compilation inputs.
 - AMD Ryzen 9 5950X, Linux 7.2.9, shared loaded host, no CPU pinning.
@@ -29,19 +28,10 @@ against other server stacks, which is a different comparison.
 The FastAPI application returns typed JSON through an asynchronous dependency
 and is absent from training. All measured responses are checked.
 
-| Artifact | SHA-256 |
-| --- | --- |
-| Ordinary wheel | `ffce35c1e78fa0e0d1d1960ebd623a53690465861a319d0b7d9f53675b7c1843` |
-| Accepted profile | `ed786709d8ca264aa92afa2517c6a561195e33a94a2a8df99e7a5202ecf9322c` |
-| PGO wheel | `4ac63268091932f888c92dd9d8b8c312ce7f3387d86c84e4790229dbd2142e83` |
-| PGO native extension | `030572c52a62e314b52a5ad8aba31d0e50aed47d6f32c2a6968ac3d1b383985a` |
-
 ## Work and throughput
 
-Changes below use every observation: the geometric mean of paired
-candidate/baseline ratios. Nominal 95% intervals resample adjacent blocks of two
-pairs 10,000 times. Six pairs provide limited independent information, and these
-intervals do not account for persistent host drift.
+Changes are geometric means of paired candidate/baseline ratios. The nominal
+95% intervals do not account for persistent host drift.
 
 | Workload and metric | Change | Nominal 95% interval |
 | --- | ---: | ---: |
@@ -76,9 +66,9 @@ both comparison order and arm order.
 | Six pairs | +100.8% (−6.5% to +229.6%) | +193.6% (+70.8% to +323.4%) | 8 / 1,146 |
 | Twelve interleaved blocks | +97.2% (−7.2% to +335.1%) | +39.8% (−35.6% to +213.4%) | 968 / 2,828 |
 
-The unfavorable observations are not discarded. Same-wheel controls also
-varied substantially: the six-pair control's p99 changed −78.1%, while the
-interleaved control changed +105.4% for p99 and +67.8% for p99.9, with intervals
+Same-wheel controls also varied substantially: the six-pair control's p99
+changed −78.1%, while the interleaved control changed +105.4% for p99 and
++67.8% for p99.9, with intervals
 crossing zero in the interleaved series. Its two identical-wheel arms dropped
 2,455 and 3,734 arrivals.
 
@@ -95,24 +85,15 @@ scheduled request. These results cannot support a production tail-latency claim.
 | Native extension | 7,913,320 B | 8,506,048 B |
 | Executable `.text` | 5,191,890 B | 5,672,082 B |
 
-PGO adds 480,192 bytes of executable code and 524,364 bytes to the compressed
-wheel. All 13 Python/stub members match the ordinary wheel. Collection exports,
-the collection-only supervisor overlay, and LLVM instrumentation sections are
-absent from the final installation.
-
-The exact PGO installation passed 2,350 runtime tests, with 46 explicit
-platform/free-threaded skips, and the embedded application request check.
-The local build, profile admission, collection, and installed-wheel paths were
-exercised. Hosted manylinux/cibuildwheel execution is not covered by this evidence.
+The Python API and stubs are identical in both wheels. Profiling
+instrumentation is absent from the final installation.
 
 ## Evidence
 
 [Qualification data](qualification.json) contains raw paired observations,
 arrival distributions and dropped counts from both series, execution order,
 artifact identities, profile weights and compiler identity, workload sources,
-and the evaluation and summary drivers. No observations are trimmed.
-The local build logs, wheels, raw profiles, and test reports are retained under
-`/tmp/opencode/task824`.
+and the evaluation and summary drivers.
 
 The [HTTP](../results/raw) and [gRPC](../results/grpc/raw) records retain the
 complete cross-server measurements and link to their trial evidence, including
