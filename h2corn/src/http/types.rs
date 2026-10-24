@@ -53,14 +53,13 @@ macro_rules! common_status_codes {
         }
     };
 }
-pub(crate) use common_status_codes;
-
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
 use std::str::Utf8Error;
 use std::{fmt, str};
 
 use bytes::Bytes;
+pub(crate) use common_status_codes;
 use http::Method;
 use http::method::InvalidMethod;
 use pyo3::pybacked::PyBackedBytes;
