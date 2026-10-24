@@ -734,8 +734,23 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
         source_dir,
         "src/iso19111/internal.cpp",
         "/******************************************************************************\n",
-        "#include <charconv>\n/******************************************************************************\n",
+        "#include \"proj/internal/include_nlohmann_json.hpp\"\n/******************************************************************************\n",
     )?;
+    // PROJ's bundled formatter preserves binary64 round trips without requiring
+    // the floating-point std::to_chars symbols introduced in macOS 13.3.
+    const ROUNDTRIP_DOUBLE_FORMAT: &str = r#"std::string toString(double val, int) {
+    if (!std::isfinite(val)) {
+        return std::string(std::signbit(val) ? "-" : "") +
+               (std::isnan(val) ? "nan" : "inf");
+    }
+    char buffer[64];
+    auto end = nlohmann::detail::to_chars(buffer, buffer + sizeof(buffer), val);
+    // JSON marks integral doubles with ".0"; PROJ identity-step elimination
+    // compares numeric tokens, so keep the shortest spelling.
+    if (end - buffer >= 2 && end[-2] == '.' && end[-1] == '0')
+        end -= 2;
+    return std::string(buffer, end);
+}"#;
     replace_pinned_source(
         source_dir,
         "src/iso19111/internal.cpp",
@@ -754,11 +769,7 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
     }
     return str;
 }"#,
-        r#"std::string toString(double val, int) {
-    char buffer[64];
-    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), val);
-    return std::string(buffer, result.ptr);
-}"#,
+        ROUNDTRIP_DOUBLE_FORMAT,
     )?;
     replace_pinned_source(
         source_dir,
@@ -774,11 +785,7 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
     }
     return szBuffer;
 }"#,
-        r#"std::string toString(double val, int) {
-    char buffer[64];
-    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), val);
-    return std::string(buffer, result.ptr);
-}"#,
+        ROUNDTRIP_DOUBLE_FORMAT,
     )?;
 
     replace_pinned_source(
