@@ -1,0 +1,19 @@
+Subject: [PATCH] Accept Python 3.15 module entry points
+
+PyModExport_* names are module-defined entry points, like PyInit_*,
+not non-stable interpreter APIs.
+
+diff --git a/abi3audit/_audit.py b/abi3audit/_audit.py
+--- a/abi3audit/_audit.py
++++ b/abi3audit/_audit.py
+@@ -120,8 +120,8 @@
+                 # Exclude module initialization symbols. Technically
+-                # this should always be `PyInit_{filename}` but there can
++                # these are `PyInit_{filename}` or `PyModExport_{filename}`, but there can
+                 # be multiple if a shared object contains multiple extensions;
+                 # see https://github.com/pypa/abi3audit/issues/111.
+-                if sym.name.startswith("PyInit_"):
++                if sym.name.startswith(("PyInit_", "PyModExport_")):
+                     continue
+                 # Local symbols are fine, since they are inlined functions
+                 # from the CPython limited API.
