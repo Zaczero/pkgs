@@ -2,6 +2,11 @@
 # Optional monorepo CI hook: install test-only system deps before pytest.
 set -euo pipefail
 
+if [[ "${RUNNER_OS:-}" == Windows ]]; then
+  echo "PYTHONTRACEMALLOC=5" >> "$GITHUB_ENV"
+  exit 0
+fi
+
 # h2spec is Linux x64 only (protocol conformance tests).
 if [[ "${RUNNER_OS:-}" != "Linux" || "${RUNNER_ARCH:-}" != "X64" ]]; then
   exit 0
