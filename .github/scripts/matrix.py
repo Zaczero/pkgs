@@ -35,7 +35,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from package_version import package_info, write_outputs
+from package_version import list_packages, package_info, write_outputs
+from route_packages import rust_packages
 
 VERSION_RE = re.compile(
     r"""
@@ -422,13 +423,31 @@ def resolve_matrix(
 def main() -> None:
     selection = json.load(sys.stdin)
     catalog = load_uv_catalog()
+    test_packages = set(list_packages('test'))
+    crates = rust_packages()
     plans = [
         {**item, 'plan': resolve_matrix(item['package'], catalog=catalog)}
         for item in selection
+        if item['package'] in test_packages
+    ]
+    checks = [
+        {'package': item['package'], 'crate': crates[item['package']]}
+        for item in selection
+        if item['package'] in crates
+    ]
+    kani_checks = [
+        item
+        for item in checks
+        if any(
+            re.search(r'#\s*\[\s*kani\s*::\s*proof\b', source.read_text())
+            for source in (Path(item['package']) / 'src').rglob('*.rs')
+        )
     ]
     primary = max(available_stable_cpython_minors(catalog, freethreaded=False))
     write_outputs({
         'plans': json.dumps(plans, separators=(',', ':')),
+        'rust-checks': json.dumps(checks, separators=(',', ':')),
+        'kani-checks': json.dumps(kani_checks, separators=(',', ':')),
         'primary-python': str(primary),
         'rust-toolchain': rust_toolchain_channel('.'),
     })

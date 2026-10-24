@@ -22,6 +22,8 @@ jobs:
     outputs:
       release-package: ${{ steps.release.outputs.package }}
       plans: ${{ steps.matrix.outputs.plans }}
+      rust-checks: ${{ steps.matrix.outputs.rust-checks }}
+      kani-checks: ${{ steps.matrix.outputs.kani-checks }}
       primary-python: ${{ steps.matrix.outputs.primary-python }}
       rust-toolchain: ${{ steps.matrix.outputs.rust-toolchain }}
       lint-python: ${{ steps.detect.outputs.lint-python }}
@@ -64,7 +66,12 @@ jobs:
               test_all=false
             fi
 
-            test_packages="$(python3 .github/scripts/package_version.py list --test)"
+            test_packages="$(PYTHONPATH=.github/scripts python3 -c '
+          from package_version import ci_package_sort_key, list_packages
+          from route_packages import rust_packages
+          print(*sorted(set(list_packages("test")) | rust_packages().keys(),
+                        key=ci_package_sort_key), sep="\n")
+          ')"
 
             if ! $test_all && {
               [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null
@@ -135,11 +142,48 @@ jobs:
 
       - run: ruff format --check .
 
-  lint-rust:
+  check-workspace:
     needs: detect
     if: needs.detect.outputs.lint-rust == 'true'
 
     runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          toolchain: ${{ needs.detect.outputs.rust-toolchain }}
+          components: rustfmt
+          cache: false
+
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-audit
+
+      - name: Audit Rust dependencies
+        run: cargo audit --deny unsound --deny yanked
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+  check-rust:
+    name: check-rust (${{ matrix.package }})
+    needs: detect
+    if: needs.detect.outputs.rust-checks != '' && needs.detect.outputs.rust-checks != '[]'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.rust-checks) }}
+
+    runs-on: ubuntu-26.04
+
+    env:
+      CARGO_PACKAGE: ${{ matrix.crate }}
+      RUSTUP_TOOLCHAIN: ${{ needs.detect.outputs.rust-toolchain }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,38 +197,38 @@ jobs:
           check-latest: true
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        # zizmor: ignore[cache-poisoning] -- This lint-only job produces no published artifacts.
+        # zizmor: ignore[cache-poisoning] -- Checks produce no distribution artifacts.
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
-          components: clippy, rustfmt
+          components: clippy
+          cache-key: check-${{ matrix.crate }}
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        with:
-          tool: cargo-audit
-
-      - name: Audit Rust dependencies
-        run: cargo audit --deny unsound --deny yanked
-
-      - name: Check Rust
+      - name: Check crate and doctests
         shell: bash
         run: |
           set -euo pipefail
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
-          cargo fmt --check
-          cargo clippy --locked --workspace --all-targets
-          cargo test --locked --workspace --doc
+          cargo clippy --locked -p "$CARGO_PACKAGE" --all-targets
+          cargo test --locked -p "$CARGO_PACKAGE" --doc
 
   test-kani:
+    name: kani (${{ matrix.package }})
     needs: detect
-    if: needs.detect.outputs.lint-rust == 'true'
+    if: needs.detect.outputs.kani-checks != '' && needs.detect.outputs.kani-checks != '[]'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.kani-checks) }}
 
     runs-on: ubuntu-26.04
 
     env:
       KANI_VERSION: "0.68.0"
+      CARGO_PACKAGE: ${{ matrix.crate }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,7 +245,7 @@ jobs:
         # zizmor: ignore[cache-poisoning] -- Verification produces no distribution artifacts.
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
-          cache-key: kani-${{ env.KANI_VERSION }}
+          cache-key: kani-${{ env.KANI_VERSION }}-${{ matrix.crate }}
           cache-directories: ~/.kani
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -221,24 +265,11 @@ jobs:
           set -euo pipefail
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
-          crates="$(python3 - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          members = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["members"]
-          print(*(tomllib.loads((Path(member) / "Cargo.toml").read_text())["package"]["name"]
-                  for member in members), sep="\n")
-          PY
-          )"
-          mapfile -t crates <<< "$crates"
-          packages=()
-          for crate in "${crates[@]}"; do
-            packages+=(-p "$crate")
-          done
-          cargo kani "${packages[@]}" --lib --bins -Z unstable-options \
+          cargo kani -p "$CARGO_PACKAGE" --lib --bins -j -Z unstable-options \
             --harness-timeout 180 --output-format terse
 
   test:
+    name: ${{ matrix.package }}
     needs: detect
     if: needs.detect.outputs.plans != '' && needs.detect.outputs.plans != '[]'
 
@@ -253,7 +284,7 @@ jobs:
       plan: ${{ toJson(matrix.plan) }}
 
   release:
-    needs: [detect, test, lint-python, lint-rust, test-kani]
+    needs: [detect, test, lint-python, check-workspace, check-rust, test-kani]
     if: >-
       !cancelled()
       && startsWith(github.ref, 'refs/tags/')
@@ -261,10 +292,14 @@ jobs:
       && needs.lint-python.result == 'success'
       && (
         (needs.detect.outputs.lint-rust == 'true'
-          && needs.lint-rust.result == 'success'
-          && needs.test-kani.result == 'success')
+          && needs.check-workspace.result == 'success'
+          && needs.check-rust.result == 'success'
+          && (
+            needs.test-kani.result == 'success'
+            || (needs.detect.outputs.kani-checks == '[]' && needs.test-kani.result == 'skipped')))
         || (needs.detect.outputs.lint-rust == 'false'
-          && needs.lint-rust.result == 'skipped'
+          && needs.check-workspace.result == 'skipped'
+          && needs.check-rust.result == 'skipped'
           && needs.test-kani.result == 'skipped')
       )
 

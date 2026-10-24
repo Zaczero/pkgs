@@ -32,7 +32,7 @@ IGNORED_PATHS = re.compile(
     r'|^tools/benchmark\.py$'
     r'|^[^/]+/tools/(?:benchmark_report\.py|wasm\.ts|check\.py)$'
     r'|^[^/]+/tests/(?:test_public_docs\.py|tooling/)'
-    r'|^(?:ruff\.toml|rustfmt\.toml|clippy\.toml|shell\.nix|package\.json|bun\.lock|tsconfig\.json)$'
+    r'|^(?:ruff\.toml|rustfmt\.toml|shell\.nix|package\.json|bun\.lock|tsconfig\.json)$'
 )
 
 
@@ -44,10 +44,6 @@ def filter_changed_paths(paths: Iterable[str]) -> list[str]:
         if path and not IGNORED_PATHS.search(path):
             filtered.append(path)
     return filtered
-
-
-def discover_native_packages(test_packages: Iterable[str]) -> set[str]:
-    return {name for name in test_packages if (Path(name) / 'Cargo.toml').is_file()}
 
 
 def reverse_uv_consumers(test_packages: Sequence[str]) -> dict[str, set[str]]:
@@ -84,6 +80,48 @@ def reverse_uv_consumers(test_packages: Sequence[str]) -> dict[str, set[str]]:
     return dict(consumers)
 
 
+def rust_packages() -> dict[str, str]:
+    """Map workspace member paths to crate names."""
+    workspace = load_toml(Path('Cargo.toml'))['workspace']
+    return {
+        member: load_toml(Path(member) / 'Cargo.toml')['package']['name']
+        for pattern in workspace['members']
+        for path in Path('.').glob(pattern)
+        if (member := path.as_posix()) not in workspace.get('exclude', [])
+    }
+
+
+def reverse_rust_consumers() -> dict[str, set[str]]:
+    """Follow local Cargo dependencies, including inherited and target-specific ones."""
+    repo = Path.cwd()
+    workspace = load_toml(Path('Cargo.toml'))['workspace']
+    consumers: dict[str, set[str]] = defaultdict(set)
+    pending = list(rust_packages())
+    visited = set()
+    while pending:
+        member = pending.pop()
+        if member in visited:
+            continue
+        visited.add(member)
+        manifest = load_toml(Path(member) / 'Cargo.toml')
+        for table in (manifest, *manifest.get('target', {}).values()):
+            for kind in ('dependencies', 'build-dependencies', 'dev-dependencies'):
+                for name, dependency in table.get(kind, {}).items():
+                    if not isinstance(dependency, dict):
+                        continue
+                    base = repo / member
+                    if dependency.get('workspace'):
+                        dependency = workspace['dependencies'][name]
+                        base = repo
+                    if isinstance(dependency, dict) and 'path' in dependency:
+                        path = (base / dependency['path']).resolve()
+                        if path.is_relative_to(repo):
+                            dependency_path = path.relative_to(repo).as_posix()
+                            consumers[dependency_path].add(member)
+                            pending.append(dependency_path)
+    return dict(consumers)
+
+
 def route_paths(
     paths: Sequence[str],
     *,
@@ -96,7 +134,7 @@ def route_paths(
     Rules (exact root-Cargo match; package-local Cargo is not root):
     - Root Cargo.toml / Cargo.lock / rust-toolchain.toml / .cargo/** → all native
     - Root .python-versions → all test packages
-    - <pkg>/… → that package + reverse uv.sources consumers
+    - <pkg>/… → that package + transitive local Python and Rust consumers
     - Anything else (shared dirs, unknown root files, .github/**) → all test packages
     - Documentation and its shared browser tooling are validated locally
     """
@@ -106,27 +144,41 @@ def route_paths(
         packages = set(test_packages)
 
     if native_packages is None:
-        native = discover_native_packages(packages)
+        native = set(rust_packages())
     else:
         native = set(native_packages)
 
     if reverse_consumers is None:
         reverse = reverse_uv_consumers(sorted(packages))
+        for dependency, consumers in reverse_rust_consumers().items():
+            reverse.setdefault(dependency, set()).update(consumers)
     else:
         reverse = {key: set(value) for key, value in reverse_consumers.items()}
 
     selected: set[str] = set()
+    owners = sorted(packages | native | reverse.keys(), key=len, reverse=True)
     for path in filter_changed_paths(paths):
-        if path in ROOT_RUST_PATHS or path == '.cargo' or path.startswith('.cargo/'):
+        if (
+            path in ROOT_RUST_PATHS | {'clippy.toml'}
+            or path == '.cargo'
+            or path.startswith('.cargo/')
+        ):
             selected.update(native)
         elif path == '.python-versions':
             selected.update(packages)
         else:
-            package = path.partition('/')[0]
-            if package in packages:
-                selected.add(package)
+            owner = next(
+                (
+                    name
+                    for name in owners
+                    if path == name or path.startswith(name + '/')
+                ),
+                None,
+            )
+            if owner is not None:
+                selected.add(owner)
             else:
-                selected.update(packages)
+                selected.update(packages | native)
 
     pending = list(selected)
     while pending:
@@ -134,7 +186,7 @@ def route_paths(
             if consumer not in selected:
                 selected.add(consumer)
                 pending.append(consumer)
-    return sorted(selected, key=ci_package_sort_key)
+    return sorted(selected & (packages | native), key=ci_package_sort_key)
 
 
 def main() -> None:
