@@ -164,6 +164,8 @@ def test_production_block_identity_must_name_a_real_block(block):
 @pytest.fixture
 def collect_scenario(monkeypatch, tmp_path):
     """Supply the external cell-measurement boundary with chosen observations."""
+    if sys.platform == 'win32':
+        pytest.skip('benchmark collection deadlines require POSIX interval timers')
 
     def collect(ratios, *, required=0, limited=False, fail=None, later_cost=0):
         scenario = Scenario('Paired collection', 1, 'h1')

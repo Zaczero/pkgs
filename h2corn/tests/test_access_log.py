@@ -372,17 +372,21 @@ serve(app, Config(port=0, lifespan='on', log_format='json', loop='asyncio'))
 
 async def test_json_cli_startup_error_is_one_record(tmp_path: Path) -> None:
     certificate = tmp_path / 'missing-cert.pem'
+    (tmp_path / 'startup_app.py').write_text(
+        'async def app(scope, receive, send):\n    pass\n'
+    )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         '-m',
         'h2corn',
-        'unused:app',
+        'startup_app:app',
         '--log-format',
         'json',
         '--certfile',
         str(certificate),
         '--keyfile',
         str(tmp_path / 'missing-key.pem'),
+        cwd=tmp_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
