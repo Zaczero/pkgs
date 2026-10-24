@@ -31,11 +31,11 @@ fn receive_release_and_update_conserve_credit() {
                 pending += wide;
             },
             _ => {
-                let update = state
-                    .take_update(amount)
-                    .map(|value| u64::from(value.get()));
+                let update = state.take_update(amount);
                 if pending != 0 && pending >= wide {
-                    assert_eq!(update, Some(pending));
+                    let increment = update.expect("released credit meets the threshold");
+                    assert_eq!(u64::from(increment.get()), pending);
+                    state.commit_update(increment);
                     available += pending;
                     pending = 0;
                 } else {
