@@ -1,4 +1,4 @@
-name: Test & Build Package
+name: Validate Package
 
 on:
   workflow_call:
@@ -6,7 +6,6 @@ on:
       package:
         required: true
         type: string
-
       plan:
         required: true
         type: string
@@ -21,17 +20,16 @@ env:
   CARGO_PACKAGE: ${{ fromJson(inputs.plan).crate }}
   RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
   PYTHONDEVMODE: "1"
-  SCCACHE_VERSION: v0.18.0
 
 jobs:
   test-rust:
+    name: Rust (${{ matrix.runner }})
     if: fromJson(inputs.plan).type == 'rust'
-
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJson(inputs.plan).rust-test-runners }}
-
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -44,34 +42,103 @@ jobs:
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
           cache-key: ${{ inputs.package }}
+          cache-targets: false
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: nextest
 
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
+      - name: Package prerequisites
         shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
+        run: |
+          for hook in before_build before_test; do
+            if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
+              bash "$PACKAGE/tools/ci_$hook.sh"
+            fi
+          done
 
-      - name: Package before-test hook
-        if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_test.sh"
-
-      - name: Build and test Rust debug and release
+      - name: Test Rust debug and release
         shell: bash
         run: bash .github/scripts/test_rust.sh
 
+  development:
+    if: fromJson(inputs.plan).type == 'python-rust'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    env:
+      MATURIN_PEP517_ARGS: --profile dev --locked --compression-method stored
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: ${{ fromJson(inputs.plan).primary-python }}
+          check-latest: true
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          cache-suffix: ${{ inputs.package }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          working-directory: ${{ inputs.package }}
+          python-version: ${{ steps.python.outputs.python-path }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
+          cache-key: ${{ inputs.package }}
+          cache-targets: false
+          cache-on-failure: false
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
+
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: nextest
+
+      - name: Package prerequisites
+        shell: bash
+        run: |
+          for hook in before_build before_test; do
+            if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
+              bash "$PACKAGE/tools/ci_$hook.sh"
+            fi
+          done
+
+      - name: Test development extension
+        shell: bash
+        run: |
+          uv sync --project "$PACKAGE" --no-default-groups --group dev --no-install-project
+          python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
+          uv build --python "$python" --wheel --out-dir "$RUNNER_TEMP/development-wheel" "$PACKAGE"
+          uv run --project "$PACKAGE" --no-sync python .github/scripts/install_wheel.py "$PACKAGE" "$RUNNER_TEMP/development-wheel"
+          bash .github/scripts/test_python.sh
+
+      - name: Test embedded Rust against the Python test installation
+        shell: bash
+        run: |
+          python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
+          PYO3_PYTHON="$python"
+          PYTHONPATH="$("$python" -c 'import os, site; print(os.pathsep.join(site.getsitepackages()))')"
+          PATH="$(dirname "$python"):$PATH"
+          export PYO3_PYTHON PYTHONPATH PATH
+          bash .github/scripts/test_rust.sh
+
   test-address-sanitizer:
     if: fromJson(inputs.plan).crate != ''
-
     runs-on: ubuntu-26.04
-
+    timeout-minutes: 45
     env:
-      MATURIN_PEP517_ARGS: --profile dev
       PYTHONMALLOC: malloc
       # Embedded CPython retains process-lifetime allocations after tests finish.
       ASAN_OPTIONS: ${{ fromJson(inputs.plan).type == 'rust' && 'detect_leaks=1' || 'detect_leaks=0' }}
@@ -103,8 +170,11 @@ jobs:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
           components: rust-src
           cache-key: ${{ inputs.package }}-address-sanitizer
+          cache-targets: false
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
@@ -114,152 +184,29 @@ jobs:
         if: fromJson(inputs.plan).type != 'rust'
         shell: bash
         run: |
+          if command -v clang >/dev/null && [ -f "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" ]; then
+            exit 0
+          fi
           sudo apt-get update
           sudo apt-get install --yes clang
 
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
+      - name: Package prerequisites
         shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
-
-      - name: Package before-test hook
-        if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_test.sh"
+        run: |
+          for hook in before_build before_test; do
+            if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
+              bash "$PACKAGE/tools/ci_$hook.sh"
+            fi
+          done
 
       - name: Test instrumented Rust and Python
         shell: bash
         run: bash .github/scripts/test_asan.sh
 
-  test:
-    if: fromJson(inputs.plan).type != 'rust'
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(inputs.plan).test-matrix }}
-
-    runs-on: ${{ matrix.os }}
-
-    env:
-      SCCACHE_GHA_ENABLED: "on"
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        id: python
-        if: fromJson(inputs.plan).crate != '' && matrix.primary
-        with:
-          python-version: ${{ matrix.python-version }}
-          check-latest: true
-
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          cache-suffix: ${{ inputs.package }}
-          enable-cache: true
-          python-version: ${{ steps.python.outputs.python-path || matrix.python-version }}
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
-          working-directory: ${{ inputs.package }}
-
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        if: fromJson(inputs.plan).crate != ''
-        with:
-          toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-on-failure: false
-          cache-targets: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' && matrix.primary }}
-
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
-        with:
-          version: ${{ env.SCCACHE_VERSION }}
-
-      - name: Configure compiler cache
-        # sccache 0.18 reorders MSVC's per-file -Tp and treats /WX- as its filename.
-        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
-        shell: bash
-        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
-
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
-
-      - name: Package before-test hook
-        if: hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_test.sh"
-
-      - name: Test Python
-        env:
-          DEPENDENCY_GROUP: ${{ matrix.dependency-group }}
-          FREETHREADED: ${{ matrix.freethreaded }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PACKAGE"
-          if [[ "$FREETHREADED" == true ]]; then
-            export MATURIN_PEP517_ARGS="--profile dev"
-          fi
-          uv sync --no-default-groups --group "$DEPENDENCY_GROUP"
-          uv run --no-sync python - "$IMPORT_NAME" "$PACKAGE_TYPE" <<'PY'
-          import importlib
-          import sys
-          import sysconfig
-          importlib.import_module(sys.argv[1])
-          if sysconfig.get_config_var("Py_GIL_DISABLED"):
-              state = "enabled" if sys._is_gil_enabled() else "disabled"
-              print(f"CPython free-threaded runtime GIL after import: {state}")
-              if sys.argv[2] == "python-rust":
-                  assert not sys._is_gil_enabled()
-          PY
-          pytest_args=(tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
-          if [[ "$FREETHREADED" == true ]]; then
-            pytest_args+=(-n 2)
-          fi
-          uv run --no-sync python -m pytest "${pytest_args[@]}"
-
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        if: fromJson(inputs.plan).crate != '' && matrix.primary
-        with:
-          tool: nextest
-
-      - name: Test embedded Rust against the Python test installation
-        if: fromJson(inputs.plan).crate != '' && matrix.primary
-        shell: bash
-        run: |
-          set -euo pipefail
-          python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
-          PYO3_PYTHON="$python"
-          PYTHONPATH="$("$python" -c 'import os, site; print(os.pathsep.join(site.getsitepackages()))')"
-          PATH="$(dirname "$python"):$PATH"
-          export PYO3_PYTHON PYTHONPATH PATH
-          bash .github/scripts/test_rust.sh
-
-      - name: Check Python types
-        if: matrix.primary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PACKAGE"
-          python="$(uv run --no-sync python -c 'import sys; print(sys.executable)')"
-          uv tool run pyright --pythonpath "$python"
-
-      - name: Audit Python dependencies
-        if: matrix.primary
-        shell: bash
-        run: uv audit --project "$PACKAGE" --locked
-
   prepare-distributions:
     if: fromJson(inputs.plan).type != 'rust'
-
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -301,175 +248,16 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build:
+  distributions:
+    name: ${{ matrix.runner }} / ${{ matrix.abi }}
     needs: prepare-distributions
     if: fromJson(inputs.plan).type != 'rust'
-
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(inputs.plan).build-matrix }}
-
-    runs-on: ${{ matrix.runner }}
-
-    env:
-      SCCACHE_GHA_ENABLED: "on"
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
-      CIBW_ARCHS: native
-      CIBW_BUILD: ${{ matrix.abi == 'abi3t' && 'cp315t-*' || '*' }}
-      CIBW_BUILD_FRONTEND: build[uv]
-      CIBW_AUDIT_REQUIRES: '"${{ github.workspace }}/vendor/abi3audit"'
-      CIBW_INHERIT: "environment-linux; environment-macos"
-      CIBW_BEFORE_ALL_LINUX: >-
-        curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
-        sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path &&
-        if [ -f "{package}/tools/ci_before_build.sh" ]; then bash "{package}/tools/ci_before_build.sh"; fi
-      CIBW_ENVIRONMENT_LINUX: >-
-        PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache
-      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-      CIBW_ENVIRONMENT_PASS_LINUX: >-
-        IMPORT_NAME ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN
-        MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
-      MATURIN_PEP517_ARGS: ${{ matrix.abi == 'abi3t' && '--profile release-dist --features pyo3/abi3t-py315' || '--profile release-dist' }}
-      CIBW_TEST_COMMAND: ${{ fromJson(inputs.plan).wheel-test-command }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          enable-cache: true
-          cache-suffix: ${{ inputs.package }}
-          save-cache: false
-          working-directory: ${{ inputs.package }}
-
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        if: fromJson(inputs.plan).crate != ''
-        with:
-          toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-on-failure: false
-          cache-save-if: false
-          cache-targets: false
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: metadata-${{ inputs.package }}
-          path: ${{ inputs.package }}
-
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
-        with:
-          version: ${{ env.SCCACHE_VERSION }}
-
-      - name: Configure distribution build
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "$PACKAGE/Cargo.toml" ] && [ "$RUNNER_OS" != Windows ]; then
-            echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
-            if [ "$RUNNER_OS" = Linux ]; then
-              echo "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $(dirname "$SCCACHE_PATH"):/opt/sccache:ro" >> "$GITHUB_ENV"
-            fi
-          fi
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', inputs.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
-
-      - uses: pypa/cibuildwheel@b9e566a2b284570af229f6c2a33673410d0389a3 # v4.3.4
-        if: fromJson(inputs.plan).crate != ''
-        with:
-          package-dir: ${{ inputs.package }}
-          output-dir: dist
-        env:
-          CIBW_SKIP: ${{ matrix.pgo-build }}
-
-      - name: Build and qualify the PGO wheel
-        if: matrix.pgo-build != ''
-        shell: bash
-        run: python tools/pgo.py "$PACKAGE" release --output dist --work "$RUNNER_TEMP/pgo"
-
-      - name: Retain PGO inputs and evidence
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() && matrix.pgo-build != '' }}
-        with:
-          name: pgo-${{ inputs.package }}-${{ matrix.pgo-build }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/pgo
-            !${{ runner.temp }}/pgo/collection/files
-          if-no-files-found: error
-
-      - name: Test stable-ABI wheel on standard CPython
-        if: matrix.abi == 'abi3t'
-        env:
-          WHEEL_TEST_COMMAND: ${{ fromJson(inputs.plan).wheel-test-command }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          wheel="$(uv run --no-project --python 3.15 --with packaging python - <<'PY'
-          from pathlib import Path
-          from packaging.tags import sys_tags
-          from packaging.utils import parse_wheel_filename
-          supported = set(sys_tags())
-          wheels = [
-              path.resolve() for path in Path("dist").glob("*.whl")
-              if parse_wheel_filename(path.name)[3] & supported
-          ]
-          if len(wheels) != 1:
-              raise SystemExit(f"expected one compatible stable-ABI wheel, found {wheels}")
-          print(wheels[0])
-          PY
-          )"
-          export PACKAGE_DIR="$GITHUB_WORKSPACE/$PACKAGE"
-          uv run --no-project --isolated --directory "$RUNNER_TEMP" --python 3.15 \
-            --with "$wheel" python - <<'PY'
-          import os
-          import subprocess
-          command = os.environ["WHEEL_TEST_COMMAND"].replace(
-              "{package}", os.environ["PACKAGE_DIR"]
-          ).replace("{project}", os.environ["GITHUB_WORKSPACE"])
-          subprocess.run(command, shell=True, check=True)
-          PY
-
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        if: hashFiles(format('{0}/tools/wheel_smoke.py', inputs.package)) != '' && matrix.runner == 'ubuntu-26.04' && matrix.abi == 'optimized'
-        with:
-          tool: cargo-about@0.9.2
-
-      - name: Build source distribution
-        if: fromJson(inputs.plan).crate != '' && matrix.runner == 'ubuntu-26.04' && matrix.abi == 'optimized'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "$PACKAGE/tools/wheel_smoke.py" ]; then
-            staging="$RUNNER_TEMP/sdist"
-            uv run --project "$PACKAGE" --no-sync --with maturin==1.15.0 \
-              python "$PACKAGE/tools/wheel_smoke.py" --stage-sdist "$staging"
-            cp "$staging"/*.tar.gz "$GITHUB_WORKSPACE/dist/"
-          else
-            uv build --project "$PACKAGE" --sdist --out-dir "$GITHUB_WORKSPACE/dist"
-          fi
-
-      - name: Build Python distributions
-        if: fromJson(inputs.plan).crate == ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          uv build --project "$PACKAGE" --out-dir "$GITHUB_WORKSPACE/dist"
-          for wheel in "$GITHUB_WORKSPACE"/dist/*.whl; do
-            uv run --isolated --no-project --directory "$RUNNER_TEMP" --with "$wheel" \
-              python -c 'import importlib, sys; importlib.import_module(sys.argv[1])' "$IMPORT_NAME"
-          done
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          name: dist-${{ inputs.package }}-${{ matrix.runner }}-${{ matrix.abi }}
-          path: dist
-          if-no-files-found: error
+    uses: ./.github/workflows/_distribution.yaml # zizmor: ignore[self-repository] -- same-revision workflow
+    with:
+      package: ${{ inputs.package }}
+      plan: ${{ inputs.plan }}
+      build: ${{ toJson(matrix) }}

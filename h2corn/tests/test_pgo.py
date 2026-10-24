@@ -21,6 +21,8 @@ CONFIG = {'target': 'x86_64-unknown-linux-gnu'}
 
 @pytest.fixture
 def profile(tmp_path, monkeypatch):
+    # The interpreter already loaded ASan; child compiler tools must not preload it.
+    monkeypatch.delenv('LD_PRELOAD', raising=False)
     monkeypatch.delenv('RUSTFLAGS', raising=False)
     monkeypatch.delenv('CARGO_ENCODED_RUSTFLAGS', raising=False)
     path = tmp_path / 'profile.profdata'

@@ -218,12 +218,14 @@ def release(package: Path, config: dict, adapter, output: Path, work: Path) -> N
             'MATURIN_PEP517_ARGS': shlex.join([
                 '--profile',
                 'release-dist',
+                '--locked',
                 '--target',
                 config['target'],
                 '--config',
                 f'/pgo/{phase}.toml',
             ]),
-            'CIBW_BEFORE_TEST': 'cd {package} && uv pip install -r /pgo/'  # ruff: ignore[missing-f-string-syntax] -- cibuildwheel expands the container path
+            'CIBW_BEFORE_TEST_LINUX': os.environ['CIBW_BEFORE_TEST_LINUX']
+            + ' && cd {package} && uv pip install -r /pgo/'  # ruff: ignore[missing-f-string-syntax] -- cibuildwheel expands the container path
             + ('training.txt' if phase == 'generate' else 'tests.txt'),
             'CIBW_TEST_COMMAND': test,
         }

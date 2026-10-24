@@ -2942,6 +2942,8 @@ async def test_h2_fixed_length_violation_on_a_live_stream_ends_the_connection(
 
 
 def _resident_kib(pid: int | None = None) -> int:
+    if 'ASAN_OPTIONS' in os.environ:
+        pytest.skip('ASan quarantine retains freed memory; RSS is not live allocation')
     status_path = '/proc/self/status' if pid is None else f'/proc/{pid}/status'
     with open(status_path) as status:
         for line in status:

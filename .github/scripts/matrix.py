@@ -387,7 +387,7 @@ def resolve_matrix(
         freethreaded_linux=freethreaded_linux,
         freethreaded_group=info['freethreaded-group'],
     )
-    build_matrix = [
+    build_matrix: list[dict[str, Any]] = [
         {'runner': runner, 'abi': abi, 'pgo-build': ''}
         for runner in (NATIVE_BUILD_RUNNERS if has_rust else PURE_BUILD_RUNNERS)
         for abi in (('optimized', 'abi3t') if has_rust else ('optimized',))
@@ -403,6 +403,14 @@ def resolve_matrix(
         for cell in build_matrix:
             if cell['runner'] == pgo_runner and cell['abi'] == 'optimized':
                 cell['pgo-build'] = pgo['build']
+
+    for cell in build_matrix:
+        cell['test-matrix'] = [
+            test
+            for test in test_matrix
+            if cell['abi'] == 'optimized'
+            and (not has_rust or test['os'] == cell['runner'])
+        ]
 
     plan = {
         'type': info['type'],

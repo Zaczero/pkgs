@@ -13,11 +13,12 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   detect:
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
 
     outputs:
       release-package: ${{ steps.release.outputs.package }}
@@ -147,6 +148,7 @@ jobs:
     if: needs.detect.outputs.lint-rust == 'true'
 
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -170,20 +172,14 @@ jobs:
         run: cargo fmt --check
 
   check-rust:
-    name: check-rust (${{ matrix.package }})
     needs: detect
     if: needs.detect.outputs.rust-checks != '' && needs.detect.outputs.rust-checks != '[]'
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.detect.outputs.rust-checks) }}
-
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
 
     env:
-      CARGO_PACKAGE: ${{ matrix.crate }}
-      PACKAGE: ${{ matrix.package }}
+      RUST_CHECKS: ${{ needs.detect.outputs.rust-checks }}
       RUSTUP_TOOLCHAIN: ${{ needs.detect.outputs.rust-toolchain }}
 
     steps:
@@ -202,54 +198,31 @@ jobs:
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
           components: clippy
-          cache-key: check-${{ matrix.crate }}
+          cache-key: check
+          cache-targets: false
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', matrix.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
+      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
-      - name: Check crate targets
-        id: check
+      - name: Check crate targets and doctests
         shell: bash
         run: |
           set -euo pipefail
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
-          cargo clippy --locked -p "$CARGO_PACKAGE" --all-targets
-          doctests="$(cargo metadata --locked --no-deps --format-version 1 |
-            jq --arg package "$CARGO_PACKAGE" \
-              'any(.packages[] | select(.name == $package) | .targets[]; .doctest)')"
-          echo "doctests=$doctests" >> "$GITHUB_OUTPUT"
-
-      - name: Package before-test hook
-        if: steps.check.outputs.doctests == 'true' && hashFiles(format('{0}/tools/ci_before_test.sh', matrix.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_test.sh"
-
-      - name: Test doctests
-        if: steps.check.outputs.doctests == 'true'
-        shell: bash
-        run: PYO3_PYTHON="$(command -v python)" cargo test --locked -p "$CARGO_PACKAGE" --doc
+          python .github/scripts/check_rust.py clippy
 
   test-kani:
-    name: kani (${{ matrix.package }})
     needs: detect
     if: needs.detect.outputs.kani-checks != '' && needs.detect.outputs.kani-checks != '[]'
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.detect.outputs.kani-checks) }}
-
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
 
     env:
       KANI_VERSION: "0.68.0"
-      CARGO_PACKAGE: ${{ matrix.crate }}
-      PACKAGE: ${{ matrix.package }}
+      RUST_CHECKS: ${{ needs.detect.outputs.kani-checks }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -266,10 +239,12 @@ jobs:
         # zizmor: ignore[cache-poisoning] -- Verification produces no distribution artifacts.
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
-          cache-key: kani-${{ env.KANI_VERSION }}-${{ matrix.crate }}
+          cache-key: kani-${{ env.KANI_VERSION }}
           cache-directories: ~/.kani
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
       - name: Install Kani
         shell: bash
@@ -280,19 +255,16 @@ jobs:
           # Keep Kani's exact rustc, but use current Cargo for workspace manifest features.
           cp --remove-destination "$(rustup which cargo)" "$HOME/.kani/kani-$KANI_VERSION/toolchain/bin/cargo"
 
-      - name: Package before-build hook
-        if: hashFiles(format('{0}/tools/ci_before_build.sh', matrix.package)) != ''
-        shell: bash
-        run: bash "$PACKAGE/tools/ci_before_build.sh"
-
       - name: Verify first-party Rust harnesses
+        # Kani owns its compiler wrapper and caches its verification artifacts.
+        env:
+          RUSTC_WRAPPER: ""
         shell: bash
         run: |
           set -euo pipefail
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
-          cargo kani -p "$CARGO_PACKAGE" --lib --bins -j -Z unstable-options \
-            --harness-timeout 180 --output-format terse
+          python .github/scripts/check_rust.py kani
 
   test:
     name: ${{ matrix.package }}

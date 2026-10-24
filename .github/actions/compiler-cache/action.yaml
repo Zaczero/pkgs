@@ -1,0 +1,26 @@
+name: Compiler cache
+description: Share Rust and native compiler outputs through the Actions cache
+
+runs:
+  using: composite
+  steps:
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      env:
+        SCCACHE_GHA_ENABLED: "on"
+        SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+        SCCACHE_MULTILEVEL_CHAIN: disk,gha
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+      with:
+        version: v0.19.0
+
+    - name: Configure compiler caching
+      shell: bash
+      run: | # zizmor: ignore[github-env] -- Values come only from runner paths, the pinned setup action, and the fixed cache policy.
+        echo "SCCACHE_GHA_ENABLED=on" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_RW_MODE=$CACHE_MODE" >> "$GITHUB_ENV"
+        echo "SCCACHE_MULTILEVEL_CHAIN=disk,gha" >> "$GITHUB_ENV"
+        echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/sccache"
+      env:
+        CACHE_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
