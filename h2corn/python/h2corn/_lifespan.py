@@ -172,6 +172,8 @@ class LifespanRunner:
             return await self._recv.get()
 
         async def send(message: FrameworkMessage):
+            if message.get('type') == 'lifespan.startup.complete':
+                self._active = True
             await self._send.put(message)
 
         self._task = asyncio.ensure_future(self._app(scope, receive, send))
@@ -179,7 +181,6 @@ class LifespanRunner:
         if message is not None:
             match message.get('type'):
                 case 'lifespan.startup.complete':
-                    self._active = True
                     return
                 case 'lifespan.startup.failed':
                     detail = message.get('message', '')
@@ -228,6 +229,10 @@ class LifespanRunner:
     async def shutdown(self):
         if not self._active or self._task is None:
             return
+        # A cancelled startup exchange may leave its completion queued.
+        # It must not be mistaken for the response to shutdown.
+        if not self._send.empty():
+            self._send.get_nowait()
         message = await self._exchange({'type': 'lifespan.shutdown'})
         if message is None:
             if self._task.cancelled():
@@ -302,9 +307,23 @@ class PreparedApplication:
         self._startup_task = None
 
     async def discard_task(self, timeout: float | None = None) -> bool:
+        startup_pending = self._startup_task is not None
         if not await self._cancel_startup(timeout):
             return False
-        return self._runner is None or await self._runner.discard_task(timeout)
+        if self._runner is None:
+            return True
+        # Publishing startup completion commits resources even when the
+        # startup waiter is cancelled before it can observe the message.
+        if startup_pending and self._runner._active:
+            try:
+                await await_with_timeout(
+                    self._runner.shutdown(),
+                    timeout,
+                    'lifespan startup rollback timed out',
+                )
+            except (Exception, asyncio.CancelledError):
+                pass
+        return await self._runner.discard_task(timeout)
 
     async def _cancel_startup(self, timeout: float | None = None) -> bool:
         startup = self._startup_task

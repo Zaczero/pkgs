@@ -4,7 +4,14 @@ from typing import Any
 import pytest
 from h2corn import Config, Server
 from h2corn._config import LifespanMode
-from h2corn._lifespan import LifespanRunner, await_with_timeout, cancel_task
+from h2corn._lifespan import (
+    LifespanRunner,
+    PreparedApplication,
+    await_with_timeout,
+    cancel_task,
+    start_prepared_application,
+    stop_prepared_application,
+)
 
 from tests._support import wait_for_server
 
@@ -47,6 +54,66 @@ async def _run_lifespan(
         except BaseException:
             await runner.discard_task(shutdown_timeout)
             raise
+
+
+async def test_cancelled_startup_rolls_back_published_completion() -> None:
+    published = asyncio.Event()
+    events = []
+
+    async def app(scope, receive, send):
+        events.append((await receive())['type'])
+        await send({'type': 'lifespan.startup.complete'})
+        published.set()
+        events.append((await receive())['type'])
+        await send({'type': 'lifespan.shutdown.complete'})
+
+    owner = PreparedApplication(app, False, 'on')
+    startup = asyncio.create_task(
+        start_prepared_application(owner, required=True, startup_timeout=1)
+    )
+    await published.wait()
+    startup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await startup
+    await stop_prepared_application(owner, shutdown_timeout=1)
+
+    assert events == ['lifespan.startup', 'lifespan.shutdown']
+
+
+async def test_cancelled_startup_waits_for_rollback_completion() -> None:
+    starting = asyncio.Event()
+    publish = asyncio.Event()
+    stopping = asyncio.Event()
+    finish = asyncio.Event()
+    events = []
+
+    async def app(scope, receive, send):
+        events.append((await receive())['type'])
+        starting.set()
+        await publish.wait()
+        await send({'type': 'lifespan.startup.complete'})
+        events.append((await receive())['type'])
+        stopping.set()
+        await finish.wait()
+        events.append('released')
+        await send({'type': 'lifespan.shutdown.complete'})
+
+    owner = PreparedApplication(app, False, 'on')
+    startup = asyncio.create_task(
+        start_prepared_application(owner, required=True, startup_timeout=1)
+    )
+    await starting.wait()
+    startup.cancel()
+    publish.set()
+    await stopping.wait()
+    # Let the rollback waiter consume any queued response before the app finishes.
+    await asyncio.sleep(0)
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await startup
+    await stop_prepared_application(owner, shutdown_timeout=1)
+
+    assert events == ['lifespan.startup', 'lifespan.shutdown', 'released']
 
 
 async def test_lifespan_startup_failure_is_reported() -> None:
