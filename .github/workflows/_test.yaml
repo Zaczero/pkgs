@@ -72,6 +72,7 @@ jobs:
           persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
         if: fromJson(inputs.plan).type != 'rust'
         with:
           python-version: ${{ fromJson(inputs.plan).primary-python }}
@@ -84,7 +85,7 @@ jobs:
           cache-suffix: ${{ inputs.package }}
           save-cache: false
           working-directory: ${{ inputs.package }}
-          python-version: ${{ fromJson(inputs.plan).primary-python }}
+          python-version: ${{ steps.python.outputs.python-path }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
@@ -98,36 +99,21 @@ jobs:
         with:
           tool: nextest
 
-      - name: Prepare embedded Python
+      - name: Install AddressSanitizer runtime
         if: fromJson(inputs.plan).type != 'rust'
         shell: bash
         run: |
-          set -euo pipefail
-          uv sync --project "$PACKAGE" --no-dev
-          python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
-          {
-            echo "PYO3_PYTHON=$python"
-            echo "PYTHONPATH=$("$python" -c 'import os, site; print(os.pathsep.join(site.getsitepackages()))')"
-          } >> "$GITHUB_ENV"
-          dirname "$python" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install --yes clang
 
-      - name: Test instrumented Rust and standard library
+      - name: Package before-test hook
+        if: fromJson(inputs.plan).type != 'rust' && hashFiles(format('{0}/tools/ci_before_test.sh', inputs.package)) != ''
         shell: bash
-        run: |
-          set -euo pipefail
-          args=(--locked -p "$CARGO_PACKAGE" --target x86_64-unknown-linux-gnu -Z build-std
-            --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Zsanitizer=address"]')
-          status=0
-          cargo nextest run "${args[@]}" || status=$?
-          if [[ "$status" == 4 && "$PACKAGE_TYPE" != rust ]]; then
-            cargo nextest list "${args[@]}" --message-format json > "$RUNNER_TEMP/rust-tests.json"
-            count="$(jq -er '."test-count" | numbers' "$RUNNER_TEMP/rust-tests.json")"
-            if [[ "$count" == 0 ]]; then
-              echo "::notice::The instrumented package targets contain no Rust tests."
-              exit 0
-            fi
-          fi
-          exit "$status"
+        run: bash "$PACKAGE/tools/ci_before_test.sh"
+
+      - name: Test instrumented Rust and Python
+        shell: bash
+        run: bash .github/scripts/test_asan.sh
 
   test:
     if: fromJson(inputs.plan).type != 'rust'
@@ -149,11 +135,18 @@ jobs:
           submodules: true
           persist-credentials: false
 
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        if: fromJson(inputs.plan).crate != '' && matrix.primary
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: true
+
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           cache-suffix: ${{ inputs.package }}
           enable-cache: true
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ steps.python.outputs.python-path || matrix.python-version }}
           save-cache: ${{ github.ref == 'refs/heads/main' }}
           working-directory: ${{ inputs.package }}
 
