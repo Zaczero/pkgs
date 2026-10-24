@@ -371,12 +371,12 @@ async def test_data_connection_is_pinned_to_the_selected_validated_ip(
             if flags & socket.AI_NUMERICHOST:
                 raise socket.gaierror(socket.EAI_NONAME, 'A hostname, not an IP')
             resolutions.append(name)
-            host = '127.0.0.1' if len(resolutions) == 1 else '127.0.0.2'
+            host = '127.0.0.1' if len(resolutions) == 1 else '::1'
         return real_resolution(host, port, family, type, proto, flags)
 
     async with (
         server_factory(host='127.0.0.1') as allowed,
-        server_factory(host='127.0.0.2', port=allowed.port) as denied,
+        server_factory(host='::1', port=allowed.port) as denied,
     ):
         monkeypatch.setattr(socket, 'getaddrinfo', resolve)
         async with httpx_ssrf_protection(
