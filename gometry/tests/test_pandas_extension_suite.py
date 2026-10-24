@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import itertools
 import operator
+from io import StringIO
 
 import gometry as gm
 import numpy as np
@@ -294,6 +295,17 @@ class TestGroupby(base.BaseGroupbyTests):
 
 class TestMethods(base.BaseMethodsTests):
     """Sorting uses the WKB-byte argsort key; order comparisons are refused."""
+
+    def test_json_roundtrip(self, data):
+        series = pd.Series(data)
+        encoded = series.to_json(
+            default_handler=lambda geometry: geometry.to_wkb().hex()
+        )
+        values = pd.read_json(StringIO(encoded), typ='series', dtype=str)
+        restored = gm.from_wkb([bytes.fromhex(value) for value in values])
+        pd.testing.assert_series_equal(
+            pd.Series(restored.to_pandas(), index=values.index), series
+        )
 
     def test_combine_le(self, data_repeated):
         first, second = data_repeated(2)
