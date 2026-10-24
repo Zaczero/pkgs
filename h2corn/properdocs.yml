@@ -63,11 +63,11 @@ extra_css:
 
 # Material renders ```mermaid fences itself, but its bundle lazy-loads the
 # library from unpkg.com unless a global `mermaid` already exists. Serving a
-# pinned copy keeps readers off a third-party CDN, keeps the site working
-# offline, and stops an upstream 11.x release from re-laying-out the diagrams.
+# pinned copy keeps readers off a third-party CDN and keeps the site working
+# offline.
 # The docs hook copies the shared source under vendor/ into this site path.
 extra_javascript: &javascript_assets
-  - assets/javascripts/mermaid-11.17.0.min.js
+  - assets/javascripts/mermaid-12.2.0.min.js
   - assets/shared/accessibility.js
 
 extra:

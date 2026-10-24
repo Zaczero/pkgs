@@ -12,7 +12,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 _ROOT = Path(__file__).resolve().parents[2]
-_MERMAID_PATH = 'assets/javascripts/mermaid-11.17.0.min.js'
+_MERMAID_PATH = 'assets/javascripts/mermaid-12.2.0.min.js'
 
 _PYTHON_FENCE = re.compile(
     r'^(?P<indent>[ \t]*)(?P<fence>`{3,})python(?P<options>[^\n]*)\n'
