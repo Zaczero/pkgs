@@ -212,7 +212,12 @@ jobs:
           PYO3_PYTHON="$(command -v python)"
           export PYO3_PYTHON
           cargo clippy --locked -p "$CARGO_PACKAGE" --all-targets
-          cargo test --locked -p "$CARGO_PACKAGE" --doc
+          doctests="$(cargo metadata --locked --no-deps --format-version 1 |
+            jq --arg package "$CARGO_PACKAGE" \
+              'any(.packages[] | select(.name == $package) | .targets[]; .doctest)')"
+          if [[ "$doctests" == true ]]; then
+            cargo test --locked -p "$CARGO_PACKAGE" --doc
+          fi
 
   test-kani:
     name: kani (${{ matrix.package }})
