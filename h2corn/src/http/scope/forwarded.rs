@@ -96,6 +96,7 @@ fn default_server<'a>(
             ServerEndpoint::Tcp(server) => {
                 (ScopeHost::Ip(&server.ip), server.port.map(NonZeroU16::get))
             },
+            #[cfg(unix)]
             ServerEndpoint::Unix(path) => (ScopeHost::Text(Cow::Borrowed(path)), None),
         };
     }
@@ -303,6 +304,7 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    #[cfg(unix)]
     use std::sync::Arc;
 
     use bytes::Bytes;
@@ -355,6 +357,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn unix_listener_path_overrides_an_unrelated_first_configured_bind() {
         let info = ConnectionInfo {
             actual_server: Some(ServerEndpoint::Unix(Arc::from("/run/h2corn.sock"))),

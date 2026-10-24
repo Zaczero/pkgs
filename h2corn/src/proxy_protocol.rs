@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU16;
 use std::str;
+#[cfg(unix)]
 use std::sync::Arc;
 
 use atoi_simd::parse_pos;
@@ -125,6 +126,7 @@ pub(crate) struct ServerAddr {
 #[derive(Clone, Debug)]
 pub(crate) enum ServerEndpoint {
     Tcp(ServerAddr),
+    #[cfg(unix)]
     Unix(Arc<str>),
 }
 
