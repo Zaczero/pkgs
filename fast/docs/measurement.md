@@ -57,11 +57,15 @@ Peak and launch RSS are means of the individual invocation high-water marks.
 
 Task sampling follows the root and discovered child lists, not a scan of every
 process on the host. Identity includes invocation, PID namespace, task ID, and
-kernel start ticks. The initial cadence is 100 ms, increasing to at least 200
+kernel start ticks.
+
+The initial cadence is 100 ms, increasing to at least 200
 times the preceding sweep's collector CPU cost. Large sweeps yield between
 16-task chunks for at least 200 times each chunk's collector CPU cost, so the
 initial sweep cannot run as an uninterrupted burst. A sweep still in progress
-when the command exits marks task detail incomplete. At most 1,024 task identities and
+when the command exits marks task detail incomplete.
+
+At most 1,024 task identities and
 bounded activity samples are retained per invocation. Task detail survives only
 for the first complete measured invocation of each command, subject to the
 retention allowance below.
@@ -121,7 +125,9 @@ the remaining target, up to the larger of a precision estimate and 100. The
 precision estimate is the run count at which every pair's interval would reach
 about ±1%, assuming independent runs with the pilot's variation. When the budget
 allows, 100 runs give the batch means below enough length to absorb correlation
-between consecutive runs. The default target is a goal: slow commands still get
+between consecutive runs.
+
+The default target is a goal: slow commands still get
 at least 3 runs, the fewest that usually bound an interval. An explicit `--time`
 is a strict budget, so the plan may stop after the first run.
 
@@ -152,11 +158,14 @@ per batch the method is the classical paired analysis.
 Fieller's theorem turns these estimates into a confidence set for the ratio of
 means: the values `R` with `(Y - R X)^2 <= t^2 Var(Y - R X)`. When the
 denominator's mean is not distinguishable from zero at this confidence, the set is
-unbounded, and the comparison is unresolved without an interval. The t quantile
+unbounded, and the comparison is unresolved without an interval.
+
+The t quantile
 has `b - 1` degrees of freedom at level `1 - 0.05 / (2m)` for the `m` command pairs
 (Bonferroni). With independent normally distributed batch means, this targets at
 least 95% simultaneous coverage. The simulations below assess specific departures
 from that model; they do not establish distribution-free coverage.
+
 Elapsed times are positive, so a set reaching below zero is cut at zero, which
 cannot exclude the true ratio. A single command uses the t interval for its mean,
 likewise cut at zero.
@@ -214,8 +223,11 @@ method. Simulated runs take about 1 ms each.
 Joint coverage counts an experiment when every bounded interval contains its true
 ratio; an unbounded set makes no claim and so cannot be wrong. The no-claim
 column shows how often that happened, so abstention is not mistaken for evidence.
+
 False direction counts experiments with at least one directional verdict against
-the truth; with equal means, every directional verdict is false. Across all 118
+the truth; with equal means, every directional verdict is false.
+
+Across all 118
 supported cells, from two runs to 1,000, the one-sided 95% lower coverage bound
 is at least 94.15% and the upper false-direction bound at most 5.80%. Automatic
 cells include the pilot, the warmup decision, and the variance-dependent run count.

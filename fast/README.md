@@ -194,16 +194,22 @@ and the assumptions behind the intervals.
 
 JSON schema 2 records each candidate as its exact argument vector and uses tagged
 UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include
-the shell executable and `-c` in that vector. Elapsed
+the shell executable and `-c` in that vector.
+
+Elapsed
 and CPU nanoseconds and PMU counters are decimal strings to avoid JavaScript
 integer rounding. Missing measurements are `null` with availability metadata.
-Readers should ignore unfamiliar fields. Raw invocations preserve phase,
+Readers should ignore unfamiliar fields.
+
+Raw invocations preserve phase,
 chronological run index, order, failures, and partial completion. `plan` records
 the planning mode, warmup, pilot and discarded runs, and the planned run count;
 the analysis uses the kept pilot runs and the production runs.
+
 `retention` reports `allowance_bytes`, `retained_bytes` (including unused buffer
 capacity), and `task_detail_omitted`. These bytes cover invocation storage and the stop reason, not
 command arguments, report analysis, transient collection, or allocator overhead.
+
 For a single command, the interval describes its mean elapsed nanoseconds;
 the comparison denominator is `null` and its decision is `not_applicable`.
 There is no import or reopen interface.
