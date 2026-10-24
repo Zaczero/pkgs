@@ -167,12 +167,13 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' && matrix.primary }}
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        if: fromJson(inputs.plan).crate != ''
+        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
         with:
           version: ${{ env.SCCACHE_VERSION }}
 
       - name: Configure compiler cache
-        if: fromJson(inputs.plan).crate != ''
+        # sccache 0.18 reorders MSVC's per-file -Tp and treats /WX- as its filename.
+        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
         shell: bash
         run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
 
@@ -305,7 +306,7 @@ jobs:
         run: cargo install --locked cargo-about --version 0.9.2 --features cli
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        if: fromJson(inputs.plan).crate != ''
+        if: fromJson(inputs.plan).crate != '' && runner.os != 'Windows'
         with:
           version: ${{ env.SCCACHE_VERSION }}
 
@@ -320,7 +321,7 @@ jobs:
           if [ "$PUBLISHABLE" = true ]; then
             python3 .github/scripts/gen_licenses.py "$PACKAGE"
           fi
-          if [ -f "$PACKAGE/Cargo.toml" ]; then
+          if [ -f "$PACKAGE/Cargo.toml" ] && [ "$RUNNER_OS" != Windows ]; then
             echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
             if [ "$RUNNER_OS" = Linux ]; then
               echo "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $(dirname "$SCCACHE_PATH"):/opt/sccache:ro" >> "$GITHUB_ENV"
