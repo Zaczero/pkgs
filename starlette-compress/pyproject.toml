@@ -63,6 +63,7 @@ dev = [
   "pytest-xdist[psutil]>=3.8",
   "trio",
   "uvloop; sys_platform != 'win32'",
+  "zstandard>=0.15",
 ]
 
 [build-system]
