@@ -1,6 +1,6 @@
 {
   "command": [
-    "/tmp/opencode/h2corn-release799/venv/bin/h2corn",
+    "/tmp/opencode/task824/python315/bin/h2corn",
     "bench.bench_app:app",
     "--backlog",
     "2048",
@@ -25,86 +25,85 @@
   ],
   "correctness_after": "passed",
   "correctness_before": "passed",
-  "elapsed_seconds": 1.521331854048185,
+  "elapsed_seconds": 2.518032775959,
   "load_plan": {
-    "duration": "1s",
-    "mode": "time-window",
+    "duration": "2s",
     "warmup_duration": "0.25s"
   },
   "metrics": {
-    "completed": 109404,
-    "elapsed_seconds": 1.5213312939740717,
+    "completed": 194221,
+    "elapsed_seconds": 2.5180321759544313,
     "latency_percentiles": {
-      "p50": 0.000901736,
-      "p75": 0.000912817,
-      "p90": 0.000922346,
-      "p95": 0.000928746,
-      "p99": 0.000978486,
-      "p99.9": 0.001119947
+      "p50": 0.000975959,
+      "p75": 0.00104363,
+      "p90": 0.001140851,
+      "p95": 0.001307023,
+      "p99": 0.001855948,
+      "p99.9": 0.005804235
     },
-    "peak_memory_bytes": 51686400,
-    "rps": 109219.16240440907
+    "peak_memory_bytes": 60685312,
+    "rps": 96956.41090896422
   },
   "phase": "completed",
-  "port": 56325,
+  "port": 36221,
   "server": "h2corn",
   "socket_path": "None",
-  "started_at": "2026-10-21T17:39:31.535674+00:00",
+  "started_at": "2026-10-24T04:39:25.899222+00:00",
   "status": "completed",
-  "supervisor_pid": 1185521,
+  "supervisor_pid": 844213,
   "tcp_nodelay": true,
   "workers": {
-    "1185522": {
+    "844215": {
       "event_loop": "asyncio.unix_events",
-      "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
+      "executable": "/tmp/opencode/task824/python315/bin/python",
       "gil_enabled": true,
       "modules": {
         "h2corn": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/__init__.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/__init__.py",
           "sha256": "984b3aa898987a86b2ffa73f3b08c4bf375a6c62157e8de68a3077968246ce77"
         },
         "h2corn._cli": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_cli.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_cli.py",
           "sha256": "257e608117264043c515ae31a767489f28320b8e256a56d1dd6d94505002158a"
         },
         "h2corn._config": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_config.py",
-          "sha256": "a1a7cb94c851dd64e8ef2a1178dacac1e173c8f21ca49fb9fbd6fae1f28d70a5"
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_config.py",
+          "sha256": "11aa090df042b00d6ad71c31622b9309e888e1b805ce399e818d31fbe563ae42"
         },
         "h2corn._lib": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_lib.cpython-315-x86_64-linux-gnu.so",
-          "sha256": "2205d1e0c2b52c090073b41fa3eef5132116f50a1f45f16785aa2512ccdd919a"
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_lib.cpython-315-x86_64-linux-gnu.so",
+          "sha256": "030572c52a62e314b52a5ad8aba31d0e50aed47d6f32c2a6968ac3d1b383985a"
         },
         "h2corn._lifespan": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_lifespan.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_lifespan.py",
           "sha256": "e4048204a29bc9166182228639de509fa883d2292d6b286607daaa13863801f8"
         },
         "h2corn._log": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_log.py",
-          "sha256": "0b8a03315ecaad2a756c5f362671efdfc925764016db4ea7cef9eba92c58231c"
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_log.py",
+          "sha256": "1f096c24fc6eb74d8ad153df72e83e246b695549384b434f3777c346753b3921"
         },
         "h2corn._reload": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_reload.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_reload.py",
           "sha256": "0f456ba5b81e250aa0665ba1062528b467e513752268fbda01216d96e106efde"
         },
         "h2corn._server": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_server.py",
-          "sha256": "3480d15f188be7e8911f23c2d18c84a67f4acd5d0a0b46bf15648f18ee7431bd"
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_server.py",
+          "sha256": "951947244907ed879581a91e7f18cfae336948511b72241950fa052db91cc669"
         },
         "h2corn._socket": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_socket.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_socket.py",
           "sha256": "4cf537f0efe2de26bfffa87076a62e1353ee808cce2f4131c8d0dbef6d57cd93"
         },
         "h2corn._supervisor": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_supervisor.py",
-          "sha256": "7fef7c97922a6f76e8127bfe063c7940080244fc307b5c78ebea318e6673f940"
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_supervisor.py",
+          "sha256": "085cb70349db0cec9a0c4964a16ff37350291e10dcbb635388ace409ef3b9dc8"
         },
         "h2corn._systemd": {
-          "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/h2corn/_systemd.py",
+          "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/h2corn/_systemd.py",
           "sha256": "bd6e877b2fbad9d0f3491b853ce853d54adaf103755e90aca284340d79ce8a84"
         }
       },
-      "pid": 1185522,
+      "pid": 844215,
       "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
     }
   }

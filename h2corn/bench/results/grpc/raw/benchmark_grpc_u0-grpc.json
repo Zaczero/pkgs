@@ -1,78 +1,78 @@
 {
   "aggregate": {
     "grpcio": {
-      "completed": 3755.0,
-      "elapsed_seconds": 1.5053624010179192,
+      "completed": 2936.0,
+      "elapsed_seconds": 1.5808807850116864,
       "latency_percentiles": {
-        "p50": 0.0002598252474997984,
-        "p90": 0.00029718389510776923,
-        "p95": 0.00031546669309099115,
-        "p99": 0.0003868635387853145
+        "p50": 0.00031717744219327817,
+        "p90": 0.00038348836702191294,
+        "p95": 0.0004135546933561405,
+        "p99": 0.0005762309631191891
       },
-      "peak_memory_bytes": 52290560,
-      "rpc_rate": 3754.145675392263,
-      "rps": 3754.145675392263,
+      "peak_memory_bytes": 53387264,
+      "rpc_rate": 2935.714266199274,
+      "rps": 2935.714266199274,
       "rps_range": [
-        3588.322140829342,
-        3797.6415444122645
+        2359.612351084902,
+        3246.3426935167877
       ],
       "rps_samples": [
-        3588.322140829342,
-        3770.320972733453,
-        3693.598217773067,
-        3797.6415444122645,
-        3755.037801603641,
-        3753.2535491808853
+        3099.679666704524,
+        2760.4788353982713,
+        2359.612351084902,
+        2771.7488656940236,
+        3246.3426935167877,
+        3240.2188933922453
       ]
     },
     "h2corn": {
-      "completed": 5855.5,
-      "elapsed_seconds": 1.6852761264890432,
+      "completed": 4260.0,
+      "elapsed_seconds": 1.6501037920243107,
       "latency_percentiles": {
-        "p50": 0.00016687281461955073,
-        "p90": 0.00019469800879721023,
-        "p95": 0.00020667585962012955,
-        "p99": 0.0002611243737372975
+        "p50": 0.00021940145054982969,
+        "p90": 0.00026506085614954326,
+        "p95": 0.00029718389510776923,
+        "p99": 0.0005104175211111834
       },
-      "peak_memory_bytes": 60332032,
-      "rpc_rate": 5855.371363114792,
-      "rps": 5855.371363114792,
+      "peak_memory_bytes": 60541952,
+      "rpc_rate": 4259.702204520148,
+      "rps": 4259.702204520148,
       "rps_range": [
-        5145.373669099381,
-        5934.528970501083
+        3641.6117495633202,
+        5009.522116637683
       ],
       "rps_samples": [
-        5145.373669099381,
-        5788.09128703221,
-        5877.792825436281,
-        5896.410182089486,
-        5832.949900793303,
-        5934.528970501083
+        4196.683259527671,
+        4302.845773098955,
+        4216.558635941342,
+        3641.6117495633202,
+        5009.522116637683,
+        4811.626786168331
       ]
     },
     "hypercorn": {
-      "completed": 2200.5,
-      "elapsed_seconds": 1.5393400634056889,
+      "completed": 1721.0,
+      "elapsed_seconds": 1.6323493369854987,
       "latency_percentiles": {
-        "p50": 0.00044246632363244374,
-        "p90": 0.0005012858970263945,
-        "p95": 0.0005564175278433448,
-        "p99": 0.0006923760585076739
+        "p50": 0.0005426058962884024,
+        "p90": 0.0006821102985150223,
+        "p95": 0.0007576913819005288,
+        "p99": 0.0010631412284994803
       },
-      "peak_memory_bytes": 36132864,
-      "rpc_rate": 2200.0338644545727,
-      "rps": 2200.0338644545727,
+      "peak_memory_bytes": 36401152,
+      "rpc_rate": 1720.23825234986,
+      "rps": 1720.23825234986,
       "rps_range": [
-        2123.8773906821134,
-        2246.5967313935216
+        1384.640592995198,
+        1804.8678060672805
       ],
       "rps_samples": [
-        2152.9760481414646,
-        2232.1796985147726,
-        2203.47471366301,
-        2196.593015246135,
-        2123.8773906821134,
-        2246.5967313935216
+        1804.8678060672805,
+        1717.3229849116274,
+        1723.1535197880928,
+        1500.2339670343265,
+        1384.640592995198,
+        1787.5772433446807
       ]
     }
   },
@@ -136,63 +136,63 @@
   ],
   "calibration": {
     "grpcio": {
-      "elapsed_seconds": 1.8544882020214573,
+      "elapsed_seconds": 2.0045530470088124,
       "processes_after": {
-        "1181948": {
-          "start_ticks": 79973413,
-          "system_ticks": 55,
+        "838090": {
+          "start_ticks": 101211579,
+          "system_ticks": 62,
           "threads": [
-            1181948,
-            1181952,
-            1181953,
-            1181954,
-            1181955,
-            1181956,
-            1181957,
-            1181958,
-            1181959,
-            1181960,
-            1181961,
-            1181962,
-            1181963,
-            1181964,
-            1181965,
-            1181966,
-            1181967,
-            1181968,
-            1181969,
-            1181970
+            838090,
+            838092,
+            838093,
+            838094,
+            838095,
+            838096,
+            838097,
+            838098,
+            838099,
+            838100,
+            838101,
+            838102,
+            838103,
+            838104,
+            838105,
+            838106,
+            838107,
+            838108,
+            838109,
+            838110
           ],
-          "user_ticks": 122
+          "user_ticks": 120
         }
       },
       "processes_before": {
-        "1181948": {
-          "start_ticks": 79973413,
-          "system_ticks": 4,
+        "838090": {
+          "start_ticks": 101211579,
+          "system_ticks": 7,
           "threads": [
-            1181948,
-            1181952,
-            1181953,
-            1181954,
-            1181955,
-            1181956,
-            1181957,
-            1181958,
-            1181959,
-            1181960,
-            1181961,
-            1181962,
-            1181963,
-            1181964,
-            1181965,
-            1181966,
-            1181967,
-            1181968,
-            1181969,
-            1181970
+            838090,
+            838092,
+            838093,
+            838094,
+            838095,
+            838096,
+            838097,
+            838098,
+            838099,
+            838100,
+            838101,
+            838102,
+            838103,
+            838104,
+            838105,
+            838106,
+            838107,
+            838108,
+            838109,
+            838110
           ],
-          "user_ticks": 12
+          "user_ticks": 13
         }
       },
       "selected_duration_seconds": 1.0,
@@ -200,41 +200,41 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 1851,
+          "completed": 1631,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5125277920160443,
-          "rate": 3701.613233239712
+          "elapsed_seconds": 0.5131956909317523,
+          "rate": 3260.8716927421074
         },
         {
-          "completed": 3749,
+          "completed": 3296,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0107731090392917,
-          "rate": 3748.1078341441307
+          "elapsed_seconds": 1.0538097589742392,
+          "rate": 3289.879573838422
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 1.9357075379230082,
+      "elapsed_seconds": 1.8867231730837375,
       "processes_after": {
-        "1182114": {
-          "start_ticks": 79973779,
-          "system_ticks": 53,
+        "838361": {
+          "start_ticks": 101211967,
+          "system_ticks": 51,
           "threads": [
-            1182114,
-            1182115,
-            1182116
+            838361,
+            838362,
+            838363
           ],
-          "user_ticks": 122
+          "user_ticks": 113
         }
       },
       "processes_before": {
-        "1182114": {
-          "start_ticks": 79973779,
-          "system_ticks": 8,
+        "838361": {
+          "start_ticks": 101211967,
+          "system_ticks": 7,
           "threads": [
-            1182114,
-            1182115,
-            1182116
+            838361,
+            838362,
+            838363
           ],
           "user_ticks": 17
         }
@@ -244,39 +244,39 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 2877,
+          "completed": 2508,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5100637009600177,
-          "rate": 5753.296993133815
+          "elapsed_seconds": 0.5124636860564351,
+          "rate": 5014.224172395553
         },
         {
-          "completed": 5504,
+          "completed": 5075,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.00964673794806,
-          "rate": 5503.257131829546
+          "elapsed_seconds": 1.0114616140490398,
+          "rate": 5074.178957251284
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.8011475160019472,
+      "elapsed_seconds": 1.865657589980401,
       "processes_after": {
-        "1182052": {
-          "start_ticks": 79973599,
-          "system_ticks": 19,
+        "838223": {
+          "start_ticks": 101211780,
+          "system_ticks": 22,
           "threads": [
-            1182052
+            838223
           ],
-          "user_ticks": 142
+          "user_ticks": 141
         }
       },
       "processes_before": {
-        "1182052": {
-          "start_ticks": 79973599,
-          "system_ticks": 4,
+        "838223": {
+          "start_ticks": 101211780,
+          "system_ticks": 5,
           "threads": [
-            1182052
+            838223
           ],
-          "user_ticks": 15
+          "user_ticks": 16
         }
       },
       "selected_duration_seconds": 1.0,
@@ -284,16 +284,16 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 1054,
+          "completed": 967,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.511149070924148,
-          "rate": 2106.5707254679014
+          "elapsed_seconds": 0.5128305580001324,
+          "rate": 1932.4682483676138
         },
         {
-          "completed": 2209,
+          "completed": 1849,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0102866380475461,
-          "rate": 2208.202408331123
+          "elapsed_seconds": 1.012144289095886,
+          "rate": 1848.8169948497648
         }
       ]
     }
@@ -305,16 +305,92 @@
   "identity": "../evidence/grpc/identity.json",
   "load_plan": {
     "duration": "1s",
-    "mode": "time-window",
     "warmup_duration": "0.25s"
   },
+  "look_history": [
+    {
+      "blocks": 6,
+      "budget": null,
+      "contrasts": {
+        "grpcio": {
+          "achieved_coverage": 0.96875,
+          "block_ids": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "block_ratios": [
+            1.3539086972782075,
+            1.5587316656525485,
+            1.7869709124054438,
+            1.3138317813116485,
+            1.5431279410649126,
+            1.4849696716418284
+          ],
+          "collection_complete": true,
+          "confidence": 0.95,
+          "decision": "slower",
+          "error_probability": 0.03125,
+          "h2corn_over_competitor": 1.5140488063533706,
+          "interval": [
+            1.3138317813116485,
+            1.7869709124054438
+          ],
+          "look_reason": "direction-resolved",
+          "lower_order": 1,
+          "method": "binomial order-statistic median interval with across-look error allocation",
+          "next_look": null,
+          "sample_size": 6,
+          "upper_order": 6
+        },
+        "hypercorn": {
+          "achieved_coverage": 0.96875,
+          "block_ids": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "block_ratios": [
+            2.3252025690856777,
+            2.505554174085882,
+            2.4470011450052804,
+            2.4273625511639927,
+            3.6179223272670993,
+            2.691702864355917
+          ],
+          "collection_complete": true,
+          "confidence": 0.95,
+          "decision": "slower",
+          "error_probability": 0.03125,
+          "h2corn_over_competitor": 2.4762776595455813,
+          "interval": [
+            2.3252025690856777,
+            3.6179223272670993
+          ],
+          "look_reason": "direction-resolved",
+          "lower_order": 1,
+          "method": "binomial order-statistic median interval with across-look error allocation",
+          "next_look": null,
+          "sample_size": 6,
+          "upper_order": 6
+        }
+      },
+      "decision": "direction-resolved"
+    }
+  ],
   "network_profile": "grpc",
   "not_selected": {
     "grpclib": "Representative no-compression subset"
   },
   "package_versions": {
     "connectrpc": "0.12.1",
-    "grpcio": "1.84.0",
+    "grpcio": "1.84.1",
     "grpclib": "0.4.9",
     "hypercorn": "0.18.0",
     "protobuf-py": "0.6.0",
@@ -332,21 +408,26 @@
         6
       ],
       "block_ratios": [
-        1.4339218908339622,
-        1.5351720261725859,
-        1.591346020569639,
-        1.5526505366904062,
-        1.553366492955746,
-        1.5811692156519086
+        1.3539086972782075,
+        1.5587316656525485,
+        1.7869709124054438,
+        1.3138317813116485,
+        1.5431279410649126,
+        1.4849696716418284
       ],
+      "collection_complete": true,
+      "confidence": 0.95,
       "decision": "slower",
-      "h2corn_over_competitor": 1.5530085148230761,
+      "error_probability": 0.03125,
+      "h2corn_over_competitor": 1.5140488063533706,
       "interval": [
-        1.4339218908339622,
-        1.591346020569639
+        1.3138317813116485,
+        1.7869709124054438
       ],
+      "look_reason": "direction-resolved",
       "lower_order": 1,
-      "method": "distribution-free order-statistic interval for the common median; independent paired blocks",
+      "method": "binomial order-statistic median interval with across-look error allocation",
+      "next_look": null,
       "sample_size": 6,
       "upper_order": 6
     },
@@ -361,27 +442,32 @@
         6
       ],
       "block_ratios": [
-        2.3898889509435435,
-        2.593022098930224,
-        2.667510904023565,
-        2.6843434997578624,
-        2.74636847041343,
-        2.641563965429615
+        2.3252025690856777,
+        2.505554174085882,
+        2.4470011450052804,
+        2.4273625511639927,
+        3.6179223272670993,
+        2.691702864355917
       ],
+      "collection_complete": true,
+      "confidence": 0.95,
       "decision": "slower",
-      "h2corn_over_competitor": 2.65453743472659,
+      "error_probability": 0.03125,
+      "h2corn_over_competitor": 2.4762776595455813,
       "interval": [
-        2.3898889509435435,
-        2.74636847041343
+        2.3252025690856777,
+        3.6179223272670993
       ],
+      "look_reason": "direction-resolved",
       "lower_order": 1,
-      "method": "distribution-free order-statistic interval for the common median; independent paired blocks",
+      "method": "binomial order-statistic median interval with across-look error allocation",
+      "next_look": null,
       "sample_size": 6,
       "upper_order": 6
     }
   },
   "planned_trials": 6,
-  "production_started_elapsed_seconds": 2192.739880239009,
+  "production_started_elapsed_seconds": 1778.7606918000383,
   "qualification": {
     "application_artifact_kind": "release",
     "cells": [
@@ -527,7 +613,7 @@
       },
       {
         "case": "Cancellation",
-        "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['server handler did not settle after cancellation']",
+        "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['rpc error: code = DeadlineExceeded desc = context deadline exceeded']",
         "server": "hypercorn",
         "status": "failed"
       },
@@ -605,360 +691,539 @@
   "samples": {
     "grpcio": [
       {
-        "completed": 3589,
-        "elapsed_seconds": 1.5585022009909153,
+        "completed": 3100,
+        "elapsed_seconds": 1.6271000991109759,
         "latency_percentiles": {
-          "p50": 0.000270375194447533,
-          "p90": 0.0003202065409175322,
-          "p95": 0.00033654029261208314,
-          "p99": 0.00039461996027330155
+          "p50": 0.0003077121919965813,
+          "p90": 0.00036442491256903045,
+          "p95": 0.00038684438807303373,
+          "p99": 0.0005162453355117428
         },
-        "message_rate": 3588.322140829342,
+        "message_rate": 3099.679666704524,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52210688,
-        "post_settlement_pss_bytes": 52222976,
-        "rpc_rate": 3588.322140829342,
-        "rps": 3588.322140829342
+        "peak_memory_bytes": 53357568,
+        "post_settlement_pss_bytes": 53346304,
+        "rpc_rate": 3099.679666704524,
+        "rps": 3099.679666704524
       },
       {
-        "completed": 3771,
-        "elapsed_seconds": 1.5010464149527252,
+        "completed": 2761,
+        "elapsed_seconds": 1.579943920020014,
         "latency_percentiles": {
-          "p50": 0.0002598252474997984,
-          "p90": 0.00029277759234300714,
-          "p95": 0.00031389720705571247,
-          "p99": 0.00037922202536323286
+          "p50": 0.00035020517801870744,
+          "p90": 0.0004147495442173026,
+          "p95": 0.00044026499863924736,
+          "p99": 0.0006362165907266354
         },
-        "message_rate": 3770.320972733453,
+        "message_rate": 2760.4788353982713,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52212736,
-        "post_settlement_pss_bytes": 52225024,
-        "rpc_rate": 3770.320972733453,
-        "rps": 3770.320972733453
+        "peak_memory_bytes": 53346304,
+        "post_settlement_pss_bytes": 53350400,
+        "rpc_rate": 2760.4788353982713,
+        "rps": 2760.4788353982713
       },
       {
-        "completed": 3694,
-        "elapsed_seconds": 1.5082672470016405,
+        "completed": 2360,
+        "elapsed_seconds": 1.5911914530443028,
         "latency_percentiles": {
-          "p50": 0.00026504773497454425,
-          "p90": 0.0003016490461685927,
-          "p95": 0.00031703617912626984,
-          "p99": 0.0003907128319537643
+          "p50": 0.0003572443020968833,
+          "p90": 0.0005425790359400881,
+          "p95": 0.0008240635568257079,
+          "p99": 0.001738055907435869
         },
-        "message_rate": 3693.598217773067,
+        "message_rate": 2359.612351084902,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52251648,
-        "post_settlement_pss_bytes": 52415488,
-        "rpc_rate": 3693.598217773067,
-        "rps": 3693.598217773067
+        "peak_memory_bytes": 53302272,
+        "post_settlement_pss_bytes": 53302272,
+        "rpc_rate": 2359.612351084902,
+        "rps": 2359.612351084902
       },
       {
-        "completed": 3798,
-        "elapsed_seconds": 1.5050615560030565,
+        "completed": 2772,
+        "elapsed_seconds": 1.5818176500033587,
         "latency_percentiles": {
-          "p50": 0.0002572527202968304,
-          "p90": 0.00029277759234300714,
-          "p95": 0.0003107893139165468,
-          "p99": 0.00037546735184478474
+          "p50": 0.00032664269238997503,
+          "p90": 0.00040255182147479543,
+          "p95": 0.00048632645854104637,
+          "p99": 0.0008240635568257079
         },
-        "message_rate": 3797.6415444122645,
+        "message_rate": 2771.7488656940236,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52185088,
-        "post_settlement_pss_bytes": 52197376,
-        "rpc_rate": 3797.6415444122645,
-        "rps": 3797.6415444122645
+        "peak_memory_bytes": 53263360,
+        "post_settlement_pss_bytes": 53271552,
+        "rpc_rate": 2771.7488656940236,
+        "rps": 2771.7488656940236
       },
       {
-        "completed": 3756,
-        "elapsed_seconds": 1.4989494979381561,
+        "completed": 3247,
+        "elapsed_seconds": 1.5693644559942186,
         "latency_percentiles": {
-          "p50": 0.0002598252474997984,
-          "p90": 0.00029570536826643693,
-          "p95": 0.0003107893139165468,
-          "p99": 0.0003830142456168648
+          "p50": 0.00029570536826643693,
+          "p90": 0.0003537072297988941,
+          "p95": 0.0003830142456168648,
+          "p99": 0.0005010626365612987
         },
-        "message_rate": 3755.037801603641,
+        "message_rate": 3246.3426935167877,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52290560,
-        "post_settlement_pss_bytes": 52302848,
-        "rpc_rate": 3755.037801603641,
-        "rps": 3755.037801603641
+        "peak_memory_bytes": 53387264,
+        "post_settlement_pss_bytes": 53373952,
+        "rpc_rate": 3246.3426935167877,
+        "rps": 3246.3426935167877
       },
       {
-        "completed": 3754,
-        "elapsed_seconds": 1.505663246032782,
+        "completed": 3241,
+        "elapsed_seconds": 1.5725126579636708,
         "latency_percentiles": {
-          "p50": 0.0002598252474997984,
-          "p90": 0.0002986624219491015,
-          "p95": 0.00031703617912626984,
-          "p99": 0.00039461996027330155
+          "p50": 0.0002986624219491015,
+          "p90": 0.0003572443020968833,
+          "p95": 0.00037922202536323286,
+          "p99": 0.00048151134509014543
         },
-        "message_rate": 3753.2535491808853,
+        "message_rate": 3240.2188933922453,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 52241408,
-        "post_settlement_pss_bytes": 52252672,
-        "rpc_rate": 3753.2535491808853,
-        "rps": 3753.2535491808853
+        "peak_memory_bytes": 53326848,
+        "post_settlement_pss_bytes": 53313536,
+        "rpc_rate": 3240.2188933922453,
+        "rps": 3240.2188933922453
       }
     ],
     "h2corn": [
       {
-        "completed": 5146,
-        "elapsed_seconds": 1.6901025840779766,
+        "completed": 4197,
+        "elapsed_seconds": 1.6606134210014716,
         "latency_percentiles": {
-          "p50": 0.00018897196915970205,
-          "p90": 0.0002305817145980231,
-          "p95": 0.0002447671364059304,
-          "p99": 0.0003077121919965813
+          "p50": 0.00022829872732477518,
+          "p90": 0.00027856783321448777,
+          "p95": 0.0003077121919965813,
+          "p99": 0.0004673501676598832
         },
-        "message_rate": 5145.373669099381,
+        "message_rate": 4196.683259527671,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60236800,
-        "post_settlement_pss_bytes": 59507712,
-        "rpc_rate": 5145.373669099381,
-        "rps": 5145.373669099381
+        "peak_memory_bytes": 60541952,
+        "post_settlement_pss_bytes": 60540928,
+        "rpc_rate": 4196.683259527671,
+        "rps": 4196.683259527671
       },
       {
-        "completed": 5789,
-        "elapsed_seconds": 1.687711910926737,
+        "completed": 4303,
+        "elapsed_seconds": 1.6395941630471498,
         "latency_percentiles": {
-          "p50": 0.0001693800579038844,
-          "p90": 0.00019664498888518248,
-          "p95": 0.00021293834484247917,
-          "p99": 0.00026504773497454425
+          "p50": 0.0002172184055738129,
+          "p90": 0.0002624234999747966,
+          "p95": 0.0002986624219491015,
+          "p99": 0.0006821102985150223
         },
-        "message_rate": 5788.09128703221,
+        "message_rate": 4302.845773098955,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60165120,
-        "post_settlement_pss_bytes": 60169216,
-        "rpc_rate": 5788.09128703221,
-        "rps": 5788.09128703221
+        "peak_memory_bytes": 60343296,
+        "post_settlement_pss_bytes": 60347392,
+        "rpc_rate": 4302.845773098955,
+        "rps": 4302.845773098955
       },
       {
-        "completed": 5878,
-        "elapsed_seconds": 1.6829357959795743,
+        "completed": 4217,
+        "elapsed_seconds": 1.672524549998343,
         "latency_percentiles": {
-          "p50": 0.0001660426016114932,
-          "p90": 0.00019469800879721023,
-          "p95": 0.00020667585962012955,
-          "p99": 0.0002598252474997984
+          "p50": 0.0002260383438859163,
+          "p90": 0.0002676982123242899,
+          "p95": 0.00029570536826643693,
+          "p99": 0.0005534848745624836
         },
-        "message_rate": 5877.792825436281,
+        "message_rate": 4216.558635941342,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60184576,
-        "post_settlement_pss_bytes": 59947008,
-        "rpc_rate": 5877.792825436281,
-        "rps": 5877.792825436281
+        "peak_memory_bytes": 60278784,
+        "post_settlement_pss_bytes": 60282880,
+        "rpc_rate": 4216.558635941342,
+        "rps": 4216.558635941342
       },
       {
-        "completed": 5897,
-        "elapsed_seconds": 1.6854261319385841,
+        "completed": 3642,
+        "elapsed_seconds": 1.7660277120303363,
         "latency_percentiles": {
-          "p50": 0.0001660426016114932,
-          "p90": 0.00019469800879721023,
-          "p95": 0.00020667585962012955,
-          "p99": 0.0002624234999747966
+          "p50": 0.00022158449552584644,
+          "p90": 0.00032664269238997503,
+          "p95": 0.00044911432511189603,
+          "p99": 0.0012640951966689218
         },
-        "message_rate": 5896.410182089486,
+        "message_rate": 3641.6117495633202,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60175360,
-        "post_settlement_pss_bytes": 60179456,
-        "rpc_rate": 5896.410182089486,
-        "rps": 5896.410182089486
+        "peak_memory_bytes": 60402688,
+        "post_settlement_pss_bytes": 60403712,
+        "rpc_rate": 3641.6117495633202,
+        "rps": 3641.6117495633202
       },
       {
-        "completed": 5833,
-        "elapsed_seconds": 1.6851261210395023,
+        "completed": 5010,
+        "elapsed_seconds": 1.6338136369595304,
         "latency_percentiles": {
-          "p50": 0.00016770302762760824,
-          "p90": 0.00019469800879721023,
-          "p95": 0.00020462956398032615,
-          "p99": 0.0002572527202968304
+          "p50": 0.00019469800879721023,
+          "p90": 0.00023288753174400306,
+          "p95": 0.00024721480776998946,
+          "p99": 0.00031389720705571247
         },
-        "message_rate": 5832.949900793303,
+        "message_rate": 5009.522116637683,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60271616,
-        "post_settlement_pss_bytes": 60275712,
-        "rpc_rate": 5832.949900793303,
-        "rps": 5832.949900793303
+        "peak_memory_bytes": 60464128,
+        "post_settlement_pss_bytes": 60468224,
+        "rpc_rate": 5009.522116637683,
+        "rps": 5009.522116637683
       },
       {
-        "completed": 5935,
-        "elapsed_seconds": 1.6828947889152914,
+        "completed": 4812,
+        "elapsed_seconds": 1.582424596999772,
         "latency_percentiles": {
-          "p50": 0.0001660426016114932,
-          "p90": 0.00018897196915970205,
-          "p95": 0.00020059755316177458,
-          "p99": 0.0002447671364059304
+          "p50": 0.00019086168885129923,
+          "p90": 0.00023756857113205787,
+          "p95": 0.0002676982123242899,
+          "p99": 0.0004315900388581977
         },
-        "message_rate": 5934.528970501083,
+        "message_rate": 4811.626786168331,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 60332032,
-        "post_settlement_pss_bytes": 59820032,
-        "rpc_rate": 5934.528970501083,
-        "rps": 5934.528970501083
+        "peak_memory_bytes": 60430336,
+        "post_settlement_pss_bytes": 60434432,
+        "rpc_rate": 4811.626786168331,
+        "rps": 4811.626786168331
       }
     ],
     "hypercorn": [
       {
-        "completed": 2153,
-        "elapsed_seconds": 1.5741468470077962,
+        "completed": 1805,
+        "elapsed_seconds": 1.6273908920120448,
         "latency_percentiles": {
-          "p50": 0.00044466764862564017,
-          "p90": 0.0005162453355117428,
-          "p95": 0.0005993448078837022,
-          "p99": 0.0007686189576775177
+          "p50": 0.0005372069662773155,
+          "p90": 0.0006362165907266354,
+          "p95": 0.0006821102985150223,
+          "p99": 0.0008923427483724444
         },
-        "message_rate": 2152.9760481414646,
+        "message_rate": 1804.8678060672805,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36109312,
-        "post_settlement_pss_bytes": 51424256,
-        "rpc_rate": 2152.9760481414646,
-        "rps": 2152.9760481414646
+        "peak_memory_bytes": 36383744,
+        "post_settlement_pss_bytes": 51674112,
+        "rpc_rate": 1804.8678060672805,
+        "rps": 1804.8678060672805
       },
       {
-        "completed": 2233,
-        "elapsed_seconds": 1.534689696971327,
+        "completed": 1718,
+        "elapsed_seconds": 1.6244540920015424,
         "latency_percentiles": {
-          "p50": 0.00043590593924678006,
-          "p90": 0.00047674390602984665,
-          "p95": 0.0005372069662773155,
-          "p99": 0.0006958207155151751
+          "p50": 0.0005590197233081087,
+          "p90": 0.0006821102985150223,
+          "p95": 0.0007313145650742221,
+          "p99": 0.0010155692857660526
         },
-        "message_rate": 2232.1796985147726,
+        "message_rate": 1717.3229849116274,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36132864,
-        "post_settlement_pss_bytes": 51410944,
-        "rpc_rate": 2232.1796985147726,
-        "rps": 2232.1796985147726
+        "peak_memory_bytes": 36400128,
+        "post_settlement_pss_bytes": 51690496,
+        "rpc_rate": 1717.3229849116274,
+        "rps": 1717.3229849116274
       },
       {
-        "completed": 2204,
-        "elapsed_seconds": 1.5473591350018978,
+        "completed": 1724,
+        "elapsed_seconds": 1.6299336079973727,
         "latency_percentiles": {
-          "p50": 0.00044466764862564017,
-          "p90": 0.00048632645854104637,
-          "p95": 0.0005425790359400881,
-          "p99": 0.0006175055549073864
+          "p50": 0.0005590197233081087,
+          "p90": 0.000668670030894052,
+          "p95": 0.0007098067118970299,
+          "p99": 0.000966279328793692
         },
-        "message_rate": 2203.47471366301,
+        "message_rate": 1723.1535197880928,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36104192,
-        "post_settlement_pss_bytes": 51422208,
-        "rpc_rate": 2203.47471366301,
-        "rps": 2203.47471366301
+        "peak_memory_bytes": 36363264,
+        "post_settlement_pss_bytes": 51657728,
+        "rpc_rate": 1723.1535197880928,
+        "rps": 1723.1535197880928
       },
       {
-        "completed": 2197,
-        "elapsed_seconds": 1.5356888700043783,
+        "completed": 1501,
+        "elapsed_seconds": 1.7941496410639957,
         "latency_percentiles": {
-          "p50": 0.00044026499863924736,
-          "p90": 0.0005266218667555286,
-          "p95": 0.0005702560197466016,
-          "p99": 0.0006889314015001729
+          "p50": 0.0005111339955561807,
+          "p90": 0.0007240738268061598,
+          "p95": 0.00104634205069405,
+          "p99": 0.0023660631373216383
         },
-        "message_rate": 2196.593015246135,
+        "message_rate": 1500.2339670343265,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36117504,
-        "post_settlement_pss_bytes": 51416064,
-        "rpc_rate": 2196.593015246135,
-        "rps": 2196.593015246135
+        "peak_memory_bytes": 36346880,
+        "post_settlement_pss_bytes": 51641344,
+        "rpc_rate": 1500.2339670343265,
+        "rps": 1500.2339670343265
       },
       {
-        "completed": 2124,
-        "elapsed_seconds": 1.535865222918801,
+        "completed": 1385,
+        "elapsed_seconds": 1.6347650659736246,
         "latency_percentiles": {
-          "p50": 0.00044911432511189603,
-          "p90": 0.0005590197233081087,
-          "p95": 0.0005934107008749533,
-          "p99": 0.0006958207155151751
+          "p50": 0.0005480048262994893,
+          "p90": 0.0006958207155151751,
+          "p95": 0.0010568054712009913,
+          "p99": 0.002342636769625383
         },
-        "message_rate": 2123.8773906821134,
+        "message_rate": 1384.640592995198,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36113408,
-        "post_settlement_pss_bytes": 51411968,
-        "rpc_rate": 2123.8773906821134,
-        "rps": 2123.8773906821134
+        "peak_memory_bytes": 36354048,
+        "post_settlement_pss_bytes": 51660800,
+        "rpc_rate": 1384.640592995198,
+        "rps": 1384.640592995198
       },
       {
-        "completed": 2247,
-        "elapsed_seconds": 1.5428149038925767,
+        "completed": 1788,
+        "elapsed_seconds": 1.6513842230197042,
         "latency_percentiles": {
-          "p50": 0.00043590593924678006,
-          "p90": 0.00047674390602984665,
-          "p95": 0.0005010626365612987,
-          "p99": 0.0006236806104564607
+          "p50": 0.0005214077888668606,
+          "p90": 0.0006821102985150223,
+          "p95": 0.0007840681987268354,
+          "p99": 0.0011107131712329078
         },
-        "message_rate": 2246.5967313935216,
+        "message_rate": 1787.5772433446807,
         "payload_bytes_rate": 0.0,
-        "peak_memory_bytes": 36124672,
-        "post_settlement_pss_bytes": 51423232,
-        "rpc_rate": 2246.5967313935216,
-        "rps": 2246.5967313935216
+        "peak_memory_bytes": 36401152,
+        "post_settlement_pss_bytes": 51695616,
+        "rpc_rate": 1787.5772433446807,
+        "rps": 1787.5772433446807
       }
     ]
   },
   "sampling": {
+    "calibration": {
+      "calibration_limited": false,
+      "duration_seconds": 1.0,
+      "not_selected_servers": {
+        "grpclib": "Representative no-compression subset"
+      },
+      "scenario": "gRPC U0",
+      "servers": {
+        "grpcio": {
+          "elapsed_seconds": 2.0045530470088124,
+          "processes_after": {
+            "838090": {
+              "start_ticks": 101211579,
+              "system_ticks": 62,
+              "threads": [
+                838090,
+                838092,
+                838093,
+                838094,
+                838095,
+                838096,
+                838097,
+                838098,
+                838099,
+                838100,
+                838101,
+                838102,
+                838103,
+                838104,
+                838105,
+                838106,
+                838107,
+                838108,
+                838109,
+                838110
+              ],
+              "user_ticks": 120
+            }
+          },
+          "processes_before": {
+            "838090": {
+              "start_ticks": 101211579,
+              "system_ticks": 7,
+              "threads": [
+                838090,
+                838092,
+                838093,
+                838094,
+                838095,
+                838096,
+                838097,
+                838098,
+                838099,
+                838100,
+                838101,
+                838102,
+                838103,
+                838104,
+                838105,
+                838106,
+                838107,
+                838108,
+                838109,
+                838110
+              ],
+              "user_ticks": 13
+            }
+          },
+          "selected_duration_seconds": 1.0,
+          "server": "grpcio",
+          "status": "stable",
+          "windows": [
+            {
+              "completed": 1631,
+              "duration_seconds": 0.5,
+              "elapsed_seconds": 0.5131956909317523,
+              "rate": 3260.8716927421074
+            },
+            {
+              "completed": 3296,
+              "duration_seconds": 1.0,
+              "elapsed_seconds": 1.0538097589742392,
+              "rate": 3289.879573838422
+            }
+          ]
+        },
+        "h2corn": {
+          "elapsed_seconds": 1.8867231730837375,
+          "processes_after": {
+            "838361": {
+              "start_ticks": 101211967,
+              "system_ticks": 51,
+              "threads": [
+                838361,
+                838362,
+                838363
+              ],
+              "user_ticks": 113
+            }
+          },
+          "processes_before": {
+            "838361": {
+              "start_ticks": 101211967,
+              "system_ticks": 7,
+              "threads": [
+                838361,
+                838362,
+                838363
+              ],
+              "user_ticks": 17
+            }
+          },
+          "selected_duration_seconds": 1.0,
+          "server": "h2corn",
+          "status": "stable",
+          "windows": [
+            {
+              "completed": 2508,
+              "duration_seconds": 0.5,
+              "elapsed_seconds": 0.5124636860564351,
+              "rate": 5014.224172395553
+            },
+            {
+              "completed": 5075,
+              "duration_seconds": 1.0,
+              "elapsed_seconds": 1.0114616140490398,
+              "rate": 5074.178957251284
+            }
+          ]
+        },
+        "hypercorn": {
+          "elapsed_seconds": 1.865657589980401,
+          "processes_after": {
+            "838223": {
+              "start_ticks": 101211780,
+              "system_ticks": 22,
+              "threads": [
+                838223
+              ],
+              "user_ticks": 141
+            }
+          },
+          "processes_before": {
+            "838223": {
+              "start_ticks": 101211780,
+              "system_ticks": 5,
+              "threads": [
+                838223
+              ],
+              "user_ticks": 16
+            }
+          },
+          "selected_duration_seconds": 1.0,
+          "server": "hypercorn",
+          "status": "stable",
+          "windows": [
+            {
+              "completed": 967,
+              "duration_seconds": 0.5,
+              "elapsed_seconds": 0.5128305580001324,
+              "rate": 1932.4682483676138
+            },
+            {
+              "completed": 1849,
+              "duration_seconds": 1.0,
+              "elapsed_seconds": 1.012144289095886,
+              "rate": 1848.8169948497648
+            }
+          ]
+        }
+      },
+      "status": "calibrated",
+      "supported_servers": [
+        "h2corn",
+        "hypercorn",
+        "grpcio"
+      ],
+      "unsupported_servers": {}
+    },
     "calibration_limited": false,
     "calibration_servers": {
       "grpcio": {
-        "elapsed_seconds": 1.8544882020214573,
+        "elapsed_seconds": 2.0045530470088124,
         "processes_after": {
-          "1181948": {
-            "start_ticks": 79973413,
-            "system_ticks": 55,
+          "838090": {
+            "start_ticks": 101211579,
+            "system_ticks": 62,
             "threads": [
-              1181948,
-              1181952,
-              1181953,
-              1181954,
-              1181955,
-              1181956,
-              1181957,
-              1181958,
-              1181959,
-              1181960,
-              1181961,
-              1181962,
-              1181963,
-              1181964,
-              1181965,
-              1181966,
-              1181967,
-              1181968,
-              1181969,
-              1181970
+              838090,
+              838092,
+              838093,
+              838094,
+              838095,
+              838096,
+              838097,
+              838098,
+              838099,
+              838100,
+              838101,
+              838102,
+              838103,
+              838104,
+              838105,
+              838106,
+              838107,
+              838108,
+              838109,
+              838110
             ],
-            "user_ticks": 122
+            "user_ticks": 120
           }
         },
         "processes_before": {
-          "1181948": {
-            "start_ticks": 79973413,
-            "system_ticks": 4,
+          "838090": {
+            "start_ticks": 101211579,
+            "system_ticks": 7,
             "threads": [
-              1181948,
-              1181952,
-              1181953,
-              1181954,
-              1181955,
-              1181956,
-              1181957,
-              1181958,
-              1181959,
-              1181960,
-              1181961,
-              1181962,
-              1181963,
-              1181964,
-              1181965,
-              1181966,
-              1181967,
-              1181968,
-              1181969,
-              1181970
+              838090,
+              838092,
+              838093,
+              838094,
+              838095,
+              838096,
+              838097,
+              838098,
+              838099,
+              838100,
+              838101,
+              838102,
+              838103,
+              838104,
+              838105,
+              838106,
+              838107,
+              838108,
+              838109,
+              838110
             ],
-            "user_ticks": 12
+            "user_ticks": 13
           }
         },
         "selected_duration_seconds": 1.0,
@@ -966,41 +1231,41 @@
         "status": "stable",
         "windows": [
           {
-            "completed": 1851,
+            "completed": 1631,
             "duration_seconds": 0.5,
-            "elapsed_seconds": 0.5125277920160443,
-            "rate": 3701.613233239712
+            "elapsed_seconds": 0.5131956909317523,
+            "rate": 3260.8716927421074
           },
           {
-            "completed": 3749,
+            "completed": 3296,
             "duration_seconds": 1.0,
-            "elapsed_seconds": 1.0107731090392917,
-            "rate": 3748.1078341441307
+            "elapsed_seconds": 1.0538097589742392,
+            "rate": 3289.879573838422
           }
         ]
       },
       "h2corn": {
-        "elapsed_seconds": 1.9357075379230082,
+        "elapsed_seconds": 1.8867231730837375,
         "processes_after": {
-          "1182114": {
-            "start_ticks": 79973779,
-            "system_ticks": 53,
+          "838361": {
+            "start_ticks": 101211967,
+            "system_ticks": 51,
             "threads": [
-              1182114,
-              1182115,
-              1182116
+              838361,
+              838362,
+              838363
             ],
-            "user_ticks": 122
+            "user_ticks": 113
           }
         },
         "processes_before": {
-          "1182114": {
-            "start_ticks": 79973779,
-            "system_ticks": 8,
+          "838361": {
+            "start_ticks": 101211967,
+            "system_ticks": 7,
             "threads": [
-              1182114,
-              1182115,
-              1182116
+              838361,
+              838362,
+              838363
             ],
             "user_ticks": 17
           }
@@ -1010,39 +1275,39 @@
         "status": "stable",
         "windows": [
           {
-            "completed": 2877,
+            "completed": 2508,
             "duration_seconds": 0.5,
-            "elapsed_seconds": 0.5100637009600177,
-            "rate": 5753.296993133815
+            "elapsed_seconds": 0.5124636860564351,
+            "rate": 5014.224172395553
           },
           {
-            "completed": 5504,
+            "completed": 5075,
             "duration_seconds": 1.0,
-            "elapsed_seconds": 1.00964673794806,
-            "rate": 5503.257131829546
+            "elapsed_seconds": 1.0114616140490398,
+            "rate": 5074.178957251284
           }
         ]
       },
       "hypercorn": {
-        "elapsed_seconds": 1.8011475160019472,
+        "elapsed_seconds": 1.865657589980401,
         "processes_after": {
-          "1182052": {
-            "start_ticks": 79973599,
-            "system_ticks": 19,
+          "838223": {
+            "start_ticks": 101211780,
+            "system_ticks": 22,
             "threads": [
-              1182052
+              838223
             ],
-            "user_ticks": 142
+            "user_ticks": 141
           }
         },
         "processes_before": {
-          "1182052": {
-            "start_ticks": 79973599,
-            "system_ticks": 4,
+          "838223": {
+            "start_ticks": 101211780,
+            "system_ticks": 5,
             "threads": [
-              1182052
+              838223
             ],
-            "user_ticks": 15
+            "user_ticks": 16
           }
         },
         "selected_duration_seconds": 1.0,
@@ -1050,16 +1315,16 @@
         "status": "stable",
         "windows": [
           {
-            "completed": 1054,
+            "completed": 967,
             "duration_seconds": 0.5,
-            "elapsed_seconds": 0.511149070924148,
-            "rate": 2106.5707254679014
+            "elapsed_seconds": 0.5128305580001324,
+            "rate": 1932.4682483676138
           },
           {
-            "completed": 2209,
+            "completed": 1849,
             "duration_seconds": 1.0,
-            "elapsed_seconds": 1.0102866380475461,
-            "rate": 2208.202408331123
+            "elapsed_seconds": 1.012144289095886,
+            "rate": 1848.8169948497648
           }
         ]
       }
@@ -1067,22 +1332,37 @@
     "calibration_status": "calibrated",
     "duration_seconds": 1.0,
     "family": "grpc",
-    "fixed_count": false,
-    "production_blocks": 6,
+    "maximum_blocks": 12,
+    "minimum_blocks": 6,
+    "not_selected_servers": {
+      "grpclib": "Representative no-compression subset"
+    },
     "production_cell_cost_seconds": {
-      "grpcio": 1.6044882020214573,
-      "h2corn": 1.6857075379230082,
-      "hypercorn": 1.5511475160019472
+      "grpcio": 1.7545530470088124,
+      "h2corn": 1.6367231730837375,
+      "hypercorn": 1.615657589980401
     },
     "profile": "grpc",
     "scenario": "gRPC U0",
-    "scenario_cost_seconds": 4.841343255946413,
+    "scenario_cost_seconds": 5.006933810072951,
     "slug": "benchmark_grpc_u0",
     "supported_servers": [
       "h2corn",
       "hypercorn",
       "grpcio"
-    ]
+    ],
+    "unsupported_servers": {}
+  },
+  "sampling_policy": {
+    "error_probabilities": [
+      0.03125,
+      0.01875
+    ],
+    "looks": [
+      6,
+      12
+    ],
+    "precision_ratio": 1.1
   },
   "scenario": "gRPC U0",
   "server_profiles": {
@@ -1118,7 +1398,7 @@
     "hypercorn": "Connect / Hypercorn"
   },
   "status": "completed",
-  "stopped": "max-trials",
+  "stopped": "direction-resolved",
   "system_summary": "Python 3.15.0 | Linux 7.2.9 | x86_64\nCPU: AMD Ryzen 9 5950X 16-Core Processor",
   "trials": 6,
   "type": "grpc",

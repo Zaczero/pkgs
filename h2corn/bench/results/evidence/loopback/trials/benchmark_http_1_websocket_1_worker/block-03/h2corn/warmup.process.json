@@ -7,16 +7,16 @@
     "--vus",
     "100",
     "--summary-export",
-    "/tmp/h2c-k6-pt3qiqe5/summary.json",
+    "/tmp/h2c-k6-pc1dgbjp/summary.json",
     "--summary-trend-stats",
     "med,p(90),p(95),p(99)",
     "-e",
-    "WS_URL=ws://127.0.0.1:50047/ws",
+    "WS_URL=ws://127.0.0.1:49983/ws",
     "bench/k6/ws.js"
   ],
-  "elapsed_seconds": 1.041618857998401,
+  "elapsed_seconds": 1.0725015749922022,
   "returncode": 0,
   "stderr": "",
-  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 31s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 1s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 22958 complete and 0 interrupted iterations\ndefault   [  99% ] 100 VUs  1.0s/1s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 46438   46256.538375/s\n    checks_succeeded...: 100.00% 46438 out of 46438\n    checks_failed......: 0.00%   0 out of 46438\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 23219 out of 23219\n\n    EXECUTION\n    iteration_duration....: med=4.18ms p(90)=5.1ms  p(95)=5.52ms p(99)=8.53ms\n    iterations............: 23219   23128.269188/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 4.5 MB  4.5 MB/s\n    data_sent.............: 5.3 MB  5.2 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=2.31ms p(90)=2.96ms p(95)=3.19ms p(99)=5.07ms\n    ws_msgs_received......: 23219   23128.269188/s\n    ws_msgs_sent..........: 23219   23128.269188/s\n    ws_session_duration...: med=4.12ms p(90)=5.03ms p(95)=5.44ms p(99)=8.37ms\n    ws_sessions...........: 23219   23128.269188/s\n\n\n\n\nrunning (01.0s), 000/100 VUs, 23219 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  1s\n",
+  "stdout": "\n         /\\      Grafana   /\u203e\u203e/  \n    /\\  /  \\     |\\  __   /  /   \n   /  \\/    \\    | |/ /  /   \u203e\u203e\\ \n  /          \\   |   (  |  (\u203e)  |\n / __________ \\  |_|\\_\\  \\_____/ \n\n\n     execution: local\n        script: bench/k6/ws.js\n        output: -\n\n     scenarios: (100.00%) 1 scenario, 100 max VUs, 31s max duration (incl. graceful stop):\n              * default: 100 looping VUs for 1s (gracefulStop: 30s)\n\n\nrunning (01.0s), 100/100 VUs, 15872 complete and 0 interrupted iterations\ndefault   [  99% ] 100 VUs  1.0s/1s\n\n\n  \u2588 TOTAL RESULTS \n\n    checks_total.......: 32184   31501.473606/s\n    checks_succeeded...: 100.00% 32184 out of 32184\n    checks_failed......: 0.00%   0 out of 32184\n\n    \u2713 status is 101\n    \u2713 first message exactly echoed nonce\n\n    CUSTOM\n    bench_echo_success....: 100.00% 16092 out of 16092\n\n    EXECUTION\n    iteration_duration....: med=5.23ms p(90)=7.31ms p(95)=9.68ms p(99)=38.87ms\n    iterations............: 16092   15750.736803/s\n    vus...................: 100     min=100            max=100\n    vus_max...............: 100     min=100            max=100\n\n    NETWORK\n    data_received.........: 3.1 MB  3.1 MB/s\n    data_sent.............: 3.6 MB  3.6 MB/s\n\n    WEBSOCKET\n    ws_connecting.........: med=2.8ms  p(90)=4.14ms p(95)=5.47ms p(99)=18.05ms\n    ws_msgs_received......: 16092   15750.736803/s\n    ws_msgs_sent..........: 16092   15750.736803/s\n    ws_session_duration...: med=5.15ms p(90)=7.18ms p(95)=9.53ms p(99)=38.8ms \n    ws_sessions...........: 16092   15750.736803/s\n\n\n\n\nrunning (01.0s), 000/100 VUs, 16092 complete and 0 interrupted iterations\ndefault \u2713 [ 100% ] 100 VUs  1s\n",
   "timeout_seconds": 31.0
 }

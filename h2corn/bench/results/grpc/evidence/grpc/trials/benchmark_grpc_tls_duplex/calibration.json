@@ -1,120 +1,113 @@
 {
   "calibration_limited": false,
-  "duration_seconds": 2.0,
-  "fixed_count": false,
+  "duration_seconds": 1.0,
   "not_selected_servers": {
     "grpclib": "Representative no-compression subset"
   },
   "scenario": "gRPC TLS-Duplex TLS",
   "servers": {
     "grpcio": {
-      "elapsed_seconds": 3.822681942023337,
+      "elapsed_seconds": 1.8530816429993138,
       "processes_after": {
-        "1184246": {
-          "start_ticks": 79978223,
-          "system_ticks": 249,
+        "841492": {
+          "start_ticks": 101216626,
+          "system_ticks": 106,
           "threads": [
-            1184246,
-            1184281,
-            1184282,
-            1184283,
-            1184284,
-            1184285,
-            1184286,
-            1184287,
-            1184288,
-            1184289,
-            1184290,
-            1184291,
-            1184292,
-            1184293,
-            1184294,
-            1184295,
-            1184296,
-            1184297,
-            1184298,
-            1184299
+            841492,
+            841493,
+            841494,
+            841495,
+            841496,
+            841497,
+            841498,
+            841499,
+            841500,
+            841501,
+            841502,
+            841503,
+            841504,
+            841505,
+            841506,
+            841507,
+            841508,
+            841509,
+            841510,
+            841511
           ],
-          "user_ticks": 454
+          "user_ticks": 202
         }
       },
       "processes_before": {
-        "1184246": {
-          "start_ticks": 79978223,
+        "841492": {
+          "start_ticks": 101216626,
           "system_ticks": 4,
           "threads": [
-            1184246,
-            1184281,
-            1184282,
-            1184283,
-            1184284,
-            1184285,
-            1184286,
-            1184287,
-            1184288,
-            1184289,
-            1184290,
-            1184291,
-            1184292,
-            1184293,
-            1184294,
-            1184295,
-            1184296,
-            1184297,
-            1184298,
-            1184299
+            841492,
+            841493,
+            841494,
+            841495,
+            841496,
+            841497,
+            841498,
+            841499,
+            841500,
+            841501,
+            841502,
+            841503,
+            841504,
+            841505,
+            841506,
+            841507,
+            841508,
+            841509,
+            841510,
+            841511
           ],
-          "user_ticks": 12
+          "user_ticks": 14
         }
       },
-      "selected_duration_seconds": 2.0,
+      "selected_duration_seconds": 1.0,
       "server": "grpcio",
       "status": "stable",
       "windows": [
         {
-          "completed": 254,
+          "completed": 257,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5238401850219816,
-          "rate": 31950.88846544702
+          "elapsed_seconds": 0.5220444600563496,
+          "rate": 32419.41635979896
         },
         {
-          "completed": 573,
+          "completed": 499,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0247791820438579,
-          "rate": 36282.38455235766
-        },
-        {
-          "completed": 1088,
-          "duration_seconds": 2.0,
-          "elapsed_seconds": 2.0264618610963225,
-          "rate": 34611.74668571835
+          "elapsed_seconds": 1.0237565280403942,
+          "rate": 31690.78849925686
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 1.9958209570031613,
+      "elapsed_seconds": 1.8722206699894741,
       "processes_after": {
-        "1184101": {
-          "start_ticks": 79978023,
-          "system_ticks": 117,
+        "841383": {
+          "start_ticks": 101216439,
+          "system_ticks": 111,
           "threads": [
-            1184101,
-            1184105,
-            1184106
+            841383,
+            841384,
+            841385
           ],
-          "user_ticks": 215
+          "user_ticks": 205
         }
       },
       "processes_before": {
-        "1184101": {
-          "start_ticks": 79978023,
-          "system_ticks": 9,
+        "841383": {
+          "start_ticks": 101216439,
+          "system_ticks": 5,
           "threads": [
-            1184101,
-            1184105,
-            1184106
+            841383,
+            841384,
+            841385
           ],
-          "user_ticks": 21
+          "user_ticks": 19
         }
       },
       "selected_duration_seconds": 1.0,
@@ -122,39 +115,39 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 547,
+          "completed": 537,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5192982580047101,
-          "rate": 69292.97163415565
+          "elapsed_seconds": 0.5165170260006562,
+          "rate": 68245.51877411525
         },
         {
-          "completed": 1056,
+          "completed": 1069,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0166138460626826,
-          "rate": 67263.1449110918
+          "elapsed_seconds": 1.0167470399755985,
+          "rate": 68079.83958902735
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.8597388269845396,
+      "elapsed_seconds": 1.9263456199551001,
       "processes_after": {
-        "1184032": {
-          "start_ticks": 79977837,
+        "841291": {
+          "start_ticks": 101216246,
           "system_ticks": 24,
           "threads": [
-            1184032
+            841291
           ],
-          "user_ticks": 140
+          "user_ticks": 143
         }
       },
       "processes_before": {
-        "1184032": {
-          "start_ticks": 79977837,
-          "system_ticks": 4,
+        "841291": {
+          "start_ticks": 101216246,
+          "system_ticks": 5,
           "threads": [
-            1184032
+            841291
           ],
-          "user_ticks": 16
+          "user_ticks": 18
         }
       },
       "selected_duration_seconds": 1.0,
@@ -162,16 +155,16 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 125,
+          "completed": 119,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5277664270251989,
-          "rate": 15557.501470553381
+          "elapsed_seconds": 0.5430844071088359,
+          "rate": 14399.221513348994
         },
         {
-          "completed": 252,
+          "completed": 232,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0403061700053513,
-          "rate": 15691.075445354565
+          "elapsed_seconds": 1.0375059749931097,
+          "rate": 14495.265540514962
         }
       ]
     }

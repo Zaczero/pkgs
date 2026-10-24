@@ -1,68 +1,67 @@
 {
   "calibration_limited": false,
-  "duration_seconds": 1.0,
-  "fixed_count": false,
+  "duration_seconds": 2.0,
   "not_selected_servers": {},
   "scenario": "gRPC U32",
   "servers": {
     "grpcio": {
-      "elapsed_seconds": 1.7776886339997873,
+      "elapsed_seconds": 1.8568581049330533,
       "processes_after": {
-        "1182183": {
-          "start_ticks": 79973972,
+        "838426": {
+          "start_ticks": 101212155,
           "system_ticks": 84,
           "threads": [
-            1182183,
-            1182184,
-            1182185,
-            1182186,
-            1182187,
-            1182188,
-            1182189,
-            1182190,
-            1182191,
-            1182192,
-            1182193,
-            1182194,
-            1182195,
-            1182196,
-            1182197,
-            1182198,
-            1182199,
-            1182200,
-            1182201,
-            1182202
+            838426,
+            838427,
+            838428,
+            838429,
+            838430,
+            838431,
+            838432,
+            838433,
+            838434,
+            838435,
+            838436,
+            838437,
+            838438,
+            838439,
+            838440,
+            838441,
+            838442,
+            838443,
+            838444,
+            838445
           ],
-          "user_ticks": 181
+          "user_ticks": 177
         }
       },
       "processes_before": {
-        "1182183": {
-          "start_ticks": 79973972,
-          "system_ticks": 5,
+        "838426": {
+          "start_ticks": 101212155,
+          "system_ticks": 6,
           "threads": [
-            1182183,
-            1182184,
-            1182185,
-            1182186,
-            1182187,
-            1182188,
-            1182189,
-            1182190,
-            1182191,
-            1182192,
-            1182193,
-            1182194,
-            1182195,
-            1182196,
-            1182197,
-            1182198,
-            1182199,
-            1182200,
-            1182201,
-            1182202
+            838426,
+            838427,
+            838428,
+            838429,
+            838430,
+            838431,
+            838432,
+            838433,
+            838434,
+            838435,
+            838436,
+            838437,
+            838438,
+            838439,
+            838440,
+            838441,
+            838442,
+            838443,
+            838444,
+            838445
           ],
-          "user_ticks": 10
+          "user_ticks": 14
         }
       },
       "selected_duration_seconds": 1.0,
@@ -70,37 +69,37 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 3240,
+          "completed": 2676,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5216050399467349,
-          "rate": 6356.331918110419
+          "elapsed_seconds": 0.526883331942372,
+          "rate": 5227.884777052233
         },
         {
-          "completed": 6451,
+          "completed": 5159,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0214020159328356,
-          "rate": 6385.9277474792125
+          "elapsed_seconds": 1.026224286062643,
+          "rate": 5100.388245824192
         }
       ]
     },
     "grpclib": {
-      "elapsed_seconds": 1.7466880549909547,
+      "elapsed_seconds": 1.7630032129818574,
       "processes_after": {
-        "1182413": {
-          "start_ticks": 79974526,
-          "system_ticks": 23,
+        "839221": {
+          "start_ticks": 101212919,
+          "system_ticks": 21,
           "threads": [
-            1182413
+            839221
           ],
-          "user_ticks": 131
+          "user_ticks": 132
         }
       },
       "processes_before": {
-        "1182413": {
-          "start_ticks": 79974526,
+        "839221": {
+          "start_ticks": 101212919,
           "system_ticks": 3,
           "threads": [
-            1182413
+            839221
           ],
           "user_ticks": 10
         }
@@ -110,41 +109,41 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 2685,
+          "completed": 2451,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5194633770734072,
-          "rate": 5271.972303802475
+          "elapsed_seconds": 0.5239878389984369,
+          "rate": 4792.069438294443
         },
         {
-          "completed": 5137,
+          "completed": 4758,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.02082558197435,
-          "rate": 5083.615555062016
+          "elapsed_seconds": 1.0257695199688897,
+          "rate": 4690.3474462408185
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 1.9431871710112318,
+      "elapsed_seconds": 1.8856879980303347,
       "processes_after": {
-        "1182331": {
-          "start_ticks": 79974331,
-          "system_ticks": 80,
+        "838957": {
+          "start_ticks": 101212731,
+          "system_ticks": 74,
           "threads": [
-            1182331,
-            1182332,
-            1182333
+            838957,
+            839039,
+            839040
           ],
-          "user_ticks": 218
+          "user_ticks": 213
         }
       },
       "processes_before": {
-        "1182331": {
-          "start_ticks": 79974331,
-          "system_ticks": 9,
+        "838957": {
+          "start_ticks": 101212731,
+          "system_ticks": 6,
           "threads": [
-            1182331,
-            1182332,
-            1182333
+            838957,
+            839039,
+            839040
           ],
           "user_ticks": 17
         }
@@ -154,56 +153,62 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 8514,
+          "completed": 8355,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5132148589473218,
-          "rate": 16925.516909093356
+          "elapsed_seconds": 0.5156934000551701,
+          "rate": 16627.31717361758
         },
         {
-          "completed": 17267,
+          "completed": 17103,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0139965759590268,
-          "rate": 17208.50284373873
+          "elapsed_seconds": 1.0150790569605306,
+          "rate": 17053.80759279248
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.8106993569526821,
+      "elapsed_seconds": 3.8955909080104902,
       "processes_after": {
-        "1182261": {
-          "start_ticks": 79974150,
-          "system_ticks": 18,
+        "838593": {
+          "start_ticks": 101212341,
+          "system_ticks": 35,
           "threads": [
-            1182261
+            838593
           ],
-          "user_ticks": 146
+          "user_ticks": 326
         }
       },
       "processes_before": {
-        "1182261": {
-          "start_ticks": 79974150,
-          "system_ticks": 4,
+        "838593": {
+          "start_ticks": 101212341,
+          "system_ticks": 7,
           "threads": [
-            1182261
+            838593
           ],
-          "user_ticks": 14
+          "user_ticks": 16
         }
       },
-      "selected_duration_seconds": 1.0,
+      "selected_duration_seconds": 2.0,
       "server": "hypercorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 1728,
+          "completed": 1601,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.524915577028878,
-          "rate": 3356.349819467906
+          "elapsed_seconds": 0.5200759490253404,
+          "rate": 3151.184968072208
         },
         {
-          "completed": 3455,
+          "completed": 2880,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0274914379697293,
-          "rate": 3394.5391269941174
+          "elapsed_seconds": 1.0233033209806308,
+          "rate": 2844.194439050981
+        },
+        {
+          "completed": 6086,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.0261404799530283,
+          "rate": 3021.7087125559356
         }
       ]
     }

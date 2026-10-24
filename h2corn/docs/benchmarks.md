@@ -6,15 +6,17 @@ hide:
 
 # Benchmarks
 
-**h2corn delivered 10–31× higher throughput** in the one-worker HTTP/1.1 GET
+**h2corn delivered 9.7–30× the throughput of the compared servers** in the one-worker HTTP/1.1 GET
 comparison, using standard asyncio and pure-Python parsers for Uvicorn and Gunicorn.
 
 These benchmarks compare h2corn, Uvicorn, Hypercorn, and Gunicorn serving the
 same Starlette application over loopback.
-Results cover throughput, latency, and memory.
+Results cover throughput, latency, and memory. h2corn uses its profile-guided
+`release-dist` wheel. Headline ratios are medians of paired trial ratios.
 
-**Connect on h2corn delivered 1.2–2.8× the throughput of grpc.aio** in seven
-of eight gRPC workloads; grpc.aio was about 1% faster at client-streaming upload.
+**Connect on h2corn delivered 1.5–3.0× the throughput of grpc.aio** in six
+of eight gRPC workloads. Upload and download comparisons remained inconclusive
+after twelve paired blocks.
 These results compare Connect hosted by h2corn and Hypercorn, grpc.aio, and a
 selected grpclib subset, using common Python handlers and protobuf codecs over
 direct loopback HTTP/2. They measure these complete stacks, not the host
@@ -63,8 +65,8 @@ direction or has an upper/lower interval ratio at most 1.10. The latter is a
 reporting-precision goal, not equivalence. Unresolved scenarios may extend to
 twelve if the collection budget permits. Otherwise they finish as budget-limited, with
 inconclusive comparisons. At twelve, remaining uncertainty stays inconclusive.
-An interval containing one never establishes a tie. The published figures
-retain their recorded six-block plans and intervals.
+An interval containing one never establishes a tie. The HTTP figures use six
+blocks; gRPC upload and download use twelve, and the other gRPC rows use six.
 
 Each comparison records its method and achieved coverage. Rates are medians; dots show
 individual blocks and whiskers show their observed range. Latencies are

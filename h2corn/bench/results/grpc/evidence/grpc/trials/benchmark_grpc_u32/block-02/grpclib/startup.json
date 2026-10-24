@@ -1,318 +1,318 @@
 {
   "event_loop": "asyncio.unix_events",
-  "executable": "/tmp/opencode/h2corn-release799/venv/bin/python",
+  "executable": "/tmp/opencode/task824/python315/bin/python",
   "gil_enabled": true,
   "modules": {
     "grpclib": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/__init__.py",
       "sha256": "18c34eb784a968c472ddf01dbe6f36510070dbec1936cd290574d877c250df78"
     },
     "grpclib._compat": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/_compat.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/_compat.py",
       "sha256": "2eafc94bd28c584e96931b3fa1a29d22ae2a89fce8fbf36b0b4065b76f5502e5"
     },
     "grpclib._registry": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/_registry.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/_registry.py",
       "sha256": "5b8c522853f73c807d18e794d456bc1bc29f642d88b7ec9a3054ef65adf37d87"
     },
     "grpclib.config": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/config.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/config.py",
       "sha256": "119292f03d2b2343ce02d0570f94dddbe79927ac81e2807ed2cb20f3e722b97a"
     },
     "grpclib.const": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/const.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/const.py",
       "sha256": "e0ca2dbc040058c2e0f07c059cf05cc8225aebd76972f2c87747cd39f3054698"
     },
     "grpclib.encoding": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/encoding/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/encoding/__init__.py",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "grpclib.encoding.base": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/encoding/base.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/encoding/base.py",
       "sha256": "1998d838a61cd160a17937dec9fe1a0fb8e85ee7c9f0cc58ebc605e8d9a65a76"
     },
     "grpclib.encoding.proto": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/encoding/proto.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/encoding/proto.py",
       "sha256": "cda35d4d2b19bdc09efa8b6550add07bc877ecaddd6d97bab6ec61374df80296"
     },
     "grpclib.events": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/events.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/events.py",
       "sha256": "9aec67a76f8b2369891582f247c369b8d9a5ec6ffcbab9cf7e423ffcb0285722"
     },
     "grpclib.exceptions": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/exceptions.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/exceptions.py",
       "sha256": "d752a2fc81ff77f5291f1926feed4b333c8fd0d8cf89872cd80ffbfc63f61ae5"
     },
     "grpclib.metadata": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/metadata.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/metadata.py",
       "sha256": "9b0f940bd8ea9d36f5a8b365b2d87de6581a447b15871fe32e06a117554744c3"
     },
     "grpclib.protocol": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/protocol.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/protocol.py",
       "sha256": "0d1b768a23c63e07737d867e8ebe0c8a34b563e7c5c9a0dbce929fd3d4b9932f"
     },
     "grpclib.server": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/server.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/server.py",
       "sha256": "844180cbb956ace5dd3ef41a377f8bfcb9456a7e2e7fece37e1f8a281384a8aa"
     },
     "grpclib.stream": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/stream.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/stream.py",
       "sha256": "d0061c992d5d0b56315cfa17f72c6bb8cddda0349c26f4114653921b844a65ac"
     },
     "grpclib.utils": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/grpclib/utils.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/grpclib/utils.py",
       "sha256": "7cbe257e54c83d9c3cea5f216c296527e35c78a20c554eab2b87b99f33621533"
     },
     "multidict._multidict": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/multidict/_multidict.cpython-315-x86_64-linux-gnu.so",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/multidict/_multidict.cpython-315-x86_64-linux-gnu.so",
       "sha256": "cf3b41c7c5ca0aa3d9a3332586d1e69751f6314ea44deb69e66a0c8652a6dc86"
     },
     "protobuf": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/__init__.py",
       "sha256": "2e78b619c95a49f61a2f5ff0394d14bec438fd4373a893e922e739002002c143"
     },
     "protobuf._boot": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_boot/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_boot/__init__.py",
       "sha256": "951bac51487bcfaa251a4d926cd17283c4a6f71aa5d193889b74a606be5d6e0d"
     },
     "protobuf._boot._boot": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_boot/_boot.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_boot/_boot.py",
       "sha256": "9945e97b170b0f12628859b20c3054143656bffb88bf8263798d384b234ac6e9"
     },
     "protobuf._bootstrap": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_bootstrap.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_bootstrap.py",
       "sha256": "36fe446cbac3453696640823326ac09123f315aab8defc59991d82e0ae7d861b"
     },
     "protobuf._codegen": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_codegen/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_codegen/__init__.py",
       "sha256": "ca68971867a55512584c873580ddf379d63a605c546499978cb05bce94bc9c69"
     },
     "protobuf._codegen._file": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_codegen/_file.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_codegen/_file.py",
       "sha256": "96cd40fc363b4fd051d9c182905f5b5d7fc2f0e419dc95aff2ad94369acb9fb5"
     },
     "protobuf._descriptors": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_descriptors.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_descriptors.py",
       "sha256": "1dd0ffa0126015d45b559e52ed43851dd0b81a8c026d3b685802172b8dffacb0"
     },
     "protobuf._enum": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_enum.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_enum.py",
       "sha256": "32ea00fc2c0134aff648d39a47953940ea7e7c74dee1c87505cb370af3eff96d"
     },
     "protobuf._extension": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_extension.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_extension.py",
       "sha256": "5ac56ae753c4d3549c3cf98af3830c4457aaf2165cc50fecae23bb69b880bdd5"
     },
     "protobuf._field_values": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_field_values.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_field_values.py",
       "sha256": "d274453709a10bcc59383d61cf1310db43b629684d22806e291158b4a9ed81ef"
     },
     "protobuf._file_registry": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_file_registry.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_file_registry.py",
       "sha256": "c3ae0a5111685a6886fdeee909b291e247dd168fe55724d44168d27e7e4b083b"
     },
     "protobuf._from_binary": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_from_binary.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_from_binary.py",
       "sha256": "5cfd9948428160d885c38ce20d9b58be8d3482eafc9c083dbb7750600fdc868d"
     },
     "protobuf._from_json": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_from_json.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_from_json.py",
       "sha256": "18ff37366519df2d3defd18dd1c513720141c94f2e7bbea1ec93611b242684a5"
     },
     "protobuf._merge": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_merge.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_merge.py",
       "sha256": "22cfffffc51f0bf5969ab98281ac5f04e747b367c47fd4ef7d95271abeac00c1"
     },
     "protobuf._message": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_message.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_message.py",
       "sha256": "1012500be8ee0c8309e240358748abfad71753f0c05bd8eb052a3ced8bc1dcc1"
     },
     "protobuf._native_message": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_native_message.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_native_message.py",
       "sha256": "5da2f6e1916fc6c56110f2b9ad05f62bf174044fa8a7945e67133c8626933607"
     },
     "protobuf._oneof": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_oneof.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_oneof.py",
       "sha256": "43f0a2a226d6e9fa8eff0a1f1125692a4aa8f192a33757eabf2398bf2b5c5c33"
     },
     "protobuf._registry": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_registry.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_registry.py",
       "sha256": "787be772db80d19d0dde224b2bb435e92ed236eeba42818096ad32d61a11dbb1"
     },
     "protobuf._sanitization": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_sanitization.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_sanitization.py",
       "sha256": "a1fbfb6f05f0530441c4a5259007e8756ddf41c7e789cb9cd4f07583e7c30f48"
     },
     "protobuf._supported_editions": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_supported_editions.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_supported_editions.py",
       "sha256": "6655389b7cdc695bd60ed605fe03f61e6d08e470f075f7671d31a25dec93337b"
     },
     "protobuf._to_binary": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_to_binary.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_to_binary.py",
       "sha256": "435b8c5325e776b1a11a74b64504026a11cadee68488190745a441d0190dbb8c"
     },
     "protobuf._to_json": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_to_json.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_to_json.py",
       "sha256": "3983c452073259ba2470b88ea965e43f469199a4bdc06301b022276450b7525f"
     },
     "protobuf._unknown": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_unknown.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_unknown.py",
       "sha256": "56ec62e036db5da3831ecc6b040c6dd544d4fc701ef08e7ef8dd17822d1a1024"
     },
     "protobuf._validate": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_validate.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_validate.py",
       "sha256": "d3ab18869bb6e09085659f93aff7d54b9562d28d88f0f830736f8237c09731b3"
     },
     "protobuf._wire": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wire/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wire/__init__.py",
       "sha256": "7bcaf89319ae8afb4598983320f51992c9336846a5a80109f6b73e430d6c4387"
     },
     "protobuf._wire._binary_reader": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wire/_binary_reader.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wire/_binary_reader.py",
       "sha256": "16b14c17720994ba5492c5d0f9a2440c7290247bd73a90a00733e6115036c2e1"
     },
     "protobuf._wire._binary_writer": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wire/_binary_writer.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wire/_binary_writer.py",
       "sha256": "d6d39bbd824bc5b1696a9f4f83e7a1fa25b750b8133a4bc57299b387a0261c35"
     },
     "protobuf._wire._text_format": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wire/_text_format.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wire/_text_format.py",
       "sha256": "9df492a603faf0fd64eb19c091190acedf4df1f081de7917082f7abf017596b5"
     },
     "protobuf._wire._wire_type": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wire/_wire_type.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wire/_wire_type.py",
       "sha256": "c13777f6baa6c7231c99700cfc7140c69ce4dbfe316e072716518b0ccf00b295"
     },
     "protobuf._wkt_registry": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/_wkt_registry.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/_wkt_registry.py",
       "sha256": "730e5afc64e97994ba72a7b0826a23faf6479448e056a14d4fb4a167422a4745"
     },
     "protobuf.wkt": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/__init__.py",
       "sha256": "db633db82e07a924e0efdbed3d5f419eedd88b929177fb444768c8e5e503d744"
     },
     "protobuf.wkt._mixin": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/__init__.py",
       "sha256": "b87cad46efb819f951b75d642ebe315f3fae971f9f1e91f20d29cd64d3bd5d01"
     },
     "protobuf.wkt._mixin._any": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_any.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_any.py",
       "sha256": "bb69401acff331f4fd52f0892a9df50825b5761688ca5a00a292f1926e089b5f"
     },
     "protobuf.wkt._mixin._const": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_const.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_const.py",
       "sha256": "080019a233e52a1d592f33e9b355b35b65a1494a03c191ce5f0a27ce2a693ed3"
     },
     "protobuf.wkt._mixin._duration": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_duration.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_duration.py",
       "sha256": "b16de138c53b9cdc3c6a01fd0bb21656847eb3b846ae2ef5d0a8b4b5bb1b21b9"
     },
     "protobuf.wkt._mixin._file_descriptor_set": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_file_descriptor_set.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_file_descriptor_set.py",
       "sha256": "786633e3e3e35130f89eed648ba831607bdc3f74dfcf7239664a71d1f58cfb42"
     },
     "protobuf.wkt._mixin._struct": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_struct.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_struct.py",
       "sha256": "1b641c5c5df361868d5d8e5aa6cc038393df1550b4a62dede1d4d0520b34a0da"
     },
     "protobuf.wkt._mixin._timestamp": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/_mixin/_timestamp.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/_mixin/_timestamp.py",
       "sha256": "6b8e97a60f035eda0416c06a1751aa6cb282198068c1ce6ac9973e21121c0e6f"
     },
     "protobuf.wkt.google": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/__init__.py",
       "sha256": "4e2702fcdf4352fd81abd8c36768e3b2e8fcf8df594265741199875093d44e44"
     },
     "protobuf.wkt.google.protobuf": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/__init__.py",
       "sha256": "4e2702fcdf4352fd81abd8c36768e3b2e8fcf8df594265741199875093d44e44"
     },
     "protobuf.wkt.google.protobuf.any_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/any_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/any_pb.py",
       "sha256": "a73425c9abf1c24d35840f2736e1e37bd353a2aa382f8acd817db36de113c51a"
     },
     "protobuf.wkt.google.protobuf.api_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/api_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/api_pb.py",
       "sha256": "ca9858308aa5b80ca966dde8c305ebd47e12eec761d21b7ff303978be6de41be"
     },
     "protobuf.wkt.google.protobuf.c_sharp_features_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/c_sharp_features_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/c_sharp_features_pb.py",
       "sha256": "9d5a5033e74916e26586276d6d9cbd339699ef95f776b5306759447a76e0158f"
     },
     "protobuf.wkt.google.protobuf.compiler": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/compiler/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/compiler/__init__.py",
       "sha256": "1e7c6fb19089fab3bec8be5c23baa1caad092533d6c061ed7af487c37d149334"
     },
     "protobuf.wkt.google.protobuf.compiler.plugin_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/compiler/plugin_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/compiler/plugin_pb.py",
       "sha256": "cb91ce06c25aafc195aba24a6046e622f9ab99f5831bf6817cd044cc8e8e2baa"
     },
     "protobuf.wkt.google.protobuf.cpp_features_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/cpp_features_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/cpp_features_pb.py",
       "sha256": "28c3df3ac48a944b5203ceb76804f71911f3fd5766cad889d0a7c27cb441ddf6"
     },
     "protobuf.wkt.google.protobuf.descriptor_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/descriptor_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/descriptor_pb.py",
       "sha256": "4673612a7b9f2c65e0ff941d9b19091cb20af6a88c04c096285fd46e9ad876d5"
     },
     "protobuf.wkt.google.protobuf.duration_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/duration_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/duration_pb.py",
       "sha256": "eee38596008be5b31c3891325f95df99447582ad6b93e1c7ccba960379c5800a"
     },
     "protobuf.wkt.google.protobuf.empty_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/empty_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/empty_pb.py",
       "sha256": "89f2ae7ce00db0d9c976670eb54f6e0351d5ea5cc0a37b0c211062266f445382"
     },
     "protobuf.wkt.google.protobuf.field_mask_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/field_mask_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/field_mask_pb.py",
       "sha256": "9bdeb8d8b2d769e69efc25c40486c05dd98a8fb2eda7a6ee83ba0d974344f763"
     },
     "protobuf.wkt.google.protobuf.go_features_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/go_features_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/go_features_pb.py",
       "sha256": "6a820f3e49f260edbcfab846bd7bfc818b82301eb8569ccf067eb3be1b65012b"
     },
     "protobuf.wkt.google.protobuf.java_features_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/java_features_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/java_features_pb.py",
       "sha256": "b130382179dbf925149aca50602d3af5c04368e4324be4a2b952c43af4b0cff3"
     },
     "protobuf.wkt.google.protobuf.json_enumvalue_options_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/json_enumvalue_options_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/json_enumvalue_options_pb.py",
       "sha256": "1aa8c5e657d66c776258f90d1bfcb8163c7a3ed5fe6ca54f4f4dd95a6da99fb1"
     },
     "protobuf.wkt.google.protobuf.json_options_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/json_options_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/json_options_pb.py",
       "sha256": "d487d9215d5a012ef25585fa55267769456585d291a0ab82be7ccba3333bce17"
     },
     "protobuf.wkt.google.protobuf.source_context_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/source_context_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/source_context_pb.py",
       "sha256": "0a313d86f6edbc7c139550b9c8c2733f019d02910d9fee606d7d5cfb0450e90d"
     },
     "protobuf.wkt.google.protobuf.struct_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/struct_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/struct_pb.py",
       "sha256": "f17f717901cade9f87c56185febd3ffe18277de5ffad3eb5234debbc6c7792b8"
     },
     "protobuf.wkt.google.protobuf.timestamp_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/timestamp_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/timestamp_pb.py",
       "sha256": "e9301b2ba3c1c39c08c79c65ddc22da4187d975183e527e5197b712be237567e"
     },
     "protobuf.wkt.google.protobuf.type_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/type_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/type_pb.py",
       "sha256": "8f61c2c3760c5210b1dfe6ee9cb3be6cbce0207edbbcc94774342c114cacdbc9"
     },
     "protobuf.wkt.google.protobuf.wrappers_pb": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/wrappers_pb.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf/wkt/google/protobuf/wrappers_pb.py",
       "sha256": "6d10f77fd8be6d07e7c4ff55a7d71c8b776cdf72a64f3f6dc2c1bdbeeac885ff"
     },
     "protobuf_ext": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf_ext/__init__.py",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf_ext/__init__.py",
       "sha256": "45f7db41ccb377aaf81155c6bdae5766ab9c9b35f0ac36600b0b49b4173e130b"
     },
     "protobuf_ext._protobuf_ext": {
-      "path": "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/protobuf_ext/_protobuf_ext.abi3.so",
+      "path": "/tmp/opencode/task824/python315/lib/python3.15/site-packages/protobuf_ext/_protobuf_ext.abi3.so",
       "sha256": "317564eff91adff59886bd7673a7d0a293817143b56d3be90676fc5bc4a0179d"
     }
   },
-  "pid": 1247001,
-  "port": 35345,
+  "pid": 1116626,
+  "port": 57441,
   "python": "3.15.0 (main, Oct 14 2026, 01:05:07) [Clang 23.1.3 ]"
 }

@@ -1,53 +1,46 @@
 {
   "calibration_limited": false,
-  "duration_seconds": 2.0,
-  "fixed_count": false,
+  "duration_seconds": 1.0,
   "not_selected_servers": {},
   "scenario": "HTTP/2 Portable streaming download (4 Workers)",
   "servers": {
     "h2corn": {
-      "elapsed_seconds": 1.9210296380333602,
+      "elapsed_seconds": 1.7518173089483753,
       "selected_duration_seconds": 1.0,
       "server": "h2corn",
       "status": "stable",
       "windows": [
         {
-          "completed": 23850,
+          "completed": 21044,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5265949349850416,
-          "rate": 47523.38655741413
+          "elapsed_seconds": 0.526716077933088,
+          "rate": 41893.93205731922
         },
         {
-          "completed": 49074,
+          "completed": 43648,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0385902560083196,
-          "rate": 48931.79612670942
+          "elapsed_seconds": 1.0329793880227953,
+          "rate": 43540.566525775044
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 3.8069433079799637,
-      "selected_duration_seconds": 2.0,
+      "elapsed_seconds": 1.8212338390294462,
+      "selected_duration_seconds": 1.0,
       "server": "hypercorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 2063,
+          "completed": 1820,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5196849519852549,
-          "rate": 4106.581912442721
+          "elapsed_seconds": 0.518365899915807,
+          "rate": 3625.3424648884284
         },
         {
-          "completed": 4690,
+          "completed": 3871,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0197505080141127,
-          "rate": 4678.2337742344225
-        },
-        {
-          "completed": 9299,
-          "duration_seconds": 2.0,
-          "elapsed_seconds": 2.0215020689647645,
-          "rate": 4641.568726401115
+          "elapsed_seconds": 1.0201421569800004,
+          "rate": 3856.1337368144896
         }
       ]
     }

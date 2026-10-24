@@ -1,47 +1,46 @@
 {
   "calibration_limited": false,
   "duration_seconds": 1.0,
-  "fixed_count": false,
   "not_selected_servers": {},
   "scenario": "HTTP/2 GET (4 Workers)",
   "servers": {
     "h2corn": {
-      "elapsed_seconds": 1.855797522002831,
+      "elapsed_seconds": 1.8057809630408883,
       "selected_duration_seconds": 1.0,
       "server": "h2corn",
       "status": "stable",
       "windows": [
         {
-          "completed": 110199,
+          "completed": 105381,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5576152519788593,
-          "rate": 218972.87112533578
+          "elapsed_seconds": 0.5455370389390737,
+          "rate": 209041.7573333044
         },
         {
-          "completed": 215027,
+          "completed": 206755,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.085031257942319,
-          "rate": 214196.1259447919
+          "elapsed_seconds": 1.0819466069806367,
+          "rate": 206202.8705751394
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.7952377429464832,
+      "elapsed_seconds": 1.8559622369939461,
       "selected_duration_seconds": 1.0,
       "server": "hypercorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 5247,
+          "completed": 4427,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5203111739829183,
-          "rate": 10421.738065255275
+          "elapsed_seconds": 0.5198177159763873,
+          "rate": 8791.02290527528
         },
         {
-          "completed": 9756,
+          "completed": 9048,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0223815239733085,
-          "rate": 9718.238433730598
+          "elapsed_seconds": 1.021237135049887,
+          "rate": 9010.402563535214
         }
       ]
     }

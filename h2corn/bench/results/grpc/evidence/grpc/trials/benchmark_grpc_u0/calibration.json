@@ -1,70 +1,69 @@
 {
   "calibration_limited": false,
   "duration_seconds": 1.0,
-  "fixed_count": false,
   "not_selected_servers": {
     "grpclib": "Representative no-compression subset"
   },
   "scenario": "gRPC U0",
   "servers": {
     "grpcio": {
-      "elapsed_seconds": 1.8544882020214573,
+      "elapsed_seconds": 2.0045530470088124,
       "processes_after": {
-        "1181948": {
-          "start_ticks": 79973413,
-          "system_ticks": 55,
+        "838090": {
+          "start_ticks": 101211579,
+          "system_ticks": 62,
           "threads": [
-            1181948,
-            1181952,
-            1181953,
-            1181954,
-            1181955,
-            1181956,
-            1181957,
-            1181958,
-            1181959,
-            1181960,
-            1181961,
-            1181962,
-            1181963,
-            1181964,
-            1181965,
-            1181966,
-            1181967,
-            1181968,
-            1181969,
-            1181970
+            838090,
+            838092,
+            838093,
+            838094,
+            838095,
+            838096,
+            838097,
+            838098,
+            838099,
+            838100,
+            838101,
+            838102,
+            838103,
+            838104,
+            838105,
+            838106,
+            838107,
+            838108,
+            838109,
+            838110
           ],
-          "user_ticks": 122
+          "user_ticks": 120
         }
       },
       "processes_before": {
-        "1181948": {
-          "start_ticks": 79973413,
-          "system_ticks": 4,
+        "838090": {
+          "start_ticks": 101211579,
+          "system_ticks": 7,
           "threads": [
-            1181948,
-            1181952,
-            1181953,
-            1181954,
-            1181955,
-            1181956,
-            1181957,
-            1181958,
-            1181959,
-            1181960,
-            1181961,
-            1181962,
-            1181963,
-            1181964,
-            1181965,
-            1181966,
-            1181967,
-            1181968,
-            1181969,
-            1181970
+            838090,
+            838092,
+            838093,
+            838094,
+            838095,
+            838096,
+            838097,
+            838098,
+            838099,
+            838100,
+            838101,
+            838102,
+            838103,
+            838104,
+            838105,
+            838106,
+            838107,
+            838108,
+            838109,
+            838110
           ],
-          "user_ticks": 12
+          "user_ticks": 13
         }
       },
       "selected_duration_seconds": 1.0,
@@ -72,41 +71,41 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 1851,
+          "completed": 1631,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5125277920160443,
-          "rate": 3701.613233239712
+          "elapsed_seconds": 0.5131956909317523,
+          "rate": 3260.8716927421074
         },
         {
-          "completed": 3749,
+          "completed": 3296,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0107731090392917,
-          "rate": 3748.1078341441307
+          "elapsed_seconds": 1.0538097589742392,
+          "rate": 3289.879573838422
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 1.9357075379230082,
+      "elapsed_seconds": 1.8867231730837375,
       "processes_after": {
-        "1182114": {
-          "start_ticks": 79973779,
-          "system_ticks": 53,
+        "838361": {
+          "start_ticks": 101211967,
+          "system_ticks": 51,
           "threads": [
-            1182114,
-            1182115,
-            1182116
+            838361,
+            838362,
+            838363
           ],
-          "user_ticks": 122
+          "user_ticks": 113
         }
       },
       "processes_before": {
-        "1182114": {
-          "start_ticks": 79973779,
-          "system_ticks": 8,
+        "838361": {
+          "start_ticks": 101211967,
+          "system_ticks": 7,
           "threads": [
-            1182114,
-            1182115,
-            1182116
+            838361,
+            838362,
+            838363
           ],
           "user_ticks": 17
         }
@@ -116,39 +115,39 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 2877,
+          "completed": 2508,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5100637009600177,
-          "rate": 5753.296993133815
+          "elapsed_seconds": 0.5124636860564351,
+          "rate": 5014.224172395553
         },
         {
-          "completed": 5504,
+          "completed": 5075,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.00964673794806,
-          "rate": 5503.257131829546
+          "elapsed_seconds": 1.0114616140490398,
+          "rate": 5074.178957251284
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.8011475160019472,
+      "elapsed_seconds": 1.865657589980401,
       "processes_after": {
-        "1182052": {
-          "start_ticks": 79973599,
-          "system_ticks": 19,
+        "838223": {
+          "start_ticks": 101211780,
+          "system_ticks": 22,
           "threads": [
-            1182052
+            838223
           ],
-          "user_ticks": 142
+          "user_ticks": 141
         }
       },
       "processes_before": {
-        "1182052": {
-          "start_ticks": 79973599,
-          "system_ticks": 4,
+        "838223": {
+          "start_ticks": 101211780,
+          "system_ticks": 5,
           "threads": [
-            1182052
+            838223
           ],
-          "user_ticks": 15
+          "user_ticks": 16
         }
       },
       "selected_duration_seconds": 1.0,
@@ -156,16 +155,16 @@
       "status": "stable",
       "windows": [
         {
-          "completed": 1054,
+          "completed": 967,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.511149070924148,
-          "rate": 2106.5707254679014
+          "elapsed_seconds": 0.5128305580001324,
+          "rate": 1932.4682483676138
         },
         {
-          "completed": 2209,
+          "completed": 1849,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0102866380475461,
-          "rate": 2208.202408331123
+          "elapsed_seconds": 1.012144289095886,
+          "rate": 1848.8169948497648
         }
       ]
     }

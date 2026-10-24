@@ -143,7 +143,7 @@
     },
     {
       "case": "Cancellation",
-      "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['server handler did not settle after cancellation']",
+      "error": "hypercorn correctness-before failed: gRPC cancellation did not settle: ['rpc error: code = DeadlineExceeded desc = context deadline exceeded']",
       "server": "hypercorn",
       "status": "failed"
     },

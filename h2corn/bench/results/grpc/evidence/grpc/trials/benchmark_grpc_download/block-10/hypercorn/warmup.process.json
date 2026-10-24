@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/grpc-client",
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/evidence/benchmark_grpc_download/block-10/hypercorn/warmup.plan.json"
+  ],
+  "elapsed_seconds": 0.27463361399713904,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":33,\"started\":33,\"verified_ok\":33,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":528,\"verified_payload_bytes\":34603008,\"serialized_request_bytes\":594,\"serialized_response_bytes\":34615680,\"statuses\":{\"OK\":33},\"errors\":[],\"elapsed_seconds\":0.259445673,\"window_seconds\":0.25,\"drain_seconds\":0.009445672999999988,\"latency_percentiles\":{\"p50\":0.06186384799978567,\"p90\":0.0747382684774194,\"p95\":0.07548565116219366,\"p99\":0.07548565116219366},\"message_latency_percentiles\":{},\"first_message_percentiles\":{\"p50\":0.01186011451006624,\"p90\":0.020297524133508556,\"p95\":0.02112168500640076,\"p99\":0.02112168500640076},\"rpc_latency_histogram\":{\"1652\":1,\"1784\":1,\"1793\":1,\"1794\":1,\"1795\":4,\"1796\":2,\"1797\":4,\"1798\":2,\"1802\":1,\"1803\":7,\"1808\":1,\"1817\":1,\"1818\":1,\"1819\":1,\"1821\":3,\"1822\":2},\"message_latency_histogram\":{},\"first_message_histogram\":{\"1499\":1,\"1567\":1,\"1568\":1,\"1585\":1,\"1592\":1,\"1597\":1,\"1600\":1,\"1602\":2,\"1626\":1,\"1627\":1,\"1632\":2,\"1633\":1,\"1634\":1,\"1636\":2,\"1637\":1,\"1638\":2,\"1640\":1,\"1651\":1,\"1659\":1,\"1668\":1,\"1671\":1,\"1678\":1,\"1682\":1,\"1689\":2,\"1690\":1,\"1692\":1,\"1694\":2},\"cpu_user_seconds\":0.127898,\"cpu_system_seconds\":0.058637,\"max_rss_kib\":40312,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 1148581, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 30.25
+}

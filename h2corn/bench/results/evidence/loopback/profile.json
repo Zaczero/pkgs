@@ -1,10 +1,6 @@
 {
   "benchmark_family": "http",
-  "description": "loopback",
-  "measured_rtt_ms": null,
   "profile": "loopback",
-  "reason": null,
   "status": "completed_with_failures",
-  "suite_plan": "suite-plan.json",
-  "target_rtt_ms": null
+  "suite_plan": "suite-plan.json"
 }

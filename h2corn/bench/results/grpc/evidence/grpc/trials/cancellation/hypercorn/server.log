@@ -1,11 +1,11 @@
-[2026-10-21 17:39:04 +0000] [1184426] [INFO] Running on http://127.0.0.1:59985 (CTRL + C to quit)
-[2026-10-21 17:39:10 +0000] [1184426] [ERROR] Error in ASGI Framework
+[2026-10-24 04:38:46 +0000] [841609] [INFO] Running on http://127.0.0.1:47371 (CTRL + C to quit)
+[2026-10-24 04:38:52 +0000] [841609] [ERROR] Error in ASGI Framework
 Traceback (most recent call last):
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/connectrpc/_server_async.py", line 461, in _handle_stream
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/connectrpc/_server_async.py", line 461, in _handle_stream
     async for message in response_stream:
     ...<13 lines>...
         )
-  File "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/grpc_app.py", line 85, in download
+  File "/home/user/Source/pkgs/h2corn/bench/grpc_app.py", line 85, in download
     await asyncio.Event().wait()
   File "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/lib/python3.15/asyncio/locks.py", line 213, in wait
     await fut
@@ -14,59 +14,59 @@ asyncio.exceptions.CancelledError
 The above exception was the direct cause of the following exception:
 
 Traceback (most recent call last):
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/connectrpc/_server_async.py", line 489, in _handle_stream
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/connectrpc/_server_async.py", line 489, in _handle_stream
     raise ConnectError(Code.CANCELED, "Request was cancelled") from e
 connectrpc.errors.ConnectError: Request was cancelled
 
 During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py", line 28, in _handle
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/asyncio/task_group.py", line 28, in _handle
     await app(scope, receive, send, sync_spawn, call_soon)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/app_wrappers.py", line 34, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/app_wrappers.py", line 34, in __call__
     await self.app(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/applications.py", line 96, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/applications.py", line 96, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/middleware/errors.py", line 186, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/middleware/errors.py", line 186, in __call__
     raise exc
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/middleware/errors.py", line 164, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/middleware/errors.py", line 164, in __call__
     await self.app(scope, receive, _send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
     raise exc
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
     await app(scope, receive, sender)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/routing.py", line 678, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/routing.py", line 676, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/routing.py", line 699, in app
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/routing.py", line 697, in app
     await route.handle(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/routing.py", line 459, in handle
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/routing.py", line 457, in handle
     await self.app(scope, receive, send)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/connectrpc/_server_async.py", line 247, in __call__
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/connectrpc/_server_async.py", line 247, in __call__
     return await self._handle_stream(
            ^^^^^^^^^^^^^^^^^^^^^^^^^^
         receive, send, protocol, endpoint, codec, headers, ctx
         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
     ^
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/connectrpc/_server_async.py", line 517, in _handle_stream
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/connectrpc/_server_async.py", line 517, in _handle_stream
     await send(
     ...<7 lines>...
     )
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/_exception_handler.py", line 39, in sender
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/_exception_handler.py", line 39, in sender
     await send(message)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/starlette/middleware/errors.py", line 161, in _send
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/starlette/middleware/errors.py", line 161, in _send
     await send(message)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py", line 239, in app_send
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py", line 239, in app_send
     await self._send_closed()
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py", line 247, in _send_closed
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/protocol/http_stream.py", line 247, in _send_closed
     await self.send(StreamClosed(stream_id=self.stream_id))
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/protocol/h2.py", line 231, in stream_send
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/protocol/h2.py", line 231, in stream_send
     await self.send(Updated(idle=idle))
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py", line 91, in protocol_send
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/asyncio/tcp_server.py", line 91, in protocol_send
     await self.idle_task.restart(self._task_group, self._idle_timeout)
-  File "/tmp/opencode/h2corn-release799/venv/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py", line 23, in restart
+  File "/tmp/opencode/task824/python315/lib/python3.15/site-packages/hypercorn/asyncio/worker_context.py", line 23, in restart
     self._handle = task_group._task_group.create_task(action())  # type: ignore
                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
   File "/home/user/.local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/lib/python3.15/asyncio/taskgroups.py", line 219, in create_task

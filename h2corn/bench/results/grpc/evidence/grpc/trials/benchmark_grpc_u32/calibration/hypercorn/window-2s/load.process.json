@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/grpc-client",
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/evidence/benchmark_grpc_u32/calibration/hypercorn/window-2s/load.plan.json"
+  ],
+  "elapsed_seconds": 2.0233859239378944,
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "{\"attempted\":6086,\"started\":6086,\"verified_ok\":6086,\"expected_cancelled\":0,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":6086,\"verified_payload_bytes\":194752,\"serialized_request_bytes\":206924,\"serialized_response_bytes\":206924,\"statuses\":{\"OK\":6086},\"errors\":[],\"elapsed_seconds\":2.014092217,\"window_seconds\":2,\"drain_seconds\":0.014092216999999962,\"latency_percentiles\":{\"p50\":0.02112168500640076,\"p90\":0.02264530519143086,\"p95\":0.024038447777213222,\"p99\":0.035789973107247235},\"message_latency_percentiles\":{},\"first_message_percentiles\":{},\"rpc_latency_histogram\":{\"1466\":1,\"1468\":2,\"1470\":1,\"1471\":1,\"1474\":1,\"1678\":2,\"1679\":3,\"1680\":4,\"1681\":4,\"1682\":3,\"1683\":42,\"1684\":97,\"1685\":289,\"1686\":281,\"1687\":544,\"1688\":448,\"1689\":276,\"1690\":193,\"1691\":172,\"1692\":241,\"1693\":416,\"1694\":482,\"1695\":434,\"1696\":360,\"1697\":515,\"1698\":295,\"1699\":124,\"1700\":153,\"1701\":118,\"1702\":56,\"1703\":3,\"1704\":65,\"1705\":72,\"1706\":54,\"1707\":59,\"1708\":26,\"1709\":6,\"1710\":57,\"1711\":13,\"1712\":5,\"1713\":8,\"1714\":8,\"1715\":4,\"1716\":4,\"1717\":3,\"1718\":3,\"1719\":5,\"1722\":2,\"1724\":1,\"1725\":2,\"1734\":26,\"1735\":29,\"1736\":8,\"1746\":1,\"1747\":31,\"1748\":22,\"1749\":10,\"1760\":1},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0.603836,\"cpu_system_seconds\":0.400279,\"max_rss_kib\":16752,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 838593, \\\"active\\\": 0, \\\"finished\\\": 4482, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "timeout_seconds": 32.0
+}

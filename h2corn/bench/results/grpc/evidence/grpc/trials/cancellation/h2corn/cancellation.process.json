@@ -1,11 +1,11 @@
 {
   "command": [
-    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/grpc-client",
-    "/home/user/Source/pkgs.worktrees/release799-h2corn/h2corn/bench/results/runs/20261021T173228Z-da6512/grpc/evidence/cancellation/h2corn/cancellation.plan.json"
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/grpc-client",
+    "/home/user/Source/pkgs/h2corn/bench/results/runs/20261024T043302Z-367c1a/grpc/evidence/cancellation/h2corn/cancellation.plan.json"
   ],
-  "elapsed_seconds": 0.068885981105268,
+  "elapsed_seconds": 0.048346437979489565,
   "returncode": 0,
   "stderr": "",
-  "stdout": "{\"attempted\":1,\"started\":1,\"verified_ok\":0,\"expected_cancelled\":1,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":0,\"verified_payload_bytes\":0,\"serialized_request_bytes\":0,\"serialized_response_bytes\":0,\"statuses\":{\"Canceled\":1},\"errors\":[],\"elapsed_seconds\":0.000678495,\"window_seconds\":0,\"drain_seconds\":0,\"latency_percentiles\":null,\"message_latency_percentiles\":null,\"first_message_percentiles\":null,\"rpc_latency_histogram\":{},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0,\"cpu_system_seconds\":0,\"max_rss_kib\":0,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 1184416, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
+  "stdout": "{\"attempted\":1,\"started\":1,\"verified_ok\":0,\"expected_cancelled\":1,\"deadline_exceeded\":0,\"other_non_ok\":0,\"invalid_response\":0,\"unfinished\":0,\"admission_failures\":0,\"verified_messages\":0,\"verified_payload_bytes\":0,\"serialized_request_bytes\":0,\"serialized_response_bytes\":0,\"statuses\":{\"Canceled\":1},\"errors\":[],\"elapsed_seconds\":0.01161466,\"window_seconds\":0,\"drain_seconds\":0,\"latency_percentiles\":null,\"message_latency_percentiles\":null,\"first_message_percentiles\":null,\"rpc_latency_histogram\":{},\"message_latency_histogram\":{},\"first_message_histogram\":{},\"cpu_user_seconds\":0,\"cpu_system_seconds\":0,\"max_rss_kib\":0,\"go_version\":\"go1.26.8\",\"gomaxprocs\":32,\"connections\":1,\"resource_scope\":\"whole_generator_process\",\"server_identity\":\"{\\\"pid\\\": 841600, \\\"active\\\": 0, \\\"finished\\\": 1, \\\"readers\\\": 0, \\\"consumed\\\": 0}\"}\n",
   "timeout_seconds": 18
 }

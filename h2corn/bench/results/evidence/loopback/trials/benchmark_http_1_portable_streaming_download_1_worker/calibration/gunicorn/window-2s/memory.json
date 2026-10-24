@@ -1,0 +1,42 @@
+{
+  "errors": [],
+  "sample_interval_seconds": 1.0,
+  "samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "pss_bytes": 45376512,
+      "unique_pids": [
+        827934,
+        827943
+      ]
+    },
+    {
+      "elapsed_seconds": 1.0009150669211522,
+      "pss_bytes": 45922304,
+      "unique_pids": [
+        827934,
+        827943
+      ]
+    },
+    {
+      "elapsed_seconds": 2.0022408498916775,
+      "pss_bytes": 45783040,
+      "unique_pids": [
+        827934,
+        827943
+      ]
+    },
+    {
+      "elapsed_seconds": 2.0136301449965686,
+      "pss_bytes": 46011392,
+      "unique_pids": [
+        827934,
+        827943
+      ]
+    }
+  ],
+  "unique_pids": [
+    827934,
+    827943
+  ]
+}

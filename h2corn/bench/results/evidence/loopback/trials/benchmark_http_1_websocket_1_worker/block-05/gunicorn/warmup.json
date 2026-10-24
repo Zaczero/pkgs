@@ -2,31 +2,31 @@
   "metrics": {
     "bench_echo_success": {
       "fails": 0,
-      "passes": 4997,
+      "passes": 3946,
       "value": 1
     },
     "checks": {
       "fails": 0,
-      "passes": 9994,
+      "passes": 7892,
       "value": 1
     },
     "data_received": {
-      "count": 783129,
-      "rate": 775730.0556995355
+      "count": 618206,
+      "rate": 608902.5469314051
     },
     "data_sent": {
-      "count": 1127922,
-      "rate": 1117265.477187962
+      "count": 890480,
+      "rate": 877079.0642463478
     },
     "iteration_duration": {
-      "med": 17.172034,
-      "p(90)": 19.900732,
-      "p(95)": 20.717571999999993,
-      "p(99)": 123.9052588
+      "med": 20.9946785,
+      "p(90)": 25.290336,
+      "p(95)": 70.738235,
+      "p(99)": 85.186557
     },
     "iterations": {
-      "count": 4997,
-      "rate": 4949.788717223572
+      "count": 3946,
+      "rate": 3886.6161929701825
     },
     "vus": {
       "max": 100,
@@ -39,28 +39,28 @@
       "value": 100
     },
     "ws_connecting": {
-      "med": 11.479549,
-      "p(90)": 13.715033,
-      "p(95)": 15.075306,
-      "p(99)": 118.06703983999999
+      "med": 13.5688395,
+      "p(90)": 16.496149,
+      "p(95)": 55.926787499999996,
+      "p(99)": 78.0281255
     },
     "ws_msgs_received": {
-      "count": 4997,
-      "rate": 4949.788717223572
+      "count": 3946,
+      "rate": 3886.6161929701825
     },
     "ws_msgs_sent": {
-      "count": 4997,
-      "rate": 4949.788717223572
+      "count": 3946,
+      "rate": 3886.6161929701825
     },
     "ws_session_duration": {
-      "med": 17.111953,
-      "p(90)": 19.787171,
-      "p(95)": 20.641491799999997,
-      "p(99)": 123.8528412
+      "med": 20.922838,
+      "p(90)": 24.872782,
+      "p(95)": 70.57448825,
+      "p(99)": 85.12488655
     },
     "ws_sessions": {
-      "count": 4997,
-      "rate": 4949.788717223572
+      "count": 3946,
+      "rate": 3886.6161929701825
     }
   },
   "root_group": {
@@ -69,14 +69,14 @@
         "fails": 0,
         "id": "ee0d5a85ec9f65361f03fdc8859e12ac",
         "name": "first message exactly echoed nonce",
-        "passes": 4997,
+        "passes": 3946,
         "path": "::first message exactly echoed nonce"
       },
       "status is 101": {
         "fails": 0,
         "id": "b26b36ccbc717178372f638aae5b6111",
         "name": "status is 101",
-        "passes": 4997,
+        "passes": 3946,
         "path": "::status is 101"
       }
     },

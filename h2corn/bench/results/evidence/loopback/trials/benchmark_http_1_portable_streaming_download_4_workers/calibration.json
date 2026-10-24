@@ -1,87 +1,104 @@
 {
   "calibration_limited": false,
-  "duration_seconds": 1.0,
-  "fixed_count": false,
+  "duration_seconds": 4.0,
   "not_selected_servers": {},
   "scenario": "HTTP/1 Portable streaming download (4 Workers)",
   "servers": {
     "gunicorn": {
-      "elapsed_seconds": 2.4592809620080516,
+      "elapsed_seconds": 2.471176755032502,
       "selected_duration_seconds": 1.0,
       "server": "gunicorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 7231,
+          "completed": 6495,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5208310829475522,
-          "rate": 14385.228481085289
+          "elapsed_seconds": 0.5209965780377388,
+          "rate": 12906.935506322605
         },
         {
-          "completed": 14604,
+          "completed": 12326,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0208661539945751,
-          "rate": 14564.759116222504
+          "elapsed_seconds": 1.0196551909903064,
+          "rate": 12295.62020292378
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 1.773470295011066,
-      "selected_duration_seconds": 1.0,
+      "elapsed_seconds": 7.863814775948413,
+      "selected_duration_seconds": 4.0,
       "server": "h2corn",
       "status": "stable",
       "windows": [
         {
-          "completed": 22528,
+          "completed": 19852,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5238890020409599,
-          "rate": 44839.45431228027
+          "elapsed_seconds": 0.5250881019746885,
+          "rate": 39493.90074177293
         },
         {
-          "completed": 46461,
+          "completed": 30777,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0320892629679292,
-          "rate": 46303.34650473073
+          "elapsed_seconds": 1.0308524869615212,
+          "rate": 30684.02559209843
+        },
+        {
+          "completed": 83264,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.042979854042642,
+          "rate": 41549.603749472095
+        },
+        {
+          "completed": 159751,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.072288119001314,
+          "rate": 39905.491408359136
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 1.7852607320528477,
+      "elapsed_seconds": 1.813287685974501,
       "selected_duration_seconds": 1.0,
       "server": "hypercorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 3208,
+          "completed": 2873,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5216201189905405,
-          "rate": 6386.119919646766
+          "elapsed_seconds": 0.5171687450492755,
+          "rate": 5723.057806479432
         },
         {
-          "completed": 6844,
+          "completed": 5776,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0205705990083516,
-          "rate": 6832.590619052547
+          "elapsed_seconds": 1.0215181410312653,
+          "rate": 5757.307335746902
         }
       ]
     },
     "uvicorn": {
-      "elapsed_seconds": 2.084623485105112,
-      "selected_duration_seconds": 1.0,
+      "elapsed_seconds": 4.260760127916001,
+      "selected_duration_seconds": 2.0,
       "server": "uvicorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 4701,
+          "completed": 4235,
           "duration_seconds": 0.5,
-          "elapsed_seconds": 0.5211432289797813,
-          "rate": 9351.366874436493
+          "elapsed_seconds": 0.518932381994091,
+          "rate": 8409.283292769545
         },
         {
-          "completed": 10308,
+          "completed": 7565,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0204315880546346,
-          "rate": 10281.732640718797
+          "elapsed_seconds": 1.0874991149175912,
+          "rate": 7254.465209882021
+        },
+        {
+          "completed": 15667,
+          "duration_seconds": 2.0,
+          "elapsed_seconds": 2.03465742606204,
+          "rate": 7819.477807436072
         }
       ]
     }

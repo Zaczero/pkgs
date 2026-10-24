@@ -1,93 +1,104 @@
 {
   "calibration_limited": true,
   "duration_seconds": 4.0,
-  "fixed_count": false,
   "not_selected_servers": {},
   "scenario": "HTTP/1 WebSocket (1 Worker)",
   "servers": {
     "gunicorn": {
-      "elapsed_seconds": 8.350899502984248,
+      "elapsed_seconds": 9.20943863701541,
       "selected_duration_seconds": 4.0,
       "server": "gunicorn",
       "status": "calibration-limited",
       "windows": [
         {
-          "completed": 4854,
+          "completed": 4100,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.051789646036923,
-          "rate": 4789.857892139612
+          "elapsed_seconds": 1.0517113630194217,
+          "rate": 4050.8530576844673
         },
         {
-          "completed": 7100,
+          "completed": 6600,
           "duration_seconds": 2.0,
-          "elapsed_seconds": 2.056421323097311,
-          "rate": 3522.028558124502
+          "elapsed_seconds": 2.1456280070124194,
+          "rate": 3141.1384330647666
         },
         {
-          "completed": 11800,
+          "completed": 11650,
           "duration_seconds": 4.0,
-          "elapsed_seconds": 4.209422305924818,
-          "rate": 2831.6392946866167
+          "elapsed_seconds": 4.173682844033465,
+          "rate": 2824.0508748619936
         }
       ]
     },
     "h2corn": {
-      "elapsed_seconds": 3.310159482061863,
-      "selected_duration_seconds": 2.0,
+      "elapsed_seconds": 7.409054677002132,
+      "selected_duration_seconds": 4.0,
       "server": "h2corn",
       "status": "stable",
       "windows": [
         {
-          "completed": 24649,
+          "completed": 18123,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.053058660007082,
-          "rate": 24565.584805447605
+          "elapsed_seconds": 1.097773596062325,
+          "rate": 18062.624395511673
         },
         {
-          "completed": 49217,
+          "completed": 44110,
           "duration_seconds": 2.0,
-          "elapsed_seconds": 2.046726271044463,
-          "rate": 24566.089765912555
+          "elapsed_seconds": 2.0533862930024043,
+          "rate": 22022.272480643787
+        },
+        {
+          "completed": 91963,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.069067077012733,
+          "rate": 22973.688957474755
         }
       ]
     },
     "hypercorn": {
-      "elapsed_seconds": 3.3559172940440476,
-      "selected_duration_seconds": 2.0,
+      "elapsed_seconds": 7.606619754922576,
+      "selected_duration_seconds": 4.0,
       "server": "hypercorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 2358,
+          "completed": 2058,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0723883470054716,
-          "rate": 2270.2349485307554
+          "elapsed_seconds": 1.1018459950573742,
+          "rate": 1944.21547376193
         },
         {
-          "completed": 4358,
+          "completed": 3558,
           "duration_seconds": 2.0,
-          "elapsed_seconds": 2.0615343609824777,
-          "rate": 2150.9860173456054
+          "elapsed_seconds": 2.1661126320250332,
+          "rate": 1704.6734504205717
+        },
+        {
+          "completed": 6550,
+          "duration_seconds": 4.0,
+          "elapsed_seconds": 4.086518357973546,
+          "rate": 1621.142616689327
         }
       ]
     },
     "uvicorn": {
-      "elapsed_seconds": 3.4800458520185202,
+      "elapsed_seconds": 3.4283666029805318,
       "selected_duration_seconds": 2.0,
       "server": "uvicorn",
       "status": "stable",
       "windows": [
         {
-          "completed": 2258,
+          "completed": 1558,
           "duration_seconds": 1.0,
-          "elapsed_seconds": 1.0722712180577219,
-          "rate": 2179.49671859057
+          "elapsed_seconds": 1.0722493859939277,
+          "rate": 1515.0152539476155
         },
         {
-          "completed": 4107,
+          "completed": 3300,
           "duration_seconds": 2.0,
-          "elapsed_seconds": 2.086262015043758,
-          "rate": 2012.307666645314
+          "elapsed_seconds": 2.0766583679942414,
+          "rate": 1626.9594212453342
         }
       ]
     }

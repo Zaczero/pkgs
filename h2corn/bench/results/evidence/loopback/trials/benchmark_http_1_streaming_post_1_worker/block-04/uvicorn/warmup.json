@@ -53,7 +53,7 @@
       "p95": null,
       "p99": null
     },
-    "requests_per_sec": 3870.9610639033003,
+    "requests_per_sec": 3886.4551604394373,
     "success_rate": null
   },
   "responseTimeHistogram": {
@@ -80,12 +80,12 @@
   "summary": {
     "average": null,
     "fastest": null,
-    "requestsPerSec": 3870.9610639033003,
+    "requestsPerSec": 3886.4551604394373,
     "sizePerRequest": null,
     "sizePerSec": 0.0,
     "slowest": null,
     "successRate": null,
-    "total": 0.258333779,
+    "total": 0.257303882,
     "totalData": 0
   }
 }

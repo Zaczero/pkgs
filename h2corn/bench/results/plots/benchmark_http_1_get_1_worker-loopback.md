@@ -1,6 +1,8 @@
 | Server | Requests/s | Blocks | p50 latency (ms) | p99 latency (ms) | PSS (MB) | Throughput vs h2corn |
 | --- | --- | --- | --- | --- | --- | --- |
-| h2corn | 106,942 | 6 | 0.910 | 1.413 | 51.8 | - |
-| uvicorn | 7,721 | 6 | 12.606 | 15.550 | 26.6 | slower |
-| hypercorn | 3,412 | 6 | 28.058 | 41.550 | 50.4 | slower |
-| gunicorn | 10,994 | 6 | 8.795 | 10.531 | 40.1 | slower |
+| h2corn | 94,412 | 6 | 1.015 | 1.842 | 60.8 | - |
+| uvicorn | 7,042 | 6 | 13.887 | 18.291 | 27.2 | slower |
+| hypercorn | 3,092 | 6 | 31.046 | 52.393 | 51.3 | slower |
+| gunicorn | 9,750 | 6 | 9.888 | 13.931 | 40.8 | slower |
+
+Collection: direction-resolved.
