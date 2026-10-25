@@ -184,7 +184,7 @@ def release(package: Path, config: dict, adapter, output: Path, work: Path) -> N
         'CIBW_TEST_SKIP': '',
         'CIBW_CONTAINER_ENGINE': engine + f' --volume {work}:/pgo',
         'CIBW_BEFORE_ALL_LINUX': os.environ['CIBW_BEFORE_ALL_LINUX']
-        + ' && $HOME/.cargo/bin/rustup component add llvm-tools-preview --toolchain "$RUSTUP_TOOLCHAIN"',
+        + ' && rustup component add llvm-tools-preview --toolchain "$RUSTUP_TOOLCHAIN"',
     }
     wheels = {}
     profile = None
@@ -240,23 +240,31 @@ def release(package: Path, config: dict, adapter, output: Path, work: Path) -> N
                 file=sys.stderr,
                 flush=True,
             )
-            subprocess.run(
-                [
-                    'uv',
-                    'tool',
-                    'run',
-                    'cibuildwheel==4.3.4',
-                    str(package),
-                    '--output-dir',
-                    str(stage / 'wheels'),
-                ],
-                env=env,
-                cwd=ROOT,
-                check=True,
-                timeout=2700,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
+            try:
+                subprocess.run(
+                    [
+                        'uv',
+                        'tool',
+                        'run',
+                        'cibuildwheel==4.3.4',
+                        str(package),
+                        '--output-dir',
+                        str(stage / 'wheels'),
+                    ],
+                    env=env,
+                    cwd=ROOT,
+                    check=True,
+                    timeout=2700,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                if token := env.get('ACTIONS_RUNTIME_TOKEN'):
+                    log.flush()
+                    redacted = (stage / 'build.log').read_text().replace(token, '***')
+                    log.seek(0)
+                    log.write(redacted)
+                    log.truncate()
         wheels[phase] = one_wheel(stage / 'wheels')
         if phase == 'generate':
             pointer = json.loads((work / 'profiles/profile.json').read_text())
