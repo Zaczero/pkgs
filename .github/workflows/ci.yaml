@@ -20,6 +20,10 @@ jobs:
     name: Packages
     runs-on: ubuntu-26.04
 
+    permissions:
+      actions: read
+      contents: read
+
     outputs:
       release-package: ${{ steps.release.outputs.package }}
       plans: ${{ steps.matrix.outputs.plans }}
@@ -35,7 +39,6 @@ jobs:
 
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      BEFORE_SHA: ${{ github.event.before }}
       EVENT_NAME: ${{ github.event_name }}
 
     steps:
@@ -44,6 +47,8 @@ jobs:
           persist-credentials: false
 
       - id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -65,8 +70,15 @@ jobs:
               base="$BASE_SHA"
               test_all=false
             else
-              base="$BEFORE_SHA"
+              base="$(gh api --method GET \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs" \
+                -f branch="$GITHUB_REF_NAME" -f event=push -f status=success \
+                -f per_page=1 --jq '.workflow_runs[0].head_sha // empty')"
               test_all=false
+              if [[ -z "$base" ]]; then
+                test_all=true
+                changed=""
+              fi
             fi
 
             test_packages="$(PYTHONPATH=.github/scripts python3 -c '
