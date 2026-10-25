@@ -239,13 +239,11 @@ inherits = "release"
 debug = "full"
 trim-paths = "none"
 
-# Published artifacts only: maximal optimization, and drop DWARF while keeping the
-# symbol table. That yields a demangled call chain without frame-level file:line,
-# which costs +4.6% wheel size instead of the +388% that shipping line tables does.
-# Invoke as `maturin build --profile release-dist`; plain `--release` uses the fast
-# local profile above and would publish the 5x-larger artifact.
+# Distribution builds retain symbol names for backtraces without generating DWARF.
+# Strip debug information from prebuilt inputs as well.
 [profile.release-dist]
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+debug = false
 strip = "debuginfo"
