@@ -29,7 +29,10 @@ def server(
 ):
     root.mkdir(parents=True)
     package = Path(__file__).resolve().parents[2]
+    exited, exit_signal = socket.socketpair()
     with (
+        exited,
+        exit_signal,
         socket.socket(socket.AF_UNIX if unix else socket.AF_INET) as listener,
         socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify,
         (root / 'server.log').open('wb') as log,
@@ -101,25 +104,28 @@ def server(
         )
         if drainer is not None:
             drainer.start()
+
+        def signal_exit():
+            process.wait()
+            exit_signal.sendall(b'\0')
+
+        waiter = threading.Thread(target=signal_exit)
+        waiter.start()
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(notify, selectors.EVENT_READ)
-                pidfd = os.pidfd_open(process.pid)
-                try:
-                    selector.register(pidfd, selectors.EVENT_READ)
-                    deadline = time.monotonic() + 60
-                    while True:
-                        events = selector.select(max(0, deadline - time.monotonic()))
-                        if not events:
-                            raise TimeoutError('PGO fleet readiness deadline expired')
-                        if any(key.fileobj == pidfd for key, _ in events):
-                            raise RuntimeError(
-                                f'PGO supervisor exited before readiness; see {root / "server.log"}'
-                            )
-                        if b'READY=1' in notify.recv(4096):
-                            break
-                finally:
-                    os.close(pidfd)
+                selector.register(exited, selectors.EVENT_READ)
+                deadline = time.monotonic() + 60
+                while True:
+                    events = selector.select(max(0, deadline - time.monotonic()))
+                    if not events:
+                        raise TimeoutError('PGO fleet readiness deadline expired')
+                    if any(key.fileobj is exited for key, _ in events):
+                        raise RuntimeError(
+                            f'PGO supervisor exited before readiness; see {root / "server.log"}'
+                        )
+                    if b'READY=1' in notify.recv(4096):
+                        break
             yield port
             process.send_signal(signal.SIGTERM)
             if process.wait(timeout=120) != 0:
@@ -128,6 +134,7 @@ def server(
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=15)
+            waiter.join()
             if drainer is not None:
                 drainer.join(timeout=15)
                 if drainer.is_alive():
