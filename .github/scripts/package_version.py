@@ -114,6 +114,11 @@ def package_info(package: str) -> dict[str, Any]:
         type(test_batch_size) is not int or test_batch_size < 1
     ):
         fail(f'{package}: test-batch-size must be a positive integer')
+    typecheck_python = ci.get('typecheck-python')
+    if typecheck_python is not None and (
+        not isinstance(typecheck_python, str) or not typecheck_python.strip()
+    ):
+        fail(f'{package}: typecheck-python must name a Python minor version')
     common = {
         'publishable': publishable,
         'package': package,
@@ -121,6 +126,7 @@ def package_info(package: str) -> dict[str, Any]:
         'requires-python': requires_python,
         'test-tools': test_tools,
         'test-batch-size': test_batch_size,
+        'typecheck-python': typecheck_python,
     }
     exclusion = ci.get('freethreaded-test-exclusion')
     if exclusion is not None:

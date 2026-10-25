@@ -33,7 +33,8 @@ def main() -> int:
     batch = json.loads(os.environ['TEST_BATCH'])
     package = os.environ['PACKAGE']
     if args.check != 'test':
-        environment = runtime_environment(batch['primary'])
+        runtime = batch['typecheck'] if args.check == 'types' else batch['primary']
+        environment = runtime_environment(runtime)
         if args.check == 'audit':
             command = ['uv', 'audit', '--project', package, '--locked']
         else:

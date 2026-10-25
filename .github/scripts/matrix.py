@@ -388,6 +388,17 @@ def resolve_matrix(
         freethreaded_linux=freethreaded_linux,
         freethreaded_group=info['freethreaded-group'],
     )
+    typecheck_python = info['typecheck-python'] or str(primary)
+    for test in test_matrix:
+        test['typecheck'] = (
+            test['os'] == LINUX_TEST_RUNNER
+            and test['python-version'] == typecheck_python
+            and not test['freethreaded']
+        )
+    if not any(test['typecheck'] for test in test_matrix):
+        fail(
+            f'{package}: typecheck-python must select a supported standard Linux runtime'
+        )
     build_matrix: list[dict[str, Any]] = [
         {'runner': runner, 'abi': abi, 'pgo-build': ''}
         for runner in (NATIVE_BUILD_RUNNERS if has_rust else PURE_BUILD_RUNNERS)
@@ -423,6 +434,9 @@ def resolve_matrix(
                     'os': runner,
                     'runtimes': batch,
                     'primary': next((test for test in batch if test['primary']), None),
+                    'typecheck': next(
+                        (test for test in batch if test['typecheck']), None
+                    ),
                 }
         cell['tests'] = batches
         cell['test-batches'] = list(batches)

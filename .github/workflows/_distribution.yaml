@@ -228,7 +228,7 @@ jobs:
         run: python3 .github/scripts/test_python_batch.py test
 
       - name: Check Python types
-        if: fromJson(env.TEST_BATCH).primary != null
+        if: fromJson(env.TEST_BATCH).typecheck != null
         shell: bash
         run: python3 .github/scripts/test_python_batch.py types
 

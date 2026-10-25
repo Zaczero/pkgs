@@ -64,7 +64,8 @@ viz = ["arro3-core", "lonboard>=0.16.0"]
 dev = [
   { include-group = "freethreaded" },
   "geopandas>=1.2.0",
-  "h3>=4.5.0",
+  # Source-built H3 on Windows CPython 3.15 lacks its public API; await a wheel.
+  "h3>=4.5.0; sys_platform != 'win32' or python_version != '3.15'",
   "libcst",
   "lonboard>=0.16.0; python_version<'3.15'",
   "markdownify>=1",
@@ -113,6 +114,8 @@ build-backend = "maturin"
 [tool.ci]
 # Keep the geometry suite's interpreter runs parallel on separate runners.
 test-batch-size = 1
+# Remove when the Python 3.15 development group can include lonboard.
+typecheck-python = "3.14"
 
 [tool.cibuildwheel]
 test-command = """python -c "import gometry as gm; \
