@@ -1,9 +1,10 @@
 use super::{
     ChartPole, ExactChartPoint, ExactDyadic, ExactGeographicTopology, ExactRational, FallibleAvl,
     FragmentRecipe, FragmentRecipeId, GeometryErrorKind, PublicationInventory, ResourceError,
-    Result, SearchAccount, SourceTrace, TraceRequestLocation, try_sort_by_with_work,
+    Result, SearchAccount, SourceTrace, TraceRequestLocation,
 };
 use crate::geographic::retained_exact::sites::retained_exact_native_site_with_work;
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -262,7 +263,7 @@ impl FeatureFamilyBounds {
                         .map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 let mut sorted = possible_intervals.clone();
-                try_sort_by_with_work(&mut sorted, work, |left, right, _work| Ok(left.cmp(right)))?;
+                try_sort_with_work(&mut sorted, work)?;
                 let mut merged = Vec::<(i64, i64)>::new();
                 for (low, high) in sorted {
                     work.charge_into_error(1)?;
@@ -313,9 +314,7 @@ impl FeatureFamilyBounds {
                 native_cut_ranges,
             });
         }
-        try_sort_by_with_work(&mut region_families, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut region_families, work)?;
         work.charge_into_error(
             u64::try_from(region_families.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

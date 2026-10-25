@@ -8,8 +8,9 @@ use super::super::{
     build_q_proximity_closure, build_q_publication_chords, build_q_publication_pairs,
     build_unified_q_classes, candidate_domains, chord_boxes,
     exact_node_position_from_key_with_work, inexact_axes_with_work, planned_area_rings,
-    published_candidate_radius, source_span_range_index, subgraph_chart, try_sort_by_with_work,
+    published_candidate_radius, source_span_range_index, subgraph_chart,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 
 impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>
@@ -590,9 +591,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 }
             }
         }
-        try_sort_by_with_work(&mut source_seeds, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut source_seeds, budget)?;
         budget.charge_into_error(
             u64::try_from(source_seeds.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

@@ -1,8 +1,8 @@
 use super::{
     ChartPole, ExactGeographicTopology, GeometryErrorKind, GlobalFaceId, OverlayOp, ResourceError,
     Result, SelectedRegionFact, SelectedRegionPoles, SourceRowId, selects_support,
-    try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 /// Incident faces can differ only on rows owning an incident source edge.
@@ -65,9 +65,7 @@ impl AreaSupport {
         let Some(&first) = self.faces.first() else {
             return Ok(0);
         };
-        try_sort_by_with_work(&mut self.rows, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut self.rows, work)?;
         work.charge_into_error(
             u64::try_from(self.rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -118,7 +116,7 @@ pub(in crate::geometry::topology) fn append_unique_rows(
     )?;
     output.extend_from_slice(left);
     output.extend_from_slice(right);
-    try_sort_by_with_work(output, work, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(output, work)?;
     work.charge_into_error(u64::try_from(output.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     output.dedup();
     Ok(())
@@ -314,7 +312,7 @@ pub(in crate::geometry::topology) fn selected_region_facts(
             .into());
         }
     }
-    try_sort_by_with_work(&mut roots, work, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(&mut roots, work)?;
     work.charge_into_error(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     roots.dedup();
     work.charge_into_error(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;

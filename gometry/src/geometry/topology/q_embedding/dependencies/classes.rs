@@ -5,6 +5,7 @@ use super::super::{
     chord_dependencies, compare_qnode_keys, compare_variable_nodes, publication_pair_variables,
     q_graph_variable_domain, try_sort_by_with_work, variable_class_rank,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -98,9 +99,7 @@ pub(in crate::geometry::topology::q_embedding) fn union_prepared_dependencies(
             .into());
         }
     }
-    try_sort_by_with_work(&mut indices, budget, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut indices, budget)?;
     budget.charge_into_error(
         u64::try_from(indices.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -591,9 +590,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_fan_rows(
                 topology, emission, span.nodes, span.ports, budget,
             )?);
         }
-        try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut dependencies, budget)?;
         budget.charge_into_error(
             u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -626,9 +623,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_cut_rows(
                 dependencies.push(port.node);
             }
         }
-        try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut dependencies, budget)?;
         budget.charge_into_error(
             u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -666,9 +661,7 @@ pub(in crate::geometry::topology::q_embedding) fn include_closure_variables(
             variables.push(node);
         }
     }
-    try_sort_by_with_work(&mut variables, budget, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut variables, budget)?;
     budget.charge_into_error(
         u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;

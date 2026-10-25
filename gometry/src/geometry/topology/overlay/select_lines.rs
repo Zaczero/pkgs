@@ -1,8 +1,8 @@
 use super::{
     AreaSupport, ExactGeographicTopology, GeometryErrorKind, OverlayOp, QNodeId, ResourceError,
     Result, SelectedLineSpan, SourceRowId, append_unique_rows, line_owner_index, selects_support,
-    try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[expect(
@@ -142,9 +142,7 @@ pub(in crate::geometry::topology) fn select_points(
             u64::try_from(point_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         support_rows.extend_from_slice(point_rows);
-        try_sort_by_with_work(&mut support_rows, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut support_rows, work)?;
         work.charge_into_error(
             u64::try_from(support_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

@@ -8,9 +8,9 @@ use super::super::{
     for_each_overlapping_bounds_cross_pair_with_work, port_swept_radius, proximity_limit,
     publication_leaf_replaces_source_span, quotient_key_for_chart_position_with_work,
     rounded_chart_point_with_work, segments_within_chebyshev, shifted_segment,
-    try_sort_by_with_work,
 };
 use crate::geographic::retained_exact::sites::split_rational_native_site_with_work;
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[derive(Clone)]
@@ -457,7 +457,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_publication_pairs(
             Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
         },
     )?;
-    try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(&mut pairs, budget)?;
     budget
         .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
@@ -551,9 +551,7 @@ pub(in crate::geometry::topology::q_embedding) fn publication_pair_variables(
             },
         }
     }
-    try_sort_by_with_work(&mut variables, budget, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut variables, budget)?;
     budget.charge_into_error(
         u64::try_from(variables.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;

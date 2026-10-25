@@ -2,9 +2,10 @@ use super::super::{
     ChartMetric, EmittedNodeKey, GeometryErrorKind, GlobalCheck, NearestQCertificate,
     NodeAuthority, PlannedAreaRing, Problem, QCandidate, QEmbeddingPass, QEmbeddingProblem,
     QEmissionDrawing, QNodeId, QVariableNode, ResourceError, Result, SearchAccount, SearchOutcome,
-    planned_area_rings, try_sort_by_with_work,
+    planned_area_rings,
 };
 use super::search::search_q_embedding;
+use crate::geometry::segments::ordering::try_sort_with_work;
 
 impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
     pub(super) fn certify_nearest(
@@ -74,9 +75,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
             budget.charge_into_error(
                 u64::try_from(group_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
-            try_sort_by_with_work(&mut group_nodes, budget, |left, right, _work| {
-                Ok(left.cmp(right))
-            })?;
+            try_sort_with_work(&mut group_nodes, budget)?;
             group_nodes.dedup();
             if group_nodes.len() > 1 {
                 let mut movable = false;

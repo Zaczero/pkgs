@@ -4,6 +4,7 @@ use super::super::{
     QProducerTrace, QSourceSpanRange, RecipeWalk, ResourceError, Result, RootRange,
     try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn add_source_reused_recipe_walk(
@@ -361,7 +362,7 @@ pub(in crate::geometry::topology::q_embedding) fn trace_source_nodes(
             .into());
         }
     }
-    try_sort_by_with_work(&mut nodes, budget, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(&mut nodes, budget)?;
     budget
         .charge_into_error(u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     nodes.dedup();

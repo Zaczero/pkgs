@@ -7,7 +7,7 @@ use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId};
 use crate::error::{ResourceError, Result};
 use crate::geographic::ChartPole;
 use crate::geometry::GeometryErrorKind;
-use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,9 +281,7 @@ pub(super) fn even_odd_face_selection(
             )
             .into());
         }
-        try_sort_by_with_work(&mut child_faces, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut child_faces, work)?;
         work.charge_into_error(
             u64::try_from(child_faces.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -727,7 +725,7 @@ pub(super) fn diagnostic_spans(
                 })?;
             rows.push((edge.row, owner_index));
         }
-        try_sort_by_with_work(&mut rows, work, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(&mut rows, work)?;
         work.charge_into_error(
             u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

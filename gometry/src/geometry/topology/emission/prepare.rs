@@ -12,9 +12,10 @@ use super::{
     CoordinateAxes, EmissionNodeRegistry, ExactChartPoint, ExactGeographicTopology,
     FrozenLiteralBuffers, GeometryErrorKind, NativeMaterializedParts, NodeOrdinates,
     PublicationInventory, QEmissionPlan, QNodeId, QSourceImage, ResourceError, Result,
-    SourceFrozenDrawing, index_recipe_walks, try_sort_by_with_work,
+    SourceFrozenDrawing, index_recipe_walks,
 };
 use crate::geometry::embedding_completion::literals::ShapeLiteralLayout;
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::geometry::{HasM, HasZ, Shape};
 use crate::work::Work;
 
@@ -202,21 +203,17 @@ impl super::plan::QEmissionPlan {
             u64::try_from(self.point_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         live_nodes.extend_from_slice(&self.point_nodes);
-        try_sort_by_with_work(&mut spans, work, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(&mut spans, work)?;
         work.charge_into_error(
             u64::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         spans.dedup();
-        try_sort_by_with_work(&mut areal_spans, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut areal_spans, work)?;
         work.charge_into_error(
             u64::try_from(areal_spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         areal_spans.dedup();
-        try_sort_by_with_work(&mut live_nodes, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut live_nodes, work)?;
         work.charge_into_error(
             u64::try_from(live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -250,9 +247,7 @@ impl super::plan::QEmissionPlan {
                 selected_ports.push((node_id, port_id));
             }
         }
-        try_sort_by_with_work(&mut selected_ports, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut selected_ports, work)?;
         work.charge_into_error(
             u64::try_from(selected_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -261,9 +256,7 @@ impl super::plan::QEmissionPlan {
             .iter()
             .map(|(node, _)| *node)
             .collect::<Vec<_>>();
-        try_sort_by_with_work(&mut selected_nodes, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut selected_nodes, work)?;
         work.charge_into_error(
             u64::try_from(selected_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

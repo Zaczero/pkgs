@@ -4,10 +4,8 @@ use super::plan::{
     SpanEndpoint,
 };
 use super::source_reuse::source_edge_at;
-use super::{
-    ExactGeographicTopology, GeometryErrorKind, RecipeWalkOwner, ResourceError, Result,
-    try_sort_by_with_work,
-};
+use super::{ExactGeographicTopology, GeometryErrorKind, RecipeWalkOwner, ResourceError, Result};
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 pub(in crate::geometry::topology) fn boundary_cycle_line_paths(
@@ -201,9 +199,7 @@ pub(in crate::geometry::topology) fn line_steps(
             incidences.push((node, span_index, endpoint));
         }
     }
-    try_sort_by_with_work(&mut incidences, work, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut incidences, work)?;
     let offset_count = node_count
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;

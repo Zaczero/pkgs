@@ -19,6 +19,14 @@ pub(in crate::geometry) fn try_sort_by<T>(
     })
 }
 
+/// Stable natural ordering with raw-work accounting.
+pub(in crate::geometry) fn try_sort_with_work<T: Ord, W: Work>(
+    items: &mut [T],
+    work: &mut W,
+) -> Result<()> {
+    try_sort_by_with_work(items, work, |left, right, _work| Ok(left.cmp(right)))
+}
+
 /// Stable fallible sort that shares one raw-work account with its comparator.
 pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
     items: &mut [T],

@@ -5,6 +5,7 @@ use super::super::{
     QSourceSpanRange, QVariableNode, ResourceError, Result, SelectedUse, SourceEdgeKind,
     producer_range_touches_node, span_parameter_at_source, try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 impl PreparedProducerWitness {
@@ -21,9 +22,7 @@ impl PreparedProducerWitness {
             budget.charge_into_error(1)?;
             sorted_live_nodes.push(node);
         }
-        try_sort_by_with_work(&mut sorted_live_nodes, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut sorted_live_nodes, budget)?;
         budget.charge_into_error(
             u64::try_from(sorted_live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -422,9 +421,7 @@ impl PreparedProducerWitness {
                 }
             }
         }
-        try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut dependencies, budget)?;
         budget.charge_into_error(
             u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -477,7 +474,7 @@ impl PreparedProducerWitness {
             }
         }
         for nodes in &mut host_boundary_nodes {
-            try_sort_by_with_work(nodes, budget, |left, right, _work| Ok(left.cmp(right)))?;
+            try_sort_with_work(nodes, budget)?;
             budget.charge_into_error(
                 u64::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -550,9 +547,7 @@ impl PreparedProducerWitness {
                 source_nodes.extend(range.nodes);
             }
         }
-        try_sort_by_with_work(&mut source_nodes, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut source_nodes, budget)?;
         budget.charge_into_error(
             u64::try_from(source_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

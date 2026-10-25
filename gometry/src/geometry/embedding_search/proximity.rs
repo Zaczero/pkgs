@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::collections::{HashMap, UnionFind, try_hash_map_with_capacity};
 use crate::error::{ResourceError, Result};
-use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::geometry::segments::ordering::{try_sort_by_with_work, try_sort_with_work};
 use crate::geometry::{Bounds, Segment, XY, for_each_overlapping_bounds_cross_pair_with_work};
 use crate::work::{Unmetered, Work};
 
@@ -269,9 +269,7 @@ where
                 .get_mut(chord)
                 .expect("frontier chord belongs to the emitted chord table") = false;
         }
-        try_sort_by_with_work(&mut frontier_chords, work, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut frontier_chords, work)?;
         if frontier_chords.is_empty() {
             break;
         }

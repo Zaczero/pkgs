@@ -7,8 +7,8 @@ use super::super::{
     port_swept_radius, published_domains, q_port_assigned_point_if_representable,
     quotient_key_for_chart_position_with_work, rounded_chart_point_with_work,
     source_port_for_exact_point, source_sample_at_fragment_endpoint, trace_source_nodes,
-    try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 pub(in crate::geometry::topology::q_embedding) fn publication_sample_index(
@@ -177,9 +177,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_publication_chords(
         }
         producer_traces.push(fragment_traces);
     }
-    try_sort_by_with_work(&mut source_inventory, budget, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut source_inventory, budget)?;
     budget.charge_into_error(
         u64::try_from(source_inventory.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -528,9 +526,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_publication_chords(
                 }
             }
             dependencies.extend(producer_trace.dependencies);
-            try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
-                Ok(left.cmp(right))
-            })?;
+            try_sort_with_work(&mut dependencies, budget)?;
             budget.charge_into_error(
                 u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;

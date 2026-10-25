@@ -5,8 +5,8 @@ use super::super::{
     Result, SearchAccount, Segment, UnionFind, XY, assigned_port_point, build_q_classes,
     emitted_node_key, for_each_overlapping_bounds_cross_pair_with_work, include_closure_variables,
     node_is_movable, proximity_limit, segments_within_chebyshev, swept_bounds,
-    try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::{Unmetered, Work};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -148,9 +148,7 @@ pub(in crate::geometry::topology::q_embedding) fn chord_dependencies(
             }
         }
     }
-    try_sort_by_with_work(&mut dependencies, budget, |left, right, _work| {
-        Ok(left.cmp(right))
-    })?;
+    try_sort_with_work(&mut dependencies, budget)?;
     budget.charge_into_error(
         u64::try_from(dependencies.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
@@ -458,7 +456,7 @@ pub(in crate::geometry::topology::q_embedding) fn q_proximity_pairs(
             Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
         },
     )?;
-    try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(&mut pairs, budget)?;
     budget
         .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
@@ -625,9 +623,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_proximity_closure(
                 frontier_chords.push(chord);
             }
         }
-        try_sort_by_with_work(&mut frontier_chords, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut frontier_chords, budget)?;
         budget.charge_into_error(
             u64::try_from(frontier_chords.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -705,16 +701,14 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_proximity_closure(
                 pairs.push(pair);
             }
         }
-        try_sort_by_with_work(&mut newly_reached, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut newly_reached, budget)?;
         budget.charge_into_error(
             u64::try_from(newly_reached.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         newly_reached.dedup();
         frontier = newly_reached;
     }
-    try_sort_by_with_work(&mut pairs, budget, |left, right, _work| Ok(left.cmp(right)))?;
+    try_sort_with_work(&mut pairs, budget)?;
     budget
         .charge_into_error(u64::try_from(pairs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     pairs.dedup();
@@ -742,7 +736,7 @@ pub(in crate::geometry::topology::q_embedding) fn build_q_proximity_closure(
         }
     }
     for row in &mut incident_pairs {
-        try_sort_by_with_work(row, budget, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(row, budget)?;
         budget.charge_into_error(
             u64::try_from(row.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

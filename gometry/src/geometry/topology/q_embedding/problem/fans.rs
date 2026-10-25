@@ -4,6 +4,7 @@ use super::super::{
     QPortId, QVariableNode, ResourceError, Result, compare_q_darts_with_points,
     inexact_axes_with_work, rotation_row_matches, try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
@@ -30,7 +31,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
             })?;
             ports.extend([dart.from_port, dart.to_port]);
         }
-        try_sort_by_with_work(&mut ports, budget, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(&mut ports, budget)?;
         budget.charge_into_error(
             u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -307,9 +308,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
                 }
             }
         }
-        try_sort_by_with_work(&mut classes, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut classes, budget)?;
         budget.charge_into_error(
             u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -338,9 +337,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
             budget.charge_into_error(1)?;
             classes.push(class);
         }
-        try_sort_by_with_work(&mut classes, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut classes, budget)?;
         budget.charge_into_error(
             u64::try_from(classes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

@@ -305,7 +305,11 @@ fn validate_dense_output_ids(
     let Some(mut ids) = unordered_ids else {
         return Ok(());
     };
-    try_sort_by_with_work(&mut ids, work, |left, right, work| {
+    validate_unordered_output_ids(&mut ids, work)
+}
+
+fn validate_unordered_output_ids(ids: &mut [u32], work: &mut impl Work) -> Result<()> {
+    try_sort_by_with_work(ids, work, |left, right, work| {
         work.charge_into_error(1)?;
         Ok(left.cmp(right))
     })?;

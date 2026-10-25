@@ -10,7 +10,7 @@ use super::{
 use crate::collections::{HashSet, try_hash_set_with_capacity};
 use crate::error::{ResourceError, Result};
 use crate::geometry::GeometryErrorKind;
-use crate::geometry::segments::ordering::try_sort_by_with_work;
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 pub(super) struct ClassSearchState<C, K> {
@@ -299,9 +299,7 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
                         account.charge_into_error(1)?;
                         order.push(position);
                     }
-                    try_sort_by_with_work(&mut order, account, |left, right, _work| {
-                        Ok(left.cmp(right))
-                    })?;
+                    try_sort_with_work(&mut order, account)?;
                     let blamed_count = order.len();
                     account.charge_product_into_error(blamed_count, 1)?;
                     order.dedup();

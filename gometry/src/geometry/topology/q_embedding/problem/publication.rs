@@ -10,6 +10,7 @@ use super::super::{
     producer_range_touches_node, q_port_assigned_point, quotient_key_for_chart_position_with_work,
     reconstruct_cut_ports, translated_exact_point_with_work, try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
@@ -108,7 +109,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
             }
         }
 
-        try_sort_by_with_work(&mut live, budget, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(&mut live, budget)?;
         let mut start = 0_usize;
         while start < live.len() {
             budget.charge_into_error(1)?;
@@ -131,9 +132,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
                 u64::try_from(group.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut distinct = group.iter().map(|(_, node)| *node).collect::<Vec<_>>();
-            try_sort_by_with_work(&mut distinct, budget, |left, right, _work| {
-                Ok(left.cmp(right))
-            })?;
+            try_sort_with_work(&mut distinct, budget)?;
             budget.charge_into_error(
                 u64::try_from(distinct.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -189,9 +188,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
             }
             start = end;
         }
-        try_sort_by_with_work(&mut conflicting_nodes, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut conflicting_nodes, budget)?;
         budget.charge_into_error(
             u64::try_from(conflicting_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -574,9 +571,7 @@ impl<M: ChartMetric> QEmbeddingProblem<'_, '_, '_, '_, M> {
                 }));
             }
         }
-        try_sort_by_with_work(&mut rejected, budget, |left, right, _work| {
-            Ok(left.cmp(right))
-        })?;
+        try_sort_with_work(&mut rejected, budget)?;
         budget.charge_into_error(
             u64::try_from(rejected.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;

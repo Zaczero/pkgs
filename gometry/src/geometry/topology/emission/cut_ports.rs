@@ -4,6 +4,7 @@ use super::{
     ExactGeographicTopology, ExactRational, GeometryErrorKind, QNodeId, QPortId, ResourceError,
     Result, SourceEdgeId, try_sort_by_with_work,
 };
+use crate::geometry::segments::ordering::try_sort_with_work;
 use crate::work::Work;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -279,7 +280,7 @@ pub(in crate::geometry::topology) fn build_cut_node_ports(
                 },
             }
         }
-        try_sort_by_with_work(&mut chords, work, |left, right, _work| Ok(left.cmp(right)))?;
+        try_sort_with_work(&mut chords, work)?;
         work.charge_into_error(
             u64::try_from(chords.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
