@@ -473,7 +473,7 @@ def main() -> None:
     checks = [
         {'package': item['package'], 'crate': crates[item['package']]}
         for item in selection
-        if item['package'] in crates
+        if item['package'] in crates and item['package'] in test_packages
     ]
     kani_checks = [
         item

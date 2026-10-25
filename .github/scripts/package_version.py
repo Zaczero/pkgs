@@ -55,7 +55,7 @@ def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
     """List monorepo packages by capability set.
 
     kind='release' (default): dynamic-version packages eligible for release tags.
-    kind='test': every top-level Python or Cargo package.
+    kind='test': release packages in CI scheduling order.
     """
     if kind == 'release':
         packages = []
@@ -66,15 +66,10 @@ def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
         return packages
 
     if kind == 'test':
-        packages = {
-            manifest.parent.name
-            for pattern in ('*/pyproject.toml', '*/Cargo.toml')
-            for manifest in Path('.').glob(pattern)
-        }
         # GitHub schedules matrix entries in declaration order when capacity is
         # constrained. Start the critical-path native builds before short jobs.
         return sorted(
-            packages,
+            list_packages('release'),
             key=ci_package_sort_key,
         )
 

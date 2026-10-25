@@ -51,9 +51,13 @@ def reverse_uv_consumers(test_packages: Sequence[str]) -> dict[str, set[str]]:
     """Map dependency package → set of consumers that pin it via tool.uv.sources."""
     repo = Path.cwd()
     consumers: dict[str, set[str]] = defaultdict(set)
-    test_set = set(test_packages)
-
-    for consumer in test_packages:
+    pending = list(test_packages)
+    visited = set()
+    while pending:
+        consumer = pending.pop()
+        if consumer in visited:
+            continue
+        visited.add(consumer)
         pyproject = Path(consumer) / 'pyproject.toml'
         if not pyproject.is_file():
             continue
@@ -75,8 +79,9 @@ def reverse_uv_consumers(test_packages: Sequence[str]) -> dict[str, set[str]]:
             if not rel.parts:
                 continue
             dep = rel.parts[0]
-            if dep in test_set:
+            if (repo / dep / 'pyproject.toml').is_file():
                 consumers[dep].add(consumer)
+                pending.append(dep)
 
     return dict(consumers)
 
@@ -210,7 +215,7 @@ def route_paths(
             if consumer not in selected:
                 selected.add(consumer)
                 pending.append(consumer)
-    return sorted(selected & (packages | native), key=ci_package_sort_key)
+    return sorted(selected & packages, key=ci_package_sort_key)
 
 
 def main() -> None:
