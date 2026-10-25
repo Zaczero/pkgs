@@ -57,8 +57,6 @@ def main() -> None:
                         '-j',
                         '-Z',
                         'unstable-options',
-                        '--harness-timeout',
-                        '180',
                         '--output-format',
                         'terse',
                     ],

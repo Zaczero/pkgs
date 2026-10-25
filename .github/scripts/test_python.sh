@@ -14,7 +14,8 @@ if sysconfig.get_config_var("Py_GIL_DISABLED"):
     if sys.argv[2] == "python-rust":
         assert not sys._is_gil_enabled()
 PY
-pytest_args=(tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
+pytest_args=(--timeout=0 -o faulthandler_timeout=0
+  tests --ignore=tests/tooling --ignore=tests/test_public_docs.py)
 if [[ "${FREETHREADED:-false}" == true ]]; then
   pytest_args+=(-n 2)
 fi

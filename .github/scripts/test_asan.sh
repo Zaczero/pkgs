@@ -7,7 +7,7 @@ export CC=clang CXX=clang++
 build_args=(--locked --target x86_64-unknown-linux-gnu -Zbuild-std
   --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Zsanitizer=address"]')
 if [[ "$PACKAGE_TYPE" == rust ]]; then
-  cargo nextest run -p "$CARGO_PACKAGE" "${build_args[@]}"
+  cargo nextest run --profile ci -p "$CARGO_PACKAGE" "${build_args[@]}"
   exit 0
 fi
 
@@ -45,8 +45,9 @@ assert "__asan_init" in symbols and "__asan_report_" in symbols, (
 print(f"ASan extension: {extension}", flush=True)
 PY
 
-cargo nextest run -p "$CARGO_PACKAGE" "${build_args[@]}" --no-tests=pass
+cargo nextest run --profile ci -p "$CARGO_PACKAGE" "${build_args[@]}" --no-tests=pass
 
 cd "$PACKAGE"
 LD_PRELOAD="$runtime${LD_PRELOAD:+:$LD_PRELOAD}" \
-  "$PYO3_PYTHON" -m pytest tests --ignore=tests/tooling --ignore=tests/test_public_docs.py
+  "$PYO3_PYTHON" -m pytest --timeout=0 -o faulthandler_timeout=0 \
+    tests --ignore=tests/tooling --ignore=tests/test_public_docs.py

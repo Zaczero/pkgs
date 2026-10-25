@@ -6,5 +6,5 @@ for profile in test release; do
   if [[ "$PACKAGE_TYPE" != rust ]]; then
     args+=(--no-tests=pass)
   fi
-  cargo nextest run "${args[@]}"
+  cargo nextest run --profile ci "${args[@]}"
 done
