@@ -167,7 +167,7 @@ impl OpenWriterIngressQueue {
     }
 
     #[cfg(test)]
-    fn has_pending(&self) -> bool {
+    const fn has_pending(&self) -> bool {
         !self.ready_streams.is_empty()
     }
 
@@ -180,7 +180,7 @@ impl OpenWriterIngressQueue {
 
 impl WriterIngressQueue {
     #[cfg(test)]
-    fn has_pending(&self) -> bool {
+    const fn has_pending(&self) -> bool {
         match self {
             Self::Open(queue) => queue.has_pending(),
             Self::Closed => false,

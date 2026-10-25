@@ -932,10 +932,10 @@ impl<W: WriteTarget> WriterState<W> {
         result
     }
 
-    pub(crate) fn has_ready_streams(&self) -> bool {
+    pub(crate) const fn has_ready_streams(&self) -> bool {
         !self.ready_streams.is_empty()
     }
-    pub(crate) fn needs_flush(&self) -> bool {
+    pub(crate) const fn needs_flush(&self) -> bool {
         self.dirty
             || self.flushing
             || self.active.is_some()

@@ -167,14 +167,14 @@ impl ReadyStreamQueue {
         }
     }
 
-    pub(super) fn begin_scan(&mut self) -> usize {
+    pub(super) const fn begin_scan(&mut self) -> usize {
         if self.unexamined == 0 {
             self.restart_scan();
         }
         self.unexamined
     }
 
-    pub(super) fn restart_scan(&mut self) {
+    pub(super) const fn restart_scan(&mut self) {
         self.unexamined = self.queue.len();
     }
 
@@ -182,7 +182,7 @@ impl ReadyStreamQueue {
         self.unexamined != 0
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
