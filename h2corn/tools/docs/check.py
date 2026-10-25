@@ -348,6 +348,12 @@ def check_examples() -> None:
         raise AssertionError(
             f'embedded example did not prove its request: {result.stdout!r}'
         )
+    subprocess.run(
+        ['buf', 'generate'],
+        cwd=EXAMPLES / 'grpc',
+        check=True,
+        timeout=30,
+    )
     grpc_result = subprocess.run(
         [sys.executable, '-m', 'examples.grpc.roundtrip'],
         cwd=ROOT,

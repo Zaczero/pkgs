@@ -314,6 +314,12 @@ def prepare(
     )
     descriptor = directory / 'notebook.pb'
     _run(
+        ['buf', 'generate'],
+        30,
+        evidence_path=directory / 'buf-generate.process.json',
+        cwd=ROOT / 'examples/grpc',
+    )
+    _run(
         ['buf', 'build', '--as-file-descriptor-set', '-o', str(descriptor)],
         30,
         evidence_path=directory / 'buf-build.process.json',

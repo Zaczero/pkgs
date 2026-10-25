@@ -47,27 +47,14 @@ listener and network policy when native gRPC should be isolated. Connect and
 gRPC-Web requests use the ordinary HTTP path and do not need this admission
 setting.
 
-## Try a native gRPC round trip
+## Example service {#try-a-native-grpc-round-trip}
 
 The repository's
 [Notebook service](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/app.py)
-uses generated Connect service code and includes a real native gRPC client
-round trip in
-[roundtrip.py](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/roundtrip.py).
-From the `h2corn/` package directory in a source checkout, install the example's
-dependencies and run it:
-
-```console
-pip install h2corn connectrpc "protobuf-py<0.7" starlette asgi-lifespan
-python -m examples.grpc.roundtrip
-```
-The script binds an ephemeral loopback port, calls the generated service with
-Connect's released client configured for native gRPC, checks the returned note,
-and shuts the server down. Its output is:
-
-```text
-native gRPC response: Welcome
-```
+shows a Connect service alongside an HTTP health endpoint.
+Its companion
+[roundtrip.py](https://github.com/Zaczero/pkgs/blob/main/h2corn/examples/grpc/roundtrip.py)
+demonstrates a native gRPC client call and graceful server shutdown.
 
 ## HTTP/2, TLS, and proxies
 

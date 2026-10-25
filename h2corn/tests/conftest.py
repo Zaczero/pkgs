@@ -11,7 +11,10 @@ guard) working on whichever loop a deployment picks.
 """
 
 import asyncio
+import importlib.util
+import os
 import shutil
+import subprocess
 import sys
 import sysconfig
 import tempfile
@@ -34,6 +37,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help='Default event-loop scope for asynchronous fixtures.',
         default='function',
     )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if (
+        not hasattr(session.config, 'workerinput')
+        and not _FREE_THREADED_BUILD
+        and importlib.util.find_spec('connectrpc') is not None
+    ):
+        subprocess.run(
+            ['buf', 'generate'],
+            cwd=Path(__file__).resolve().parents[1] / 'examples/grpc',
+            env={
+                key: value for key, value in os.environ.items() if key != 'LD_PRELOAD'
+            },
+            check=True,
+        )
 
 
 @pytest.fixture
