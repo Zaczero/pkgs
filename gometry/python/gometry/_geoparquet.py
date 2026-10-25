@@ -896,146 +896,153 @@ def from_geoparquet(
     parquet_file_options = {
         key: value for key, value in kwargs.items() if key in _PARQUET_FILE_OPTIONS
     }
-    parquet_file = pq.ParquetFile(path, filesystem=filesystem, **parquet_file_options)
-    schema = parquet_file.schema_arrow
-    stored_schema = _stored_arrow_schema(
-        pa, (parquet_file.metadata.metadata or {}).get(b'ARROW:schema')
-    )
-    if selected_row_groups is not None and any(
-        group >= parquet_file.num_row_groups for group in selected_row_groups
-    ):
-        raise pa.ArrowInvalid('row group index is out of range')
-    from gometry._geoparquet_native import admit_native_columns, logical_columns
+    with pq.ParquetFile(
+        path, filesystem=filesystem, **parquet_file_options
+    ) as parquet_file:
+        schema = parquet_file.schema_arrow
+        stored_schema = _stored_arrow_schema(
+            pa, (parquet_file.metadata.metadata or {}).get(b'ARROW:schema')
+        )
+        if selected_row_groups is not None and any(
+            group >= parquet_file.num_row_groups for group in selected_row_groups
+        ):
+            raise pa.ArrowInvalid('row group index is out of range')
+        from gometry._geoparquet_native import admit_native_columns, logical_columns
 
-    native_columns = logical_columns(parquet_file.schema, schema)
-    geo_metadata = (
-        _parse_geo_metadata(schema)
-        if b'geo' in (schema.metadata or {}) or not native_columns
-        else None
-    )
-    if native_columns or (
-        geo_metadata is not None and geo_metadata['version'].startswith('2.')
-    ):
-        schema, geo_metadata = admit_native_columns(
-            pa,
+        native_columns = logical_columns(parquet_file.schema, schema)
+        geo_metadata = (
+            _parse_geo_metadata(schema)
+            if b'geo' in (schema.metadata or {}) or not native_columns
+            else None
+        )
+        if native_columns or (
+            geo_metadata is not None and geo_metadata['version'].startswith('2.')
+        ):
+            schema, geo_metadata = admit_native_columns(
+                pa,
+                schema,
+                native_columns,
+                geo_metadata,
+                geometry,
+                stored_schema=stored_schema,
+            )
+        assert geo_metadata is not None
+        primary = geo_metadata.get('primary_column')
+        if not isinstance(primary, str):
+            raise _metadata_error('primary_column is required and must be a string')
+        geometry_metadata = geo_metadata.get('columns')
+        if (
+            not isinstance(geometry_metadata, Mapping)
+            or primary not in geometry_metadata
+        ):
+            raise _metadata_error('primary_column must name an entry in columns')
+        if primary not in schema.names:
+            raise _metadata_error(
+                f'primary geometry column {primary!r} not found in GeoParquet file'
+            )
+        selected_geometry = primary if geometry is None else geometry
+        if selected_geometry not in schema.names:
+            raise _metadata_error(
+                f'geometry column {selected_geometry!r} not found in GeoParquet file'
+            )
+        column_metadata, encoding, crs, epoch = _validate_column_metadata(
+            geo_metadata, selected_geometry
+        )
+        # Schema is known: validate columns online (bounded by finite attribute set).
+        # Selected geometry is already a member of the declared geometry columns.
+        admitted_layouts: dict[str, _GeoParquetPhysicalLayout] = {}
+        declaration_schema = stored_schema
+        if stored_schema is not None and native_columns:
+            # Native admission reconciles and resolves contextual frame metadata.
+            # Other columns retain their original declarations through Arrow rewrites.
+            native_fields = {
+                field.name: field for field in schema if field.name in native_columns
+            }
+            declaration_schema = pa.schema([
+                native_fields.get(field.name, field) for field in stored_schema
+            ])
+        attribute_columns = _validate_attribute_columns(
             schema,
-            native_columns,
             geo_metadata,
-            geometry,
-            stored_schema=stored_schema,
+            columns,
+            admitted_layouts=admitted_layouts,
+            declaration_schema=declaration_schema,
         )
-    assert geo_metadata is not None
-    primary = geo_metadata.get('primary_column')
-    if not isinstance(primary, str):
-        raise _metadata_error('primary_column is required and must be a string')
-    geometry_metadata = geo_metadata.get('columns')
-    if not isinstance(geometry_metadata, Mapping) or primary not in geometry_metadata:
-        raise _metadata_error('primary_column must name an entry in columns')
-    if primary not in schema.names:
-        raise _metadata_error(
-            f'primary geometry column {primary!r} not found in GeoParquet file'
+        layout = admitted_layouts[selected_geometry]
+
+        from gometry._geoparquet_bbox import (
+            candidate_groups,
+            covering_column,
+            covering_filter,
+            query_rectangle,
         )
-    selected_geometry = primary if geometry is None else geometry
-    if selected_geometry not in schema.names:
-        raise _metadata_error(
-            f'geometry column {selected_geometry!r} not found in GeoParquet file'
+
+        coverings = (
+            {
+                name: covering_column(pa, schema, name, column_meta)
+                for name, column_meta in geometry_metadata.items()
+            }
+            if geo_metadata['version'].startswith('1.')
+            else {}
         )
-    column_metadata, encoding, crs, epoch = _validate_column_metadata(
-        geo_metadata, selected_geometry
-    )
-    # Schema is known: validate columns online (bounded by finite attribute set).
-    # Selected geometry is already a member of the declared geometry columns.
-    admitted_layouts: dict[str, _GeoParquetPhysicalLayout] = {}
-    declaration_schema = stored_schema
-    if stored_schema is not None and native_columns:
-        # Native admission reconciles and resolves contextual frame metadata.
-        # Other columns retain their original declarations through Arrow rewrites.
-        native_fields = {
-            field.name: field for field in schema if field.name in native_columns
-        }
-        declaration_schema = pa.schema([
-            native_fields.get(field.name, field) for field in stored_schema
-        ])
-    attribute_columns = _validate_attribute_columns(
-        schema,
-        geo_metadata,
-        columns,
-        admitted_layouts=admitted_layouts,
-        declaration_schema=declaration_schema,
-    )
-    layout = admitted_layouts[selected_geometry]
+        if columns is None:
+            auxiliary_columns = set(coverings.values())
+            attribute_columns = [
+                name for name in attribute_columns if name not in auxiliary_columns
+            ]
 
-    from gometry._geoparquet_bbox import (
-        candidate_groups,
-        covering_column,
-        covering_filter,
-        query_rectangle,
-    )
+        rectangle = None
+        if bbox is not None:
+            rectangle, bounds = query_rectangle(bbox, crs, epoch)
+            covering = coverings.get(selected_geometry)
+            if covering is not None:
+                spatial_filter = covering_filter(covering, bounds, crs)
+                filters = (
+                    spatial_filter
+                    if filters is None
+                    else pq.filters_to_expression(filters) & spatial_filter
+                )
+            if selected_geometry in native_columns:
+                candidates = candidate_groups(
+                    parquet_file, selected_geometry, bounds, crs
+                )
+                groups = (
+                    range(parquet_file.num_row_groups)
+                    if selected_row_groups is None
+                    else selected_row_groups
+                )
+                selected_row_groups = [group for group in groups if group in candidates]
 
-    coverings = (
-        {
-            name: covering_column(pa, schema, name, column_meta)
-            for name, column_meta in geometry_metadata.items()
-        }
-        if geo_metadata['version'].startswith('1.')
-        else {}
-    )
-    if columns is None:
-        auxiliary_columns = set(coverings.values())
-        attribute_columns = [
-            name for name in attribute_columns if name not in auxiliary_columns
-        ]
-
-    rectangle = None
-    if bbox is not None:
-        rectangle, bounds = query_rectangle(bbox, crs, epoch)
-        covering = coverings.get(selected_geometry)
-        if covering is not None:
-            spatial_filter = covering_filter(covering, bounds, crs)
-            filters = (
-                spatial_filter
-                if filters is None
-                else pq.filters_to_expression(filters) & spatial_filter
+        projected_columns = [selected_geometry, *attribute_columns]
+        if selected_row_groups is not None and filters is not None:
+            table = _read_filtered_groups(
+                pa,
+                pq,
+                parquet_file,
+                path,
+                filesystem,
+                selected_row_groups,
+                projected_columns,
+                pq.filters_to_expression(filters),
+                kwargs,
             )
-        if selected_geometry in native_columns:
-            candidates = candidate_groups(parquet_file, selected_geometry, bounds, crs)
-            groups = (
-                range(parquet_file.num_row_groups)
-                if selected_row_groups is None
-                else selected_row_groups
+        elif selected_row_groups is not None:
+            row_group_read_options = {
+                key: value for key, value in kwargs.items() if key in _ROW_GROUP_OPTIONS
+            }
+            table = parquet_file.read_row_groups(
+                selected_row_groups or [],
+                columns=projected_columns,
+                **row_group_read_options,
             )
-            selected_row_groups = [group for group in groups if group in candidates]
-
-    projected_columns = [selected_geometry, *attribute_columns]
-    if selected_row_groups is not None and filters is not None:
-        table = _read_filtered_groups(
-            pa,
-            pq,
-            parquet_file,
-            path,
-            filesystem,
-            selected_row_groups,
-            projected_columns,
-            pq.filters_to_expression(filters),
-            kwargs,
-        )
-    elif selected_row_groups is not None:
-        row_group_read_options = {
-            key: value for key, value in kwargs.items() if key in _ROW_GROUP_OPTIONS
-        }
-        table = parquet_file.read_row_groups(
-            selected_row_groups or [],
-            columns=projected_columns,
-            **row_group_read_options,
-        )
-    else:
-        table = pq.read_table(
-            path,
-            columns=projected_columns,
-            filters=filters,
-            filesystem=filesystem,
-            **kwargs,
-        )
+        else:
+            table = pq.read_table(
+                path,
+                columns=projected_columns,
+                filters=filters,
+                filesystem=filesystem,
+                **kwargs,
+            )
     # Admit against the *file* schema field, not the post-read table field:
     # extension registration and read_dictionary can erase or rewrite field
     # metadata / ExtensionType on the materialised column while the schema

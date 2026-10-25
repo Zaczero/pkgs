@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 
 import gometry as gm
@@ -106,6 +107,20 @@ def test_geoparquet_binary_streams_are_caller_owned() -> None:
         source.to_geoparquet(io.StringIO())
     with pytest.raises(TypeError):
         gm.from_geoparquet(io.StringIO('not parquet'))
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='inspects live file descriptors')
+def test_geoparquet_error_releases_its_file_with_traceback_retained(
+    parquet_path: str,
+) -> None:
+    import psutil
+
+    gm.GeometryArray([gm.Point(3, 7, crs=4326)]).to_geoparquet(parquet_path)
+    with pytest.raises(gm.ParseError) as failure:
+        gm.from_geoparquet(parquet_path, geometry='absent')
+
+    assert parquet_path not in {entry.path for entry in psutil.Process().open_files()}
+    assert failure.value.category == 'metadata'
 
 
 @pytest.mark.parametrize(
