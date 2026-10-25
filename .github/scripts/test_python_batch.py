@@ -86,7 +86,15 @@ def main() -> int:
                 package,
                 'dist',
             ],
-            ['bash', '.github/scripts/test_python.sh'],
+            [
+                'uv',
+                'run',
+                '--project',
+                package,
+                '--no-sync',
+                'python',
+                '.github/scripts/test_python.py',
+            ],
         ]
         try:
             for command in commands:

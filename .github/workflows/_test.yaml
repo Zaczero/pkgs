@@ -120,7 +120,7 @@ jobs:
           python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
           uv build --python "$python" --wheel --out-dir "$RUNNER_TEMP/development-wheel" "$PACKAGE"
           uv run --project "$PACKAGE" --no-sync python .github/scripts/install_wheel.py "$PACKAGE" "$RUNNER_TEMP/development-wheel"
-          bash .github/scripts/test_python.sh
+          uv run --project "$PACKAGE" --no-sync python .github/scripts/test_python.py
 
       - name: Test embedded Rust against the Python test installation
         shell: bash
