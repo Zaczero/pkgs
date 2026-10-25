@@ -259,20 +259,27 @@ def resolve_process_identity(config: Config) -> ProcessIdentity:
 def drop_process_privileges(identity: ProcessIdentity) -> None:
     if identity.uid is None and identity.gid is None:
         return
-    assert sys.platform != 'win32'
+    if sys.platform == 'win32':
+        raise ValueError('process identities require POSIX')
+    else:
+        if (
+            identity.uid is not None
+            and identity.username is not None
+            and os.geteuid() == 0
+        ):
+            os.initgroups(
+                identity.username,
+                os.getegid() if identity.gid is None else identity.gid,
+            )
+        elif (
+            identity.gid is not None and hasattr(os, 'setgroups') and os.geteuid() == 0
+        ):
+            os.setgroups([identity.gid])
 
-    if identity.uid is not None and identity.username is not None and os.geteuid() == 0:
-        os.initgroups(
-            identity.username,
-            os.getegid() if identity.gid is None else identity.gid,
-        )
-    elif identity.gid is not None and hasattr(os, 'setgroups') and os.geteuid() == 0:
-        os.setgroups([identity.gid])
-
-    if identity.gid is not None and os.getegid() != identity.gid:
-        os.setgid(identity.gid)
-    if identity.uid is not None and os.geteuid() != identity.uid:
-        os.setuid(identity.uid)
+        if identity.gid is not None and os.getegid() != identity.gid:
+            os.setgid(identity.gid)
+        if identity.uid is not None and os.geteuid() != identity.uid:
+            os.setuid(identity.uid)
 
 
 def _resolve_on_owning_loop(

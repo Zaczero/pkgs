@@ -451,20 +451,25 @@ def _inotify_needs_rebuild(mask: int):
 
 
 class _InotifyNotifier:
+    _fd: int
+
     def __init__(
         self,
         roots: tuple[Path, ...],
         include_patterns: tuple[str, ...],
         exclude_patterns: tuple[str, ...],
     ):
-        assert sys.platform == 'linux'
         self._roots = roots
         self._include_patterns = include_patterns
         self._exclude_patterns = exclude_patterns
         inotify_init1, self._inotify_add_watch, self._inotify_rm_watch = (
             _inotify_bindings()
         )
-        fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        fd: int
+        if sys.platform == 'linux':
+            fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        else:
+            raise RuntimeError('inotify requires Linux')
         if fd < 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
@@ -868,18 +873,6 @@ class _ReloadChild:
             raise
 
     def stop(self, graceful_timeout: float) -> None:
-        def signal_tree(number: int) -> None:
-            assert sys.platform != 'win32'
-            try:
-                os.killpg(self.process.pid, number)
-            except ProcessLookupError:
-                # The whole group is already gone, which is the goal.
-                pass
-            except PermissionError:
-                # Darwin can reject a signal while an exited group leader has
-                # not been reaped yet. The outer group-existence loop retries.
-                self.process.poll()
-
         try:
             if sys.platform == 'win32':
                 if self.process.poll() is None:
@@ -890,6 +883,17 @@ class _ReloadChild:
                         self.process.kill()
                         self.process.wait()
             else:
+
+                def signal_tree(number: int) -> None:
+                    try:
+                        os.killpg(self.process.pid, number)
+                    except ProcessLookupError:
+                        # The whole group is already gone, which is the goal.
+                        pass
+                    except PermissionError:
+                        # Darwin can reject a signal while an exited group leader has
+                        # not been reaped yet. The outer group-existence loop retries.
+                        self.process.poll()
 
                 def group_exists() -> bool:
                     try:

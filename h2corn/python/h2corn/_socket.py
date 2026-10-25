@@ -298,8 +298,10 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     if reuse_port:
-        assert sys.platform != 'win32'
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        if sys.platform == 'win32':
+            raise ValueError('reuse_port is not supported on this platform')
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
     value = 512 if sys.platform == 'linux' else 1
     # CPython omits TCP_FASTOPEN on Windows versions before Windows 10 1607.
