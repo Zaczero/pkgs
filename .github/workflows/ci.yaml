@@ -26,6 +26,8 @@ jobs:
       packages: ${{ steps.matrix.outputs.packages }}
       rust-checks: ${{ steps.matrix.outputs.rust-checks }}
       kani-checks: ${{ steps.matrix.outputs.kani-checks }}
+      rust-submodules: ${{ steps.matrix.outputs.rust-submodules }}
+      kani-submodules: ${{ steps.matrix.outputs.kani-submodules }}
       primary-python: ${{ steps.matrix.outputs.primary-python }}
       rust-toolchain: ${{ steps.matrix.outputs.rust-toolchain }}
       lint-python: ${{ steps.detect.outputs.lint-python }}
@@ -39,7 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - id: detect
@@ -74,6 +75,11 @@ jobs:
           print(*sorted(set(list_packages("test")) | rust_packages().keys(),
                         key=ci_package_sort_key), sep="\n")
           ')"
+
+            if ! $test_all && [[ -n "$base" && ! "$base" =~ ^0+$ ]] \
+                && ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$base" || test_all=true
+            fi
 
             if ! $test_all && {
               [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null
@@ -187,7 +193,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: ${{ needs.detect.outputs.rust-submodules == 'true' }}
           persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -229,7 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: ${{ needs.detect.outputs.kani-submodules == 'true' }}
           persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

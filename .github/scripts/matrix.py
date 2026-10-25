@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 from package_version import list_packages, package_info, write_outputs
-from route_packages import rust_packages
+from route_packages import rust_packages, submodule_consumers
 
 VERSION_RE = re.compile(
     r"""
@@ -313,6 +313,7 @@ def resolve_matrix(
         return {
             'type': 'rust',
             'crate': info['crate'],
+            'submodules': package in submodule_consumers(),
             'rust-test-runners': [LINUX_TEST_RUNNER, 'ubuntu-26.04-arm'],
             'rust-toolchain': rust_toolchain_channel(package),
         }
@@ -422,6 +423,7 @@ def resolve_matrix(
         'import-name': info['import-name'],
         'publishable': info['publishable'],
         'crate': info.get('crate', ''),
+        'submodules': package in submodule_consumers(),
         'primary-python': str(primary),
         'builds': builds,
         'build-targets': list(builds),
@@ -462,6 +464,12 @@ def main() -> None:
         'packages': json.dumps(list(plans), separators=(',', ':')),
         'rust-checks': json.dumps(checks, separators=(',', ':')),
         'kani-checks': json.dumps(kani_checks, separators=(',', ':')),
+        'rust-submodules': json.dumps(
+            any(item['package'] in submodule_consumers() for item in checks)
+        ),
+        'kani-submodules': json.dumps(
+            any(item['package'] in submodule_consumers() for item in kani_checks)
+        ),
         'primary-python': str(primary),
         'rust-toolchain': rust_toolchain_channel('.'),
     })

@@ -13,6 +13,7 @@ import os
 import re
 import sys
 from collections import defaultdict
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -120,6 +121,29 @@ def reverse_rust_consumers() -> dict[str, set[str]]:
                             consumers[dependency_path].add(member)
                             pending.append(dependency_path)
     return dict(consumers)
+
+
+@cache
+def submodule_consumers() -> set[str]:
+    """Propagate native source requirements through local Cargo dependencies."""
+    consumers = reverse_rust_consumers()
+    packages = set(rust_packages()) | consumers.keys()
+    required = {
+        package
+        for package in packages
+        if load_toml(Path(package) / 'Cargo.toml')
+        .get('package', {})
+        .get('metadata', {})
+        .get('ci', {})
+        .get('submodules', False)
+    }
+    pending = list(required)
+    while pending:
+        for consumer in consumers.get(pending.pop(), ()):
+            if consumer not in required:
+                required.add(consumer)
+                pending.append(consumer)
+    return required
 
 
 def route_paths(
