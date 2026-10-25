@@ -11,7 +11,7 @@ runs:
   steps:
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.save == 'true' && github.ref == 'refs/heads/main'
-      with: &cargo-downloads
+      with:
         path: |
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
@@ -21,7 +21,13 @@ runs:
 
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.save != 'true' || github.ref != 'refs/heads/main'
-      with: *cargo-downloads
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Populate workspace downloads
       if: inputs.save == 'true' && github.ref == 'refs/heads/main'

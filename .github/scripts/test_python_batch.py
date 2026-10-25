@@ -70,7 +70,6 @@ def main() -> int:
                 'sync',
                 '--project',
                 package,
-                '--locked',
                 '--no-default-groups',
                 '--group',
                 runtime['dependency-group'],

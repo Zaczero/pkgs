@@ -11,11 +11,14 @@ runs:
   steps:
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.save == 'true' && github.ref == 'refs/heads/main'
-      with: &wheel-tools
+      with:
         path: ${{ runner.temp }}/cibuildwheel-cache
         key: wheel-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.python-versions', '**/pyproject.toml', '.github/workflows/_distribution.yaml') }}
         restore-keys: wheel-tools-${{ runner.os }}-${{ runner.arch }}-
 
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.save != 'true' || github.ref != 'refs/heads/main'
-      with: *wheel-tools
+      with:
+        path: ${{ runner.temp }}/cibuildwheel-cache
+        key: wheel-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.python-versions', '**/pyproject.toml', '.github/workflows/_distribution.yaml') }}
+        restore-keys: wheel-tools-${{ runner.os }}-${{ runner.arch }}-

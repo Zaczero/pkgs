@@ -419,11 +419,10 @@ def resolve_matrix(
             for start in range(0, len(runtimes), batch_size):
                 batch = runtimes[start : start + batch_size]
                 versions = ', '.join(str(test['python-version']) for test in batch)
-                primary = next((test for test in batch if test['primary']), None)
                 batches[f'{versions}, {NATIVE_BUILD_RUNNERS[runner]}'] = {
                     'os': runner,
                     'runtimes': batch,
-                    'primary': primary,
+                    'primary': next((test for test in batch if test['primary']), None),
                 }
         cell['tests'] = batches
         cell['test-batches'] = list(batches)
