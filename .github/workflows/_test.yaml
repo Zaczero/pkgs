@@ -22,8 +22,7 @@ env:
   PYTHONDEVMODE: "1"
 
 jobs:
-  test-rust:
-    name: Rust (${{ matrix.runner }})
+  rust-tests:
     if: fromJson(inputs.plan).type == 'rust'
     strategy:
       fail-fast: false
@@ -65,6 +64,7 @@ jobs:
         run: bash .github/scripts/test_rust.sh
 
   development:
+    name: Development and embedded Rust tests
     if: fromJson(inputs.plan).type == 'python-rust'
     runs-on: ubuntu-26.04
     env:
@@ -133,6 +133,7 @@ jobs:
           bash .github/scripts/test_rust.sh
 
   test-address-sanitizer:
+    name: AddressSanitizer tests
     if: fromJson(inputs.plan).crate != ''
     runs-on: ubuntu-26.04
     env:
@@ -201,6 +202,7 @@ jobs:
         run: bash .github/scripts/test_asan.sh
 
   prepare-distributions:
+    name: Prepare distribution metadata
     if: fromJson(inputs.plan).type != 'rust'
     runs-on: ubuntu-26.04
 
@@ -245,15 +247,14 @@ jobs:
           retention-days: 1
 
   distributions:
-    name: ${{ matrix.runner }} / ${{ matrix.abi }}
     needs: prepare-distributions
     if: fromJson(inputs.plan).type != 'rust'
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(inputs.plan).build-matrix }}
+        target: ${{ fromJson(inputs.plan).build-targets }}
     uses: ./.github/workflows/_distribution.yaml # zizmor: ignore[self-repository] -- same-revision workflow
     with:
       package: ${{ inputs.package }}
       plan: ${{ inputs.plan }}
-      build: ${{ toJson(matrix) }}
+      build: ${{ toJson(fromJson(inputs.plan).builds[matrix.target]) }}

@@ -405,12 +405,14 @@ def resolve_matrix(
                 cell['pgo-build'] = pgo['build']
 
     for cell in build_matrix:
-        cell['test-matrix'] = [
-            test
+        cell['tests'] = {
+            f'CPython {test["python-version"]}, {test["os"]}': test
             for test in test_matrix
             if cell['abi'] == 'optimized'
             and (not has_rust or test['os'] == cell['runner'])
-        ]
+        }
+        cell['test-runtimes'] = list(cell['tests'])
+    builds = {f'{cell["runner"]}, {cell["abi"]}': cell for cell in build_matrix}
 
     plan = {
         'type': info['type'],
@@ -418,8 +420,8 @@ def resolve_matrix(
         'publishable': info['publishable'],
         'crate': info.get('crate', ''),
         'primary-python': str(primary),
-        'test-matrix': test_matrix,
-        'build-matrix': build_matrix,
+        'builds': builds,
+        'build-targets': list(builds),
         'rust-toolchain': rust_toolchain_channel(package) if has_rust else '',
         'wheel-test-command': info.get('wheel-test-command', ''),
     }
@@ -433,11 +435,11 @@ def main() -> None:
     catalog = load_uv_catalog()
     test_packages = set(list_packages('test'))
     crates = rust_packages()
-    plans = [
-        {**item, 'plan': resolve_matrix(item['package'], catalog=catalog)}
+    plans = {
+        item['package']: resolve_matrix(item['package'], catalog=catalog)
         for item in selection
         if item['package'] in test_packages
-    ]
+    }
     checks = [
         {'package': item['package'], 'crate': crates[item['package']]}
         for item in selection
@@ -454,6 +456,7 @@ def main() -> None:
     primary = max(available_stable_cpython_minors(catalog, freethreaded=False))
     write_outputs({
         'plans': json.dumps(plans, separators=(',', ':')),
+        'packages': json.dumps(list(plans), separators=(',', ':')),
         'rust-checks': json.dumps(checks, separators=(',', ':')),
         'kani-checks': json.dumps(kani_checks, separators=(',', ':')),
         'primary-python': str(primary),

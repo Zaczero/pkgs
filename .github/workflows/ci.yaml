@@ -17,11 +17,13 @@ concurrency:
 
 jobs:
   detect:
+    name: Select affected packages
     runs-on: ubuntu-26.04
 
     outputs:
       release-package: ${{ steps.release.outputs.package }}
       plans: ${{ steps.matrix.outputs.plans }}
+      packages: ${{ steps.matrix.outputs.packages }}
       rust-checks: ${{ steps.matrix.outputs.rust-checks }}
       kani-checks: ${{ steps.matrix.outputs.kani-checks }}
       primary-python: ${{ steps.matrix.outputs.primary-python }}
@@ -126,6 +128,7 @@ jobs:
           echo "package=$package" >> "$GITHUB_OUTPUT"
 
   lint-python:
+    name: Python lint and format
     needs: detect
     if: needs.detect.outputs.lint-python == 'true'
 
@@ -143,6 +146,7 @@ jobs:
       - run: ruff format --check .
 
   check-workspace:
+    name: Rust formatting and dependency audit
     needs: detect
     if: needs.detect.outputs.lint-rust == 'true'
 
@@ -170,6 +174,7 @@ jobs:
         run: cargo fmt --check
 
   check-rust:
+    name: Rust Clippy and doctests
     needs: detect
     if: needs.detect.outputs.rust-checks != '' && needs.detect.outputs.rust-checks != '[]'
 
@@ -211,6 +216,7 @@ jobs:
           python .github/scripts/check_rust.py clippy
 
   test-kani:
+    name: Rust Kani proofs
     needs: detect
     if: needs.detect.outputs.kani-checks != '' && needs.detect.outputs.kani-checks != '[]'
 
@@ -262,27 +268,27 @@ jobs:
           export PYO3_PYTHON
           python .github/scripts/check_rust.py kani
 
-  test:
-    name: ${{ matrix.package }}
+  packages:
     needs: detect
-    if: needs.detect.outputs.plans != '' && needs.detect.outputs.plans != '[]'
+    if: needs.detect.outputs.packages != '' && needs.detect.outputs.packages != '[]'
 
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.detect.outputs.plans) }}
+        package: ${{ fromJson(needs.detect.outputs.packages) }}
 
     uses: ./.github/workflows/_test.yaml # zizmor: ignore[self-repository] -- actionlint does not yet accept GitHub's $/ workflow syntax
     with:
       package: ${{ matrix.package }}
-      plan: ${{ toJson(matrix.plan) }}
+      plan: ${{ toJson(fromJson(needs.detect.outputs.plans)[matrix.package]) }}
 
   release:
-    needs: [detect, test, lint-python, check-workspace, check-rust, test-kani]
+    name: Publish distributions
+    needs: [detect, packages, lint-python, check-workspace, check-rust, test-kani]
     if: >-
       !cancelled()
       && startsWith(github.ref, 'refs/tags/')
-      && needs.test.result == 'success'
+      && needs.packages.result == 'success'
       && needs.lint-python.result == 'success'
       && (
         (needs.detect.outputs.lint-rust == 'true'

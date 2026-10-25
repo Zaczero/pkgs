@@ -25,6 +25,7 @@ env:
 
 jobs:
   build:
+    name: Build and smoke-test wheels
     runs-on: ${{ fromJson(inputs.build).runner }}
     env:
       CIBW_ARCHS: native
@@ -169,15 +170,17 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  test:
-    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+  python-tests:
     needs: build
-    if: toJson(fromJson(inputs.build).test-matrix) != '[]'
+    if: toJson(fromJson(inputs.build).test-runtimes) != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(inputs.build).test-matrix }}
-    runs-on: ${{ matrix.os }}
+        runtime: ${{ fromJson(inputs.build).test-runtimes }}
+    runs-on: ${{ fromJson(inputs.build).tests[matrix.runtime].os }}
+
+    env:
+      TEST_PLAN: ${{ toJson(fromJson(inputs.build).tests[matrix.runtime]) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,9 +192,9 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: ${{ inputs.package }}
-          save-cache: ${{ github.ref == 'refs/heads/main' && matrix.primary && fromJson(inputs.plan).crate == '' }}
+          save-cache: ${{ github.ref == 'refs/heads/main' && fromJson(env.TEST_PLAN).primary && fromJson(inputs.plan).crate == '' }}
           working-directory: ${{ inputs.package }}
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ fromJson(env.TEST_PLAN).python-version }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         if: fromJson(inputs.plan).crate != ''
@@ -217,7 +220,7 @@ jobs:
 
       - name: Install the built wheel
         env:
-          DEPENDENCY_GROUP: ${{ matrix.dependency-group }}
+          DEPENDENCY_GROUP: ${{ fromJson(env.TEST_PLAN).dependency-group }}
         shell: bash
         run: |
           uv sync --project "$PACKAGE" --no-default-groups --group "$DEPENDENCY_GROUP" --no-install-project
@@ -225,12 +228,12 @@ jobs:
 
       - name: Test Python
         env:
-          FREETHREADED: ${{ matrix.freethreaded }}
+          FREETHREADED: ${{ fromJson(env.TEST_PLAN).freethreaded }}
         shell: bash
         run: bash .github/scripts/test_python.sh
 
       - name: Check Python types
-        if: matrix.primary
+        if: fromJson(env.TEST_PLAN).primary
         shell: bash
         run: |
           cd "$PACKAGE"
@@ -238,6 +241,6 @@ jobs:
           uv tool run pyright --pythonpath "$python"
 
       - name: Audit Python dependencies
-        if: matrix.primary
+        if: fromJson(env.TEST_PLAN).primary
         shell: bash
         run: uv audit --project "$PACKAGE" --locked
