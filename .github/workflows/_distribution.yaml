@@ -39,6 +39,7 @@ jobs:
         if [ -f "{package}/tools/ci_before_build.sh" ]; then bash "{package}/tools/ci_before_build.sh"; fi
       CIBW_ENVIRONMENT_LINUX: >-
         PATH="/opt/cargo/bin:$PATH" CARGO_HOME=/opt/cargo RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_DIR=/opt/sccache-cache
+        CMAKE_C_COMPILER_LAUNCHER="$RUSTC_WRAPPER" CMAKE_CXX_COMPILER_LAUNCHER="$RUSTC_WRAPPER"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: >-
         IMPORT_NAME ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN

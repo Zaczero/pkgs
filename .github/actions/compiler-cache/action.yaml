@@ -21,6 +21,8 @@ runs:
         echo "SCCACHE_MULTILEVEL_CHAIN=disk,gha" >> "$GITHUB_ENV"
         echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        echo "CMAKE_C_COMPILER_LAUNCHER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        echo "CMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_PATH" >> "$GITHUB_ENV"
         mkdir -p "$RUNNER_TEMP/sccache"
       env:
         CACHE_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
