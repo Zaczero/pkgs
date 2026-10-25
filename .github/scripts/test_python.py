@@ -15,6 +15,7 @@ if sysconfig.get_config_var('Py_GIL_DISABLED'):
         assert not sys._is_gil_enabled()
 
 arguments = [
+    '--verbose',
     '--timeout=0',
     '-o',
     'faulthandler_timeout=0',
