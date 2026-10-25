@@ -457,6 +457,7 @@ class _InotifyNotifier:
         include_patterns: tuple[str, ...],
         exclude_patterns: tuple[str, ...],
     ):
+        assert sys.platform == 'linux'
         self._roots = roots
         self._include_patterns = include_patterns
         self._exclude_patterns = exclude_patterns
@@ -868,9 +869,7 @@ class _ReloadChild:
 
     def stop(self, graceful_timeout: float) -> None:
         def signal_tree(number: int) -> None:
-            if sys.platform == 'win32':
-                self.process.terminate() if number == signal.SIGTERM else self.process.kill()
-                return
+            assert sys.platform != 'win32'
             try:
                 os.killpg(self.process.pid, number)
             except ProcessLookupError:
@@ -884,11 +883,11 @@ class _ReloadChild:
         try:
             if sys.platform == 'win32':
                 if self.process.poll() is None:
-                    signal_tree(signal.SIGTERM)
+                    self.process.terminate()
                     try:
                         self.process.wait(timeout=graceful_timeout)
                     except subprocess.TimeoutExpired:
-                        signal_tree(signal.SIGKILL)
+                        self.process.kill()
                         self.process.wait()
             else:
 

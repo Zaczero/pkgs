@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 
 _MESSAGE_READY = b'READY=1'
 _MESSAGE_STOPPING = b'STOPPING=1'
@@ -54,6 +55,8 @@ def _notify(message: bytes) -> bool:
     to retry or report it. This function does not log, because it is called
     from both a signal-handling supervisor and an event loop.
     """
+    if sys.platform == 'win32':
+        return False
     address = _address()
     if address is None:
         return False

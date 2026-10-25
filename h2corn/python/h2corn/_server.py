@@ -41,7 +41,11 @@ def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
     """Return a worker-loop constructor that registers its loop as current."""
     import importlib.util
 
-    if loop == 'asyncio' or importlib.util.find_spec('uvloop') is None:
+    if (
+        sys.platform == 'win32'
+        or loop == 'asyncio'
+        or importlib.util.find_spec('uvloop') is None
+    ):
         if loop == 'uvloop':
             raise RuntimeError(
                 "loop='uvloop' requires the uvloop package — install the "
@@ -255,6 +259,7 @@ def resolve_process_identity(config: Config) -> ProcessIdentity:
 def drop_process_privileges(identity: ProcessIdentity) -> None:
     if identity.uid is None and identity.gid is None:
         return
+    assert sys.platform != 'win32'
 
     if identity.uid is not None and identity.username is not None and os.geteuid() == 0:
         os.initgroups(

@@ -38,7 +38,7 @@ def swap_signal_handlers(handlers: Mapping[int, Any]):
 
 
 def nonblocking_pipe() -> tuple[int, int]:
-    if hasattr(os, 'pipe2'):
+    if sys.platform != 'win32' and hasattr(os, 'pipe2'):
         return os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
     read_fd, write_fd = os.pipe()
     try:
@@ -298,6 +298,7 @@ def _prepare_tcp_listener(sock: socket.socket, *, reuse_port: bool = False):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     if reuse_port:
+        assert sys.platform != 'win32'
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
     value = 512 if sys.platform == 'linux' else 1
