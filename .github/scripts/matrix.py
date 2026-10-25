@@ -59,14 +59,14 @@ OTHER_TEST_RUNNERS = {'macos': MACOS_TEST_RUNNER, 'windows': WINDOWS_TEST_RUNNER
 # Free-threaded wheels in cibuildwheel 4 start at CPython 3.14 (3.13t removed).
 MIN_FREETHREADED_MINOR = (3, 14)
 
-NATIVE_BUILD_RUNNERS = [
-    LINUX_TEST_RUNNER,
-    'ubuntu-26.04-arm',
-    WINDOWS_TEST_RUNNER,
-    'windows-11-vs2026-arm',
-    'macos-26-intel',
-    MACOS_TEST_RUNNER,
-]
+NATIVE_BUILD_RUNNERS = {
+    LINUX_TEST_RUNNER: 'linux-x64',
+    'ubuntu-26.04-arm': 'linux-arm64',
+    WINDOWS_TEST_RUNNER: 'windows-x64',
+    'windows-11-vs2026-arm': 'windows-arm64',
+    'macos-26-intel': 'macos-x64',
+    MACOS_TEST_RUNNER: 'macos-arm64',
+}
 PURE_BUILD_RUNNERS = [LINUX_TEST_RUNNER]
 
 
@@ -406,13 +406,16 @@ def resolve_matrix(
 
     for cell in build_matrix:
         cell['tests'] = {
-            f'CPython {test["python-version"]}, {test["os"]}': test
+            f'{test["python-version"]}, {NATIVE_BUILD_RUNNERS[test["os"]]}': test
             for test in test_matrix
             if cell['abi'] == 'optimized'
             and (not has_rust or test['os'] == cell['runner'])
         }
         cell['test-runtimes'] = list(cell['tests'])
-    builds = {f'{cell["runner"]}, {cell["abi"]}': cell for cell in build_matrix}
+    builds = {
+        f'{NATIVE_BUILD_RUNNERS[cell["runner"]]}, {cell["abi"]}': cell
+        for cell in build_matrix
+    }
 
     plan = {
         'type': info['type'],

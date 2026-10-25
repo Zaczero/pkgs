@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   detect:
-    name: Select affected packages
+    name: Packages
     runs-on: ubuntu-26.04
 
     outputs:
@@ -128,7 +128,7 @@ jobs:
           echo "package=$package" >> "$GITHUB_OUTPUT"
 
   lint-python:
-    name: Python lint and format
+    name: Ruff
     needs: detect
     if: needs.detect.outputs.lint-python == 'true'
 
@@ -146,7 +146,7 @@ jobs:
       - run: ruff format --check .
 
   check-workspace:
-    name: Rust formatting and dependency audit
+    name: Rust fmt / audit
     needs: detect
     if: needs.detect.outputs.lint-rust == 'true'
 
@@ -174,7 +174,7 @@ jobs:
         run: cargo fmt --check
 
   check-rust:
-    name: Rust Clippy and doctests
+    name: Clippy / doctests
     needs: detect
     if: needs.detect.outputs.rust-checks != '' && needs.detect.outputs.rust-checks != '[]'
 
@@ -216,7 +216,7 @@ jobs:
           python .github/scripts/check_rust.py clippy
 
   test-kani:
-    name: Rust Kani proofs
+    name: Kani
     needs: detect
     if: needs.detect.outputs.kani-checks != '' && needs.detect.outputs.kani-checks != '[]'
 
@@ -268,7 +268,7 @@ jobs:
           export PYO3_PYTHON
           python .github/scripts/check_rust.py kani
 
-  packages:
+  test:
     needs: detect
     if: needs.detect.outputs.packages != '' && needs.detect.outputs.packages != '[]'
 
@@ -283,12 +283,12 @@ jobs:
       plan: ${{ toJson(fromJson(needs.detect.outputs.plans)[matrix.package]) }}
 
   release:
-    name: Publish distributions
-    needs: [detect, packages, lint-python, check-workspace, check-rust, test-kani]
+    name: Publish
+    needs: [detect, test, lint-python, check-workspace, check-rust, test-kani]
     if: >-
       !cancelled()
       && startsWith(github.ref, 'refs/tags/')
-      && needs.packages.result == 'success'
+      && needs.test.result == 'success'
       && needs.lint-python.result == 'success'
       && (
         (needs.detect.outputs.lint-rust == 'true'

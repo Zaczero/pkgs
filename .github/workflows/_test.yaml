@@ -22,7 +22,7 @@ env:
   PYTHONDEVMODE: "1"
 
 jobs:
-  rust-tests:
+  rust:
     if: fromJson(inputs.plan).type == 'rust'
     strategy:
       fail-fast: false
@@ -64,7 +64,7 @@ jobs:
         run: bash .github/scripts/test_rust.sh
 
   development:
-    name: Development and embedded Rust tests
+    name: Development
     if: fromJson(inputs.plan).type == 'python-rust'
     runs-on: ubuntu-26.04
     env:
@@ -133,7 +133,7 @@ jobs:
           bash .github/scripts/test_rust.sh
 
   test-address-sanitizer:
-    name: AddressSanitizer tests
+    name: ASan
     if: fromJson(inputs.plan).crate != ''
     runs-on: ubuntu-26.04
     env:
@@ -201,7 +201,7 @@ jobs:
         run: bash .github/scripts/test_asan.sh
 
   prepare-distributions:
-    name: Prepare distribution metadata
+    name: Metadata
     if: fromJson(inputs.plan).type != 'rust'
     runs-on: ubuntu-26.04
 
@@ -245,7 +245,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  distributions:
+  wheels:
     needs: prepare-distributions
     if: fromJson(inputs.plan).type != 'rust'
     strategy:

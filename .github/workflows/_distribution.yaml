@@ -25,7 +25,7 @@ env:
 
 jobs:
   build:
-    name: Build and smoke-test wheels
+    name: Build
     runs-on: ${{ fromJson(inputs.build).runner }}
     env:
       CIBW_ARCHS: native
@@ -170,7 +170,7 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  python-tests:
+  python:
     needs: build
     if: toJson(fromJson(inputs.build).test-runtimes) != '[]'
     strategy:
