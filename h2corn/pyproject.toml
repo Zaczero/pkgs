@@ -150,6 +150,9 @@ extend = "../ruff.toml"
 [tool.ruff.lint]
 extend-select = ["non-capitalized-section-name", "missing-new-line-after-section-name", "missing-dashed-underline-after-section", "missing-section-underline-after-name", "mismatched-section-underline-length", "no-blank-line-after-section", "no-blank-line-before-section", "blank-lines-between-header-and-content", "empty-docstring-section", "missing-section-name-colon"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["examples"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
