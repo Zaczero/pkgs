@@ -213,8 +213,6 @@ rustflags = ["--cap-lints", "allow"]
 # the C and C++ objects, so every checkout compiles identical objects and the
 # compiler cache shares them. gometry's own Rust keeps checkout paths.
 [profile.dev.package.proj-sys]
-opt-level = 2
-debug = false
 trim-paths = "all"
 
 [profile.dev.package.gometry-libtiff-sys]
