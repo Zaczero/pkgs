@@ -99,7 +99,7 @@ impl PatchQueue {
         Ok(maximum)
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
 }
