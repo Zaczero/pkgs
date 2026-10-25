@@ -178,8 +178,7 @@ jobs:
         with:
           tool: nextest
 
-      - name: Install AddressSanitizer runtime
-        if: fromJson(inputs.plan).type != 'rust'
+      - name: Prepare Clang and AddressSanitizer runtime
         shell: bash
         run: |
           if command -v clang >/dev/null && [ -f "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" ]; then

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep native global registration compatible with LLVM's sanitizer runtime.
+export CC=clang CXX=clang++
+
 build_args=(--locked --target x86_64-unknown-linux-gnu -Zbuild-std
   --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Zsanitizer=address"]')
 if [[ "$PACKAGE_TYPE" == rust ]]; then
