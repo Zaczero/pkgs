@@ -35,9 +35,8 @@ HTTP tests use standard asyncio, direct connections without TLS or a proxy,
 Uvicorn's h11 parser, and Gunicorn's Python HTTP parser. HTTP/2 uses cleartext
 prior knowledge.
 
-The [benchmark source](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench),
-[raw results](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/raw),
-and [trial evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/evidence)
+The [benchmark source](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench)
+and [raw results and trial evidence](assets/benchmarks/http-evidence.zip)
 provide exact commands, calibration rules, configurations, and observations.
 
 ### HTTP workload notes {#workloads-and-limits}
@@ -76,5 +75,5 @@ for h2corn and grpc.aio but timed out on Hypercorn.
 Released Connect failed the reserved-flag, truncated-suffix, and expired-deadline
 checks. Throughput results do not imply that these error paths conform.
 
-The [gRPC records and evidence](https://github.com/Zaczero/pkgs/tree/main/h2corn/bench/results/grpc)
+The [gRPC records and evidence](assets/benchmarks/grpc-evidence.zip)
 retain exact configurations, verified counts, and failure details.

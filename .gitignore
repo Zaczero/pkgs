@@ -102,8 +102,6 @@ CMakeUserPresets.json
 # Logs
 logs
 *.log
-!/h2corn/bench/results/evidence/**/*.log
-!/h2corn/bench/results/grpc/evidence/**/*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -444,9 +442,7 @@ Cargo.lock
 
 # Custom rules (everything added below won't be overriden by 'Generate .gitignore File' if you use 'Update' option)
 #
-# Policy: commit sources and generators; do not commit build/docs/license outputs
-# that scripts already produce. Exceptions are intentional published surfaces
-# (e.g. h2corn bench plots for docs, gometry REPORT.md).
+# Commit sources and generators, not build, documentation, license, or benchmark outputs.
 
 !.envrc
 !/Cargo.lock
@@ -475,15 +471,14 @@ uv.lock
 githead/tests/git/HEAD
 jinja2-htmlmin/tests/templates/.*
 
-# h2corn bench: accepted raw records, tables, and plots are public evidence.
-# Other staged measurements and generated payloads remain local.
+# Benchmark measurements, provenance, tables, and plots are external artifacts.
+**/bench/results/
+**/benches/results/
+**/benchmarks/results/
+**/docs/assets/benchmark-runs/
+**/docs/assets/benchmark-*.svg
 h2corn/bench/*.bin
-h2corn/bench/results/_generated/
-h2corn/bench/results/runs/
-h2corn/bench/results/compare/
-h2corn/bench/results/instr/
-h2corn/bench/results/*_summary.json
-h2corn/bench/results/*.sock
+h2corn/examples/grpc/gen/
 
 # gometry: the only genuinely package-specific rules (build artifacts and
 # LICENSE-*.md are already covered by the general `target/` and `**/LICENSE*.md`

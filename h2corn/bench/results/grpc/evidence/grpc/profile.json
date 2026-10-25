@@ -1,6 +1,0 @@
-{
-  "benchmark_family": "grpc",
-  "profile": "grpc",
-  "status": "completed",
-  "suite_plan": "suite-plan.json"
-}

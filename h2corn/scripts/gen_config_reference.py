@@ -1,4 +1,4 @@
-"""Generate the configuration reference and mirror checked-in benchmark plots."""
+"""Generate configuration reference and publish local benchmark artifacts."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import sys
 from html import escape
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import mkdocs_gen_files
 
@@ -224,6 +225,20 @@ def _render_benchmark_family(directory: Path, title: str = '') -> str:
     }
     if not records:
         raise RuntimeError('benchmark results are missing; populate bench/results/raw')
+
+    family = 'grpc' if title else 'http'
+    with (
+        mkdocs_gen_files.open(
+            f'assets/benchmarks/{family}-evidence.zip', 'wb'
+        ) as handle,
+        ZipFile(handle, 'w', compression=ZIP_DEFLATED) as archive,
+    ):
+        for source in ('raw', 'evidence'):
+            for artifact in sorted((directory / source).rglob('*')):
+                if artifact.is_file():
+                    entry = ZipInfo(artifact.relative_to(directory).as_posix())
+                    entry.compress_type = ZIP_DEFLATED
+                    archive.writestr(entry, artifact.read_bytes())
 
     for plot_path in sorted(plot_directory.glob('*.svg')):
         with mkdocs_gen_files.open(

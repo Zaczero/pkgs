@@ -1,6 +1,0 @@
-{
-  "benchmark_family": "http",
-  "profile": "loopback",
-  "status": "completed_with_failures",
-  "suite_plan": "suite-plan.json"
-}
