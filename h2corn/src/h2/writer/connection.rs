@@ -932,10 +932,14 @@ impl<W: WriteTarget> WriterState<W> {
         result
     }
 
-    pub(crate) const fn has_ready_streams(&self) -> bool {
+    pub(crate) fn has_ready_streams(&self) -> bool {
         !self.ready_streams.is_empty()
     }
-    pub(crate) const fn needs_flush(&self) -> bool {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Kani 0.68's standard library lacks const VecDeque queries"
+    )]
+    pub(crate) fn needs_flush(&self) -> bool {
         self.dirty
             || self.flushing
             || self.active.is_some()

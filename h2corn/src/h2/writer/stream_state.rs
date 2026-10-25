@@ -167,14 +167,18 @@ impl ReadyStreamQueue {
         }
     }
 
-    pub(super) const fn begin_scan(&mut self) -> usize {
+    pub(super) fn begin_scan(&mut self) -> usize {
         if self.unexamined == 0 {
             self.restart_scan();
         }
         self.unexamined
     }
 
-    pub(super) const fn restart_scan(&mut self) {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Kani 0.68's standard library lacks const VecDeque queries"
+    )]
+    pub(super) fn restart_scan(&mut self) {
         self.unexamined = self.queue.len();
     }
 
@@ -182,7 +186,11 @@ impl ReadyStreamQueue {
         self.unexamined != 0
     }
 
-    pub(super) const fn is_empty(&self) -> bool {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Kani 0.68's standard library lacks const VecDeque queries"
+    )]
+    pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
