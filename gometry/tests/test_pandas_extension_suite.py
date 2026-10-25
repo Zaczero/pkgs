@@ -298,7 +298,7 @@ class TestMethods(base.BaseMethodsTests):
 
     def test_json_roundtrip(self, data):
         series = pd.Series(data)
-        encoded = series.to_json(
+        encoded = series.astype(object).to_json(
             default_handler=lambda geometry: geometry.to_wkb().hex()
         )
         values = pd.read_json(StringIO(encoded), typ='series', dtype=str)
