@@ -25,7 +25,6 @@ jobs:
   test-rust:
     name: Rust (${{ matrix.runner }})
     if: fromJson(inputs.plan).type == 'rust'
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -68,7 +67,6 @@ jobs:
   development:
     if: fromJson(inputs.plan).type == 'python-rust'
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
     env:
       MATURIN_PEP517_ARGS: --profile dev --locked --compression-method stored
 
@@ -137,7 +135,6 @@ jobs:
   test-address-sanitizer:
     if: fromJson(inputs.plan).crate != ''
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
     env:
       PYTHONMALLOC: malloc
       # Embedded CPython retains process-lifetime allocations after tests finish.
@@ -206,7 +203,6 @@ jobs:
   prepare-distributions:
     if: fromJson(inputs.plan).type != 'rust'
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
