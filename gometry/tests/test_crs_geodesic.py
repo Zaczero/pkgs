@@ -1144,7 +1144,10 @@ def test_geographic_buffer_refines_a_long_chart_parallel_before_construction() -
             assert maximum_relative_distance_error(coarse_result, distance) > 0.001
 
 
-def test_geographic_interior_searches_use_refined_boundary_support() -> None:
+@pytest.mark.parametrize('operation', ['polylabel', 'inscribed', 'enclosing'])
+def test_geographic_interior_searches_use_refined_boundary_support(
+    operation: str,
+) -> None:
     source = _six_hundred_kilometer_parallel()
     fine_input = source.segmentize(250.0)
     local = source.estimate_local_crs()
@@ -1157,12 +1160,28 @@ def test_geographic_interior_searches_use_refined_boundary_support() -> None:
     )
     input_budget = 1.0e-4 * extent
 
-    actual_label = source.polylabel(tolerance=1.0)
-    actual_label_local = actual_label.to_crs(local)
+    if operation == 'enclosing':
+        enclosing_circle = source.minimum_bounding_circle()
+        actual_enclosing_radius = enclosing_circle.radius
+        reference_enclosing_radius = (
+            fine_input.to_crs(local).minimum_bounding_circle(unit='planar').radius
+        )
+        assert (
+            abs(actual_enclosing_radius - reference_enclosing_radius)
+            <= 4.0 * input_budget
+        )
+        enclosing_circle_local = enclosing_circle.to_polygon().to_crs(local)
+        circle_vertices = list(enclosing_circle_local.exterior.coords)[:-1]
+        center_x = sum(point[0] for point in circle_vertices) / len(circle_vertices)
+        center_y = sum(point[1] for point in circle_vertices) / len(circle_vertices)
+        realized_radius = max(
+            math.hypot(point[0] - center_x, point[1] - center_y)
+            for point in circle_vertices
+        ) * math.cos(math.pi / 64.0)
+        assert abs(realized_radius - actual_enclosing_radius) <= 4.0 * input_budget
+        return
+
     fine_polygon_local = shapely.from_wkt(fine_input.to_crs(local).to_wkt())
-    label_local = shapely.Point(actual_label_local.x, actual_label_local.y)
-    assert fine_polygon_local.covers(label_local)
-    actual_clearance = fine_polygon_local.boundary.distance(label_local)
     # Each input chord approximation perturbs both candidate clearance and
     # optimum radius; the candidate search can lose another tolerance.
     fine_input_budget = 2.0e-7 * (1.02 * 250.0) ** 2 / 8.0
@@ -1172,36 +1191,26 @@ def test_geographic_interior_searches_use_refined_boundary_support() -> None:
         tolerance=1.0,
     )
     reference_clearance = independent_radius_line.length
-    assert abs(actual_clearance - reference_clearance) <= clearance_bound
+    if operation == 'polylabel':
+        actual_label_local = source.polylabel(tolerance=1.0).to_crs(local)
+        label_local = shapely.Point(actual_label_local.x, actual_label_local.y)
+        assert fine_polygon_local.covers(label_local)
+        actual_clearance = fine_polygon_local.boundary.distance(label_local)
+        assert abs(actual_clearance - reference_clearance) <= clearance_bound
+        return
 
-    actual_radius = source.maximum_inscribed_circle(tolerance=1.0).radius
+    inscribed_circle = source.maximum_inscribed_circle(tolerance=1.0)
+    actual_radius = inscribed_circle.radius
     reference_radius = fine_input.maximum_inscribed_circle(tolerance=1.0).radius
     assert abs(actual_radius - reference_clearance) <= clearance_bound
     assert abs(actual_radius - reference_radius) <= clearance_bound
 
-    actual_circle = source.maximum_inscribed_circle(tolerance=1.0).to_polygon()
+    actual_circle = inscribed_circle.to_polygon()
     actual_circle_local = _projected_chart_outline(actual_circle, local)
     assert shapely.covers(
         shapely.buffer(fine_polygon_local, input_budget),
         actual_circle_local,
     )
-
-    actual_enclosing_radius = source.minimum_bounding_circle().radius
-    reference_enclosing_radius = (
-        fine_input.to_crs(local).minimum_bounding_circle(unit='planar').radius
-    )
-    assert (
-        abs(actual_enclosing_radius - reference_enclosing_radius) <= 4.0 * input_budget
-    )
-    enclosing_circle_local = source.minimum_bounding_circle().to_polygon().to_crs(local)
-    circle_vertices = list(enclosing_circle_local.exterior.coords)[:-1]
-    center_x = sum(point[0] for point in circle_vertices) / len(circle_vertices)
-    center_y = sum(point[1] for point in circle_vertices) / len(circle_vertices)
-    realized_radius = max(
-        math.hypot(point[0] - center_x, point[1] - center_y)
-        for point in circle_vertices
-    ) * math.cos(math.pi / 64.0)
-    assert abs(realized_radius - actual_enclosing_radius) <= 4.0 * input_budget
 
 
 def test_large_polar_buffer_uses_concise_local_crs_diagnostic() -> None:

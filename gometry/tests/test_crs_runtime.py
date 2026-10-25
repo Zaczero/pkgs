@@ -47,7 +47,15 @@ def _isolated_child_env(tmpdir: str) -> dict[str, str]:
     return {
         **{
             key: os.environ[key]
-            for key in ('NIX_LD', 'NIX_LD_LIBRARY_PATH', 'LD_LIBRARY_PATH')
+            for key in (
+                'NIX_LD',
+                'NIX_LD_LIBRARY_PATH',
+                'LD_LIBRARY_PATH',
+                'LD_PRELOAD',
+                'ASAN_OPTIONS',
+                'ASAN_SYMBOLIZER_PATH',
+                'PYTHONMALLOC',
+            )
             if key in os.environ
         },
         'TMPDIR': tmpdir,

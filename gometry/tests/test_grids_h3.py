@@ -5,6 +5,7 @@ exact membership predicates, compaction, and antimeridian-aware bounds.
 import copy
 import math
 import operator
+import os
 import pickle
 import subprocess
 import sys
@@ -124,6 +125,10 @@ def test_h3_pentagon_traversal_charges_actual_returned_cells() -> None:
 @pytest.mark.skipif(
     sys.platform != 'linux',
     reason='large-radius allocation regression needs Linux RLIMIT_AS',
+)
+@pytest.mark.skipif(
+    'ASAN_OPTIONS' in os.environ,
+    reason='ASan shadow mappings are incompatible with the address-space limit',
 )
 def test_h3_large_grid_radius_honors_budget_and_resolution_in_child() -> None:
     script = textwrap.dedent(
