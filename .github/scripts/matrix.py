@@ -406,13 +406,27 @@ def resolve_matrix(
                 cell['pgo-build'] = pgo['build']
 
     for cell in build_matrix:
-        cell['tests'] = {
-            f'{test["python-version"]}, {NATIVE_BUILD_RUNNERS[test["os"]]}': test
+        tests = [
+            test
             for test in test_matrix
             if cell['abi'] == 'optimized'
             and (not has_rust or test['os'] == cell['runner'])
-        }
-        cell['test-runtimes'] = list(cell['tests'])
+        ]
+        batches = {}
+        for runner in dict.fromkeys(test['os'] for test in tests):
+            runtimes = [test for test in tests if test['os'] == runner]
+            batch_size = info['test-batch-size'] or len(runtimes)
+            for start in range(0, len(runtimes), batch_size):
+                batch = runtimes[start : start + batch_size]
+                versions = ', '.join(str(test['python-version']) for test in batch)
+                primary = next((test for test in batch if test['primary']), None)
+                batches[f'{versions}, {NATIVE_BUILD_RUNNERS[runner]}'] = {
+                    'os': runner,
+                    'runtimes': batch,
+                    'primary': primary,
+                }
+        cell['tests'] = batches
+        cell['test-batches'] = list(batches)
     builds = {
         f'{NATIVE_BUILD_RUNNERS[cell["runner"]]}, {cell["abi"]}': cell
         for cell in build_matrix
@@ -427,8 +441,13 @@ def resolve_matrix(
         'primary-python': str(primary),
         'builds': builds,
         'build-targets': list(builds),
-        'rust-toolchain': rust_toolchain_channel(package) if has_rust else '',
+        'rust-toolchain': (
+            rust_toolchain_channel(package)
+            if has_rust or 'rust' in info['test-tools']
+            else ''
+        ),
         'wheel-test-command': info.get('wheel-test-command', ''),
+        'test-tools': info['test-tools'],
     }
     if freethreaded_exclusion is not None:
         plan['freethreaded-test-exclusion'] = freethreaded_exclusion
@@ -445,6 +464,13 @@ def main() -> None:
         for item in selection
         if item['package'] in test_packages
     }
+    native = [package for package, plan in plans.items() if plan['type'] != 'python']
+    cache_owner = next(
+        (package for package in native if plans[package]['type'] == 'python-rust'),
+        next(iter(native), None),
+    )
+    for package, plan in plans.items():
+        plan['cache-owner'] = package == cache_owner
     checks = [
         {'package': item['package'], 'crate': crates[item['package']]}
         for item in selection

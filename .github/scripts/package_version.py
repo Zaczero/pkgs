@@ -110,15 +110,24 @@ def package_info(package: str) -> dict[str, Any]:
     requires_python = project.get('requires-python', '')
     publishable = package in list_packages('release')
     cargo_toml = path / 'Cargo.toml'
+    ci = pyproject.get('tool', {}).get('ci', {})
+    test_tools = ci.get('test-tools', [])
+    if not isinstance(test_tools, list) or any(tool != 'rust' for tool in test_tools):
+        fail(f'{package}: test-tools must be a list of supported tools: rust')
+    test_batch_size = ci.get('test-batch-size')
+    if test_batch_size is not None and (
+        type(test_batch_size) is not int or test_batch_size < 1
+    ):
+        fail(f'{package}: test-batch-size must be a positive integer')
     common = {
         'publishable': publishable,
         'package': package,
         'freethreaded-group': freethreaded_group,
         'requires-python': requires_python,
+        'test-tools': test_tools,
+        'test-batch-size': test_batch_size,
     }
-    exclusion = (
-        pyproject.get('tool', {}).get('ci', {}).get('freethreaded-test-exclusion')
-    )
+    exclusion = ci.get('freethreaded-test-exclusion')
     if exclusion is not None:
         if not isinstance(exclusion, str) or not exclusion.strip():
             fail(f'{package}: freethreaded-test-exclusion must explain the blocker')

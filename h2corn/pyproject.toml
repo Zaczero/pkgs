@@ -131,6 +131,9 @@ exclude = ["**/__pycache__/**", "**/*.py[co]"]
 [tool.cibuildwheel]
 test-command = "python {package}/examples/embedded.py"
 
+[tool.ci]
+test-tools = ["rust"]
+
 [tool.ci.pgo]
 build = "cp315-manylinux_x86_64"
 target = "x86_64-unknown-linux-gnu"

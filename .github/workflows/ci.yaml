@@ -218,10 +218,9 @@ jobs:
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
           components: clippy
-          cache-key: check
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 

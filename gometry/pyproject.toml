@@ -110,6 +110,10 @@ freethreaded = [
 requires = ["maturin==1.15.0"]
 build-backend = "maturin"
 
+[tool.ci]
+# Keep the geometry suite's interpreter runs parallel on separate runners.
+test-batch-size = 1
+
 [tool.cibuildwheel]
 test-command = """python -c "import gometry as gm; \
   import numpy as np; \

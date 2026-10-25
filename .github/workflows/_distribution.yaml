@@ -38,7 +38,7 @@ jobs:
         sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path &&
         if [ -f "{package}/tools/ci_before_build.sh" ]; then bash "{package}/tools/ci_before_build.sh"; fi
       CIBW_ENVIRONMENT_LINUX: >-
-        PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_DIR=/opt/sccache-cache
+        PATH="/opt/cargo/bin:$PATH" CARGO_HOME=/opt/cargo RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_DIR=/opt/sccache-cache
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: >-
         IMPORT_NAME ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN
@@ -64,10 +64,17 @@ jobs:
         if: fromJson(inputs.plan).crate != ''
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' && fromJson(inputs.build).abi == 'optimized' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
+        if: fromJson(inputs.plan).crate != ''
+        with:
+          save: ${{ fromJson(inputs.plan).cache-owner && fromJson(inputs.build).abi == 'optimized' }}
+
+      - uses: ./.github/actions/cibuildwheel-cache # zizmor: ignore[self-repository] -- same-revision action
+        if: fromJson(inputs.plan).crate != ''
+        with:
+          save: ${{ fromJson(inputs.plan).cache-owner && fromJson(inputs.build).abi == 'optimized' }}
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
         if: fromJson(inputs.plan).crate != ''
@@ -81,7 +88,9 @@ jobs:
         shell: bash
         run: |
           if [ -f "$PACKAGE/Cargo.toml" ] && [ "$RUNNER_OS" = Linux ]; then
-            echo "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $(dirname "$SCCACHE_PATH"):/opt/sccache:ro --volume $SCCACHE_DIR:/opt/sccache-cache" >> "$GITHUB_ENV"
+            cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+            mkdir -p "$cargo_home/registry" "$cargo_home/git"
+            echo "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $(dirname "$SCCACHE_PATH"):/opt/sccache:ro --volume $SCCACHE_DIR:/opt/sccache-cache --volume $cargo_home/registry:/opt/cargo/registry --volume $cargo_home/git:/opt/cargo/git" >> "$GITHUB_ENV"
           fi
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
@@ -96,10 +105,13 @@ jobs:
           package-dir: ${{ inputs.package }}
           output-dir: dist
         env:
+          CIBW_CACHE_PATH: ${{ runner.temp }}/cibuildwheel-cache
           CIBW_SKIP: ${{ fromJson(inputs.build).pgo-build }}
 
       - name: Build and qualify the PGO wheel
         if: fromJson(inputs.build).pgo-build != ''
+        env:
+          CIBW_CACHE_PATH: ${{ runner.temp }}/cibuildwheel-cache
         shell: bash
         run: python tools/pgo.py "$PACKAGE" release --output dist --work "$RUNNER_TEMP/pgo"
 
@@ -172,15 +184,15 @@ jobs:
 
   python:
     needs: build
-    if: toJson(fromJson(inputs.build).test-runtimes) != '[]'
+    if: toJson(fromJson(inputs.build).test-batches) != '[]'
     strategy:
       fail-fast: false
       matrix:
-        runtime: ${{ fromJson(inputs.build).test-runtimes }}
-    runs-on: ${{ fromJson(inputs.build).tests[matrix.runtime].os }}
+        batch: ${{ fromJson(inputs.build).test-batches }}
+    runs-on: ${{ fromJson(inputs.build).tests[matrix.batch].os }}
 
     env:
-      TEST_PLAN: ${{ toJson(fromJson(inputs.build).tests[matrix.runtime]) }}
+      TEST_BATCH: ${{ toJson(fromJson(inputs.build).tests[matrix.batch]) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -191,21 +203,14 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: ${{ inputs.package }}
-          save-cache: ${{ github.ref == 'refs/heads/main' && fromJson(env.TEST_PLAN).primary && fromJson(inputs.plan).crate == '' }}
+          save-cache: ${{ github.ref == 'refs/heads/main' && fromJson(env.TEST_BATCH).primary != null }}
           working-directory: ${{ inputs.package }}
-          python-version: ${{ fromJson(env.TEST_PLAN).python-version }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        if: fromJson(inputs.plan).crate != ''
+        if: contains(fromJson(inputs.plan).test-tools, 'rust')
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: false
-
-      - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
-        if: fromJson(inputs.plan).crate != ''
+          cache: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -217,29 +222,16 @@ jobs:
         shell: bash
         run: bash "$PACKAGE/tools/ci_before_test.sh"
 
-      - name: Install the built wheel
-        env:
-          DEPENDENCY_GROUP: ${{ fromJson(env.TEST_PLAN).dependency-group }}
+      - name: Test Python interpreters
         shell: bash
-        run: |
-          uv sync --project "$PACKAGE" --no-default-groups --group "$DEPENDENCY_GROUP" --no-install-project
-          uv run --project "$PACKAGE" --no-sync python .github/scripts/install_wheel.py "$PACKAGE" dist
-
-      - name: Test Python
-        env:
-          FREETHREADED: ${{ fromJson(env.TEST_PLAN).freethreaded }}
-        shell: bash
-        run: bash .github/scripts/test_python.sh
+        run: python3 .github/scripts/test_python_batch.py test
 
       - name: Check Python types
-        if: fromJson(env.TEST_PLAN).primary
+        if: fromJson(env.TEST_BATCH).primary != null
         shell: bash
-        run: |
-          cd "$PACKAGE"
-          python="$(uv run --no-sync python -c 'import sys; print(sys.executable)')"
-          uv tool run pyright --pythonpath "$python"
+        run: python3 .github/scripts/test_python_batch.py types
 
       - name: Audit Python dependencies
-        if: fromJson(env.TEST_PLAN).primary
+        if: fromJson(env.TEST_BATCH).primary != null
         shell: bash
-        run: uv audit --project "$PACKAGE" --locked
+        run: python3 .github/scripts/test_python_batch.py audit

@@ -39,10 +39,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
+        with:
+          save: ${{ fromJson(inputs.plan).cache-owner }}
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
@@ -93,10 +94,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
@@ -167,10 +167,9 @@ jobs:
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
           components: rust-src
-          cache-key: ${{ inputs.package }}-address-sanitizer
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
@@ -214,10 +213,10 @@ jobs:
         if: fromJson(inputs.plan).crate != ''
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
-          cache-key: ${{ inputs.package }}-licenses
-          cache-targets: false
-          cache-on-failure: false
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+
+      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
+        if: fromJson(inputs.plan).crate != ''
 
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         if: fromJson(inputs.plan).crate != ''
