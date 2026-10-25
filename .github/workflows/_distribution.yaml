@@ -224,8 +224,6 @@ jobs:
         run: bash "$PACKAGE/tools/ci_before_test.sh"
 
       - name: Test Python interpreters
-        env:
-          PYTHONTRACEMALLOC: ${{ runner.os == 'Windows' && '5' || '0' }}
         shell: bash
         run: python3 .github/scripts/test_python_batch.py test
 
