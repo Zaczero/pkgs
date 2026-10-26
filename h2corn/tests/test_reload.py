@@ -5,9 +5,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 import h2corn._reload as reload_module
 import pytest
@@ -388,92 +386,40 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
     )
 
 
-def test_darwin_kqueue_rebuilds_directory_watch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Rebuild replaces every vnode fd and includes newly discovered paths."""
+@pytest.mark.skipif(
+    sys.platform != 'darwin', reason='kqueue vnode watches require macOS'
+)
+def test_darwin_kqueue_rebuilds_directory_watch(tmp_path: Path) -> None:
+    """Rebuilt native watches report changes in newly discovered files and dirs."""
     watched = tmp_path / 'watched'
     watched.mkdir()
-    (watched / 'initial.py').write_text('initial')
-    opened: list[Path] = []
-    closed: list[int] = []
-    registered: list[list[object]] = []
-    next_fd = 100
-
-    class Kqueue:
-        def __init__(self) -> None:
-            self.queued: list[list[object]] = []
-
-        def fileno(self) -> int:
-            return 42
-
-        def control(self, changelist, _max_events, _timeout):
-            if changelist is not None:
-                registered.append(list(changelist))
-                return []
-            return self.queued.pop(0) if self.queued else []
-
-        def close(self) -> None:
-            pass
-
-    class Select:
-        KQ_FILTER_VNODE = -4
-        KQ_EV_ADD = 1
-        KQ_EV_ENABLE = 2
-        KQ_EV_CLEAR = 4
-        KQ_NOTE_WRITE = 8
-        KQ_NOTE_EXTEND = 16
-        KQ_NOTE_ATTRIB = 32
-        KQ_NOTE_LINK = 64
-        KQ_NOTE_RENAME = 128
-        KQ_NOTE_DELETE = 256
-
-        def kqueue(self):
-            return Kqueue()
-
-        def kevent(self, ident: int, **kwargs: int) -> object:
-            return (ident, kwargs)
-
-    def fake_open(path, _flags: int) -> int:
-        nonlocal next_fd
-        opened.append(Path(path))
-        fd = next_fd
-        next_fd += 1
-        return fd
-
-    monkeypatch.setitem(sys.modules, 'select', Select())
-    monkeypatch.setattr(reload_module.os, 'open', fake_open)
-    monkeypatch.setattr(reload_module.os, 'close', closed.append)
-    monkeypatch.setattr(reload_module.os, 'O_EVTONLY', 0, raising=False)
+    initial = watched / 'initial.py'
+    initial.write_text('initial')
     notifier = reload_module._KqueueNotifier((watched,), ('*.py',), ())
-    first_fds = tuple(notifier._fds)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(notifier.fileno(), selectors.EVENT_READ)
+            initial.write_text('changed')
+            assert selector.select(HANG_BOUND), 'initial file change was not reported'
+            assert initial in notifier.consume().paths
 
-    @dataclass
-    class Event:
-        ident: int
+            added = watched / 'new-directory'
+            added.mkdir()
+            new_file = added / 'new.py'
+            new_file.write_text('new')
+            assert selector.select(HANG_BOUND), 'new directory was not reported'
+            assert watched in notifier.consume().rescan_directories
 
-    initial_file_fd = next(
-        fd for fd, path in notifier._paths.items() if path == watched / 'initial.py'
-    )
-    initial_dir_fd = next(fd for fd, path in notifier._paths.items() if path == watched)
-    installed = cast('Kqueue', notifier._kqueue)
-    installed.queued.append([Event(initial_file_fd), Event(initial_dir_fd)])
-    events = notifier.consume()
-    assert events.paths == {watched / 'initial.py'}
-    assert events.rescan_directories == {watched}
+            notifier.rebuild()
+            new_file.write_text('changed after rebuild')
+            assert selector.select(HANG_BOUND), 'rebuilt file watch missed a change'
+            assert new_file in notifier.consume().paths
 
-    (watched / 'new-directory').mkdir()
-    (watched / 'new-directory' / 'new.py').write_text('new')
-    notifier.rebuild()
-    second_fds = tuple(notifier._fds)
-    notifier.close()
-
-    assert set(first_fds).issubset(closed)
-    assert set(second_fds).issubset(closed)
-    assert watched / 'new-directory' in opened
-    assert watched / 'new-directory' / 'new.py' in opened
-    assert len(registered) == 2
+            (added / 'later.py').write_text('later')
+            assert selector.select(HANG_BOUND), 'rebuilt directory watch missed a file'
+            assert added in notifier.consume().rescan_directories
+    finally:
+        notifier.close()
 
 
 def _inotify_notifier(root: Path, *, exclude_patterns: tuple[str, ...] = ()):
@@ -522,9 +468,9 @@ def test_inotify_preserves_packed_file_events_even_when_mtime_is_unchanged(
             raise chunk
         return chunk
 
-    monkeypatch.setattr(reload_module.os, 'read', fake_read)
-
-    events = notifier.consume()
+    with monkeypatch.context() as patch:
+        patch.setattr(reload_module.os, 'read', fake_read)
+        events = notifier.consume()
     assert events.paths == {first, second}
     assert events.rescan_directories == set()
     assert events.full_resync is False
@@ -600,9 +546,9 @@ def test_inotify_rename_cookie_and_directory_events_rescan_only_the_subtree(
             raise chunk
         return chunk
 
-    monkeypatch.setattr(reload_module.os, 'read', fake_read)
-
-    events = notifier.consume()
+    with monkeypatch.context() as patch:
+        patch.setattr(reload_module.os, 'read', fake_read)
+        events = notifier.consume()
     assert events.paths == {tmp_path / 'old.py', renamed}
     assert events.rescan_directories == {nested}
     snapshot: dict[Path, int] = {}
@@ -639,9 +585,9 @@ def test_inotify_ignores_excluded_topology_and_forces_full_resync_on_overflow(
             raise chunk
         return chunk
 
-    monkeypatch.setattr(reload_module.os, 'read', fake_read)
-
-    events = notifier.consume()
+    with monkeypatch.context() as patch:
+        patch.setattr(reload_module.os, 'read', fake_read)
+        events = notifier.consume()
     assert events.paths == set()
     assert events.rescan_directories == set()
     assert events.full_resync is True
