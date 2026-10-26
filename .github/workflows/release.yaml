@@ -71,6 +71,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         if: steps.tag.outputs.exists == 'false'
+        with:
+          enable-cache: false
 
       - name: Check released API compatibility
         if: steps.tag.outputs.exists == 'false'

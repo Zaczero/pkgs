@@ -477,13 +477,6 @@ def main() -> None:
         for item in selection
         if item['package'] in test_packages
     }
-    native = [package for package, plan in plans.items() if plan['type'] != 'python']
-    cache_owner = next(
-        (package for package in native if plans[package]['type'] == 'python-rust'),
-        next(iter(native), None),
-    )
-    for package, plan in plans.items():
-        plan['cache-owner'] = package == cache_owner
     checks = [
         {'package': item['package'], 'crate': crates[item['package']]}
         for item in selection

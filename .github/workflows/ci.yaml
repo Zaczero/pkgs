@@ -220,8 +220,6 @@ jobs:
           components: clippy
           cache: false
 
-      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
-
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
 
       - name: Check crate targets and doctests
@@ -259,7 +257,6 @@ jobs:
         with:
           toolchain: ${{ needs.detect.outputs.rust-toolchain }}
           cache-key: kani-${{ env.KANI_VERSION }}
-          cache-directories: ~/.kani
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 

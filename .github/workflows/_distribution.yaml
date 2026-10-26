@@ -61,9 +61,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
-          cache-suffix: ${{ inputs.package }}
-          save-cache: false
+          enable-cache: false
           working-directory: ${{ inputs.package }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
@@ -71,16 +69,6 @@ jobs:
         with:
           toolchain: ${{ fromJson(inputs.plan).rust-toolchain }}
           cache: false
-
-      - uses: ./.github/actions/cargo-cache # zizmor: ignore[self-repository] -- same-revision action
-        if: fromJson(inputs.plan).crate != ''
-        with:
-          save: ${{ fromJson(inputs.plan).cache-owner && fromJson(inputs.build).abi == 'optimized' }}
-
-      - uses: ./.github/actions/cibuildwheel-cache # zizmor: ignore[self-repository] -- same-revision action
-        if: fromJson(inputs.plan).crate != ''
-        with:
-          save: ${{ fromJson(inputs.plan).cache-owner && fromJson(inputs.build).abi == 'optimized' }}
 
       - uses: ./.github/actions/compiler-cache # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
         if: fromJson(inputs.plan).crate != ''
@@ -123,13 +111,10 @@ jobs:
           package-dir: ${{ inputs.package }}
           output-dir: dist
         env:
-          CIBW_CACHE_PATH: ${{ runner.temp }}/cibuildwheel-cache
           CIBW_SKIP: ${{ fromJson(inputs.build).pgo-build }}
 
       - name: Build and qualify the PGO wheel
         if: fromJson(inputs.build).pgo-build != ''
-        env:
-          CIBW_CACHE_PATH: ${{ runner.temp }}/cibuildwheel-cache
         shell: bash
         run: python tools/pgo.py "$PACKAGE" release --output dist --work "$RUNNER_TEMP/pgo"
 
@@ -220,9 +205,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
-          cache-suffix: ${{ inputs.package }}
-          save-cache: ${{ github.ref == 'refs/heads/main' && fromJson(env.TEST_BATCH).primary != null }}
+          enable-cache: false
           working-directory: ${{ inputs.package }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
