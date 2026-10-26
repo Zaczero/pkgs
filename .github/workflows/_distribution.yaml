@@ -22,6 +22,7 @@ env:
   IMPORT_NAME: ${{ fromJson(inputs.plan).import-name }}
   RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
   PYTHONDEVMODE: "1"
+  RUST_BACKTRACE: "1"
 
 defaults:
   run:
@@ -231,3 +232,8 @@ jobs:
       - name: Audit Python dependencies
         if: fromJson(env.TEST_BATCH).primary != null
         run: python3 .github/scripts/test_python_batch.py audit
+
+      - uses: ./.github/actions/test-diagnostics # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
+        if: failure() || cancelled()
+        with:
+          name: diagnostics-${{ inputs.package }}-${{ fromJson(inputs.build).runner }}-${{ fromJson(inputs.build).abi }}-${{ strategy.job-index }}

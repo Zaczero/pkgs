@@ -41,25 +41,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
-    if sys.platform == 'win32':
-        from asyncio.proactor_events import _ProactorBasePipeTransport
-
-        initialize = _ProactorBasePipeTransport.__init__
-        describe = _ProactorBasePipeTransport.__repr__
-
-        def initialize_with_owner(self, *args, **kwargs):
-            initialize(self, *args, **kwargs)
-            self._h2corn_test_owner = os.environ.get('PYTEST_CURRENT_TEST', 'setup')
-
-        def describe_with_owner(self):
-            owner = getattr(self, '_h2corn_test_owner', 'unknown')
-            return f'{describe(self)} created by {owner}'
-
-        patch = pytest.MonkeyPatch()
-        patch.setattr(_ProactorBasePipeTransport, '__init__', initialize_with_owner)
-        patch.setattr(_ProactorBasePipeTransport, '__repr__', describe_with_owner)
-        session.config.add_cleanup(patch.undo)
-
     if (
         not hasattr(session.config, 'workerinput')
         and not _FREE_THREADED_BUILD

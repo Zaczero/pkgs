@@ -1,0 +1,30 @@
+name: Retain test diagnostics
+description: Preserve failed-test reports, runtime identity and subprocess logs.
+
+inputs:
+  name:
+    description: Unique artifact name for this test job.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2.6
+      if: hashFiles('test-results/**/junit.xml', 'target/nextest/ci/*.xml') != ''
+      with:
+        paths: |
+          test-results/**/junit.xml
+          target/nextest/ci/*.xml
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: ${{ inputs.name }}
+        path: |
+          test-results/
+          ${{ runner.temp }}/pytest/**/*.log
+          ${{ runner.temp }}/pytest/**/*.stderr
+          ${{ runner.temp }}/pytest/**/*.stdout
+          ${{ github.workspace }}/target/nextest/ci/junit.xml
+        if-no-files-found: ignore
+        retention-days: 7

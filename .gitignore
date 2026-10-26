@@ -491,6 +491,7 @@ gometry/coverage-python/
 
 # mkdocs / properdocs build output (any package)
 **/site/
+test-results/
 
 # Generated license files (any released package). Rendered at build time by
 # .github/scripts/gen_licenses.py from each pyproject's SPDX expression (own

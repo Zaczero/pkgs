@@ -20,6 +20,7 @@ env:
   CARGO_PACKAGE: ${{ fromJson(inputs.plan).crate }}
   RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
   PYTHONDEVMODE: "1"
+  RUST_BACKTRACE: "1"
 
 defaults:
   run:
@@ -61,6 +62,11 @@ jobs:
 
       - name: Test Rust debug and release
         run: bash .github/scripts/test_rust.sh
+
+      - uses: ./.github/actions/test-diagnostics # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
+        if: failure() || cancelled()
+        with:
+          name: diagnostics-${{ inputs.package }}-rust-${{ matrix.runner }}
 
   development:
     name: Development
@@ -123,6 +129,11 @@ jobs:
           export PYO3_PYTHON PYTHONPATH PATH
           bash .github/scripts/test_rust.sh
 
+      - uses: ./.github/actions/test-diagnostics # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
+        if: failure() || cancelled()
+        with:
+          name: diagnostics-${{ inputs.package }}-development
+
   test-address-sanitizer:
     name: ASan
     if: fromJson(inputs.plan).crate != ''
@@ -182,6 +193,11 @@ jobs:
 
       - name: Test instrumented Rust and Python
         run: bash .github/scripts/test_asan.sh
+
+      - uses: ./.github/actions/test-diagnostics # zizmor: ignore[self-repository] -- actionlint does not yet accept $/ syntax
+        if: failure() || cancelled()
+        with:
+          name: diagnostics-${{ inputs.package }}-asan
 
   prepare-distributions:
     name: Metadata

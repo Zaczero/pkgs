@@ -47,7 +47,5 @@ PY
 
 cargo nextest run --profile ci -p "$CARGO_PACKAGE" "${build_args[@]}" --no-tests=pass
 
-cd "$PACKAGE"
 LD_PRELOAD="$runtime${LD_PRELOAD:+:$LD_PRELOAD}" \
-  "$PYO3_PYTHON" -m pytest --timeout=0 -o faulthandler_timeout=0 \
-    tests --ignore=tests/tooling --ignore=tests/test_public_docs.py
+  "$PYO3_PYTHON" .github/scripts/test_python.py
