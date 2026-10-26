@@ -13,6 +13,7 @@ import pytest
 from h2corn import Config, RequestPolicy, WebSocketScope
 
 from tests._support import (
+    close_on_error,
     h2_request,
     open_h2_connection,
     read_http1_response,
@@ -191,41 +192,41 @@ async def _http1_h2c_upgrade_request(
     release_window_after: float | None = None,
 ) -> tuple[int, bytes]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    conn = h2.connection.H2Connection(
-        config=h2.config.H2Configuration(client_side=True, header_encoding=None)
-    )
-    if initial_window_size is not None:
-        conn.local_settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = (
-            initial_window_size
+    try:
+        conn = h2.connection.H2Connection(
+            config=h2.config.H2Configuration(client_side=True, header_encoding=None)
         )
-    settings_header = conn.initiate_upgrade_connection()
-    assert settings_header is not None
-    settings = settings_header.decode()
-    writer.write(
-        (
-            f'GET {path} HTTP/1.1\r\n'
-            f'Host: 127.0.0.1:{port}\r\n'
-            'Connection: Upgrade, HTTP2-Settings\r\n'
-            'Upgrade: h2c\r\n'
-            f'HTTP2-Settings: {settings}\r\n'
-            '\r\n'
-        ).encode()
-    )
-    await writer.drain()
-    status, _, _, _ = await read_http1_response(reader)
-    assert status == 101
+        if initial_window_size is not None:
+            conn.local_settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = (
+                initial_window_size
+            )
+        settings_header = conn.initiate_upgrade_connection()
+        assert settings_header is not None
+        settings = settings_header.decode()
+        writer.write(
+            (
+                f'GET {path} HTTP/1.1\r\n'
+                f'Host: 127.0.0.1:{port}\r\n'
+                'Connection: Upgrade, HTTP2-Settings\r\n'
+                'Upgrade: h2c\r\n'
+                f'HTTP2-Settings: {settings}\r\n'
+                '\r\n'
+            ).encode()
+        )
+        await writer.drain()
+        status, _, _, _ = await read_http1_response(reader)
+        assert status == 101
 
-    writer.write(conn.data_to_send())
-    await writer.drain()
-    if release_window_after is not None:
-        await asyncio.sleep(release_window_after)
-        conn.increment_flow_control_window(1024, stream_id=1)
         writer.write(conn.data_to_send())
         await writer.drain()
+        if release_window_after is not None:
+            await asyncio.sleep(release_window_after)
+            conn.increment_flow_control_window(1024, stream_id=1)
+            writer.write(conn.data_to_send())
+            await writer.drain()
 
-    response_status = None
-    response_body = bytearray()
-    try:
+        response_status = None
+        response_body = bytearray()
         while True:
             data = await asyncio.wait_for(reader.read(65535), timeout=5)
             if not data:
@@ -271,33 +272,33 @@ async def _http1_websocket_handshake(
     extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[int, dict[bytes, bytes], bytes]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    key_header = '' if key is None else f'Sec-WebSocket-Key: {key}\r\n'
-    subprotocol_header = (
-        '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
-    )
-    extensions_header = (
-        '' if extensions is None else f'Sec-WebSocket-Extensions: {extensions}\r\n'
-    )
-    extra_header_lines = ''.join(
-        f'{name.decode("ascii")}: {value.decode("ascii")}\r\n'
-        for name, value in extra_headers or ()
-    )
-    writer.write(
-        (
-            f'{method} {path} HTTP/1.1\r\n'
-            f'Host: 127.0.0.1:{port}\r\n'
-            'Connection: Upgrade\r\n'
-            'Upgrade: websocket\r\n'
-            f'Sec-WebSocket-Version: {version}\r\n'
-            f'{subprotocol_header}'
-            f'{extensions_header}'
-            f'{key_header}'
-            f'{extra_header_lines}'
-            '\r\n'
-        ).encode()
-    )
-    await writer.drain()
     try:
+        key_header = '' if key is None else f'Sec-WebSocket-Key: {key}\r\n'
+        subprotocol_header = (
+            '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
+        )
+        extensions_header = (
+            '' if extensions is None else f'Sec-WebSocket-Extensions: {extensions}\r\n'
+        )
+        extra_header_lines = ''.join(
+            f'{name.decode("ascii")}: {value.decode("ascii")}\r\n'
+            for name, value in extra_headers or ()
+        )
+        writer.write(
+            (
+                f'{method} {path} HTTP/1.1\r\n'
+                f'Host: 127.0.0.1:{port}\r\n'
+                'Connection: Upgrade\r\n'
+                'Upgrade: websocket\r\n'
+                f'Sec-WebSocket-Version: {version}\r\n'
+                f'{subprotocol_header}'
+                f'{extensions_header}'
+                f'{key_header}'
+                f'{extra_header_lines}'
+                '\r\n'
+            ).encode()
+        )
+        await writer.drain()
         status, headers, body, _ = await read_http1_response(reader)
         return status, headers, body
     finally:
@@ -313,32 +314,32 @@ async def _http1_websocket_round_trip(
     subprotocol: str | None = None,
 ) -> tuple[dict[bytes, bytes], str]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    subprotocol_header = (
-        '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
-    )
-    writer.write(
-        (
-            f'GET {path} HTTP/1.1\r\n'
-            f'Host: 127.0.0.1:{port}\r\n'
-            'Connection: Upgrade\r\n'
-            'Upgrade: websocket\r\n'
-            'Sec-WebSocket-Version: 13\r\n'
-            f'{subprotocol_header}'
-            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
-            '\r\n'
-        ).encode()
-    )
-    await writer.drain()
-
-    status, headers, _, _ = await read_http1_response(reader)
-    assert status == 101
-
-    writer.write(_encode_ws_client_frame(0x1, text.encode()))
-    await writer.drain()
-
-    ws_buffer = b''
-    echoed = None
     try:
+        subprotocol_header = (
+            '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
+        )
+        writer.write(
+            (
+                f'GET {path} HTTP/1.1\r\n'
+                f'Host: 127.0.0.1:{port}\r\n'
+                'Connection: Upgrade\r\n'
+                'Upgrade: websocket\r\n'
+                'Sec-WebSocket-Version: 13\r\n'
+                f'{subprotocol_header}'
+                'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+                '\r\n'
+            ).encode()
+        )
+        await writer.drain()
+
+        status, headers, _, _ = await read_http1_response(reader)
+        assert status == 101
+
+        writer.write(_encode_ws_client_frame(0x1, text.encode()))
+        await writer.drain()
+
+        ws_buffer = b''
+        echoed = None
         while echoed is None:
             ws_buffer += await asyncio.wait_for(reader.read(65535), timeout=5)
             frames, ws_buffer = _parse_ws_frames(ws_buffer)
@@ -362,30 +363,31 @@ async def _http1_open_websocket_stream(
     extensions: str | None = None,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict[bytes, bytes]]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    subprotocol_header = (
-        '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
-    )
-    extensions_header = (
-        '' if extensions is None else f'Sec-WebSocket-Extensions: {extensions}\r\n'
-    )
-    writer.write(
-        (
-            f'GET {path} HTTP/1.1\r\n'
-            f'Host: 127.0.0.1:{port}\r\n'
-            'Connection: Upgrade\r\n'
-            'Upgrade: websocket\r\n'
-            'Sec-WebSocket-Version: 13\r\n'
-            f'{subprotocol_header}'
-            f'{extensions_header}'
-            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
-            '\r\n'
-        ).encode()
-    )
-    await writer.drain()
+    async with close_on_error(writer):
+        subprotocol_header = (
+            '' if subprotocol is None else f'Sec-WebSocket-Protocol: {subprotocol}\r\n'
+        )
+        extensions_header = (
+            '' if extensions is None else f'Sec-WebSocket-Extensions: {extensions}\r\n'
+        )
+        writer.write(
+            (
+                f'GET {path} HTTP/1.1\r\n'
+                f'Host: 127.0.0.1:{port}\r\n'
+                'Connection: Upgrade\r\n'
+                'Upgrade: websocket\r\n'
+                'Sec-WebSocket-Version: 13\r\n'
+                f'{subprotocol_header}'
+                f'{extensions_header}'
+                'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+                '\r\n'
+            ).encode()
+        )
+        await writer.drain()
 
-    status, headers, _, _ = await read_http1_response(reader)
-    assert status == 101
-    return reader, writer, headers
+        status, headers, _, _ = await read_http1_response(reader)
+        assert status == 101
+        return reader, writer, headers
 
 
 def _send_h2_websocket_headers(
@@ -435,67 +437,70 @@ async def _h2_open_websocket_stream(
     '_H2WsHandshake',
 ]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
-    stream_id = _send_h2_websocket_headers(
-        conn,
-        writer,
-        authority=authority,
-        path=path,
-        subprotocol=subprotocol,
-        extensions=extensions,
-    )
-    await writer.drain()
+    async with close_on_error(writer):
+        stream_id = _send_h2_websocket_headers(
+            conn,
+            writer,
+            authority=authority,
+            path=path,
+            subprotocol=subprotocol,
+            extensions=extensions,
+        )
+        await writer.drain()
 
-    initial_frames = []
-    status = None
-    ws_buffer = b''
-    while status is None:
-        data = await reader.read(65535)
-        if not data:
-            raise RuntimeError('websocket handshake connection closed')
-        for event in conn.receive_data(data):
-            if isinstance(event, h2.events.ResponseReceived):
-                status = int(dict(event.headers)[b':status'])
-            elif isinstance(event, h2.events.DataReceived):
-                ws_buffer += event.data
-                conn.acknowledge_received_data(event.flow_controlled_length, stream_id)
-                parsed, ws_buffer = _parse_ws_frames(ws_buffer)
-                initial_frames.extend(parsed)
-            elif isinstance(event, h2.events.StreamEnded):
-                pending = conn.data_to_send()
-                if pending:
-                    writer.write(pending)
-                    await writer.drain()
-                assert status == 200
-                handshake = _H2WsHandshake('ended', None, initial_frames, ws_buffer)
-                return reader, writer, conn, stream_id, handshake
-            elif isinstance(event, h2.events.StreamReset):
-                handshake = _H2WsHandshake(
-                    'reset', int(event.error_code), initial_frames, ws_buffer
-                )
-                return reader, writer, conn, stream_id, handshake
-            elif isinstance(event, h2.events.ConnectionTerminated):
-                assert event.error_code is not None
-                handshake = _H2WsHandshake(
-                    'goaway', int(event.error_code), initial_frames, ws_buffer
-                )
-                return reader, writer, conn, stream_id, handshake
-        pending = conn.data_to_send()
-        if pending:
-            writer.write(pending)
-            await writer.drain()
+        initial_frames = []
+        status = None
+        ws_buffer = b''
+        while status is None:
+            data = await reader.read(65535)
+            if not data:
+                raise RuntimeError('websocket handshake connection closed')
+            for event in conn.receive_data(data):
+                if isinstance(event, h2.events.ResponseReceived):
+                    status = int(dict(event.headers)[b':status'])
+                elif isinstance(event, h2.events.DataReceived):
+                    ws_buffer += event.data
+                    conn.acknowledge_received_data(
+                        event.flow_controlled_length, stream_id
+                    )
+                    parsed, ws_buffer = _parse_ws_frames(ws_buffer)
+                    initial_frames.extend(parsed)
+                elif isinstance(event, h2.events.StreamEnded):
+                    pending = conn.data_to_send()
+                    if pending:
+                        writer.write(pending)
+                        await writer.drain()
+                    assert status == 200
+                    handshake = _H2WsHandshake('ended', None, initial_frames, ws_buffer)
+                    return reader, writer, conn, stream_id, handshake
+                elif isinstance(event, h2.events.StreamReset):
+                    handshake = _H2WsHandshake(
+                        'reset', int(event.error_code), initial_frames, ws_buffer
+                    )
+                    return reader, writer, conn, stream_id, handshake
+                elif isinstance(event, h2.events.ConnectionTerminated):
+                    assert event.error_code is not None
+                    handshake = _H2WsHandshake(
+                        'goaway', int(event.error_code), initial_frames, ws_buffer
+                    )
+                    return reader, writer, conn, stream_id, handshake
+            pending = conn.data_to_send()
+            if pending:
+                writer.write(pending)
+                await writer.drain()
 
-    assert status == 200
-    # The stream is still open, but frames may already have arrived in the
-    # same socket flight as the response headers — carry them (and any
-    # residual partial-frame bytes) forward so no frame is ever dropped at
-    # the handshake handoff.
-    return (
-        reader,
-        writer,
-        conn,
-        stream_id,
-        _H2WsHandshake(None, None, initial_frames, ws_buffer),
-    )
+        assert status == 200
+        # The stream is still open, but frames may already have arrived in the
+        # same socket flight as the response headers — carry them (and any
+        # residual partial-frame bytes) forward so no frame is ever dropped at
+        # the handshake handoff.
+        return (
+            reader,
+            writer,
+            conn,
+            stream_id,
+            _H2WsHandshake(None, None, initial_frames, ws_buffer),
+        )
 
 
 async def _h2_websocket_handshake(
@@ -508,22 +513,22 @@ async def _h2_websocket_handshake(
     extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[int, dict[bytes, bytes], bytes]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
-    stream_id = _send_h2_websocket_headers(
-        conn,
-        writer,
-        authority=authority,
-        path=path,
-        version=version,
-        subprotocol=subprotocol,
-        extensions=extensions,
-        extra_headers=extra_headers,
-    )
-    await writer.drain()
-
-    status = None
-    response_headers = {}
-    body = bytearray()
     try:
+        stream_id = _send_h2_websocket_headers(
+            conn,
+            writer,
+            authority=authority,
+            path=path,
+            version=version,
+            subprotocol=subprotocol,
+            extensions=extensions,
+            extra_headers=extra_headers,
+        )
+        await writer.drain()
+
+        status = None
+        response_headers = {}
+        body = bytearray()
         while True:
             data = await reader.read(65535)
             if not data:
@@ -562,36 +567,36 @@ async def _h2_websocket_round_trip(
     subprotocol: str | None = None,
 ) -> tuple[int, str | None, str]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
-    stream_id = _send_h2_websocket_headers(
-        conn,
-        writer,
-        authority=authority,
-        path=path,
-        subprotocol=subprotocol,
-    )
-    await writer.drain()
-
-    status = None
-    accepted_subprotocol = None
-    while status is None:
-        data = await reader.read(65535)
-        if not data:
-            raise RuntimeError('websocket handshake connection closed')
-        for event in conn.receive_data(data):
-            if isinstance(event, h2.events.ResponseReceived):
-                header_map = dict(event.headers)
-                status = int(header_map[b':status'])
-                raw_subprotocol = header_map.get(b'sec-websocket-protocol')
-                if raw_subprotocol is not None:
-                    accepted_subprotocol = raw_subprotocol.decode()
-        pending = conn.data_to_send()
-        if pending:
-            writer.write(pending)
-            await writer.drain()
-
-    ws_buffer = b''
-    echoed = None
     try:
+        stream_id = _send_h2_websocket_headers(
+            conn,
+            writer,
+            authority=authority,
+            path=path,
+            subprotocol=subprotocol,
+        )
+        await writer.drain()
+
+        status = None
+        accepted_subprotocol = None
+        while status is None:
+            data = await reader.read(65535)
+            if not data:
+                raise RuntimeError('websocket handshake connection closed')
+            for event in conn.receive_data(data):
+                if isinstance(event, h2.events.ResponseReceived):
+                    header_map = dict(event.headers)
+                    status = int(header_map[b':status'])
+                    raw_subprotocol = header_map.get(b'sec-websocket-protocol')
+                    if raw_subprotocol is not None:
+                        accepted_subprotocol = raw_subprotocol.decode()
+            pending = conn.data_to_send()
+            if pending:
+                writer.write(pending)
+                await writer.drain()
+
+        ws_buffer = b''
+        echoed = None
         conn.send_data(
             stream_id, _encode_ws_client_frame(0x1, text.encode()), end_stream=False
         )

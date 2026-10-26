@@ -1206,10 +1206,6 @@ async def test_lease_owned_fds_claims_quiesce_before_iterable_failure(
     finally:
         listener_peer.close()
         quiesce_peer.close()
-        with suppress(OSError):
-            real_close(listener_fd)
-        with suppress(OSError):
-            real_close(quiesce_fd)
 
 
 async def test_lease_owned_fds_claims_quiesce_before_invalid_listener(
@@ -1246,10 +1242,6 @@ async def test_lease_owned_fds_claims_quiesce_before_invalid_listener(
     finally:
         listener_peer.close()
         quiesce_peer.close()
-        with suppress(OSError):
-            real_close(listener_fd)
-        with suppress(OSError):
-            real_close(quiesce_fd)
 
 
 async def test_lease_owned_fds_preserves_type_error_and_closes_prior_fd() -> None:
@@ -1269,8 +1261,6 @@ async def test_lease_owned_fds_preserves_type_error_and_closes_prior_fd() -> Non
         assert peer.recv(1) == b''
     finally:
         peer.close()
-        with suppress(OSError):
-            os.close(fd)
 
 
 async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
@@ -1456,48 +1446,29 @@ async def test_serve_fds_closed_positive_sources_raise_oserror(
     async def app(*_args: object) -> None:
         pass
 
-    listener = socket.socket()
-    listener.bind(('127.0.0.1', 0))
-    listener.listen()
-    listener.setblocking(False)
-    listener_fd = listener.detach()
-    read_fd, write_fd = os.pipe()
     soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft_limit == resource.RLIM_INFINITY or soft_limit > 2**31 - 1:
-        os.close(listener_fd)
-        os.close(read_fd)
-        os.close(write_fd)
         pytest.skip('RLIMIT_NOFILE is infinite or outside the native fd range')
     invalid_fd = soft_limit
-    if closed_source == 'quiesce':
-        os.close(read_fd)
-        quiesce_fd = invalid_fd
-    else:
-        with suppress(OSError):
-            os.close(write_fd)
-        os.close(read_fd)
-        quiesce_fd = None
     config = Config(bind=('fd://0',), lifespan='off')
     prepared = PreparedApplication(app, False, 'off')
     await prepared.startup(required=False)
-    try:
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        listener.setblocking(False)
+        listener_fd = listener.fileno()
         with pytest.raises(OSError, match=rf'os error {errno.EBADF}\b'):
             serve_fds(
                 prepared,
                 [invalid_fd] if closed_source == 'listener' else [listener_fd],
                 config,
                 asyncio.get_running_loop().create_future(),
-                quiesce_fd=quiesce_fd,
+                quiesce_fd=invalid_fd if closed_source == 'quiesce' else None,
                 prepared_tls=prepare_tls(config),
             )
         if closed_source == 'quiesce':
             os.fstat(listener_fd)
-    finally:
-        os.close(listener_fd)
-        with suppress(OSError):
-            os.close(read_fd)
-        with suppress(OSError):
-            os.close(write_fd)
 
 
 async def test_serve_fds_returns_awaitable_and_duplicates_sources() -> None:
@@ -1600,7 +1571,7 @@ async def _wait_for_h2_body(
     while True:
         try:
             status, response_body = await h2_request(port=port)
-        except Exception:
+        except OSError:
             if loop.time() >= deadline:
                 raise
             await asyncio.sleep(0.05)
@@ -1622,7 +1593,7 @@ async def _wait_for_h2_body_any(
     while True:
         try:
             return await h2_request(port=port)
-        except Exception:
+        except OSError:
             if loop.time() >= deadline:
                 raise
             await asyncio.sleep(0.05)
@@ -1749,12 +1720,16 @@ async def _spawn_server_process(
         if sink is not None:
             sink.close()
 
-    if discover:
-        port = (
-            await _wait_for_banner_port(banner_path, process)
-            if banner_path is not None
-            else await _wait_for_listening_port(process)
-        )
+    try:
+        if discover:
+            port = (
+                await _wait_for_banner_port(banner_path, process)
+                if banner_path is not None
+                else await _wait_for_listening_port(process)
+            )
+    except BaseException:
+        await _terminate_process(process)
+        raise
     return process, port
 
 

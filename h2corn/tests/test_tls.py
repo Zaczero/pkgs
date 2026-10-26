@@ -18,6 +18,7 @@ from cryptography import x509
 from h2corn import Config, TLSExtension, _server
 
 from tests._support import (
+    close_on_error,
     find_free_port,
     http1_request,
     proxy_v1_prefix,
@@ -131,18 +132,11 @@ async def open_prefixed_tls_connection(
     prefix: bytes = b'',
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    try:
+    async with close_on_error(writer):
         if prefix:
             writer.write(prefix)
             await writer.drain()
         await writer.start_tls(context, server_hostname='localhost')
-    except BaseException:
-        # Close the plain-TCP transport on handshake failure so its pending
-        # futures don't surface "exception was never retrieved" at GC time.
-        writer.close()
-        with suppress(OSError, ssl.SSLError):
-            await writer.wait_closed()
-        raise
     return reader, writer
 
 
@@ -160,27 +154,27 @@ async def tls_h2_request(
         context,
         prefix=prefix,
     )
-    assert writer.get_extra_info('ssl_object').selected_alpn_protocol() == 'h2'
-    conn = h2.connection.H2Connection(
-        config=h2.config.H2Configuration(
-            client_side=True,
-            header_encoding=None,
-        )
-    )
-    conn.initiate_connection()
-    stream_id = conn.get_next_available_stream_id()
-    headers = [
-        (b':method', b'GET'),
-        (b':scheme', scheme),
-        (b':authority', f'127.0.0.1:{port}'.encode()),
-        (b':path', path.encode()),
-    ]
-    if extra_headers is not None:
-        headers.extend(extra_headers)
-    conn.send_headers(stream_id, headers, end_stream=True)
-    writer.write(conn.data_to_send())
-    await writer.drain()
     try:
+        assert writer.get_extra_info('ssl_object').selected_alpn_protocol() == 'h2'
+        conn = h2.connection.H2Connection(
+            config=h2.config.H2Configuration(
+                client_side=True,
+                header_encoding=None,
+            )
+        )
+        conn.initiate_connection()
+        stream_id = conn.get_next_available_stream_id()
+        headers = [
+            (b':method', b'GET'),
+            (b':scheme', scheme),
+            (b':authority', f'127.0.0.1:{port}'.encode()),
+            (b':path', path.encode()),
+        ]
+        if extra_headers is not None:
+            headers.extend(extra_headers)
+        conn.send_headers(stream_id, headers, end_stream=True)
+        writer.write(conn.data_to_send())
+        await writer.drain()
         status, body, _ = await read_h2_response(reader, writer, conn, stream_id)
         return status, body
     finally:

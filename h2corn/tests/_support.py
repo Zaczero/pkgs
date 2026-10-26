@@ -2,7 +2,7 @@ import asyncio
 import os
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -31,6 +31,20 @@ def open_fd_count() -> int:
     return len(os.listdir(fd_dir))
 
 
+@asynccontextmanager
+async def close_on_error(writer: asyncio.StreamWriter) -> AsyncGenerator[None, None]:
+    """Release a client connection if setup fails before ownership is returned."""
+    try:
+        yield
+    except BaseException:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+        raise
+
+
 async def open_h2_connection(
     *,
     host: str = '127.0.0.1',
@@ -56,28 +70,31 @@ async def open_h2_connection(
         literal = f'[{host}]' if ':' in host else host
         authority = f'{literal}:{port}'.encode()
 
-    conn = h2.connection.H2Connection(
-        config=h2.config.H2Configuration(client_side=True, header_encoding=None)
-    )
-    settings = {
-        h2.settings.SettingCodes(key): value
-        for key, value in conn.local_settings.items()
-    }
-    if max_header_list_size is not None:
-        settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = max_header_list_size
-        # h2 applies an advertised setting to its decoder on the peer's ACK.
-        # A peer may answer the opening request in the same read as that ACK,
-        # so accept the advertised limit from the first response frame too.
-        conn.decoder.max_header_list_size = max_header_list_size
-    if initial_window_size is not None:
-        # Advertised in the opening SETTINGS, so the server never has stream
-        # credit to write DATA into. Only the connection's own outbound byte
-        # budget can bound what it queues.
-        settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = initial_window_size
-    conn.local_settings = h2.settings.Settings(client=True, initial_values=settings)
-    conn.initiate_connection()
-    writer.write(prefix + conn.data_to_send())
-    await writer.drain()
+    async with close_on_error(writer):
+        conn = h2.connection.H2Connection(
+            config=h2.config.H2Configuration(client_side=True, header_encoding=None)
+        )
+        settings = {
+            h2.settings.SettingCodes(key): value
+            for key, value in conn.local_settings.items()
+        }
+        if max_header_list_size is not None:
+            settings[h2.settings.SettingCodes.MAX_HEADER_LIST_SIZE] = (
+                max_header_list_size
+            )
+            # h2 applies an advertised setting to its decoder on the peer's ACK.
+            # A peer may answer the opening request in the same read as that ACK,
+            # so accept the advertised limit from the first response frame too.
+            conn.decoder.max_header_list_size = max_header_list_size
+        if initial_window_size is not None:
+            # Advertised in the opening SETTINGS, so the server never has stream
+            # credit to write DATA into. Only the connection's own outbound byte
+            # budget can bound what it queues.
+            settings[h2.settings.SettingCodes.INITIAL_WINDOW_SIZE] = initial_window_size
+        conn.local_settings = h2.settings.Settings(client=True, initial_values=settings)
+        conn.initiate_connection()
+        writer.write(prefix + conn.data_to_send())
+        await writer.drain()
     return reader, writer, conn, authority
 
 
@@ -329,9 +346,9 @@ async def http1_request(
     head_only: bool = False,
 ) -> tuple[int, dict[bytes, bytes], bytes, list[tuple[bytes, bytes]]]:
     reader, writer = await asyncio.open_connection('127.0.0.1', port)
-    writer.write(request)
-    await writer.drain()
     try:
+        writer.write(request)
+        await writer.drain()
         return await read_http1_response(reader, head_only=head_only)
     finally:
         writer.close()

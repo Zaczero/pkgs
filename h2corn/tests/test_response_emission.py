@@ -98,40 +98,40 @@ async def _send_h2_pair(
     first_body_received: asyncio.Event | None = None,
 ) -> tuple[dict[int, int], dict[int, bytes], set[int], set[bytes]]:
     reader, writer, conn, authority = await open_h2_connection(port=port)
-    first = conn.get_next_available_stream_id()
-    conn.send_headers(
-        first,
-        [
-            (b':method', b'GET'),
-            (b':scheme', b'http'),
-            (b':authority', authority),
-            (b':path', first_path),
-        ],
-        end_stream=True,
-    )
-    second = conn.get_next_available_stream_id()
-    conn.send_headers(
-        second,
-        [
-            (b':method', b'GET'),
-            (b':scheme', b'http'),
-            (b':authority', authority),
-            (b':path', second_path),
-        ],
-        end_stream=True,
-    )
-    if ping is not None:
-        conn.ping(ping)
-    writer.write(conn.data_to_send())
-    await writer.drain()
-
-    statuses: dict[int, int] = {}
-    bodies: dict[int, bytes] = {}
-    chunks: dict[int, bytearray] = {first: bytearray(), second: bytearray()}
-    resets: set[int] = set()
-    ended: set[int] = set()
-    ping_acks: set[bytes] = set()
     try:
+        first = conn.get_next_available_stream_id()
+        conn.send_headers(
+            first,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', first_path),
+            ],
+            end_stream=True,
+        )
+        second = conn.get_next_available_stream_id()
+        conn.send_headers(
+            second,
+            [
+                (b':method', b'GET'),
+                (b':scheme', b'http'),
+                (b':authority', authority),
+                (b':path', second_path),
+            ],
+            end_stream=True,
+        )
+        if ping is not None:
+            conn.ping(ping)
+        writer.write(conn.data_to_send())
+        await writer.drain()
+
+        statuses: dict[int, int] = {}
+        bodies: dict[int, bytes] = {}
+        chunks: dict[int, bytearray] = {first: bytearray(), second: bytearray()}
+        resets: set[int] = set()
+        ended: set[int] = set()
+        ping_acks: set[bytes] = set()
         while (
             (first not in resets and first not in ended)
             or second not in ended
