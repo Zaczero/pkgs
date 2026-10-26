@@ -1188,6 +1188,15 @@ def _from_geoparquet_subprocess(
     import subprocess
     import sys
 
+    # Restore registered-extension subprocess coverage after PyArrow ships the
+    # pool-drain fix tracked by apache/arrow#50482 (PR apache/arrow#54467).
+    # Fragment cleanup can attach to Python after interpreter finalization.
+    if register_extensions:
+        pytest.skip(
+            'PyArrow registered-extension shutdown deadlock: '
+            'https://github.com/apache/arrow/issues/50482'
+        )
+
     prelude = 'gm.Point(0, 0).to_arrow()\n' if register_extensions else ''
     options = "read_dictionary=['geometry']" if read_dictionary else ''
     code = f"""
