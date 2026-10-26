@@ -37,9 +37,13 @@ jobs:
         curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
         sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path &&
         if [ -f "{package}/tools/ci_before_build.sh" ]; then bash "{package}/tools/ci_before_build.sh"; fi
+      # cmake-rs records PATH as a build input when it resolves a relative compiler or cmake.
+      # Each wheel's build environment has a different PATH, so absolute tools keep CMake-built
+      # dependencies fresh across interpreters instead of rebuilding them for every wheel.
       CIBW_ENVIRONMENT_LINUX: >-
         PATH="/opt/cargo/bin:$PATH" CARGO_HOME=/opt/cargo RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_DIR=/opt/sccache-cache
         CMAKE_C_COMPILER_LAUNCHER="$RUSTC_WRAPPER" CMAKE_CXX_COMPILER_LAUNCHER="$RUSTC_WRAPPER"
+        CC="$(which cc)" CXX="$(which c++)" CMAKE="$(which cmake)"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: >-
         IMPORT_NAME ACTIONS_CACHE_SERVICE_V2 ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN
@@ -92,6 +96,18 @@ jobs:
             cargo_home="${CARGO_HOME:-$HOME/.cargo}"
             mkdir -p "$cargo_home/registry" "$cargo_home/git"
             echo "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $(dirname "$SCCACHE_PATH"):/opt/sccache:ro --volume $SCCACHE_DIR:/opt/sccache-cache --volume $cargo_home/registry:/opt/cargo/registry --volume $cargo_home/git:/opt/cargo/git" >> "$GITHUB_ENV"
+          elif [ -f "$PACKAGE/Cargo.toml" ]; then
+            # Absolute build tools, as in CIBW_ENVIRONMENT_LINUX. MSVC builds use a Visual Studio
+            # generator, for which cmake-rs resolves only the cmake executable.
+            if [ "$RUNNER_OS" = Windows ]; then
+              echo "CMAKE=$(cygpath -w "$(command -v cmake.exe)")" >> "$GITHUB_ENV"
+            else
+              {
+                echo "CC=$(command -v cc)"
+                echo "CXX=$(command -v c++)"
+                echo "CMAKE=$(command -v cmake)"
+              } >> "$GITHUB_ENV"
+            fi
           fi
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
