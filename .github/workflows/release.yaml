@@ -35,6 +35,10 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   prepare:
     runs-on: ubuntu-26.04
@@ -54,9 +58,8 @@ jobs:
 
       - name: Check existing tag
         id: tag
-        shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             git worktree add --detach /tmp/release-tag "$TAG"
@@ -76,27 +79,23 @@ jobs:
 
       - name: Check released API compatibility
         if: steps.tag.outputs.exists == 'false'
-        shell: bash
         run: uv run --no-project --with griffe python .github/scripts/package_version.py check-api "$PACKAGE" "$VERSION"
 
       - name: Bump source version
         if: steps.tag.outputs.exists == 'false'
         id: package
-        shell: bash
         run: python3 .github/scripts/package_version.py set "$PACKAGE" "$VERSION"
 
       - name: Update Cargo lockfile
         if: steps.tag.outputs.exists == 'false' && steps.package.outputs.type == 'python-rust'
         env:
           CRATE: ${{ steps.package.outputs.crate }}
-        shell: bash
         run: cargo update -p "$CRATE" --precise "$VERSION"
 
       - name: Commit and tag release
         if: steps.tag.outputs.exists == 'false'
-        shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -112,9 +111,8 @@ jobs:
       - name: Dispatch tag CI
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           # GITHUB_TOKEN pushes do not trigger push workflows.
           gh workflow run ci.yaml --ref "$TAG"

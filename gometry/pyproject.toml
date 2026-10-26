@@ -139,7 +139,6 @@ skip_covered = true
 exclude_also = ["if _?TYPE_CHECKING:", "@overload"]
 
 [tool.maturin]
-bindings = "pyo3"
 module-name = "gometry._lib"
 python-source = "python"
 include = [

@@ -240,10 +240,9 @@ debug = "full"
 trim-paths = "none"
 
 # Distribution builds retain symbol names for backtraces without generating DWARF.
-# Strip debug information from prebuilt inputs as well.
+# With `debug` off, Cargo already strips debug information, including the prebuilt standard library's.
 [profile.release-dist]
 inherits = "release"
 lto = "fat"
 codegen-units = 1
 debug = false
-strip = "debuginfo"

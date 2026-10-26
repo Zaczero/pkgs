@@ -21,6 +21,10 @@ env:
   RUSTUP_TOOLCHAIN: ${{ fromJson(inputs.plan).rust-toolchain }}
   PYTHONDEVMODE: "1"
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   rust:
     if: fromJson(inputs.plan).type == 'rust'
@@ -48,7 +52,6 @@ jobs:
           tool: nextest
 
       - name: Package prerequisites
-        shell: bash
         run: |
           for hook in before_build before_test; do
             if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
@@ -57,7 +60,6 @@ jobs:
           done
 
       - name: Test Rust debug and release
-        shell: bash
         run: bash .github/scripts/test_rust.sh
 
   development:
@@ -97,7 +99,6 @@ jobs:
           tool: nextest
 
       - name: Package prerequisites
-        shell: bash
         run: |
           for hook in before_build before_test; do
             if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
@@ -106,7 +107,6 @@ jobs:
           done
 
       - name: Test development extension
-        shell: bash
         run: |
           uv sync --project "$PACKAGE" --no-default-groups --group dev --no-install-project
           python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
@@ -115,7 +115,6 @@ jobs:
           uv run --project "$PACKAGE" --no-sync python .github/scripts/test_python.py
 
       - name: Test embedded Rust against the Python test installation
-        shell: bash
         run: |
           python="$(uv run --project "$PACKAGE" --no-sync python -c 'import sys; print(sys.executable)')"
           PYO3_PYTHON="$python"
@@ -166,7 +165,6 @@ jobs:
           tool: nextest
 
       - name: Prepare Clang and AddressSanitizer runtime
-        shell: bash
         run: |
           if command -v clang >/dev/null && [ -f "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" ]; then
             exit 0
@@ -175,7 +173,6 @@ jobs:
           sudo apt-get install --yes clang
 
       - name: Package prerequisites
-        shell: bash
         run: |
           for hook in before_build before_test; do
             if [ -f "$PACKAGE/tools/ci_$hook.sh" ]; then
@@ -184,7 +181,6 @@ jobs:
           done
 
       - name: Test instrumented Rust and Python
-        shell: bash
         run: bash .github/scripts/test_asan.sh
 
   prepare-distributions:
@@ -212,7 +208,6 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
           PUBLISHABLE: ${{ fromJson(inputs.plan).publishable }}
-        shell: bash
         run: |
           python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "$REF_NAME"
           if [ "$PUBLISHABLE" = true ]; then
