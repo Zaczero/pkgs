@@ -36,6 +36,7 @@ jobs:
       CIBW_BEFORE_ALL_LINUX: >-
         curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
         sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" --no-modify-path &&
+        sh "{project}/.github/scripts/musl_rustc_jemalloc.sh" &&
         if [ -f "{package}/tools/ci_before_build.sh" ]; then bash "{package}/tools/ci_before_build.sh"; fi
       # cmake-rs records PATH as a build input when it resolves a relative compiler or cmake.
       # Each wheel's build environment has a different PATH, so absolute tools keep CMake-built
