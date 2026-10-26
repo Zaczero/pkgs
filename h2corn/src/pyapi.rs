@@ -916,6 +916,7 @@ async fn run_serve_task(task: ServeTask) {
     // applications may catch CancelledError and perform async cleanup before
     // acknowledging completion.
     app.wait_for_scoped_owners().await;
+    crate::log::flush_log_sink();
     {
         let shutdown_error = stop_secondary_applications(
             secondary_runners,

@@ -24,7 +24,7 @@ use crate::http::response::{
 };
 use crate::http::run_request::run_http_request;
 use crate::http::types::{RequestHead, ResponseHeaders, status_code};
-use crate::log::{HttpAccessLogState, ResponseLogState};
+use crate::log::HttpAccessLogState;
 use crate::runtime::{RequestAdmission, RequestContext, StreamInput};
 use crate::websocket::{WebSocketContext, validate_websocket_request};
 
@@ -355,8 +355,7 @@ async fn run_no_body_http_request(
     admission: RequestAdmission,
     transport: &mut H2HttpTransport<'_>,
 ) -> Result<(), H2CornError> {
-    let access_log = HttpAccessLogState::new(&ctx);
-    let mut response_log = ResponseLogState::default();
+    let mut access_log = HttpAccessLogState::new(&ctx, || 0);
     let RunningHttpRequest { state, app_task } = start_asgi_http_request(
         ctx,
         HttpRequestBody::NoBody,
@@ -364,16 +363,20 @@ async fn run_no_body_http_request(
         transport.new_http_send_state(),
     );
     tokio::pin!(app_task);
-    let result = match poll_app_task_once(app_task.as_mut()) {
+    match poll_app_task_once(app_task.as_mut()) {
         Poll::Ready(app_result) => {
-            try_complete_http_request(state, transport, &mut response_log, app_result).await
+            try_complete_http_request(state, transport, &mut access_log.response, app_result).await
         },
         Poll::Pending => {
-            drive_pinned_http_request(state, app_task.as_mut(), transport, &mut response_log).await
+            drive_pinned_http_request(
+                state,
+                app_task.as_mut(),
+                transport,
+                &mut access_log.response,
+            )
+            .await
         },
-    };
-    access_log.emit_http_response(response_log, || 0);
-    result
+    }
 }
 
 fn push_final_response_commands(

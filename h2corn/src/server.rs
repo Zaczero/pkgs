@@ -400,9 +400,7 @@ pub(crate) async fn serve_from_fds(
         })
         .await?;
     }
-    let served = serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await;
-    log::flush_log_sink();
-    served
+    serve_listeners(listeners, app, config, shutdown_trigger, quiesce).await
 }
 
 #[cfg(unix)]

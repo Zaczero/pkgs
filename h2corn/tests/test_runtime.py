@@ -1922,14 +1922,16 @@ async def test_unix_socket_serving(unix_socket_dir: Path) -> None:
     assert body == b'uds'
 
 
+@pytest.mark.parametrize('protocol', ['h2', 'h2-body', 'http1'])
 async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutdown(
     tmp_path: Path,
+    protocol: str,
 ) -> None:
     """When stderr is a regular file the batched sink must retain every line.
 
-    A burst larger than one sink buffer (32 KiB) forces at least one full
-    batch plus a trailing partial batch; graceful shutdown has to drain both
-    or the last requests vanish from the log.
+    The burst exceeds the sink's initial buffer capacity. Apps remain suspended
+    after responding, so peer-close and shutdown cancellation must retain their
+    records and flush the trailing batch.
     """
     # ~64-byte access-log lines; 800 requests ≈ 50 KiB > INITIAL_CAPACITY (32 KiB).
     request_count = 800
@@ -1937,9 +1939,11 @@ async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutd
     marker = '/access-log-marker'
 
     module_source = """
+    import asyncio
     async def app(scope, receive, send):
         await send({'type': 'http.response.start', 'status': 204, 'headers': []})
         await send({'type': 'http.response.body', 'body': b''})
+        await asyncio.Future()
     """
 
     with log_path.open('wb') as log_file:
@@ -1948,38 +1952,61 @@ async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutd
             module_name='access_log_burst_app',
             module_source=module_source,
             workers=1,
-            extra_args=['--access-log', '--lifespan', 'off'],
+            extra_args=[
+                '--access-log',
+                '--lifespan',
+                'off',
+                '--timeout-graceful-shutdown',
+                '2',
+            ],
             stderr=log_file,
         )
         try:
             await wait_for_port(port)
             # Concurrent burst so the sink writer is still busy when later
             # lines arrive and coalesce into additional batches.
-            results = await asyncio.gather(*[
-                h2_request(port=port, path=marker) for _ in range(request_count)
-            ])
-            assert all(status == 204 and body == b'' for status, body in results)
-            # Let every completed request emit into the sink before SIGTERM.
-            await asyncio.sleep(0.1)
+            if protocol == 'http1':
+                h1_results = await asyncio.gather(*[
+                    http1_request(
+                        port=port,
+                        request=(
+                            f'GET {marker}/{index} HTTP/1.1\r\n'
+                            'Host: localhost\r\nConnection: close\r\n\r\n'
+                        ).encode(),
+                    )
+                    for index in range(request_count)
+                ])
+                assert all(
+                    status == 204 and body == b'' for status, _, body, _ in h1_results
+                )
+            else:
+                h2_results = await asyncio.gather(*[
+                    h2_request(
+                        port=port,
+                        path=f'{marker}/{index}',
+                        body=b'x' if protocol == 'h2-body' else b'',
+                    )
+                    for index in range(request_count)
+                ])
+                assert all(status == 204 and body == b'' for status, body in h2_results)
+            # The response is complete but the app cannot return normally.
+            # Peer-close and shutdown cancellation must both retain its log.
         finally:
             await _terminate_process(process)
 
     # Re-open after the process closes stderr so the file view is complete.
     text = log_path.read_text(errors='replace')
+    assert process.returncode == 0, text
     assert len(text) > 32 * 1024, (
         f'burst must exceed one sink batch; log is only {len(text)} bytes'
     )
-    # Access-log lines look like: client "GET /access-log-marker HTTP/2" 204 ...
-    # Status may be plain or ANSI-styled; match the marker path and 204 digits.
-    line_re = re.compile(re.escape(marker) + r'.*\b204\b')
-    logged = [line for line in text.splitlines() if line_re.search(line)]
-    assert len(logged) == request_count, (
+    line_re = re.compile(re.escape(marker) + r'/(\d+).*\b204\b')
+    logged = [int(match[1]) for match in line_re.finditer(text)]
+    assert sorted(logged) == list(range(request_count)), (
         f'expected {request_count} access-log lines, found {len(logged)}; '
-        f'file has {len(text)} bytes and {text.count(chr(10))} newlines'
+        f'missing request ids: {sorted(set(range(request_count)) - set(logged))}; '
+        f'file has {len(text)} bytes and {text.count(chr(10))} newlines\n{text}'
     )
-    # The last batch is the whole point: the final request must be present,
-    # not only early lines that flushed while the sink was still draining.
-    assert marker in logged[-1]
 
 
 async def test_unix_socket_cleanup_removes_owned_socket_path(

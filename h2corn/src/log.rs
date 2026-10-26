@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU64;
 use std::str;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anstream::{AutoStream, ColorChoice};
@@ -21,7 +21,7 @@ use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
 pub(crate) use crate::log::event::Event;
 use crate::proxy_protocol::ConnectionInfo;
-use crate::runtime::RequestContext;
+use crate::runtime::{ConnectionShared, RequestContext};
 use crate::websocket::{WebSocketCloseCode, close_code};
 
 const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
@@ -336,6 +336,8 @@ impl ClientLabel {
 }
 
 struct ActiveAccessLog {
+    // Keep server settlement waiting until this request has emitted its last line.
+    _connection: Arc<ConnectionShared>,
     request: AccessLogRequest,
     client_label: ClientLabel,
     started_at: Instant,
@@ -345,6 +347,7 @@ struct ActiveAccessLog {
 impl ActiveAccessLog {
     fn new(ctx: &RequestContext) -> Self {
         Self {
+            _connection: Arc::clone(&ctx.connection),
             request: AccessLogRequest::from_request(&ctx.request),
             client_label: ClientLabel::build(ctx),
             started_at: Instant::now(),
@@ -353,33 +356,39 @@ impl ActiveAccessLog {
     }
 }
 
-pub(crate) struct HttpAccessLogState(Option<ActiveAccessLog>);
+pub(crate) struct HttpAccessLogState<F: Fn() -> u64> {
+    active: Option<ActiveAccessLog>,
+    pub(crate) response: ResponseLogState,
+    read_body_bytes: F,
+}
 
-impl HttpAccessLogState {
-    pub(crate) fn new(ctx: &RequestContext) -> Self {
+impl<F: Fn() -> u64> HttpAccessLogState<F> {
+    pub(crate) fn new(ctx: &RequestContext, read_body_bytes: F) -> Self {
         let connection = &ctx.connection;
-        Self(
-            connection
+        Self {
+            active: connection
                 .config
                 .access_log
                 .then(|| ActiveAccessLog::new(ctx)),
-        )
+            response: ResponseLogState::default(),
+            read_body_bytes,
+        }
     }
+}
 
-    pub(crate) fn emit_http_response(
-        &self,
-        log_state: ResponseLogState,
-        read_body_bytes: impl FnOnce() -> u64,
-    ) {
-        if let (Some(state), Some(status)) = (&self.0, log_state.status) {
+impl<F: Fn() -> u64> Drop for HttpAccessLogState<F> {
+    fn drop(&mut self) {
+        // A peer can close after receiving the response while the app is still
+        // suspended. Cancelling that request must still log its accepted response.
+        if let (Some(state), Some(status)) = (&self.active, self.response.status) {
             emit_http_access_log(&HttpAccessLogEntry {
                 request: &state.request,
                 client_label: state.client_label.as_str(),
                 format: state.format,
                 status,
                 duration: state.started_at.elapsed(),
-                rx_bytes: read_body_bytes(),
-                tx_bytes: log_state.response_body_bytes,
+                rx_bytes: (self.read_body_bytes)(),
+                tx_bytes: self.response.response_body_bytes,
             });
         }
     }

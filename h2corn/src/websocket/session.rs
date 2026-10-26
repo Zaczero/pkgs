@@ -433,6 +433,7 @@ where
         outcome.rx_bytes,
         outcome.tx_bytes,
     );
+    drop(access_log);
     let result = outcome.result;
     drop(running_app);
     result
