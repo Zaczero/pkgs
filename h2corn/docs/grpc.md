@@ -1,12 +1,13 @@
 ---
-description: Host Connect-generated ASGI applications with native gRPC and gRPC-Web on h2corn's HTTP/2 server.
+description: Host Connect-generated ASGI applications with native gRPC and gRPC-Web on h2corn.
 ---
 
 # gRPC and Connect
 
 h2corn hosts Connect-generated ASGI applications for the Connect protocol,
-native gRPC, and gRPC-Web. h2corn owns HTTP/2 transport; the ASGI application
-owns RPC routing, codecs, handlers, and status behavior.
+native gRPC, and gRPC-Web. h2corn handles HTTP transport, including HTTP/2 for
+native gRPC; the ASGI application owns RPC routing, codecs, handlers, and
+status behavior.
 
 ## Host a generated Connect application
 

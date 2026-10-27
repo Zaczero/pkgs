@@ -29,7 +29,7 @@ hypercorn myapp:app --bind 127.0.0.1:8000 --workers 4
 h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
 ```
 
-Both serve HTTP/2. Map the remaining settings through the
+Both serve HTTP/1.1 and HTTP/2. Map the remaining settings through the
 [configuration reference](configuration.md#option-index), including the
 protocols used between your clients, proxy, and application.
 

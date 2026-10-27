@@ -14,14 +14,11 @@ edge; see [Behind a proxy](deployment/proxy.md#behind-a-reverse-proxy). Direct e
 
 ## Why prefer `h2c` upstream instead of HTTP/1.1?
 
-It keeps the proxy → app hop on HTTP/2 instead of translating requests
-back down to HTTP/1.1 before they reach the application server, removing
-a protocol-conversion boundary where
-HTTP/1.1 framing ambiguity and connection-reuse issues can reappear.
-TLS, peer isolation, and application validation remain required.
-PortSwigger documents [request smuggling](https://portswigger.net/web-security/request-smuggling)
-and [HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading)
-risks.
+It keeps HTTP/2 between the proxy and application, avoiding a downgrade to
+HTTP/1.1 where framing ambiguities can introduce
+[request smuggling](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading)
+risks. The public edge still needs TLS, the cleartext `h2c` hop needs peer
+isolation, and the application remains responsible for request validation.
 
 ## Why not HTTP/3?
 
@@ -32,14 +29,18 @@ connection between a reverse proxy and an application server, the
 benefits shrink while the cost (UDP, QUIC stack, broader attack
 surface) does not, and `h2c` has wider proxy support.
 
-## Why is HTTP/1.1 even an option?
+<a id="why-is-http11-even-an-option"></a>
 
-Browsers do not speak cleartext `h2c`. Without TLS in front, a browser
-cannot talk directly to an `h2c`-only server, so HTTP/1.1 is kept
-available for **local development and testing**. In production, HTTP/1.1 is
-disabled with [`--no-http1`](configuration.md#option-http1) when every upstream client speaks h2c or HTTP/2; it
-remains enabled when a proxy uses an HTTP/1.1 WebSocket upgrade route, as
-described in [Behind a reverse proxy](deployment/proxy.md#behind-a-reverse-proxy).
+## Does h2corn support HTTP/1.1?
+
+Yes. HTTP/1.1 is enabled by default on the same listener as HTTP/2, including
+for WebSocket upgrades. It also lets browsers connect directly without TLS;
+browsers do not speak cleartext `h2c`.
+
+Prefer HTTP/2 where your clients and proxy support it. You can disable HTTP/1.1
+with [`--no-http1`](configuration.md#option-http1) when every route uses HTTP/2.
+WebSocket routes then need RFC 8441 extended CONNECT support from the client
+and proxy. See [Behind a reverse proxy](deployment/proxy.md#behind-a-reverse-proxy).
 
 ## Is HTTP/1.0 supported?
 

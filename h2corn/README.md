@@ -5,11 +5,16 @@
 <h1 align="center">h2corn</h1>
 
 <p align="center">
-  <strong>HTTP/2 ASGI for Python</strong>
+  <strong>The fastest ASGI server for Python.</strong>
 </p>
 
 <p align="center">
-  Built in Rust, with HTTP/2 end to end.
+  Built in Rust. Ready for HTTP/2, HTTP/1.1, WebSockets, and gRPC.
+</p>
+
+<p align="center">
+  Up to 30× the throughput of the compared Uvicorn, Hypercorn, and Gunicorn
+  configurations in a one-worker GET test. <a href="https://h2corn.monicz.dev/benchmarks/">Explore the benchmarks</a>.
 </p>
 
 <p align="center">
@@ -28,7 +33,8 @@
 
 ---
 
-- **HTTP/2 end to end** — keep HTTP/2 on the proxy-to-app hop with `h2c`.
+- **HTTP/2 end to end** — use `h2c` between your proxy and application.
+  HTTP/1.1 is available on the same listener when you need it.
 - **WebSockets** — HTTP/1.1 upgrades and HTTP/2 extended CONNECT (RFC 8441).
 - **Direct TLS** — TLS 1.2 and 1.3, including mutual TLS with client-certificate details exposed to the application.
 - **Operator controls** — worker management, reload, recycling, health checks, and bounded graceful shutdown.
@@ -70,9 +76,11 @@ Open <http://127.0.0.1:8000/>. Add `--reload` for development.
 
 For production, use a TLS-terminating reverse proxy with a private `h2c`
 upstream, or [terminate TLS in h2corn](https://h2corn.monicz.dev/deployment/tls/).
-The [proxy recipes](https://h2corn.monicz.dev/deployment/proxy/) cover forwarded
-headers and WebSocket routing. Keep HTTP/1.1 enabled for proxies that use
-WebSocket upgrades; HTTP/2 WebSockets require RFC 8441 support along the route.
+HTTP/1.1 is enabled by default for compatibility. You can disable it with
+`--no-http1` when every route supports HTTP/2, including WebSocket routes,
+which require RFC 8441 support. See the
+[proxy recipes](https://h2corn.monicz.dev/deployment/proxy/) for routing and
+forwarded-header configuration.
 
 ## Is h2corn right for you?
 

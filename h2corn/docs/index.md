@@ -1,5 +1,5 @@
 ---
-description: HTTP/2 ASGI for Python. Built in Rust, with HTTP/2 end to end.
+description: High-performance ASGI for Python, built in Rust for HTTP/2, HTTP/1.1, WebSockets, and gRPC.
 hide:
   - navigation
   - toc
@@ -12,10 +12,12 @@ hide:
 <a id="http2-asgi-server-for-python"></a>
 <a id="the-fastest-python-asgi-server"></a>
 
-# HTTP/2 ASGI for Python
+# The fastest ASGI server for Python
 
-Rust handles the wire. Python handles your application.
-HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
+Built in Rust. Ready for HTTP/2, HTTP/1.1, WebSockets, and gRPC.
+
+Up to **30× the throughput** of the compared Uvicorn, Hypercorn, and Gunicorn
+configurations in a one-worker GET test. [Explore the benchmarks](benchmarks.md).
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [User guide](guide.md){ .md-button }
@@ -40,8 +42,9 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
     ---
 
-    Keep HTTP/2 between your reverse proxy and application over a private
-    `h2c` connection, or terminate TLS directly in h2corn.
+    Use a private `h2c` connection between your proxy and application, or
+    terminate TLS directly in h2corn. HTTP/1.1 is available on the same
+    listener when you need it.
 
     [:octicons-arrow-right-24: Behind a proxy](deployment/proxy.md)
 
@@ -62,12 +65,18 @@ HTTP/2, WebSockets, TLS, and a multi-worker supervisor in one ASGI server.
 
 ## Benchmarks
 
-**9.7–30× the throughput** of the compared servers in the one-worker HTTP/1.1 GET benchmark.
-h2corn, Uvicorn, Hypercorn, and Gunicorn serve the same Starlette application
-using standard asyncio.
+In a one-worker HTTP/1.1 GET benchmark, h2corn delivered **9.7–30× the
+throughput** of the compared Uvicorn, Hypercorn, and Gunicorn configurations.
+All four served the same Starlette application using standard asyncio.
 
-![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light)
-![One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.](assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark)
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/benchmarks/benchmark_http_1_get_1_worker-loopback-narrow.svg">
+  <img src="assets/benchmarks/benchmark_http_1_get_1_worker-loopback.svg#only-light" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.">
+</picture>
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/benchmarks/benchmark_http_1_get_1_worker-loopback-narrow-dark.svg">
+  <img src="assets/benchmarks/benchmark_http_1_get_1_worker-loopback-dark.svg#only-dark" alt="One-worker HTTP/1.1 text-response comparison: request rate, latency percentiles, and sampled deployment memory for four servers. Exact data and paired comparisons are on the benchmark page.">
+</picture>
 
 [See the measured environment, exact data, configuration, and workloads](benchmarks.md).
 

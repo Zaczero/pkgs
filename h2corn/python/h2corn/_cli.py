@@ -237,7 +237,7 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
         # a wall of syntax with the reason buried under it. The grouped
         # option sections below carry the same information where it is read.
         usage='h2corn [OPTIONS] [target]',
-        description=f'h2corn v{version}: HTTP/2 ASGI server for Python, written in Rust',
+        description=f'h2corn v{version}: ASGI server for Python, built in Rust',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

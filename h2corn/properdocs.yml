@@ -1,5 +1,5 @@
 site_name: h2corn
-site_description: HTTP/2 ASGI for Python. Built in Rust, with HTTP/2 end to end.
+site_description: High-performance ASGI for Python, built in Rust for HTTP/2, HTTP/1.1, WebSockets, and gRPC.
 site_url: https://h2corn.monicz.dev/
 repo_url: https://github.com/Zaczero/pkgs/tree/main/h2corn
 repo_name: Zaczero/pkgs

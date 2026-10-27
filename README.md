@@ -5,7 +5,7 @@ Python libraries and native tools. Each project has its own installation and usa
 | Project | What it does |
 | --- | --- |
 | [gometry](gometry/README.md) · [docs](https://gometry.monicz.dev/) | Geometry, CRS, geodesy, grids, and spatial indexing in one Python package. |
-| [h2corn](h2corn/README.md) · [docs](https://h2corn.monicz.dev/) | HTTP/2 ASGI server for Python, written in Rust. |
+| [h2corn](h2corn/README.md) · [docs](https://h2corn.monicz.dev/) | High-performance ASGI server for Python, built in Rust. |
 | [blurhash-rs](blurhash-rs/README.md) | Encode and decode BlurHash image placeholders. |
 | [fast](fast/README.md) | Compare Linux commands with timing and resource measurements. |
 | [githead](githead/README.md) | Read Git HEAD without launching Git. |

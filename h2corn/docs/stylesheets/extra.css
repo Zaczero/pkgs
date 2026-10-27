@@ -88,14 +88,15 @@
   text-align: center;
 }
 
+.benchmark-highlight > p:not(:has(picture)) {
+  max-width: 40rem;
+  margin-inline: auto;
+  text-wrap: pretty;
+}
+
 .benchmark-highlight img {
   width: 100%;
   height: auto;
-}
-
-.benchmark-highlight > p:last-child {
-  max-width: 40rem;
-  margin-inline: auto;
 }
 
 /* Mermaid caps each rendered diagram at its own natural width, so a compact

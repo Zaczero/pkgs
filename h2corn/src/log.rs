@@ -610,7 +610,7 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     let mut stderr = anstream::stderr().lock();
     drop(writeln!(
         stderr,
-        "{} v{} • HTTP/2 ASGI",
+        "{} v{} • ASGI server",
         "h2corn".style(Style::new().bold().cyan()),
         env!("CARGO_PKG_VERSION"),
     ));
