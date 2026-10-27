@@ -64,6 +64,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 include = [
+  { path = "LICENSE*.md", format = "sdist" },
   { path = "rust-toolchain.toml", format = "sdist" },
   { path = ".cargo/config.toml", format = "sdist" },
 ]
