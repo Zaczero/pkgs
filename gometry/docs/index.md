@@ -11,9 +11,8 @@ hide:
 
 # One engine, one mental model
 
-A geospatial engine for Python, written in Rust. gometry replaces the
-day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
-package — no GEOS, no GDAL, no system PROJ.
+Geometry, geodesy, coordinate systems, and spatial grids in one Python package,
+built in Rust. No GEOS, GDAL, or system PROJ to install.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
 [User guide](guide/index.md){ .md-button }
@@ -23,6 +22,9 @@ package — no GEOS, no GDAL, no system PROJ.
 ```bash
 uv add gometry
 ```
+
+Find Paris landmarks within 5 km of the Eiffel Tower. With EPSG:4326 attached,
+[`distance`][gometry.distance] measures geodesic distance in metres.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -41,10 +43,6 @@ for name, coordinates in landmarks.items():
     if distance <= 5_000:
         print(f"{name:<18} {distance / 1_000:>4.1f} km")
 ```
-
-Find Paris landmarks within 5 km of the Eiffel Tower. With EPSG:4326 attached,
-[`distance`][gometry.distance] measures the geodesic distance in metres, so the
-filter works directly in familiar units.
 
 <div class="grid cards" markdown>
 
