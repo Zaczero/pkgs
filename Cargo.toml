@@ -65,6 +65,9 @@ doc_markdown = "allow"
 # `'EPSG'`; rustdoc's quote-link heuristic misfires on those. properdocs is the
 # real doc gate.
 doc_link_with_quotes = "allow"
+# Python doctest prompts (`>>>`) are not Markdown blockquotes. Their output
+# must remain unprefixed for NumPy-style docstrings and executable examples.
+doc_lazy_continuation = "allow"
 # Same reason: the `///` first paragraph IS the numpydoc summary, whose length is
 # governed by the docs site, not rustdoc's paragraph heuristic.
 too_long_first_doc_paragraph = "allow"
