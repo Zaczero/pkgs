@@ -7,17 +7,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      recover-sources:
-        description: Complete the October 2026 source uploads
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.recover-sources && 'source-recovery' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 defaults:
@@ -27,7 +22,6 @@ defaults:
 jobs:
   detect:
     name: Packages
-    if: ${{ !inputs.recover-sources }}
     runs-on: ubuntu-26.04
 
     permissions:
@@ -352,35 +346,5 @@ jobs:
 
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
-        with:
-          skip-existing: true
-
-  recover-sources:
-    name: Complete source uploads
-    if: github.event_name == 'workflow_dispatch' && inputs.recover-sources && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-26.04
-    environment: pypi
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Restore missing notices from original release metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/recover_sources.py
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: recovered-source-distributions
-          path: dist
-          if-no-files-found: error
-          retention-days: 7
-
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
