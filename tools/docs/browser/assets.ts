@@ -95,6 +95,31 @@ export async function finalizeAssets(
                             throw new Error(`${page}: missing asset ${path}`);
                         }
                     }
+                    const srcset = element.getAttribute("srcset");
+                    if (srcset) {
+                        let result = "";
+                        let offset = 0;
+                        while (offset < srcset.length) {
+                            const leading = /^[\s,]*/.exec(srcset.slice(offset))![0];
+                            result += leading;
+                            offset += leading.length;
+                            const token = /^\S+/.exec(srcset.slice(offset))?.[0];
+                            if (!token) break;
+                            const url = token.replace(/,+$/, "");
+                            const changed = rewrite(url, page);
+                            const path = localPath(changed, page);
+                            if (path && !(await Bun.file(join(site, path)).exists())) {
+                                throw new Error(`${page}: missing asset ${path}`);
+                            }
+                            result += changed + token.slice(url.length);
+                            offset += token.length;
+                            if (token.length !== url.length) continue;
+                            const descriptor = /^[^,]*/.exec(srcset.slice(offset))![0];
+                            result += descriptor;
+                            offset += descriptor.length;
+                        }
+                        element.setAttribute("srcset", result);
+                    }
                 },
             })
             .transform(new Response(Bun.file(join(site, page))));
