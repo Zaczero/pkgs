@@ -138,7 +138,7 @@ def build_wheel(
             command,
             cwd=ROOT,
             check=True,
-            timeout=900,
+            timeout=2700,
             stdout=log,
             stderr=subprocess.STDOUT,
         )
