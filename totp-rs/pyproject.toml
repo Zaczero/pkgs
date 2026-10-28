@@ -30,6 +30,7 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/totp-rs"
 
 [dependency-groups]
+pgo = []
 dev = [
   "benchroom",
   "pyotp",
@@ -54,6 +55,13 @@ include = [
 module-name = "totp_rs._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
+
+[tool.ci.pgo]
+build = "cp315-manylinux_x86_64"
+target = "x86_64-unknown-linux-gnu"
+adapter = "tools.pgo"
+# LLVM's PGO pre-inliner adds indexing work in the SHA-512 compression loop.
+rustflags = ["-Cllvm-args=-disable-preinline"]
 
 [tool.pyright]
 extraPaths = ["python"]
