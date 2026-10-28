@@ -93,6 +93,12 @@ routes. `trust_env=True` is supported when no proxy route is actually configured
 existing environment-derived SSL trust is retained. The helper does not remove
 proxies or silently fall back to weaker protection for unsupported routes.
 
+`trust_env=False` also disables HTTPX's `SSL_CERT_FILE` and `SSL_CERT_DIR`
+settings. To use system certificate stores with a direct client, pass an explicit
+SSL context through `verify=`, as shown in
+[HTTPX's SSL configuration guide](https://www.python-httpx.org/advanced/ssl/).
+The helper preserves that context.
+
 Sharing a transport between clients also shares its connector policy. Configure
 such transports exclusively; do not mutate routing or replace transports after
 installation. Async task sharing after setup follows HTTPX's normal client
