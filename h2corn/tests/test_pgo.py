@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 
 from pgo import check_profile
+from pgo_process import collect as collect_process
 from pgo_profile import integer_weights, merge
 from wheels import compilation_identity
 
@@ -106,3 +107,40 @@ def test_changed_collection_plan_is_rejected(tmp_path, defect):
     with pytest.raises(RuntimeError, match=r'plan|planned work'):
         merge(receipt, tmp_path / 'accepted', build={})
     assert not (tmp_path / 'accepted').exists()
+
+
+@pytest.mark.parametrize('defect', ['image', 'units'])
+def test_process_collection_rejects_wrong_worker(tmp_path, monkeypatch, defect):
+    monkeypatch.delenv('LD_PRELOAD', raising=False)
+    image = tmp_path / 'extension.so'
+    image.write_bytes(b'extension image')
+    expected_image = hashlib.sha256(image.read_bytes()).hexdigest()
+    worker = tmp_path / 'worker.py'
+    worker.write_text(
+        'import json, os\n'
+        'from pathlib import Path\n'
+        "Path(os.environ['LLVM_PROFILE_FILE']).write_bytes(b'profile')\n"
+        "print(json.dumps({'units': int(os.environ['UNITS']), "
+        "'image_sha256': os.environ['IMAGE']}))\n"
+    )
+    monkeypatch.setenv('IMAGE', 'different' if defect == 'image' else expected_image)
+    monkeypatch.setenv('UNITS', '2' if defect == 'units' else '1')
+    output = tmp_path / 'collection'
+    with pytest.raises(RuntimeError, match='wrong image or completed work'):
+        collect_process(output, worker, image, units=1, functions=['entry'])
+    assert not (output / 'collection.json').exists()
+
+
+def test_process_collection_retains_worker_failure(tmp_path, monkeypatch):
+    monkeypatch.delenv('LD_PRELOAD', raising=False)
+    image = tmp_path / 'extension.so'
+    image.write_bytes(b'extension image')
+    worker = tmp_path / 'worker.py'
+    worker.write_text(
+        "import sys\nprint('training failed', file=sys.stderr)\nsys.exit(1)\n"
+    )
+    output = tmp_path / 'collection'
+    with pytest.raises(RuntimeError, match='training process failed'):
+        collect_process(output, worker, image, units=1, functions=['entry'])
+    assert (output / 'workload/training.log').read_text() == 'training failed\n'
+    assert not (output / 'collection.json').exists()

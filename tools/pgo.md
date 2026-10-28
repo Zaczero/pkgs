@@ -46,6 +46,11 @@ files with their hashes. `pgo_profile.py` checks these inputs, rejects empty or
 incomplete contributions, and merges each leaf before applying integer
 coefficients proportional to `weight / units`. It retains zero-count functions.
 
+For a single-process workload, `pgo_process.py` runs the adapter's `train` entry
+point in a fresh interpreter and collects its exit-flushed profile. The entry
+point reports completed operations and the loaded extension's digest through
+`completed`; `collect` verifies both before producing the receipt.
+
 The accepted profile has an immutable content-addressed path. Its manifest binds
 it to the generator wheel, compiler, target, Python build, source and dependency
 inputs, corpus, and merge coefficients. A changed compiler, source, target, or
