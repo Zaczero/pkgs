@@ -46,6 +46,11 @@ files with their hashes. `pgo_profile.py` checks these inputs, rejects empty or
 incomplete contributions, and merges each leaf before applying integer
 coefficients proportional to `weight / units`. It retains zero-count functions.
 
+An optional `rustflags` array in `tool.ci.pgo` adds target compiler flags to all
+three build phases. Use it for measured package-specific pipeline adjustments.
+Build receipts and accepted profiles bind these flags so a profile cannot be
+collected or consumed under a different setting.
+
 For a single-process workload, `pgo_process.py` runs the adapter's `train` entry
 point in a fresh interpreter and collects its exit-flushed profile. The entry
 point reports completed operations and the loaded extension's digest through

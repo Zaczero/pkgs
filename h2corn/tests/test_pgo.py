@@ -39,9 +39,20 @@ def profile(tmp_path, monkeypatch):
     return path, manifest
 
 
-def test_matching_profile_is_admitted(profile):
+@pytest.mark.parametrize(
+    'rustflags',
+    [
+        pytest.param(None, id='default'),
+        pytest.param(['-Cllvm-args=-disable-preinline'], id='pipeline-adjustment'),
+    ],
+)
+def test_matching_profile_is_admitted(profile, rustflags):
     path, manifest = profile
-    assert check_profile(path, PACKAGE, CONFIG) == manifest
+    config = dict(CONFIG)
+    if rustflags is not None:
+        config['rustflags'] = manifest['rustflags'] = rustflags
+        path.with_suffix('.json').write_text(json.dumps(manifest))
+    assert check_profile(path, PACKAGE, config) == manifest
 
 
 @pytest.mark.parametrize(
@@ -50,6 +61,7 @@ def test_matching_profile_is_admitted(profile):
         ('sha256', 'changed', 'digest changed'),
         ('compiler', 'different compiler', 'different Rust compiler'),
         ('compilation', {}, 'different source or dependencies'),
+        ('rustflags', ['-Cllvm-args=-disable-preinline'], 'different target flags'),
         ('target', 'aarch64-unknown-linux-gnu', 'different target or Python'),
         ('python', 'different Python', 'different target or Python'),
     ],
