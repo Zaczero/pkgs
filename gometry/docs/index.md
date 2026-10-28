@@ -9,10 +9,12 @@ hide:
 
 <img src="assets/logo.svg" alt="gometry" class="hero-logo">
 
-# One engine, one mental model
+<a id="one-engine-one-mental-model"></a>
 
-Geometry, geodesy, coordinate systems, and spatial grids in one Python package,
-built in Rust. No GEOS, GDAL, or system PROJ to install.
+# Geospatial computing for Python
+
+Geometry, geodesy, coordinate systems, grids, and spatial indexing, built in
+Rust. No GEOS, GDAL, or system PROJ to install.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
 [User guide](guide/index.md){ .md-button }
@@ -22,6 +24,8 @@ built in Rust. No GEOS, GDAL, or system PROJ to install.
 ```bash
 uv add gometry
 ```
+
+<div class="homepage-example" markdown>
 
 Find Paris landmarks within 5 km of the Eiffel Tower. With EPSG:4326 attached,
 [`distance`][gometry.distance] measures geodesic distance in metres.
@@ -43,6 +47,8 @@ for name, coordinates in landmarks.items():
     if distance <= 5_000:
         print(f"{name:<18} {distance / 1_000:>4.1f} km")
 ```
+
+</div>
 
 <div class="grid cards" markdown>
 

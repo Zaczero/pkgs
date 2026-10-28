@@ -57,6 +57,14 @@
   opacity: 1;
 }
 
+.md-typeset .hero p:has(> .hero-logo) {
+  margin: 0 auto 0.75rem;
+}
+
+.md-typeset .hero .hero-logo {
+  margin-bottom: 0;
+}
+
 .md-typeset .hero h1 {
   /* Scales continuously rather than stepping at one breakpoint, so the
      heading never sits at 2.5rem in the width just above that step where it
@@ -72,18 +80,24 @@
 }
 
 .md-typeset .hero h1 .headerlink {
-  color: #111827;
-  opacity: 0;
+  display: none;
 }
 
-.md-typeset .hero h1:hover .headerlink,
-.md-typeset .hero h1 .headerlink:focus-visible {
-  opacity: 1;
-}
-
-[data-md-color-scheme="slate"] .md-typeset .hero h1,
-[data-md-color-scheme="slate"] .md-typeset .hero h1 .headerlink {
+[data-md-color-scheme="slate"] .md-typeset .hero h1 {
   color: #f8fafc;
+}
+
+.md-typeset .homepage-example {
+  margin-block: 2rem;
+}
+
+.md-typeset .homepage-example > p {
+  margin-bottom: 0.5rem;
+}
+
+.md-typeset .homepage-example .python-example,
+.md-typeset .homepage-example [data-python-example] > .highlight {
+  margin-top: 0.5rem;
 }
 
 /* Figure surface. The drawing carries its own intrinsic size, so it scales down
