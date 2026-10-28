@@ -38,6 +38,10 @@ def configuration(package: str):
     return path, manifest['tool']['maturin']['module-name'], config, adapter
 
 
+def pipeline_flags(config: dict) -> list[str]:
+    return [] if config.get('preinline', True) else ['-Cllvm-args=-disable-preinline']
+
+
 def check_profile(profile: Path, package: Path, config: dict) -> dict:
     reject_overriding_flags()
     manifest = json.loads(profile.with_name('profile.json').read_text())
@@ -50,7 +54,7 @@ def check_profile(profile: Path, package: Path, config: dict) -> dict:
         raise RuntimeError(
             'accepted profile belongs to different source or dependencies'
         )
-    if manifest.get('rustflags', []) != config.get('rustflags', []):
+    if manifest.get('rustflags', []) != pipeline_flags(config):
         raise RuntimeError('accepted profile belongs to different target flags')
     if manifest['target'] != config['target'] or manifest['python'] != sys.version:
         raise RuntimeError(
@@ -68,7 +72,7 @@ def reject_overriding_flags() -> None:
 
 
 def flags(phase: str, config: dict, adapter, profile: Path | None) -> list[str]:
-    common = config.get('rustflags', [])
+    common = pipeline_flags(config)
     if phase == 'baseline':
         return list(common)
     if phase == 'generate':
@@ -131,7 +135,7 @@ def build(
         verify_feedback(output / 'build.log', adapter)
     receipt = wheel.with_suffix('.build.json')
     record = json.loads(receipt.read_text())
-    record['rustflags'] = config.get('rustflags', [])
+    record['rustflags'] = pipeline_flags(config)
     receipt.write_text(json.dumps(record, indent=2) + '\n')
     return wheel
 
@@ -153,7 +157,7 @@ def release(package: Path, config: dict, adapter, output: Path, work: Path) -> N
             {
                 'compilation': compilation_identity(package),
                 'target': config['target'],
-                'rustflags': config.get('rustflags', []),
+                'rustflags': pipeline_flags(config),
             },
             indent=2,
         )
@@ -366,7 +370,7 @@ def main() -> None:
             ['rustc', '-vV'], text=True, timeout=15
         ):
             raise RuntimeError('generator wheel belongs to a different compiler')
-        if spec.get('rustflags', []) != config.get('rustflags', []):
+        if spec.get('rustflags', []) != pipeline_flags(config):
             raise RuntimeError('generator wheel belongs to different target flags')
         receipt = adapter.collect(arguments.output.resolve())
         profile = merge(

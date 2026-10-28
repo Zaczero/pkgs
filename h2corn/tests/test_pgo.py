@@ -10,11 +10,14 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pgo import check_profile
+from pgo import check_profile, pipeline_flags
 from pgo_process import collect as collect_process
 from pgo_profile import integer_weights, merge
 from wheels import compilation_identity
+
+from bench.pgo.adapter import known_profile_diagnostic
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = {'target': 'x86_64-unknown-linux-gnu'}
@@ -33,6 +36,7 @@ def profile(tmp_path, monkeypatch):
         'compiler': subprocess.check_output(['rustc', '-vV'], text=True, timeout=15),
         'compilation': compilation_identity(PACKAGE),
         'target': CONFIG['target'],
+        'rustflags': pipeline_flags(CONFIG),
         'python': sys.version,
     }
     path.with_suffix('.json').write_text(json.dumps(manifest))
@@ -40,18 +44,20 @@ def profile(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    'rustflags',
+    ('preinline', 'rustflags'),
     [
-        pytest.param(None, id='default'),
-        pytest.param(['-Cllvm-args=-disable-preinline'], id='pipeline-adjustment'),
+        (None, []),
+        (True, []),
+        (False, ['-Cllvm-args=-disable-preinline']),
     ],
 )
-def test_matching_profile_is_admitted(profile, rustflags):
+def test_matching_profile_is_admitted(profile, preinline, rustflags):
     path, manifest = profile
+    manifest['rustflags'] = rustflags
+    path.with_suffix('.json').write_text(json.dumps(manifest))
     config = dict(CONFIG)
-    if rustflags is not None:
-        config['rustflags'] = manifest['rustflags'] = rustflags
-        path.with_suffix('.json').write_text(json.dumps(manifest))
+    if preinline is not None:
+        config['preinline'] = preinline
     assert check_profile(path, PACKAGE, config) == manifest
 
 
@@ -80,6 +86,41 @@ def test_even_empty_environment_flags_cannot_disable_pgo(profile, monkeypatch, n
     monkeypatch.setenv(name, '')
     with pytest.raises(RuntimeError, match='overrides the target PGO configuration'):
         check_profile(path, PACKAGE, CONFIG)
+
+
+@pytest.mark.parametrize(
+    ('symbol', 'discarded', 'known'),
+    [
+        pytest.param('15init_lib_module', 0, True, id='collection-initializer'),
+        pytest.param('15init_lib_module', 1, False, id='discarded-executions'),
+        pytest.param(
+            'NtNtB2_15init_lib_module10ModuleExec18___pyo3_module_exec',
+            0,
+            True,
+            id='inlined-initializer',
+        ),
+        pytest.param(
+            'NtNtB2_15init_lib_module10ModuleExec18___pyo3_module_exec',
+            1,
+            False,
+            id='inlined-discarded-executions',
+        ),
+        pytest.param('9serve_fds', 0, False, id='runtime-function'),
+        pytest.param(
+            '15init_lib_module10ModuleExec', 0, False, id='different-function'
+        ),
+    ],
+)
+def test_only_zero_count_collection_initializer_mismatch_is_known(
+    symbol, discarded, known
+):
+    line = (
+        'warning: _lib.2eca8a47fe7e16ac-cgu.0: '
+        'function control flow change detected (hash mismatch) '
+        f'_RNvCs414eAY2k0Yy_4__lib{symbol} Hash = 896858936009260866 '
+        f'up to {discarded} count discarded'
+    )
+    assert known_profile_diagnostic(line) is known
 
 
 def test_weights_normalize_by_useful_work():
