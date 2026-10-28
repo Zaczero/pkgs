@@ -33,6 +33,7 @@ jobs:
     name: Build
     runs-on: ${{ fromJson(inputs.build).runner }}
     env:
+      PGO_BUILD: ${{ startsWith(github.ref, 'refs/tags/') && fromJson(inputs.build).pgo-build || '' }}
       CIBW_ARCHS: native
       CIBW_BUILD: ${{ fromJson(inputs.build).abi == 'abi3t' && 'cp315t-*' || '*' }}
       CIBW_BUILD_FRONTEND: build[uv]
@@ -114,17 +115,17 @@ jobs:
           package-dir: ${{ inputs.package }}
           output-dir: dist
         env:
-          CIBW_SKIP: ${{ fromJson(inputs.build).pgo-build }}
+          CIBW_SKIP: ${{ env.PGO_BUILD }}
 
       - name: Build and qualify the PGO wheel
-        if: fromJson(inputs.build).pgo-build != ''
+        if: env.PGO_BUILD != ''
         run: python tools/pgo.py "$PACKAGE" release --output dist --work "$RUNNER_TEMP/pgo"
 
       - name: Retain PGO inputs and evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() && fromJson(inputs.build).pgo-build != '' }}
+        if: ${{ !cancelled() && env.PGO_BUILD != '' }}
         with:
-          name: pgo-${{ inputs.package }}-${{ fromJson(inputs.build).pgo-build }}-${{ github.run_attempt }}
+          name: pgo-${{ inputs.package }}-${{ env.PGO_BUILD }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/pgo
             !${{ runner.temp }}/pgo/collection/files

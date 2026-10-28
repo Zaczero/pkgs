@@ -15,10 +15,11 @@ test-groups = ["freethreaded", "grpc-interop"]
 `wheels.py` owns distribution builds, source identities, build receipts, and
 installed-wheel byte checks for both PGO and benchmark consumers.
 
-The shared build matrix routes that identifier to PGO and excludes it from the
-ordinary wheel build. Other identifiers use their ordinary build. The release
-command runs all three phases through cibuildwheel, tests the installed baseline
-and final wheels, and copies only the tested profile-use wheel into `dist`.
+On release tags, the shared build matrix routes that identifier to PGO and
+excludes it from the ordinary wheel build. Other CI runs build it normally, as
+they do the other identifiers. The release command runs all three phases through
+cibuildwheel, tests the installed baseline and final wheels, and copies only the
+tested profile-use wheel into `dist`.
 Actions retains the profiles, collection receipts, wheel identities, and build
 and test logs in a separate `pgo-*` artifact with the repository's default
 retention. Download that artifact while it is retained if the profile is needed
