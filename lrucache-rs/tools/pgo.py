@@ -9,8 +9,8 @@ import pgo_process
 
 GENERATE_FLAGS = ()
 PACKAGE = Path(__file__).resolve().parents[1]
-OPERATIONS = 71_876
-EXPECTED_FUNCTIONS = ['8LRUCache6access', '5Store6insert']
+OPERATIONS = 72_023
+EXPECTED_FUNCTIONS = ['8LRUCache6access', '5Store6insert', 'snapshot_entries']
 stage_generator = pgo_process.stage_generator
 verify_runtime = pgo_process.verify_runtime
 known_profile_diagnostic = pgo_process.known_profile_diagnostic
@@ -58,6 +58,17 @@ def train() -> None:
             cache[512 + i] = i
             cache[key] = i
             units += 2
+        if i % 1024 == 0:
+            items = list(cache.items())
+            keys = list(cache)
+            values = list(cache.values())
+            if (
+                len(items) != 512
+                or keys != [key for key, _ in items]
+                or values != [value for _, value in items]
+            ):
+                raise RuntimeError('cache training snapshots lost entries or order')
+            units += 3
     pgo_process.completed(units, Path(_lib.__file__))
 
 
