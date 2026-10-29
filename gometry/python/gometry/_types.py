@@ -16,6 +16,9 @@ and ``PolygonizeResult``.
 # Features must remain explicitly unhashable; mypy needs a narrow assignment
 # ignore for this runtime contract, while pyright does not.
 # pyright: reportUnnecessaryTypeIgnoreComment=false
+# NumPy arrays expose SupportsIndex regardless of rank; rank-aware overloads
+# precede scalar overloads to match runtime selection.
+# pyright: reportOverlappingOverload=false
 
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ import itertools
 import math
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from types import EllipsisType  # ruff: ignore[typing-only-standard-library-import] — core runtime annotations
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -41,6 +45,7 @@ from typing import (
     TypedDict,
     TypeVar,
     cast,
+    overload,
 )
 
 import numpy as np
@@ -70,6 +75,11 @@ FloatScalar: TypeAlias = (
 _EpochInput: TypeAlias = SupportsFloat | SupportsIndex | FloatScalar | ScalarFloatArray  # ruff: ignore[unused-private-type-alias]
 
 if TYPE_CHECKING:
+    from datetime import date, datetime, time, timedelta
+    from decimal import Decimal
+    from os import PathLike
+    from typing import BinaryIO
+
     # Static consumers see the nominal optional dependency types. Runtime
     # aliases for those external types remain forward references until a caller
     # supplies the corresponding modules and symbol names. Arrow C capsules
@@ -82,6 +92,8 @@ if TYPE_CHECKING:
         CRS as PyprojCrs,  # ruff: ignore[constant-imported-as-non-constant] — CRS is a class, not a constant
     )
     from pyproj.aoi import AreaOfInterest as PyprojAreaOfInterest
+
+    from gometry._lib import ArrowValue
 
     PyArrowArray: TypeAlias = pa.Array | pa.ExtensionArray
     PyArrowChunkedArray: TypeAlias = pa.ChunkedArray
@@ -122,6 +134,21 @@ from gometry._lib import (
     LineString,
     Point,
     Polygon,
+    _iter_feature_rows,
+    _snapshot_feature_rows,
+    _snapshot_feature_value,
+)
+from gometry._lib import (
+    _expose_feature_value as exposed_value,
+)
+from gometry._lib import (
+    _FeaturePropertyColumn as PropertyColumn,
+)
+from gometry._lib import (
+    _FeaturePropertyRows as PropertyRows,
+)
+from gometry._lib import (
+    _thaw_feature_value as mutable_value,
 )
 
 
@@ -176,6 +203,16 @@ if TYPE_CHECKING:
         covariant=True,
         default=Never,
     )
+    _FeatureG_co = _DefaultTypeVar(
+        '_FeatureG_co', bound=Geometry | None, covariant=True, default=Geometry | None
+    )
+    _FeatureV_co = _DefaultTypeVar('_FeatureV_co', covariant=True, default=object)
+    _FeatureId_co = _DefaultTypeVar(
+        '_FeatureId_co',
+        bound=str | int | float,
+        covariant=True,
+        default=str | int | float,
+    )
 else:
     _ExtremeT = TypeVar('_ExtremeT')
     _GeoJsonInterfaceT_co = TypeVar(
@@ -184,6 +221,70 @@ else:
         covariant=True,
     )
     _GroupMissingT_co = TypeVar('_GroupMissingT_co', covariant=True)
+    _FeatureG_co = TypeVar('_FeatureG_co', bound=Geometry | None, covariant=True)
+    _FeatureV_co = TypeVar('_FeatureV_co', covariant=True)
+    _FeatureId_co = TypeVar('_FeatureId_co', bound=str | int | float, covariant=True)
+
+if TYPE_CHECKING:
+    _NewFeatureG = _DefaultTypeVar(
+        '_NewFeatureG', bound=Geometry | None, default=Geometry | None
+    )
+    _NewFeatureId = _DefaultTypeVar(
+        '_NewFeatureId', bound=str | int | float, default=str | int | float
+    )
+    _FeatureScalar: TypeAlias = (
+        bool
+        | int
+        | float
+        | str
+        | bytes
+        | date
+        | datetime
+        | time
+        | timedelta
+        | Decimal
+        | ArrowValue
+        | None
+    )
+    _FeatureValue: TypeAlias = (
+        _FeatureScalar
+        | Geometry
+        | np.datetime64
+        | np.timedelta64
+        | np.longdouble
+        | tuple['_FeatureValue', ...]
+        | Mapping[str, '_FeatureValue']
+    )
+    _FeatureInput: TypeAlias = (
+        _FeatureScalar
+        | Geometry
+        | pa.Scalar[Any]
+        | np.generic
+        | list['_FeatureInput']
+        | tuple['_FeatureInput', ...]
+        | Mapping[str, '_FeatureInput']
+    )
+    _FeatureScalarT = _DefaultTypeVar(
+        '_FeatureScalarT', bound=_FeatureScalar, default=_FeatureScalar
+    )
+    _FeatureIdInput: TypeAlias = str | int | float | np.integer[Any] | np.floating[Any]
+    _FeatureIdArray: TypeAlias = np.ndarray[
+        Any, np.dtype[np.integer[Any] | np.floating[Any]]
+    ]
+    _IntArray0D: TypeAlias = np.ndarray[
+        tuple[()], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
+    ]
+    _IntArray1D: TypeAlias = np.ndarray[
+        tuple[int], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
+    ]
+    _IntArrayUnknownRank: TypeAlias = np.ndarray[
+        tuple[int, ...], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
+    ]
+    _BoolArray1D: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool_]]
+else:
+    _NewFeatureG = TypeVar('_NewFeatureG', bound=Geometry | None)
+    _NewFeatureId = TypeVar('_NewFeatureId', bound=str | int | float)
+    _FeatureScalarT = TypeVar('_FeatureScalarT')
 
 __all__ = [
     'ArrowEncoding',
@@ -231,6 +332,7 @@ __all__ = [
     'CrsUnitInfo',
     'DistanceUnit',
     'Extremes',
+    'Feature',
     'FeatureId',
     'Features',
     'FloatColumn',
@@ -624,54 +726,572 @@ GeoJsonPosition: TypeAlias = list[float] | tuple[float, ...]
 FeatureId: TypeAlias = str | int | float | None
 
 
-class Features:
-    """Aligned feature columns returned by ``from_geojson(..., features=True)``.
+def _feature_id(value: Any) -> FeatureId:
+    if isinstance(value, np.generic):
+        value = value.item()
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise TypeError('feature ids must be strings, numbers, or None')
+    if isinstance(value, float) and not math.isfinite(value):
+        raise GeometryError('numeric feature ids must be finite')
+    return value
 
-    Unpack as ``geometries, properties, ids = features``. Each metadata entry
-    corresponds to the geometry at the same row; use ``len(features.geometries)``
-    for the feature count. The outer columns are fixed, while property
-    dictionaries remain editable. ``__geo_interface__`` exposes the aligned
-    record as a GeoJSON FeatureCollection.
-    """
 
-    __slots__ = ('geometries', 'ids', 'properties')
-    __match_args__ = ('geometries', 'properties', 'ids')
+class Feature(Generic[_FeatureG_co, _FeatureV_co, _FeatureId_co]):
+    """One immutable geometry, property and ID snapshot."""
 
-    geometries: GeometryArray[Geometry | None]
-    """One parsed geometry or ``None`` per input feature."""
+    __slots__ = ('_geometry', '_id', '_properties')
+    __hash__: ClassVar[None] = None  # type: ignore[assignment]
+    _geometry: _FeatureG_co
+    _properties: Mapping[str, _FeatureV_co] | None
+    _id: _FeatureId_co | None
 
-    properties: tuple[dict[str, Any] | None, ...]
-    """Row-aligned property mappings; ``None`` means no properties were supplied.
+    if TYPE_CHECKING:
 
-    A single input mapping is shallow-copied for each row, so editing one
-    returned dictionary does not change another row.
-    """
+        @overload
+        def __new__(
+            cls,
+            geometry: _NewFeatureG,
+            *,
+            properties: Mapping[str, _FeatureScalarT],
+            id: _NewFeatureId | None = None,
+        ) -> Feature[_NewFeatureG, _FeatureScalarT, _NewFeatureId]: ...
 
-    ids: tuple[FeatureId, ...]
-    """Row-aligned string, non-boolean integer, finite float, or ``None`` ids.
+        @overload
+        def __new__(
+            cls,
+            geometry: _NewFeatureG,
+            *,
+            properties: Mapping[str, _FeatureInput] | None = None,
+            id: _NewFeatureId | None = None,
+        ) -> Feature[_NewFeatureG, _FeatureValue, _NewFeatureId]: ...
 
-    An entry is ``None`` where the feature carried no id.
-    """
+        @overload
+        def __new__(
+            cls,
+            geometry: _NewFeatureG,
+            *,
+            properties: Mapping[str, _FeatureScalarT],
+            id: _FeatureIdInput,
+        ) -> Feature[_NewFeatureG, _FeatureScalarT, str | int | float]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometry: _NewFeatureG,
+            *,
+            properties: Mapping[str, _FeatureInput] | None = None,
+            id: _FeatureIdInput,
+        ) -> Feature[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+        def __new__(cls, *_args: Any, **_kwargs: Any) -> Any:
+            return super().__new__(cls)
 
     def __init__(
         self,
-        geometries: GeometryArray[Geometry | None],
+        geometry: Geometry | None,
+        *,
+        properties: Mapping[str, Any] | None = None,
+        id: Any = None,
+    ) -> None:
+        """Create a feature snapshot.
+
+        Parameters
+        ----------
+        geometry : Geometry or None
+            The geometry, or ``None`` for an unlocated feature.
+        properties : mapping or None
+            Property values to snapshot recursively. ``None`` denotes null
+            properties; an empty mapping remains distinct.
+        id : str, int, float or None
+            The optional feature identifier. Numeric IDs must be finite and
+            boolean IDs are not accepted.
+
+        Returns
+        -------
+        Feature
+            The immutable feature snapshot.
+        """
+        if geometry is not None and not isinstance(geometry, Geometry):
+            raise TypeError('geometry must be a Geometry or None')
+        if properties is not None and not (
+            isinstance(properties, Mapping)
+            or callable(getattr(properties, 'keys', None))
+        ):
+            raise TypeError('properties must be a mapping or None')
+        snapshot = (
+            None
+            if properties is None
+            else _snapshot_feature_value(properties, 'properties')
+        )
+        object.__setattr__(self, '_geometry', geometry)
+        object.__setattr__(
+            self, '_properties', None if snapshot is None else exposed_value(snapshot)
+        )
+        object.__setattr__(self, '_id', _feature_id(id))
+
+    @classmethod
+    def _from_snapshot(
+        cls,
+        geometry: Geometry | None,
+        properties: Mapping[str, Any] | None,
+        id: FeatureId,
+    ) -> Self:
+        instance = object.__new__(cls)
+        object.__setattr__(instance, '_geometry', geometry)
+        object.__setattr__(instance, '_properties', properties)
+        object.__setattr__(instance, '_id', id)
+        return instance
+
+    @property
+    def geometry(self) -> _FeatureG_co:
+        """The feature geometry.
+
+        Returns
+        -------
+        Geometry or None
+            The geometry, or ``None`` for an unlocated feature.
+        """
+        return self._geometry
+
+    @property
+    def properties(self) -> Mapping[str, _FeatureV_co] | None:
+        """The feature properties.
+
+        Returns
+        -------
+        mapping or None
+            Read-only values, or ``None`` for null properties.
+        """
+        return self._properties
+
+    @property
+    def id(self) -> _FeatureId_co | None:
+        """The explicit feature ID.
+
+        Returns
+        -------
+        str, int, float or None
+            The ID, or ``None`` when absent.
+        """
+        return self._id
+
+    def __copy__(self) -> Self:
+        """Copy the carrier while sharing its immutable values."""
+        return type(self)._from_snapshot(self.geometry, self.properties, self.id)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        """Share admitted immutable values without serializing them."""
+        result = self.__copy__()
+        memo[id(self)] = result
+        return result
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        geometry: _NewFeatureG,
+        properties: EllipsisType | None = ...,
+        id: EllipsisType | None = ...,
+    ) -> Feature[_NewFeatureG, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        properties: EllipsisType | None = ...,
+        id: EllipsisType | None = ...,
+    ) -> Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        geometry: _NewFeatureG,
+        properties: Mapping[str, _FeatureInput] | EllipsisType | None = ...,
+        id: _FeatureIdInput | EllipsisType | None = ...,
+    ) -> Feature[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        properties: Mapping[str, _FeatureInput] | EllipsisType | None = ...,
+        id: _FeatureIdInput | EllipsisType | None = ...,
+    ) -> Feature[_FeatureG_co, _FeatureValue, str | int | float]: ...
+
+    def __replace__(
+        self,
+        /,
+        *,
+        geometry: Geometry | EllipsisType | None = ...,
+        properties: Mapping[str, Any] | EllipsisType | None = ...,
+        id: Any = ...,
+    ) -> Feature:
+        """Replace fields, admitting changed inputs and sharing omitted values."""
+        if geometry is ...:
+            geometry = self.geometry
+        elif geometry is not None and not isinstance(geometry, Geometry):
+            raise TypeError('geometry must be a Geometry or None')
+        if properties is ...:
+            property_values = self.properties
+        elif properties is None:
+            property_values = None
+        else:
+            if not (
+                isinstance(properties, Mapping)
+                or callable(getattr(properties, 'keys', None))
+            ):
+                raise TypeError('properties must be a mapping or None')
+            property_values = exposed_value(
+                _snapshot_feature_value(properties, 'properties')
+            )
+        return type(self)._from_snapshot(
+            geometry, property_values, self.id if id is ... else _feature_id(id)
+        )
+
+    def _geojson_property(self) -> dict[str, Any] | None:
+        return None if self._properties is None else mutable_value(self._properties)
+
+    @property
+    def __geo_interface__(self) -> GeoJsonFeature:
+        """A detached GeoJSON Feature mapping."""
+        from gometry._lib import to_feature
+
+        return to_feature(self)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f'cannot set attribute {name!r} on frozen Feature')
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f'cannot delete attribute {name!r} on frozen Feature')
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Feature):
+            return NotImplemented
+        return (
+            self.geometry == other.geometry
+            and self.properties == other.properties
+            and self.id == other.id
+        )
+
+    def __reduce__(self) -> tuple[Callable[..., Feature], tuple[Any, ...]]:
+        return (_restore_feature_v1, (self.geometry, self._geojson_property(), self.id))
+
+    def __repr__(self) -> str:
+        return (
+            f'Feature(geometry={self.geometry!r}, '
+            f'properties={self.properties!r}, id={self.id!r})'
+        )
+
+
+def _restore_feature_v1(
+    geometry: Geometry | None, properties: dict[str, Any] | None, id: FeatureId
+) -> Feature:
+    return Feature(geometry, properties=properties, id=id)
+
+
+def _snapshot_feature_ids(ids: Iterable[Any] | None, rows: int) -> Sequence[FeatureId]:
+    if ids is None:
+        return (None,) * rows
+    from gometry._lib import _ArrowColumn
+
+    if isinstance(ids, _ArrowColumn):
+        if len(ids) != rows:
+            raise GeometryError(
+                f'ids length {len(ids)} does not match geometries length {rows}'
+            )
+        ids._validate_ids()
+        return cast(
+            'Sequence[FeatureId]',
+            PropertyRows.from_columns({'id': ids}, rows).column('id'),
+        )
+    if isinstance(ids, np.ndarray):
+        array = np.asarray(ids)
+        if array.ndim != 1:
+            raise TypeError('ids must be a one-dimensional iterable')
+        if array.dtype.kind == 'b':
+            raise TypeError('feature ids must not be boolean')
+        if array.dtype.kind in 'iufU':
+            if len(array) != rows:
+                raise GeometryError(
+                    f'ids length {len(array)} does not match geometries length {rows}'
+                )
+            if array.dtype.kind == 'f':
+                if array.dtype.itemsize > 8:
+                    raise TypeError('feature IDs cannot lose floating-point precision')
+                if not np.isfinite(array).all():
+                    raise GeometryError('numeric feature ids must be finite')
+            return cast(
+                'Sequence[FeatureId]',
+                _snapshot_feature_columns({'id': array}, rows).column('id'),
+            )
+    pa = sys.modules.get('pyarrow')
+    if pa is not None and isinstance(ids, (pa.Array, pa.ChunkedArray)):
+        arrow_ids = cast('Any', ids)
+        if len(arrow_ids) != rows:
+            raise GeometryError(
+                f'ids length {len(arrow_ids)} does not match geometries length {rows}'
+            )
+        data_type = arrow_ids.type
+        value_type = (
+            data_type.value_type if pa.types.is_dictionary(data_type) else data_type
+        )
+        if not (
+            pa.types.is_null(value_type)
+            or pa.types.is_integer(value_type)
+            or pa.types.is_floating(value_type)
+            or pa.types.is_string(value_type)
+            or pa.types.is_large_string(value_type)
+            or pa.types.is_string_view(value_type)
+        ):
+            raise TypeError('Arrow feature IDs must be strings, numbers, or null')
+        if pa.types.is_floating(value_type):
+            import pyarrow.compute as pc
+
+            values = (
+                pc.cast(arrow_ids, value_type) if value_type != data_type else arrow_ids
+            )
+            if (
+                pc.all(pc.fill_null(pc.is_finite(values), pa.scalar(True))).as_py()
+                is False
+            ):
+                raise GeometryError('numeric feature ids must be finite')
+        return cast(
+            'Sequence[FeatureId]',
+            _snapshot_feature_columns({'id': arrow_ids}, rows).column('id'),
+        )
+    if isinstance(ids, (str, bytes, bytearray)) or not isinstance(ids, Iterable):
+        raise TypeError('ids must be an iterable or None')
+    result = tuple(
+        _feature_id(identifier) for identifier in itertools.islice(ids, rows + 1)
+    )
+    if len(result) != rows:
+        raise GeometryError(
+            f'ids length {len(result)} does not match geometries length {rows}'
+        )
+    return result
+
+
+def _snapshot_property_rows(
+    properties: Mapping[str, Any] | Iterable[Mapping[str, Any] | None] | None,
+    rows: int,
+) -> PropertyRows:
+    if properties is None:
+        values: tuple[dict[str, Any] | None, ...] = (None,) * rows
+    elif isinstance(properties, Mapping) or callable(getattr(properties, 'keys', None)):
+        snapshot = _snapshot_feature_value(properties, 'properties')
+        values = (snapshot,) * rows
+    else:
+        if isinstance(properties, (str, bytes, bytearray)) or not isinstance(
+            properties, Iterable
+        ):
+            raise TypeError('properties must be a mapping, iterable, or None')
+        values = _snapshot_feature_rows(properties, rows)
+    return PropertyRows(values)
+
+
+def _snapshot_feature_columns(
+    columns: Mapping[str, Iterable[Any]], rows: int
+) -> PropertyRows:
+    from gometry._feature_values import check_arrow_type
+    from gometry._lib import _arrow_column, _ArrowColumn, _snapshot_arrow_array
+
+    pa = sys.modules.get('pyarrow')
+    owned: dict[str, Any] = {}
+    for name, values in mapping_as_dict(columns).items():
+        if not isinstance(name, str):
+            raise TypeError('column names must be strings')
+        if isinstance(values, (_ArrowColumn, GeometryArray)):
+            if len(values) != rows:
+                raise GeometryError(
+                    f'column {name!r} length {len(values)} does not match geometries length {rows}'
+                )
+            if isinstance(values, _ArrowColumn):
+                values._validate_feature_type(f'columns.{name}')
+            owned[name] = values
+        elif isinstance(values, np.ndarray) and values.dtype.kind in 'biufmMSU':
+            array = np.asarray(values)
+            if array.ndim != 1:
+                raise ValueError(f'column {name!r} must be one-dimensional')
+            if len(array) != rows:
+                raise GeometryError(
+                    f'column {name!r} length {len(array)} does not match geometries length {rows}'
+                )
+            owned[name] = np.frombuffer(array.tobytes(), dtype=array.dtype)
+        elif pa is not None and isinstance(values, (pa.Array, pa.ChunkedArray)):
+            arrow_values = cast('Any', values)
+            if len(arrow_values) != rows:
+                raise GeometryError(
+                    f'column {name!r} length {len(arrow_values)} does not match geometries length {rows}'
+                )
+            check_arrow_type(pa, arrow_values.type, f'columns.{name}')
+            chunks = (
+                arrow_values.chunks
+                if isinstance(arrow_values, pa.ChunkedArray)
+                else [arrow_values]
+            )
+            if not chunks:
+                chunks = [pa.array([], type=arrow_values.type)]
+            owned[name] = _arrow_column(
+                tuple(_snapshot_arrow_array(chunk) for chunk in chunks)
+            )
+        else:
+            if isinstance(values, (str, bytes, bytearray)) or not isinstance(
+                values, Iterable
+            ):
+                raise TypeError(f'column {name!r} must be an iterable')
+            column = tuple(
+                _snapshot_feature_value(value, f'columns.{name}[{index}]')
+                for index, value in enumerate(itertools.islice(values, rows + 1))
+            )
+            if len(column) != rows:
+                raise GeometryError(
+                    f'column {name!r} length {len(column)} does not match geometries length {rows}'
+                )
+            owned[name] = column
+    return PropertyRows.from_columns(owned, rows)
+
+
+class Features(Generic[_FeatureG_co, _FeatureV_co, _FeatureId_co]):
+    """Immutable, row-aligned geometries, properties and feature IDs."""
+
+    __slots__ = (
+        '_arrow_schema',
+        '_geometries',
+        '_geometry_column',
+        '_id_column',
+        '_ids',
+        '_properties',
+    )
+    __match_args__ = ('geometries', 'properties', 'ids')
+
+    _geometries: GeometryArray[_FeatureG_co]
+    _ids: Sequence[_FeatureId_co | None]
+    _properties: PropertyRows
+    _id_column: str | None
+    _arrow_schema: Any
+    _geometry_column: str | None
+
+    @property
+    def geometries(self) -> GeometryArray[_FeatureG_co]:
+        """The geometry column.
+
+        Returns
+        -------
+        GeometryArray
+            One parsed geometry or ``None`` per input feature.
+        """
+        return self._geometries
+
+    @property
+    def properties(self) -> Sequence[Mapping[str, _FeatureV_co] | None]:
+        """The property rows.
+
+        Returns
+        -------
+        Sequence
+            Immutable row-aligned snapshots, with ``None`` for null properties.
+        """
+        return cast('Sequence[Mapping[str, _FeatureV_co] | None]', self._properties)
+
+    @property
+    def ids(self) -> Sequence[_FeatureId_co | None]:
+        """The feature IDs.
+
+        Returns
+        -------
+        Sequence
+            Row-aligned IDs, with ``None`` for missing IDs.
+        """
+        return self._ids
+
+    if TYPE_CHECKING:
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureScalarT]
+            | Iterable[Mapping[str, _FeatureScalarT] | None],
+            ids: _FeatureIdArray,
+        ) -> Features[_NewFeatureG, _FeatureScalarT, str | int | float]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureInput]
+            | Iterable[Mapping[str, _FeatureInput] | None]
+            | None = None,
+            *,
+            ids: _FeatureIdArray,
+        ) -> Features[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureScalarT]
+            | Iterable[Mapping[str, _FeatureScalarT] | None],
+            ids: Iterable[_NewFeatureId | None] | None = None,
+        ) -> Features[_NewFeatureG, _FeatureScalarT, _NewFeatureId]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureInput]
+            | Iterable[Mapping[str, _FeatureInput] | None]
+            | None = None,
+            ids: Iterable[_NewFeatureId | None] | None = None,
+        ) -> Features[_NewFeatureG, _FeatureValue, _NewFeatureId]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureScalarT]
+            | Iterable[Mapping[str, _FeatureScalarT] | None],
+            ids: Iterable[_FeatureIdInput | None],
+        ) -> Features[_NewFeatureG, _FeatureScalarT, str | int | float]: ...
+
+        @overload
+        def __new__(
+            cls,
+            geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+            properties: Mapping[str, _FeatureInput]
+            | Iterable[Mapping[str, _FeatureInput] | None]
+            | None = None,
+            ids: Iterable[_FeatureIdInput | None] | None = None,
+        ) -> Features[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+        def __new__(cls, *_args: Any, **_kwargs: Any) -> Any:
+            return super().__new__(cls)
+
+    def __init__(
+        self,
+        geometries: GeometryArray[Geometry | None] | Iterable[Geometry | None],
         properties: Mapping[str, Any]
         | Iterable[Mapping[str, Any] | None]
         | None = None,
-        ids: Iterable[FeatureId] | None = None,
+        ids: Iterable[Any] | None = None,
     ) -> None:
         """Build row-aligned feature columns.
 
         Parameters
         ----------
-        geometries : GeometryArray[Geometry | None]
+        geometries : GeometryArray[Geometry | None] or iterable
             One geometry or ``None`` for each input feature.
         properties : Mapping[str, Any] or Iterable[Mapping[str, Any] | None] or None
-            A mapping or object with a callable ``keys()`` is broadcast as an
-            independent shallow copy per row. An iterable supplies one mapping
-            or ``None`` per geometry and is consumed once. ``None`` supplies
-            one missing-properties value per geometry.
+            A mapping or object with a callable ``keys()`` is snapshotted once
+            and broadcast. An iterable supplies one mapping or ``None`` per
+            geometry and is consumed once. ``None`` supplies null properties.
         ids : Iterable[FeatureId] or None
             One string, non-boolean integer, finite float, or ``None`` per
             geometry. ``None`` supplies one missing id per geometry.
@@ -684,110 +1304,164 @@ class Features:
         Raises
         ------
         TypeError
-            If geometries is not a GeometryArray, a property input is not a
-            mapping or row iterable, a property key is not a string, or an id
-            is not a string, non-boolean integer, finite float, or ``None``.
+            If a property input is not a mapping or row iterable, a property
+            key is not a string, or an id is not a string, non-boolean integer,
+            finite float, or ``None``.
         GeometryError
             If property or id rows do not match the geometry count, property
             keys repeat, or a numeric id is not finite.
         """
         if not isinstance(geometries, GeometryArray):
-            raise TypeError('geometries must be a GeometryArray')
+            geometries = GeometryArray(geometries)
         rows = len(geometries)
-        if properties is None:
-            property_rows: tuple[dict[str, Any] | None, ...] = (None,) * rows
-        elif isinstance(properties, Mapping) or callable(
-            getattr(properties, 'keys', None)
-        ):
-            # keys()+seen copier (N4): broadcast one mapping through independent
-            # shallow copies; reject repeated keys / accept keys()-only ducks.
-            # Validate string keys once while building the template (no re-
-            # stringify or second validation pass).
-            copied = mapping_as_dict(properties)
-            template: dict[str, Any] = {}
-            for key, value in copied.items():
-                if not isinstance(key, str):
-                    raise TypeError('properties keys must be strings')
-                template[key] = value
-            property_rows = tuple(dict(template) for _ in range(rows))
-        else:
-            if isinstance(properties, (str, bytes, bytearray)) or not isinstance(
-                properties, Iterable
-            ):
-                raise TypeError('properties must be a mapping, iterable, or None')
-            # Bound by known geometry row count so infinite iterators terminate
-            # (rows+1 then the length-mismatch check below fires). Validate each
-            # mapping's keys while collecting.
-            collected: list[dict[str, Any] | None] = []
-            for property_row in itertools.islice(properties, rows + 1):
-                if property_row is None:
-                    collected.append(None)
-                elif isinstance(property_row, Mapping) or callable(
-                    getattr(property_row, 'keys', None)
-                ):
-                    row = mapping_as_dict(property_row)
-                    validated: dict[str, Any] = {}
-                    for key, value in row.items():
-                        if not isinstance(key, str):
-                            raise TypeError('properties keys must be strings')
-                        validated[key] = value
-                    collected.append(validated)
-                else:
-                    raise TypeError('properties rows must be mappings or None')
-            property_rows = tuple(collected)
-        if ids is None:
-            id_rows: tuple[FeatureId, ...] = (None,) * rows
-        else:
-            if isinstance(ids, (str, bytes, bytearray)) or not isinstance(
-                ids, Iterable
-            ):
-                raise TypeError('ids must be an iterable or None')
-            # Bound by known geometry row count; validate each id while collecting.
-            collected_ids: list[FeatureId] = []
-            for identifier in itertools.islice(ids, rows + 1):
-                if identifier is None:
-                    collected_ids.append(None)
-                elif isinstance(identifier, bool) or not isinstance(
-                    identifier, (str, int, float)
-                ):
-                    raise TypeError('feature ids must be strings, numbers, or None')
-                elif isinstance(identifier, float) and not math.isfinite(identifier):
-                    from gometry._lib import GeometryError
-
-                    raise GeometryError('numeric feature ids must be finite')
-                else:
-                    collected_ids.append(identifier)
-            id_rows = tuple(collected_ids)
-        if len(property_rows) != rows:
-            from gometry._lib import GeometryError
-
-            raise GeometryError(
-                f'properties length {len(property_rows)} does not match geometries length {rows}'
-            )
-        if len(id_rows) != rows:
-            from gometry._lib import GeometryError
-
-            raise GeometryError(
-                f'ids length {len(id_rows)} does not match geometries length {rows}'
-            )
+        property_rows = _snapshot_property_rows(properties, rows)
+        id_rows = _snapshot_feature_ids(ids, rows)
         # ``object.__setattr__`` bypasses the frozen instance ``__setattr__``.
-        object.__setattr__(self, 'geometries', geometries)
-        object.__setattr__(self, 'properties', property_rows)
-        object.__setattr__(self, 'ids', id_rows)
+        object.__setattr__(self, '_geometries', geometries)
+        object.__setattr__(self, '_properties', property_rows)
+        object.__setattr__(self, '_ids', id_rows)
+        object.__setattr__(self, '_id_column', None if ids is None else 'id')
+        object.__setattr__(self, '_arrow_schema', None)
+        object.__setattr__(self, '_geometry_column', None)
 
     @classmethod
     def _from_normalized(
         cls,
         geometries: GeometryArray[Geometry | None],
-        properties: tuple[dict[str, Any] | None, ...],
+        properties: Sequence[Mapping[str, Any] | None],
         ids: tuple[FeatureId, ...],
     ) -> Self:
         """Finish native decoding after side-data admission and alignment."""
         instance = object.__new__(cls)
-        object.__setattr__(instance, 'geometries', geometries)
-        object.__setattr__(instance, 'properties', properties)
-        object.__setattr__(instance, 'ids', ids)
+        object.__setattr__(instance, '_geometries', geometries)
+        object.__setattr__(
+            instance,
+            '_properties',
+            PropertyRows(_snapshot_feature_rows(properties, len(properties))),
+        )
+        object.__setattr__(instance, '_ids', ids)
+        object.__setattr__(
+            instance,
+            '_id_column',
+            'id' if any(value is not None for value in ids) else None,
+        )
+        object.__setattr__(instance, '_arrow_schema', None)
+        object.__setattr__(instance, '_geometry_column', None)
         return instance
+
+    @classmethod
+    def _from_property_rows(
+        cls,
+        geometries: GeometryArray[Geometry | None],
+        properties: PropertyRows,
+        ids: Sequence[FeatureId],
+        id_column: str | None,
+        arrow_schema: Any = None,
+        geometry_column: str | None = None,
+    ) -> Self:
+        instance = object.__new__(cls)
+        object.__setattr__(instance, '_geometries', geometries)
+        object.__setattr__(instance, '_properties', properties)
+        object.__setattr__(instance, '_ids', ids)
+        object.__setattr__(instance, '_id_column', id_column)
+        object.__setattr__(instance, '_arrow_schema', arrow_schema)
+        object.__setattr__(instance, '_geometry_column', geometry_column)
+        return instance
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureScalarT]],
+        ids: _FeatureIdArray,
+    ) -> Features[_NewFeatureG, _FeatureScalarT, str | int | float]: ...
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureInput]],
+        ids: _FeatureIdArray,
+    ) -> Features[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureScalarT]],
+        ids: Iterable[_NewFeatureId | None] | None = None,
+    ) -> Features[_NewFeatureG, _FeatureScalarT, _NewFeatureId]: ...
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureInput]],
+        ids: Iterable[_NewFeatureId | None] | None = None,
+    ) -> Features[_NewFeatureG, _FeatureValue, _NewFeatureId]: ...
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureScalarT]],
+        ids: Iterable[_FeatureIdInput | None],
+    ) -> Features[_NewFeatureG, _FeatureScalarT, str | int | float]: ...
+
+    @overload
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        *,
+        columns: Mapping[str, Iterable[_FeatureInput]],
+        ids: Iterable[_FeatureIdInput | None],
+    ) -> Features[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+    @classmethod
+    def from_columns(
+        cls,
+        geometries: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+        *,
+        columns: Mapping[str, Iterable[Any]],
+        ids: Iterable[Any] | None = None,
+    ) -> Any:
+        """Build features from aligned named attribute columns.
+
+        Parameters
+        ----------
+        geometries : GeometryArray or iterable
+            One geometry or ``None`` per row.
+        columns : mapping
+            Property names and equally sized value columns. Inputs are
+            snapshotted so later changes cannot alter the features.
+        ids : iterable or None
+            Optional row-aligned feature IDs.
+
+        Returns
+        -------
+        Features
+            The immutable, aligned feature collection.
+        """
+        if not isinstance(geometries, GeometryArray):
+            geometries = GeometryArray(geometries)
+        rows = len(geometries)
+        return cls._from_property_rows(
+            geometries,
+            _snapshot_feature_columns(columns, rows),
+            _snapshot_feature_ids(ids, rows),
+            None if ids is None else 'id',
+        )
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f'cannot set attribute {name!r} on frozen Features')
@@ -820,44 +1494,348 @@ class Features:
             and self.ids == other.ids
         )
 
-    # Unhashable: property dicts are mutable. Frozen dataclass would also
-    # refuse hashing when a field is unhashable at use time; be explicit.
-    # The runtime object is intentionally unhashable; mypy models
-    # object.__hash__ as callable and cannot express this contract.
+    # Attribute values do not have a universal hash/equality contract.
     __hash__: ClassVar[None] = None  # type: ignore[assignment]
 
     def __copy__(self) -> Self:
         """Return a new record sharing its existing columns."""
-        return type(self)._from_normalized(self.geometries, self.properties, self.ids)
+        instance = object.__new__(type(self))
+        object.__setattr__(instance, '_geometries', self.geometries)
+        object.__setattr__(instance, '_properties', self._properties)
+        object.__setattr__(instance, '_ids', self.ids)
+        object.__setattr__(instance, '_id_column', self._id_column)
+        object.__setattr__(instance, '_arrow_schema', self._arrow_schema)
+        object.__setattr__(instance, '_geometry_column', self._geometry_column)
+        return instance
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        """Share admitted immutable columns without traversing their rows."""
+        result = self.__copy__()
+        memo[id(self)] = result
+        return result
+
+    def _retain_metadata(self, result: Features) -> Any:
+        object.__setattr__(result, '_arrow_schema', self._arrow_schema)
+        object.__setattr__(result, '_geometry_column', self._geometry_column)
+        return result
+
+    def with_geometries(
+        self, geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG]
+    ) -> Features[_NewFeatureG, _FeatureV_co, _FeatureId_co]:
+        """Replace the geometry column while retaining aligned attributes and IDs.
+
+        Parameters
+        ----------
+        geometries : GeometryArray or iterable
+            Replacement geometries, with the same number of rows.
+
+        Returns
+        -------
+        Features
+            A new collection sharing the existing properties and IDs.
+        """
+        if not isinstance(geometries, GeometryArray):
+            geometries = GeometryArray(geometries)
+        if len(geometries) != len(self):
+            raise GeometryError(
+                f'geometries length {len(geometries)} does not match feature count {len(self)}'
+            )
+        return cast(
+            'Features[_NewFeatureG, _FeatureV_co, _FeatureId_co]',
+            self._retain_metadata(
+                type(self)._from_property_rows(
+                    geometries, self._properties, self.ids, self._id_column
+                )
+            ),
+        )
+
+    @overload
+    def with_ids(
+        self, ids: _FeatureIdArray
+    ) -> Features[_FeatureG_co, _FeatureV_co, str | int | float]: ...
+
+    @overload
+    def with_ids(
+        self, ids: Iterable[_NewFeatureId | None] | None
+    ) -> Features[_FeatureG_co, _FeatureV_co, _NewFeatureId]: ...
+
+    @overload
+    def with_ids(
+        self, ids: Iterable[_FeatureIdInput | None]
+    ) -> Features[_FeatureG_co, _FeatureV_co, str | int | float]: ...
+
+    def with_ids(self, ids: Iterable[Any] | None) -> Any:
+        """Replace the feature IDs while retaining geometry and properties.
+
+        Parameters
+        ----------
+        ids : iterable or None
+            One ID or ``None`` per row, or ``None`` to clear all IDs.
+
+        Returns
+        -------
+        Features
+            A new collection with the replacement IDs.
+        """
+        return self._retain_metadata(
+            type(self)._from_property_rows(
+                self.geometries,
+                self._properties,
+                _snapshot_feature_ids(ids, len(self)),
+                None
+                if ids is None
+                else ('id' if self._id_column is None else self._id_column),
+            )
+        )
+
+    @overload
+    def with_columns(
+        self, columns: Mapping[str, Iterable[_FeatureScalarT]]
+    ) -> Features[_FeatureG_co, _FeatureV_co | _FeatureScalarT, _FeatureId_co]: ...
+
+    @overload
+    def with_columns(
+        self, columns: Mapping[str, Iterable[_FeatureInput]]
+    ) -> Features[_FeatureG_co, _FeatureV_co | _FeatureValue, _FeatureId_co]: ...
+
+    def with_columns(self, columns: Mapping[str, Iterable[Any]]) -> Any:
+        """Add or replace aligned property columns.
+
+        Parameters
+        ----------
+        columns : mapping
+            Property names and value columns, each with one value per row.
+
+        Returns
+        -------
+        Features
+            A new collection with the supplied columns snapshotted.
+        """
+        additions = _snapshot_feature_columns(columns, len(self))
+        return self._retain_metadata(
+            type(self)._from_property_rows(
+                self.geometries,
+                self._properties.with_columns(additions),
+                self.ids,
+                self._id_column,
+            )
+        )
+
+    def column(self, name: str) -> Sequence[_FeatureV_co | None]:
+        """View a property column, using ``None`` for missing keys and rows.
+
+        Parameters
+        ----------
+        name : str
+            The property name.
+
+        Returns
+        -------
+        Sequence
+            Row-aligned property values.
+        """
+        return cast('Sequence[_FeatureV_co | None]', self._properties.column(name))
+
+    def select_columns(self, names: Iterable[str]) -> Self:
+        """Return a feature collection containing the named properties.
+
+        Parameters
+        ----------
+        names : iterable of str
+            Property names to retain.
+
+        Returns
+        -------
+        Features
+            A new collection with the selected property columns.
+        """
+        if isinstance(names, (str, bytes, bytearray)):
+            raise TypeError('column names must be an iterable of strings')
+        return self._retain_metadata(
+            type(self)._from_property_rows(
+                self.geometries,
+                self._properties.project(tuple(names)),
+                self.ids,
+                self._id_column,
+            )
+        )
+
+    def materialize(self) -> Features[_FeatureG_co, _FeatureV_co, _FeatureId_co]:
+        """Detach selected geometry and properties from their parent storage.
+
+        Returns
+        -------
+        Features
+            A compact independent collection containing the selected rows.
+        """
+        from gometry._lib import _materialize_feature_geometries
+
+        ids = (
+            self.ids._materialize()
+            if isinstance(self.ids, PropertyColumn)
+            else self.ids
+        )
+        return cast(
+            'Features[_FeatureG_co, _FeatureV_co, _FeatureId_co]',
+            self._retain_metadata(
+                type(self)._from_property_rows(
+                    _materialize_feature_geometries(self.geometries),
+                    self._properties._materialize(),
+                    ids,
+                    self._id_column,
+                )
+            ),
+        )
+
+    def to_arrow(
+        self,
+        *,
+        geometry: str | None = None,
+        id_column: str | None = None,
+        encoding: ArrowEncoding = 'auto',
+    ) -> PyArrowTable:
+        """Export a feature table, normalizing absent sparse properties to null.
+
+        Parameters
+        ----------
+        geometry : str or None, default None
+            Geometry column name. ``None`` retains the imported name when
+            available, otherwise uses the default name.
+        id_column : str or None, default None
+            ID column name. ``None`` retains the existing name when available.
+        encoding : {'auto', 'wkb'}, default 'auto'
+            Geometry encoding for the Arrow column.
+
+        Returns
+        -------
+        pyarrow.Table
+            A geometry-bearing Arrow table with aligned properties and IDs.
+        """
+        from gometry._feature_arrow import to_arrow
+
+        return to_arrow(self, geometry=geometry, id_column=id_column, encoding=encoding)
+
+    def to_geoparquet(
+        self,
+        path: str | PathLike[str] | BinaryIO | PyArrowNativeFile,
+        *,
+        encoding: Literal['wkb', 'geoarrow', 'geometry'] = 'wkb',
+        **kwargs: Any,
+    ) -> None:
+        """Write aligned geometries, properties and IDs as GeoParquet.
+
+        Parameters
+        ----------
+        path : path-like or file-like
+            Destination accepted by PyArrow.
+        encoding : {'wkb', 'geoarrow', 'geometry'}, default 'wkb'
+            Geometry encoding.
+        **kwargs
+            Additional options passed to the Parquet writer.
+
+        Returns
+        -------
+        None
+            The output is written to the supplied destination.
+        """
+        from gometry._geoparquet import to_geoparquet
+
+        to_geoparquet(self, path, encoding=encoding, **kwargs)
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        properties: EllipsisType | None = ...,
+        ids: EllipsisType | None = ...,
+    ) -> Features[_NewFeatureG, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        properties: EllipsisType | None = ...,
+        ids: EllipsisType | None = ...,
+    ) -> Self: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        geometries: GeometryArray[_NewFeatureG] | Iterable[_NewFeatureG],
+        properties: Mapping[str, _FeatureInput]
+        | Iterable[Mapping[str, _FeatureInput] | None]
+        | EllipsisType
+        | None = ...,
+        ids: Iterable[_FeatureIdInput | None] | EllipsisType | None = ...,
+    ) -> Features[_NewFeatureG, _FeatureValue, str | int | float]: ...
+
+    @overload
+    def __replace__(
+        self,
+        /,
+        *,
+        properties: Mapping[str, _FeatureInput]
+        | Iterable[Mapping[str, _FeatureInput] | None]
+        | EllipsisType
+        | None = ...,
+        ids: Iterable[_FeatureIdInput | None] | EllipsisType | None = ...,
+    ) -> Features[_FeatureG_co, _FeatureValue, str | int | float]: ...
 
     def __replace__(
         self,
         /,
         *,
-        geometries: GeometryArray[Geometry | None] = cast('Any', ...),
+        geometries: GeometryArray[Geometry | None]
+        | Iterable[Geometry | None]
+        | EllipsisType = ...,
         properties: Mapping[str, Any]
         | Iterable[Mapping[str, Any] | None]
-        | None = cast('Any', ...),
-        ids: Iterable[FeatureId] | None = cast('Any', ...),
-    ) -> Self:
+        | EllipsisType
+        | None = ...,
+        ids: Iterable[Any] | EllipsisType | None = ...,
+    ) -> Any:
         """Return a new ``Features`` with the given fields replaced.
 
         Omitted fields retain their existing objects. Supplied fields pass
         through the validating constructor, which checks row alignment and
         normalizes properties and ids.
         """
-        if geometries is ... and properties is ... and ids is ...:
-            return self.__copy__()
-
-        validated = type(self)(
-            self.geometries if geometries is ... else geometries,
-            self.properties if properties is ... else properties,
-            self.ids if ids is ... else ids,
-        )
-        return type(self)._from_normalized(
-            self.geometries if geometries is ... else validated.geometries,
-            self.properties if properties is ... else validated.properties,
-            self.ids if ids is ... else validated.ids,
+        geometry_rows = self.geometries if geometries is ... else geometries
+        if not isinstance(geometry_rows, GeometryArray):
+            geometry_rows = GeometryArray(geometry_rows)
+        rows = len(geometry_rows)
+        if properties is ...:
+            if len(self._properties) != rows:
+                raise GeometryError(
+                    f'properties length {len(self._properties)} does not match geometries length {rows}'
+                )
+            property_rows = self._properties
+        else:
+            property_rows = _snapshot_property_rows(properties, rows)
+        id_rows: Sequence[FeatureId]
+        if ids is ...:
+            if len(self.ids) != rows:
+                raise GeometryError(
+                    f'ids length {len(self.ids)} does not match geometries length {rows}'
+                )
+            id_rows = self.ids
+            id_column = self._id_column
+        else:
+            id_rows = _snapshot_feature_ids(ids, rows)
+            id_column = (
+                None
+                if ids is None
+                else ('id' if self._id_column is None else self._id_column)
+            )
+        return self._retain_metadata(
+            type(self)._from_property_rows(
+                geometry_rows, property_rows, id_rows, id_column
+            )
         )
 
     @property
@@ -867,27 +1845,87 @@ class Features:
 
         return to_feature_collection(self)
 
+    def _geojson_properties(self) -> tuple[dict[str, Any] | None, ...]:
+        return self._properties.mutable_rows()
+
     def __reduce__(
         self,
-    ) -> tuple[
-        Callable[..., Features],
-        tuple[
-            GeometryArray[Geometry | None],
-            tuple[dict[str, Any] | None, ...],
-            tuple[FeatureId, ...],
-        ],
-    ]:
-        return (_restore_features_v1, (self.geometries, self.properties, self.ids))
+    ) -> tuple[Callable[..., Features], tuple[Any, ...]]:
+        mixed = self._properties._mixed_snapshot()
+        if mixed is not None:
+            data = ('mixed', mixed)
+        else:
+            columns = self._properties._column_snapshot()
+            data = (
+                ('columns', columns)
+                if columns is not None
+                else (
+                    'rows',
+                    (
+                        self._geojson_properties(),
+                        self._properties._projection_snapshot(),
+                    ),
+                )
+            )
+        return (
+            _restore_features_v2,
+            (
+                self.geometries,
+                data,
+                self.ids._snapshot()
+                if isinstance(self.ids, PropertyColumn)
+                else self.ids,
+                self._id_column,
+                self._arrow_schema,
+                self._geometry_column,
+            ),
+        )
 
-    def __iter__(
-        self,
-    ) -> Iterator[
-        GeometryArray[Geometry | None]
-        | tuple[dict[str, Any] | None, ...]
-        | tuple[FeatureId, ...]
-    ]:
-        """Unpack as ``geometries, properties, ids`` (three fields)."""
-        return iter((self.geometries, self.properties, self.ids))
+    def __len__(self) -> int:
+        """Number of aligned feature rows."""
+        return len(self.geometries)
+
+    @overload
+    def __getitem__(
+        self, index: _IntArray0D, /
+    ) -> Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __getitem__(
+        self, index: _IntArray1D | _BoolArray1D, /
+    ) -> Features[_FeatureG_co, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> (
+        Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]
+        | Features[_FeatureG_co, _FeatureV_co, _FeatureId_co]
+    ): ...
+
+    @overload
+    def __getitem__(
+        self, index: SupportsIndex, /
+    ) -> Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]: ...
+
+    @overload
+    def __getitem__(
+        self, index: slice | Sequence[bool] | Sequence[SupportsIndex], /
+    ) -> Features[_FeatureG_co, _FeatureV_co, _FeatureId_co]: ...
+
+    def __getitem__(self, index: Any, /) -> Feature | Features:
+        """Select a row or select aligned rows by slice, indices or mask."""
+        result = self._properties.select(
+            self.geometries, self.ids, self._id_column, index
+        )
+        return self._retain_metadata(result) if isinstance(result, Features) else result
+
+    def __iter__(self) -> Iterator[Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]]:
+        """Iterate feature rows in their current order."""
+        return cast(
+            'Iterator[Feature[_FeatureG_co, _FeatureV_co, _FeatureId_co]]',
+            _iter_feature_rows(self.geometries, self._properties, self.ids),
+        )
 
     def __repr__(self) -> str:
         """Return a bounded row-oriented summary."""
@@ -910,7 +1948,54 @@ def _restore_features_v1(
     properties: tuple[dict[str, Any] | None, ...],
     ids: tuple[FeatureId, ...],
 ) -> Features:
-    return Features(geometries, properties, ids)
+    return Features(
+        geometries, properties, ids if any(id is not None for id in ids) else None
+    )
+
+
+def _restore_features_v2(
+    geometries: GeometryArray[Geometry | None],
+    data: tuple[str, Any],
+    ids: Iterable[Any],
+    id_column: str | None,
+    arrow_schema: Any,
+    geometry_column: str | None,
+) -> Features:
+    kind, values = data
+    if kind == 'columns':
+        result = Features.from_columns(geometries, columns=values, ids=ids)
+    elif kind == 'rows':
+        rows, projection = values
+        result = Features(geometries, properties=rows, ids=ids)
+        if projection is not None:
+            result = Features._from_property_rows(
+                result.geometries,
+                result._properties.project_admitted(projection),
+                result.ids,
+                result._id_column,
+            )
+    elif kind == 'mixed':
+        columns, rows, groups, projection = values
+        result = (
+            Features.from_columns(geometries, columns=columns, ids=ids)
+            if columns is not None
+            else Features(geometries, properties=rows, ids=ids)
+        )
+        for group in groups:
+            result = result.with_columns(group)
+        if projection is not None:
+            result = Features._from_property_rows(
+                result.geometries,
+                result._properties.project_admitted(projection),
+                result.ids,
+                result._id_column,
+            )
+    else:
+        raise ValueError('unknown feature snapshot representation')
+    object.__setattr__(result, '_id_column', id_column)
+    object.__setattr__(result, '_arrow_schema', arrow_schema)
+    object.__setattr__(result, '_geometry_column', geometry_column)
+    return result
 
 
 class Extremes(NamedTuple, Generic[_ExtremeT]):
@@ -1160,10 +2245,7 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
-    column, or with ``from_geojson(..., features=True)``. Geometry-only
-    decoding rejects a scalar null-geometry Feature; use
-    :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` to represent a missing geometry.
     """
 
     type: Literal['Feature']

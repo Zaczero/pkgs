@@ -1073,19 +1073,15 @@ def test_russia_norway_intersection_emits_the_shared_country_border() -> None:
         for feature in source['features']
         if feature['properties']['tags'].get('ISO3166-1:alpha2') in wanted
     }
-    countries = dict(
-        zip(
-            ('RU', 'NO'),
-            gm.from_geojson(
-                json.dumps({
-                    'type': 'FeatureCollection',
-                    'features': [features['RU'], features['NO']],
-                }),
-                crs=4326,
-            ),
-            strict=True,
-        )
+    collection = gm.from_geojson(
+        json.dumps({
+            'type': 'FeatureCollection',
+            'features': [features['RU'], features['NO']],
+        }),
+        crs=4326,
     )
+    assert isinstance(collection, gm.Features)
+    countries = dict(zip(('RU', 'NO'), collection.geometries, strict=True))
 
     intersection = _assert_geographic_overlay_area_identity(
         countries['RU'], countries['NO']

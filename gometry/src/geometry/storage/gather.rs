@@ -72,6 +72,70 @@ pub(crate) fn gather_polygon_columns(
     Ok((out_coords, out_ring_offsets, out_polygon_offsets))
 }
 
+/// Copy the logical rows of a storage owner into detached packed columns.
+pub(crate) fn materialized_storage(storage: &GeometryArrayStorage) -> Result<GeometryArrayStorage> {
+    let packed = match storage {
+        GeometryArrayStorage::Mixed(shapes) => {
+            return Ok(GeometryArrayStorage::Mixed(
+                shapes
+                    .iter()
+                    .map(|shape| shape.map_points(&Ok))
+                    .collect::<Result<Vec<_>>>()?,
+            ));
+        },
+        GeometryArrayStorage::Packed(packed) => packed,
+    };
+    let materialized = match packed {
+        PackedStorage::Points { coords, row_map } => {
+            let selection = row_map.as_deref();
+            let map = (0..selection.len(coords.len()))
+                .map(|row| selection.physical(row))
+                .collect::<Vec<_>>();
+            PackedStorage::Points {
+                coords: Arc::new(gather_point_columns(coords, &map)?),
+                row_map: RowSelection::Identity,
+            }
+        },
+        PackedStorage::Lines {
+            coords,
+            offsets,
+            row_map,
+        } => {
+            let (coords, offsets) =
+                gather_line_columns(coords, offsets.as_slice(), row_map.as_deref())?;
+            PackedStorage::Lines {
+                coords: Arc::new(coords),
+                offsets,
+                row_map: RowSelection::Identity,
+            }
+        },
+        PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map,
+        } => {
+            let selection = row_map.as_deref();
+            let map = (0..selection.len(polygon_offsets.len().saturating_sub(1)))
+                .map(|row| selection.physical(row))
+                .collect::<Vec<_>>();
+            let (coords, ring_offsets, polygon_offsets) = gather_polygon_columns(
+                coords,
+                ring_offsets.as_slice(),
+                polygon_offsets.as_slice(),
+                &map,
+            )?;
+            PackedStorage::Polygons {
+                coords: Arc::new(coords),
+                ring_offsets,
+                polygon_offsets,
+                row_map: RowSelection::Identity,
+            }
+        },
+    };
+    Ok(GeometryArrayStorage::Packed(materialized))
+}
+
 /// Materialize a fancy-selected (`Gather`) packed storage into contiguous
 /// `Identity` columns. `None` when the storage is not gather-selected —
 /// Identity and Window resolve zero-copy and never need materialization.

@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import gometry as gm
 import pytest
 
-from tests._support import gil_is_disabled
+from tests._support import arrow_geometries, gil_is_disabled
 
 pa = pytest.importorskip('pyarrow')
 
@@ -166,7 +166,7 @@ def test_stream_capsule_is_consumed_before_callbacks_and_reentrancy() -> None:
         if not reentrant_attempted:
             reentrant_attempted = True
             try:
-                gm.from_arrow(provider)
+                arrow_geometries(provider)
             except TypeError as error:
                 reentrant_errors.append(str(error))
             else:
@@ -189,13 +189,13 @@ def test_stream_capsule_is_consumed_before_callbacks_and_reentrancy() -> None:
     stream.get_next = ctypes.cast(wrapped_get_next, ctypes.c_void_p).value
     stream.release = ctypes.cast(wrapped_release, ctypes.c_void_p).value
 
-    decoded = gm.from_arrow(provider)
+    decoded = arrow_geometries(provider)
     assert decoded.to_wkt() == ['POINT (1 2)']
     assert not stream.release, 'consuming the stream must clear the capsule slot'
     assert reentrant_errors and 'already released' in reentrant_errors[0]
     first_counts = counts.copy()
     with pytest.raises(TypeError, match='already released'):
-        gm.from_arrow(provider)
+        arrow_geometries(provider)
     assert counts == first_counts, 'reconsumption must not invoke producer callbacks'
     assert counts['release'] == 1
 
@@ -237,7 +237,7 @@ def test_native_admission_wkb_is_owned_before_release() -> None:
             struct.pack_into('<i', offsets, i * 4, 0)
 
     provider, flag = _poison_on_array_release(schema_c, array_c, poison)
-    decoded = gm.from_arrow(provider)
+    decoded = arrow_geometries(provider)
     assert flag[0] is True, 'release callback must run before from_arrow returns'
     assert [decoded[i].to_wkt() for i in range(rows)] == ['POINT (1 2)'] * rows
 
@@ -281,7 +281,7 @@ def test_native_admission_binary_view_is_owned_before_release() -> None:
     live_mvs = _byte_mvs(storage)
     schema_c, array_c = storage.__arrow_c_array__()
     provider, flag = _poison_on_array_release(schema_c, array_c, poison)
-    decoded = gm.from_arrow(provider)
+    decoded = arrow_geometries(provider)
     assert flag[0] is True
     assert [g.to_wkt() for g in decoded] == expected
 
@@ -343,7 +343,7 @@ def test_native_admission_nested_geoarrow_is_owned_before_release() -> None:
     ]
 
     provider, flag = _poison_on_array_release(schema_c, array_c, poison)
-    decoded = gm.from_arrow(provider)
+    decoded = arrow_geometries(provider)
     assert flag[0] is True
     assert [g.to_wkt() for g in decoded] == expected
 
@@ -356,18 +356,18 @@ def test_from_arrow_pyarrow_slices_preserve_visible_rows() -> None:
     wkb_values = [wkb] * n
     wkb_values[row] = None
     wkb_parent = pa.array(wkb_values, type=pa.binary())
-    wkb_out = gm.from_arrow(wkb_parent.slice(row, 2))
+    wkb_out = arrow_geometries(wkb_parent.slice(row, 2))
     assert wkb_out.is_missing.tolist() == [True, False]
     assert wkb_out[1].to_wkt() == 'POINT (17 -4)'
 
     view_parent = pa.array([wkb] * n, type=pa.binary_view())
-    view_out = gm.from_arrow(view_parent.slice(row, 1))
+    view_out = arrow_geometries(view_parent.slice(row, 1))
     assert view_out.to_wkt() == ['POINT (17 -4)']
 
     lines = gm.GeometryArray([
         gm.LineString([(float(i), 1.0), (float(i), 2.0)]) for i in range(n)
     ]).to_arrow()
-    nested_out = gm.from_arrow(lines.slice(row, 1))
+    nested_out = arrow_geometries(lines.slice(row, 1))
     assert nested_out.to_wkt() == [f'LINESTRING ({row} 1, {row} 2)']
 
     x_values: list[float | None] = [float(i // 2) for i in range(n * 2)]
@@ -380,7 +380,7 @@ def test_from_arrow_pyarrow_slices_preserve_visible_rows() -> None:
         lines.type,
         pa.ListArray.from_arrays(offsets, points),
     )
-    nullable_out = gm.from_arrow(nullable_lines.slice(row, 1))
+    nullable_out = arrow_geometries(nullable_lines.slice(row, 1))
     assert nullable_out.to_wkt() == [f'LINESTRING ({row} 1, {row} 2)']
 
 
@@ -405,14 +405,14 @@ def test_stream_import_peak_tracks_one_batch_not_full_stream() -> None:
     batches = table.to_batches(max_chunksize=50)
     assert len(batches) >= 4
     multi = pa.Table.from_batches(batches)
-    direct = gm.from_arrow(multi)
-    streamed = gm.from_arrow(_StreamOnly(multi))
+    direct = arrow_geometries(multi)
+    streamed = arrow_geometries(_StreamOnly(multi))
     assert direct.to_wkt() == streamed.to_wkt()
     assert direct.is_missing.tolist() == streamed.is_missing.tolist()
     # Same total rows, different batch counts: sizeof must not grow with batches.
     one_batch = pa.Table.from_batches([table.combine_chunks().to_batches()[0]])
     if one_batch.num_rows == multi.num_rows:
-        streamed_one = gm.from_arrow(_StreamOnly(one_batch))
+        streamed_one = arrow_geometries(_StreamOnly(one_batch))
         # Allow small constant drift; fail if multi-batch path retains O(batches).
         assert streamed.__sizeof__() <= streamed_one.__sizeof__() * 2 + 4096
 
@@ -432,7 +432,7 @@ def test_b4_release_callback_sees_live_release_slot() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return schema_capsule, array_capsule
 
-    decoded = gm.from_arrow(Provider())
+    decoded = arrow_geometries(Provider())
     assert decoded[0] == gm.Point(1, 2)
     del decoded
     gc.collect()
@@ -526,7 +526,7 @@ def test_schema_release_poison_after_owned_admission() -> None:
             return schema_c, array_c
 
     Provider._keep = (wrapped_release, schema_c, array_c)  # type: ignore[attr-defined]
-    decoded = gm.from_arrow(Provider())
+    decoded = arrow_geometries(Provider())
     assert flag[0] is True, 'schema release must run before from_arrow returns'
     assert decoded[0].to_wkt() == 'POINT (1 2)'
 
@@ -587,6 +587,6 @@ def test_zero_row_array_release_poison_via_stream() -> None:
             return schema_c, array_c
 
     Provider._keep = (wrapped_release, schema_c, array_c, stream_capsule)  # type: ignore[attr-defined]
-    decoded = gm.from_arrow(Provider())
+    decoded = arrow_geometries(Provider())
     assert flag[0] is True, 'zero-row array release must run before from_arrow returns'
     assert len(decoded) == 0

@@ -31,6 +31,18 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
+    FEATURE_ROWS = gm.Features(POINTS, properties={'name': 'a'}, ids=[1])
+    FEATURE_ROWS.geometries = POINTS  # type: ignore[misc]
+    FEATURE_ROWS.ids = (2,)  # type: ignore[misc]
+    FEATURE_ROWS[0] = gm.Feature(POINT)  # type: ignore[index]
+    FEATURE_ROW_PROPERTIES = FEATURE_ROWS[0].properties
+    if FEATURE_ROW_PROPERTIES is not None:
+        FEATURE_ROW_PROPERTIES['name'] = 'b'  # type: ignore[index]
+    NESTED_FEATURES = gm.Features(POINTS, properties={'items': [1, 2]})
+    NESTED_PROPERTIES = NESTED_FEATURES[0].properties
+    if NESTED_PROPERTIES is not None:
+        NESTED_PROPERTIES['items'].append(3)  # type: ignore[attr-defined]
+
     # S2 levels and adaptive controls use integer parameters.
     gm.s2_cover(POLY, '8')  # type: ignore[call-overload]
     gm.s2_cover(POLY, level='8')  # type: ignore[call-overload]
@@ -50,13 +62,7 @@ if TYPE_CHECKING:
 
     # Unknown keyword arguments are rejected.
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
-    gm.from_geojson(POINT.__geo_interface__, features=True)  # type: ignore[arg-type]
-
-    class _GeometryInterfaceProvider:
-        @property
-        def __geo_interface__(self) -> sht.GeoJsonPointGeometry: ...
-
-    gm.from_geojson([_GeometryInterfaceProvider()], features=True)  # type: ignore[arg-type]
+    gm.from_geojson(POINT.__geo_interface__, as_features='yes')  # type: ignore[call-overload]
 
     # Algorithm options are available only for the matching literal method.
     POINT.triangulate(method='delaunay', min_angle=10.0)  # type: ignore[call-overload]
@@ -253,7 +259,7 @@ if TYPE_CHECKING:
     POINTS.to_pandas(name=[])  # type: ignore[arg-type]
     gm.from_polars(POINTS)  # type: ignore[arg-type]
     POINTS.to_polars(name=1)  # type: ignore[arg-type]
-    gm.from_geopandas(POINTS)  # type: ignore[arg-type]
+    gm.from_geopandas(POINTS)  # type: ignore[call-overload]
     POINTS.to_geopandas(drop_epoch='yes')  # type: ignore[arg-type]
 
     # Geometry-like collection lanes accept native geometries, binary buffers,

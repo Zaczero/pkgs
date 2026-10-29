@@ -336,7 +336,7 @@ def test_geojson_split_writers_share_the_metric_aware_drawing() -> None:
     feature_collection = gm.to_feature_collection([source])
     array_feature_collection = gm.to_feature_collection(rows)
     array_interface = rows.__geo_interface__
-    source_features = gm.from_geojson(array_feature_collection, features=True)
+    source_features = gm.from_geojson(array_feature_collection, as_features=True)
     features_feature_collection = gm.to_feature_collection(source_features)
     scalar_json = json.loads(source.to_geojson())
     assert array_text[1] is None
@@ -367,22 +367,24 @@ def test_geojson_split_writers_share_the_metric_aware_drawing() -> None:
         ),
         (
             'Feature',
-            gm.from_geojson(feature, features=True).geometries[0],
+            gm.from_geojson(feature, as_features=True).geometries[0],
             feature['geometry'],
         ),
         (
             'FeatureCollection',
-            gm.from_geojson(feature_collection, features=True).geometries[0],
+            gm.from_geojson(feature_collection, as_features=True).geometries[0],
             feature_collection['features'][0]['geometry'],
         ),
         (
             'array FeatureCollection',
-            gm.from_geojson(array_feature_collection, features=True).geometries[0],
+            gm.from_geojson(array_feature_collection, as_features=True).geometries[0],
             array_feature_collection['features'][0]['geometry'],
         ),
         (
             'Features FeatureCollection',
-            gm.from_geojson(features_feature_collection, features=True).geometries[0],
+            gm.from_geojson(features_feature_collection, as_features=True).geometries[
+                0
+            ],
             features_feature_collection['features'][0]['geometry'],
         ),
     ]

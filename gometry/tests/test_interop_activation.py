@@ -50,6 +50,43 @@ def test_import_gometry_stays_dep_free() -> None:
     )
 
 
+def test_arrow_c_feature_table_import_does_not_require_pyarrow() -> None:
+    pytest.importorskip('arro3.core')
+    _run_isolated(
+        """
+        import sys
+        sys.modules['pyarrow'] = None
+        import numpy as np
+        from arro3.core import Array, DataType, Table
+        import gometry as gm
+
+        rank = np.array([3, 5], dtype=np.int16)
+        table = Table.from_arrays(
+            [
+                Array.from_arrow(gm.points([1, 2], [3, 4], crs=4326)),
+                Array.from_numpy(np.array([0, 17], dtype=np.uint64)),
+                Array.from_numpy(rank),
+                Array.from_numpy(np.array([1, 2], dtype=np.int64)).cast(
+                    DataType.timestamp('ns', tz='America/New_York')
+                ),
+            ],
+            names=['shape', 'fid', 'rank', 'at'],
+        )
+        features = gm.from_arrow(table, id_column='fid')
+        rank[:] = -1
+        assert isinstance(features, gm.Features)
+        assert tuple(features.ids) == (0, 17)
+        assert tuple(features.column('rank')) == (3, 5)
+        observed = features[0].properties['at']
+        assert isinstance(observed, gm.ArrowValue)
+        assert observed.value == 1
+        assert 'America/New_York' in observed.type
+        assert Array.from_arrow(observed).cast(DataType.int64()).to_pylist() == [1]
+        assert features.geometries.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
+        """
+    )
+
+
 def test_star_import_exposes_optional_exports_without_dependencies() -> None:
     _run_isolated(
         """

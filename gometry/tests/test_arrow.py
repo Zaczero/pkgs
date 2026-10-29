@@ -23,6 +23,7 @@ from tests._support import (
     _capsule_only_from_gometry,
     _capsule_only_from_pyarrow,
     _StreamOnly,
+    arrow_geometries,
     canon,
     polygon_storage_twins,
     with_validity,
@@ -71,7 +72,7 @@ def test_homogeneous_native_layout_keeps_empty_and_missing_rows(
         foreign = _StreamOnly(pa.table({'geometry': arrow}))
     else:
         foreign = arrow
-    restored = gm.from_arrow(foreign)
+    restored = arrow_geometries(foreign)
     assert restored.to_wkt() == [wkt, empty, None]
     assert restored.is_missing.tolist() == [False, False, True]
     assert restored.crs == source.crs
@@ -90,7 +91,7 @@ def test_native_empty_point_sentinel_retains_z_and_m_axes() -> None:
         math.isnan(arrow.storage.field(axis)[1].as_py())
         for axis in ('x', 'y', 'z', 'm')
     )
-    restored = gm.from_arrow(arrow)
+    restored = arrow_geometries(arrow)
     assert restored.to_wkt() == ['POINT ZM (7 13 19 23)', 'POINT ZM EMPTY', None]
 
 
@@ -176,7 +177,7 @@ def test_arrow_conformance_matrix_preserves_validity_and_values(
     else:
         raise AssertionError(shape)
 
-    restored = cast('gm.GeometryArray', gm.from_arrow(arrow_like))
+    restored = cast('gm.GeometryArray', arrow_geometries(arrow_like))
     assert restored.is_missing.tolist() == expected.is_missing.tolist()
     assert restored.to_wkt() == expected.to_wkt()
     _assert_same_crs(restored.crs, expected.crs)
@@ -200,7 +201,7 @@ def test_exported_window_outlives_geometry_and_preserves_frame(
         published = arro3.Array.from_arrow(window)
     del source, window, payload
 
-    restored = cast('gm.GeometryArray', gm.from_arrow(published))
+    restored = cast('gm.GeometryArray', arrow_geometries(published))
     assert restored.to_wkt(drop_epoch=True) == expected
     _assert_same_crs(restored.crs, gm.CRS(4326))
     assert restored.epoch == 2020.5
@@ -323,16 +324,16 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
     assert mixed_arrow.type.extension_name == 'geoarrow.wkb'
     assert [
         point.coords.to_nested()
-        for point in cast('gm.GeometryArray', gm.from_arrow(values_arrow))
+        for point in cast('gm.GeometryArray', arrow_geometries(values_arrow))
     ] == [[0.0, 2.0, 4.0, 6.0], [1.0, 3.0, 5.0, 7.0]]
-    line_back = gm.from_arrow(line_arrow)
+    line_back = arrow_geometries(line_arrow)
     assert isinstance(line_back, gm.GeometryArray)
     assert len(line_back) == 1
     assert line_back[0].coords.to_nested() == [
         (0.0, 0.0, 10.0, 20.0),
         (1.0, 1.0, 11.0, 21.0),
     ]
-    polygon_back = gm.from_arrow(polygon_arrow)
+    polygon_back = arrow_geometries(polygon_arrow)
     assert isinstance(polygon_back, gm.GeometryArray)
     assert len(polygon_back) == 1
     assert polygon_back[0].coords.to_nested() == [
@@ -351,13 +352,13 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
         gm.require(values, axes='XY')
     with pytest.raises(ValueError, match='expected CRS'):
         gm.require(values, crs=3857)
-    arrow_values = gm.from_arrow(values.to_arrow())
+    arrow_values = arrow_geometries(values.to_arrow())
     assert isinstance(arrow_values, gm.GeometryArray)
     assert [point.coords.to_nested() for point in list(arrow_values)] == [
         [0.0, 2.0, 4.0, 6.0],
         [1.0, 3.0, 5.0, 7.0],
     ]
-    arrow_line = gm.from_arrow(line.to_arrow())
+    arrow_line = arrow_geometries(line.to_arrow())
     assert isinstance(arrow_line, gm.GeometryArray)
     assert len(arrow_line) == 1
     assert arrow_line[0].coords.to_nested() == [
@@ -365,7 +366,7 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
         (1.0, 1.0, 11.0, 21.0),
     ]
     mixed_arrow = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 2, z=3)]).to_arrow()
-    arrow_mixed = gm.from_arrow(mixed_arrow)
+    arrow_mixed = arrow_geometries(mixed_arrow)
     assert isinstance(arrow_mixed, gm.GeometryArray)
     assert [point.coords.to_nested() for point in list(arrow_mixed)] == [
         [0.0, 0.0],
@@ -444,7 +445,7 @@ def test_explicit_empty_multipart_arrow_export_preserves_axes(
         assert arrow.type.extension_name == extension_name
         assert arrow.type.storage_type == storage_type
         assert arrow.storage.to_pylist() == [[[]]]
-        restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+        restored = cast('gm.GeometryArray', arrow_geometries(arrow))
         assert restored.to_wkt() == [geometry.to_wkt()]
         assert restored[0].coordinate_axes == axes
         assert len(restored[0]) == 1
@@ -480,10 +481,10 @@ def test_explicit_empty_multipart_arrow_export_preserves_axes(
             ) -> object:
                 return self.source.__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
 
-        c_restored = cast('gm.GeometryArray', gm.from_arrow(ArrayOnly(owner)))
+        c_restored = cast('gm.GeometryArray', arrow_geometries(ArrayOnly(owner)))
         assert c_restored.to_wkt() == [geometry.to_wkt()]
         assert c_restored[0].coordinate_axes == axes
-        stream_restored = cast('gm.GeometryArray', gm.from_arrow(StreamOnly(owner)))
+        stream_restored = cast('gm.GeometryArray', arrow_geometries(StreamOnly(owner)))
         assert stream_restored.to_wkt() == [geometry.to_wkt()]
         assert stream_restored[0].coordinate_axes == axes
 
@@ -500,14 +501,14 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
             assert arrow.type.extension_name == (
                 native_encoding if encoding == 'auto' else 'geoarrow.wkb'
             )
-            restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+            restored = cast('gm.GeometryArray', arrow_geometries(arrow))
             assert restored.to_wkt() == [wkt]
             assert restored[0].coordinate_axes == axes
             assert len(restored[0]) == 0
 
     geometry = gm.from_wkt('MULTILINESTRING ZM (EMPTY)')
     missing = gm.GeometryArray([geometry, None])
-    restored = cast('gm.GeometryArray', gm.from_arrow(missing.to_arrow()))
+    restored = cast('gm.GeometryArray', arrow_geometries(missing.to_arrow()))
     assert restored.is_missing.tolist() == [False, True]
     assert restored.to_wkt() == [geometry.to_wkt(), None]
     assert restored[0].coordinate_axes == 'XYZM'
@@ -528,7 +529,7 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
             )
         )
     )
-    mixed_restored = cast('gm.GeometryArray', gm.from_arrow(mixed_arrow))
+    mixed_restored = cast('gm.GeometryArray', arrow_geometries(mixed_arrow))
     assert mixed_restored.to_wkt() == [mixed.to_wkt()]
     assert mixed_restored[0].coordinate_axes == 'XYZM'
     assert len(mixed_restored[0]) == 2
@@ -546,12 +547,14 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
         mixed_axes = gm.GeometryArray([gm.from_wkt(wkt) for wkt in wkts])
         mixed_axes_arrow = mixed_axes.to_arrow()
         assert mixed_axes_arrow.type.extension_name == 'geoarrow.wkb'
-        mixed_axes_restored = cast('gm.GeometryArray', gm.from_arrow(mixed_axes_arrow))
+        mixed_axes_restored = cast(
+            'gm.GeometryArray', arrow_geometries(mixed_axes_arrow)
+        )
         assert mixed_axes_restored.to_wkt() == list(wkts)
         assert [value.coordinate_axes for value in mixed_axes_restored] == list(axes)
 
     framed = gm.from_wkt('MULTILINESTRING ZM (EMPTY)', crs=4326, epoch=2020.0)
-    framed_restored = cast('gm.GeometryArray', gm.from_arrow(framed.to_arrow()))
+    framed_restored = cast('gm.GeometryArray', arrow_geometries(framed.to_arrow()))
     assert framed_restored.to_wkt(drop_epoch=True) == [framed.to_wkt(drop_epoch=True)]
     assert framed_restored[0].coordinate_axes == 'XYZM'
     assert framed_restored.crs.to_epsg() == 4326
@@ -576,7 +579,7 @@ def test_sliced_nullable_geometry_export_rebases_validity_bits() -> None:
     assert validity.to_pybytes()[0] & 0b1111 == 0b0110
     assert arrow.is_null().to_pylist() == [True, False, False, True]
 
-    restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+    restored = cast('gm.GeometryArray', arrow_geometries(arrow))
     assert restored.is_missing.tolist() == [True, False, False, True]
     assert restored.to_wkt() == [None, 'POINT (2 12)', 'POINT (3 13)', None]
 
@@ -586,14 +589,14 @@ def test_to_arrow_forced_wkb_encoding_roundtrips() -> None:
     arrow = values.to_arrow(encoding='wkb')
     assert arrow.type.extension_name == 'geoarrow.wkb'
     assert arrow.storage.type == pa.binary()
-    restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+    restored = cast('gm.GeometryArray', arrow_geometries(arrow))
     assert canon(restored) == canon(values)
     _assert_same_crs(restored.crs, values.crs)
 
     scalar = gm.Point(4.0, 5.0, crs=4326)
     scalar_arrow = scalar.to_arrow(encoding='wkb')
     assert scalar_arrow.type.extension_name == 'geoarrow.wkb'
-    scalar_restored = gm.from_arrow(scalar_arrow)
+    scalar_restored = arrow_geometries(scalar_arrow)
     assert isinstance(scalar_restored, gm.GeometryArray)
     assert canon(scalar_restored) == canon(gm.GeometryArray([scalar]))
 
@@ -636,7 +639,9 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
         gm.LineString([(2.0, 2.0), (3.0, 3.0)]),
     ])
     nullable = with_validity(values.to_arrow(), b'\x01')
-    restored = cast('gm.GeometryArray', gm.from_arrow(nullable, crs=4326, epoch=2020.0))
+    restored = cast(
+        'gm.GeometryArray', arrow_geometries(nullable, crs=4326, epoch=2020.0)
+    )
     assert restored.is_missing.tolist() == [False, True]
     assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2020.0
@@ -651,7 +656,7 @@ def test_from_arrow_epoch_accepts_numpy_scalar_and_index_protocol() -> None:
 
     arrow = gm.GeometryArray([gm.Point(1.0, 2.0)]).to_arrow()
     for epoch, expected in ((np.float64(2023.5), 2023.5), (IndexEpoch(), 2024.0)):
-        restored = gm.from_arrow(arrow, crs=4326, epoch=epoch)
+        restored = arrow_geometries(arrow, crs=4326, epoch=epoch)
         assert restored.epoch == expected
 
 
@@ -689,7 +694,7 @@ def test_nullable_arrow_c_import_keeps_compact_native_payload(
         def __arrow_c_array__(self, requested_schema=None):
             return source.__arrow_c_array__()
 
-    restored = cast('gm.GeometryArray', gm.from_arrow(CapsuleOnly()))
+    restored = cast('gm.GeometryArray', arrow_geometries(CapsuleOnly()))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
     assert restored.crs.to_epsg() == 4326
@@ -807,7 +812,7 @@ def test_from_arrow_null_count_bitmap_mismatch_rejects_all_frontends() -> None:
         ('stream', StreamOnly()),
     ):
         try:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         except BaseException as exc:
             # BaseException so a PanicException cannot slip past as "pass".
             outcomes.append((name, type(exc), str(exc)))
@@ -825,7 +830,7 @@ def test_from_arrow_consistent_null_positive_still_imports() -> None:
     """P02 positive: matching null_count + bitmap still yields a missing row."""
     values = gm.GeometryArray([gm.Point(1, 2), gm.Point(3, 4)])
     nullable = with_validity(values.to_arrow(encoding='wkb'), b'\x01')
-    restored = cast('gm.GeometryArray', gm.from_arrow(nullable))
+    restored = cast('gm.GeometryArray', arrow_geometries(nullable))
     assert restored.is_missing.tolist() == [False, True]
     assert restored[0].to_wkt() == 'POINT (1 2)'
 
@@ -862,7 +867,7 @@ def test_sliced_geoarrow_import_decodes_only_the_visible_span() -> None:
     for name, geoms in families.items():
         arrow = gm.GeometryArray(geoms).to_arrow()
         for offset, length in slices:
-            imported = gm.from_arrow(arrow.slice(offset, length))
+            imported = arrow_geometries(arrow.slice(offset, length))
             assert isinstance(imported, gm.GeometryArray)
             got = list(imported)
             expected = geoms[offset : offset + length]
@@ -877,7 +882,7 @@ def test_large_native_geoarrow_point_import_roundtrips_packed_coordinates() -> N
     xs = [float(i) for i in range(count)]
     ys = [float(-i) / 2.0 for i in range(count)]
     values = gm.points(xs, ys)
-    restored = cast('gm.GeometryArray', gm.from_arrow(values.to_arrow()))
+    restored = cast('gm.GeometryArray', arrow_geometries(values.to_arrow()))
     assert len(restored) == count
     assert restored.to_arrow().storage.field('x').to_pylist() == xs
     assert restored.to_arrow().storage.field('y').to_pylist() == ys
@@ -889,7 +894,7 @@ def test_sliced_geoarrow_point_import_respects_coordinate_child_offsets() -> Non
     storage = sliced.storage
     assert storage.field('x').offset == 1
     assert storage.field('y').offset == 1
-    restored = cast('gm.GeometryArray', gm.from_arrow(sliced))
+    restored = cast('gm.GeometryArray', arrow_geometries(sliced))
     assert [point.coords.to_nested() for point in restored] == [
         [1.0, 11.0],
         [2.0, 12.0],
@@ -909,7 +914,7 @@ def test_from_arrow_wkb_rejects_ewkb_srid_conflicting_with_extension_crs() -> No
     with pytest.raises(
         gm.CRSMismatchError, match='conflicts with the embedded EWKB SRID'
     ):
-        gm.from_arrow(arrow)
+        arrow_geometries(arrow)
 
 
 def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
@@ -918,7 +923,7 @@ def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
     wkb_values = (values).to_wkb()
     ewkb_values = (values).to_wkb(include_srid=True)
     arrow = (values).to_arrow()
-    recovered = gm.from_arrow(arrow)
+    recovered = arrow_geometries(arrow)
     assert arrow.type.extension_name == 'geoarrow.wkb'
     assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
         _WGS84_PROJJSON_METADATA
@@ -929,7 +934,7 @@ def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
         'POINT (1 2)',
         'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))',
     ]
-    singleton = gm.from_arrow((point).to_arrow())
+    singleton = arrow_geometries((point).to_arrow())
     assert isinstance(singleton, gm.GeometryArray)
     assert len(singleton) == 1
     assert (singleton[0]).to_wkt() == 'POINT (1 2)'
@@ -976,7 +981,7 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
     ]
     for values, extension_name in cases:
         arrow = pa.array(values)
-        restored = gm.from_arrow(arrow)
+        restored = arrow_geometries(arrow)
         assert arrow.type.extension_name == extension_name
         assert _json.loads(arrow.type.__arrow_ext_serialize__()) == {
             'crs': _CRS(4326).to_projjson(as_dict=True),
@@ -1011,7 +1016,7 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
     assert 'arrow_schema' in repr(schema_capsule)
     assert 'arrow_array' in repr(array_capsule)
     assert 'arrow_array_stream' in repr(stream_capsule)
-    restored = cast('gm.GeometryArray', gm.from_arrow(_CapsuleStreamOnly(values)))
+    restored = cast('gm.GeometryArray', arrow_geometries(_CapsuleStreamOnly(values)))
     assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2015.5
     assert [str(g) for g in restored] == ['POINT (0 0)', 'POINT (1 1)']
@@ -1059,7 +1064,7 @@ def test_foreign_arrow_c_providers_with_shape_attributes_use_native_path() -> No
         ])
 
     for provider in providers:
-        restored = cast('gm.GeometryArray', gm.from_arrow(provider))
+        restored = cast('gm.GeometryArray', arrow_geometries(provider))
         assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
         assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
@@ -1078,7 +1083,7 @@ def test_pyarrow_container_types_preserve_geometry_frame() -> None:
     ]
 
     for source in inputs:
-        restored = cast('gm.GeometryArray', gm.from_arrow(source))
+        restored = cast('gm.GeometryArray', arrow_geometries(source))
         assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
         assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
@@ -1161,7 +1166,7 @@ def test_identical_requested_arrow_schema_is_accepted_for_array_and_stream(
 
     array_capsules = values.__arrow_c_array__(schema)
     restored_array = cast(
-        'gm.GeometryArray', gm.from_arrow(_ArrayCapsulesOnly(array_capsules))
+        'gm.GeometryArray', arrow_geometries(_ArrayCapsulesOnly(array_capsules))
     )
     assert restored_array.to_wkt(drop_epoch=True) == expected.to_wkt(drop_epoch=True)
     assert restored_array.crs is not None and expected.crs is not None
@@ -1170,7 +1175,7 @@ def test_identical_requested_arrow_schema_is_accepted_for_array_and_stream(
 
     stream = values.__arrow_c_stream__(schema)
     restored_stream = cast(
-        'gm.GeometryArray', gm.from_arrow(_StreamCapsuleOnly(stream))
+        'gm.GeometryArray', arrow_geometries(_StreamCapsuleOnly(stream))
     )
     assert restored_stream.to_wkt(drop_epoch=True) == expected.to_wkt(drop_epoch=True)
     assert restored_stream.crs is not None and expected.crs is not None
@@ -1212,7 +1217,7 @@ def test_arrow_c_stream_import_consumes_all_batches() -> None:
     ])
     stream_only = _ArrowCStreamOnly(chunked)
     assert not hasattr(stream_only, 'chunks')
-    restored = cast('gm.GeometryArray', gm.from_arrow(stream_only))
+    restored = cast('gm.GeometryArray', arrow_geometries(stream_only))
     assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2020.0
     assert [str(value) for value in restored] == [
@@ -1227,7 +1232,7 @@ def test_arrow_c_stream_import_consumes_all_batches() -> None:
 def test_geoarrow_point_array_uses_packed_coordinate_storage() -> None:
     values = gm.points([1, 3], [2, 4], crs=4326)
     arrow = values.to_arrow()
-    recovered = gm.from_arrow(arrow)
+    recovered = arrow_geometries(arrow)
     assert arrow.type.extension_name == 'geoarrow.point'
     assert arrow.type.storage_type == pa.struct([
         pa.field('x', pa.float64()),
@@ -1252,7 +1257,7 @@ def test_geoarrow_linestring_array_uses_packed_coordinate_storage() -> None:
         gm.LineString([(2, 2), (3, 4), (5, 8)], crs=4326),
     ])
     arrow = values.to_arrow()
-    recovered = gm.from_arrow(arrow)
+    recovered = arrow_geometries(arrow)
     assert arrow.type.extension_name == 'geoarrow.linestring'
     assert arrow.type.storage_type == pa.list_(
         pa.struct([pa.field('x', pa.float64()), pa.field('y', pa.float64())])
@@ -1282,7 +1287,7 @@ def test_geoarrow_polygon_array_uses_packed_coordinate_storage() -> None:
         ),
     ])
     arrow = values.to_arrow()
-    recovered = gm.from_arrow(arrow)
+    recovered = arrow_geometries(arrow)
     assert arrow.type.extension_name == 'geoarrow.polygon'
     assert arrow.type.storage_type == pa.list_(
         pa.list_(pa.struct([pa.field('x', pa.float64()), pa.field('y', pa.float64())]))
@@ -1327,7 +1332,7 @@ def test_geoarrow_polygon_array_uses_packed_coordinate_storage() -> None:
 
 def test_geoarrow_polygon_import_matches_packed_storage_twins() -> None:
     packed, _mixed = polygon_storage_twins()
-    recovered = gm.from_arrow(packed.to_arrow())
+    recovered = arrow_geometries(packed.to_arrow())
     assert isinstance(recovered, gm.GeometryArray)
     assert canon(recovered) == canon(packed)
     assert recovered.to_arrow().type.extension_name == 'geoarrow.polygon'
@@ -1337,7 +1342,7 @@ def test_geoarrow_polygon_chunked_import_concatenates_chunks() -> None:
     packed, _mixed = polygon_storage_twins()
     arrow = packed.to_arrow()
     chunks = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1, 1)])
-    recovered = gm.from_arrow(chunks)
+    recovered = arrow_geometries(chunks)
     assert isinstance(recovered, gm.GeometryArray)
     assert canon(recovered) == canon(packed)
 
@@ -1403,7 +1408,7 @@ def test_geoarrow_multi_and_polygon_arrays_use_packed_coordinate_storage() -> No
     ]
     for values, extension_name, storage_type, expected_wkt in cases:
         arrow = values.to_arrow()
-        recovered = gm.from_arrow(arrow)
+        recovered = arrow_geometries(arrow)
         assert arrow.type.extension_name == extension_name
         assert arrow.type.storage_type == storage_type
         assert _json.loads(arrow.type.__arrow_ext_serialize__()) == _json.loads(
@@ -1420,7 +1425,7 @@ def test_from_arrow_singleton_slice_yields_an_array() -> None:
         gm.LineString([(2, 2), (3, 3), (4, 4)], crs=4326),
         gm.LineString([(5, 5), (6, 6)], crs=4326),
     ]).to_arrow()
-    recovered = gm.from_arrow(lines.slice(1, 1))
+    recovered = arrow_geometries(lines.slice(1, 1))
     assert isinstance(recovered, gm.GeometryArray)
     assert len(recovered) == 1
     assert recovered.crs.to_epsg() == 4326
@@ -1429,7 +1434,7 @@ def test_from_arrow_singleton_slice_yields_an_array() -> None:
         gm.LineString([(0, 0), (1, 1)], crs=4326, epoch=2020.0),
         gm.LineString([(2, 2), (3, 3), (4, 4)], crs=4326, epoch=2020.0),
     ]).to_arrow()
-    epoch_recovered = gm.from_arrow(epoch_lines.slice(1, 1))
+    epoch_recovered = arrow_geometries(epoch_lines.slice(1, 1))
     assert isinstance(epoch_recovered, gm.GeometryArray)
     assert len(epoch_recovered) == 1
     assert epoch_recovered.crs.to_epsg() == 4326
@@ -1441,8 +1446,8 @@ def test_from_arrow_singleton_slice_yields_an_array() -> None:
 def test_from_arrow_empty_chunked_and_table_preserve_frame_metadata() -> None:
     values = gm.points([0.0], [1.0], crs=4326, epoch=2020.0)
     empty_chunked = pa.chunked_array([], type=values.to_arrow().type)
-    chunked_recovered = gm.from_arrow(empty_chunked)
-    table_recovered = gm.from_arrow(pa.table({'geometry': empty_chunked}))
+    chunked_recovered = arrow_geometries(empty_chunked)
+    table_recovered = arrow_geometries(pa.table({'geometry': empty_chunked}))
     assert isinstance(chunked_recovered, gm.GeometryArray)
     assert isinstance(table_recovered, gm.GeometryArray)
     assert len(chunked_recovered) == 0
@@ -1459,17 +1464,17 @@ def test_from_arrow_zero_batch_reader_roundtrips_to_arrow() -> None:
     reader = pa.RecordBatchReader.from_batches(
         pa.schema([pa.field('geometry', a.type)]), []
     )
-    out = gm.from_arrow(reader)
+    out = arrow_geometries(reader)
     assert len(out) == 0
     assert out.crs.to_epsg() == 4326
     exported = out.to_arrow()
-    back = gm.from_arrow(exported)
+    back = arrow_geometries(exported)
     assert len(back) == 0
     assert back.crs.to_epsg() == 4326
     # Positive: empty array constructed with CRS also re-exports.
     empty = gm.GeometryArray([], crs=4326)
     assert len(empty) == 0
-    assert gm.from_arrow(empty.to_arrow()).crs.to_epsg() == 4326
+    assert arrow_geometries(empty.to_arrow()).crs.to_epsg() == 4326
 
 
 def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
@@ -1485,7 +1490,7 @@ def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
     assert len(wkb0) > 12  # external (non-inline) views
     good = pa.array([wkb0, wkb1], type=pa.binary_view())
     good.validate(full=True)
-    restored = cast('gm.GeometryArray', gm.from_arrow(good))
+    restored = cast('gm.GeometryArray', arrow_geometries(good))
     assert restored.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
     bufs = good.buffers()
@@ -1530,14 +1535,14 @@ def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
         StreamOnly(bad_prefix),
     ):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'prefix' in msg or 'binary-view' in msg or 'binary view' in msg
 
     for source in (bad_pad, CapsuleOnly(bad_pad), StreamOnly(bad_pad)):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'padding' in msg or 'binary-view' in msg or 'binary view' in msg
@@ -1546,7 +1551,7 @@ def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
     # external round-trip of real WKB is already covered by `good` above.
     # Also accept a pure BinaryView of valid WKB via capsule/stream.
     for source in (good, CapsuleOnly(good), StreamOnly(good)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 
@@ -1607,13 +1612,13 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
 
     for source in (bad_bin, CapsuleOnly(bad_bin), StreamOnly(bad_bin)):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         assert 'offset' in str(ei.value).lower() or 'ordered' in str(ei.value).lower()
 
     for source in (bad_mp, CapsuleOnly(bad_mp), StreamOnly(bad_mp)):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         assert 'offset' in str(ei.value).lower() or 'ordered' in str(ei.value).lower()
 
@@ -1624,7 +1629,7 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
         CapsuleOnly(good.to_arrow()),
         StreamOnly(good.to_arrow()),
     ):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.is_missing.tolist() == [False, True, False]
         assert out.to_wkt()[0] == 'POINT (1 2)'
         assert out.to_wkt()[2] == 'POINT (3 4)'
@@ -1637,7 +1642,7 @@ def test_from_arrow_non_monotonic_offsets_rejected_all_frontends() -> None:
         ],
         crs=4326,
     )
-    restored_mp = cast('gm.GeometryArray', gm.from_arrow(good_mp.to_arrow()))
+    restored_mp = cast('gm.GeometryArray', arrow_geometries(good_mp.to_arrow()))
     assert restored_mp.is_missing.tolist() == [False, True, False]
     assert restored_mp.to_wkt()[0] == 'MULTIPOINT ((0 0), (1 1))'
 
@@ -1681,7 +1686,7 @@ def test_from_arrow_empty_malformed_start_offset_rejected_all_frontends() -> Non
 
     for source in (bad, CapsuleOnly(bad), StreamZeroRow(bad)):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'offset' in msg or 'non-negative' in msg or 'ordered' in msg
@@ -1690,17 +1695,17 @@ def test_from_arrow_empty_malformed_start_offset_rejected_all_frontends() -> Non
     good = pa.array([], type=pa.binary())
     good.validate(full=True)
     for source in (good, CapsuleOnly(good), StreamZeroRow(good)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert len(out) == 0
         assert out.to_wkt() == []
 
     # Positive: empty large_binary and sliced-empty of a valid array.
     good_large = pa.array([], type=pa.large_binary())
-    assert len(cast('gm.GeometryArray', gm.from_arrow(good_large))) == 0
+    assert len(cast('gm.GeometryArray', arrow_geometries(good_large))) == 0
     nonempty = pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())
     sliced_empty = nonempty.slice(1, 0)
     sliced_empty.validate(full=True)
-    assert len(cast('gm.GeometryArray', gm.from_arrow(sliced_empty))) == 0
+    assert len(cast('gm.GeometryArray', arrow_geometries(sliced_empty))) == 0
 
 
 def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
@@ -1772,7 +1777,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
         StreamOnly(selected_bad),
     ):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'offset' in msg or 'ordered' in msg
@@ -1781,7 +1786,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
     with pytest.raises(pa.ArrowInvalid):
         sliced.validate(full=True)
     for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.is_missing.tolist() == [True, False]
         assert out.to_wkt()[1] == (
             'POLYGON ((2 2, 3 3, 4 4, 5 5, 6 6, 2 2), (7 7, 8 8, 9 9, 10 10, 7 7))'
@@ -1798,7 +1803,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
     )
     good_slice = good.to_arrow().slice(1, 2)
     for source in (good_slice, CapsuleOnly(good_slice), StreamOnly(good_slice)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.to_wkt() == [
             'POLYGON ((2 2, 3 2, 3 3, 2 2))',
             'POLYGON ((4 4, 5 4, 5 5, 4 4))',
@@ -1823,7 +1828,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
         CapsuleOnly(mp.to_arrow()),
         StreamOnly(mp.to_arrow()),
     ):
-        restored = cast('gm.GeometryArray', gm.from_arrow(source))
+        restored = cast('gm.GeometryArray', arrow_geometries(source))
         assert restored.to_wkt() == mp.to_wkt()
 
 
@@ -1901,7 +1906,7 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
         StreamOnly(selected_bad),
     ):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert (
@@ -1916,7 +1921,7 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
     with pytest.raises(pa.ArrowInvalid):
         sliced.storage.validate(full=True)
     for source in (sliced, CapsuleOnly(sliced), StreamOnly(sliced)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.to_wkt() == ['MULTILINESTRING ((0 0, 1 1))']
 
     # Positive: valid nested MultiLineString (full + sliced).
@@ -1929,12 +1934,12 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
     )
     good_arr = good.to_arrow()
     for source in (good_arr, CapsuleOnly(good_arr), StreamOnly(good_arr)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.to_wkt() == good.to_wkt()
         assert out.crs.to_epsg() == 4326
     good_slice = good_arr.slice(1, 1)
     for source in (good_slice, CapsuleOnly(good_slice), StreamOnly(good_slice)):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert out.to_wkt() == ['MULTILINESTRING ((4 4, 5 5))']
 
     # Positive: nested MultiPolygon round-trip still imports.
@@ -1947,7 +1952,7 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
         ],
         crs=4326,
     )
-    restored = cast('gm.GeometryArray', gm.from_arrow(mp.to_arrow()))
+    restored = cast('gm.GeometryArray', arrow_geometries(mp.to_arrow()))
     assert restored.to_wkt() == mp.to_wkt()
 
 
@@ -1988,7 +1993,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
 
     for source in (chunks,):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)) as ei:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert 'PanicException' not in type(ei.value).__name__
         msg = str(ei.value).lower()
         assert 'offset' in msg or 'non-negative' in msg or 'ordered' in msg
@@ -1997,7 +2002,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     good_empty = pa.array([], type=pa.binary())
     mixed_bad = pa.chunked_array([good_empty, bad], type=pa.binary())
     with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)):
-        gm.from_arrow(mixed_bad)
+        arrow_geometries(mixed_bad)
 
     # ExtensionType multi-empty with forged binary storage under WKB extension.
     wkb_typ = (
@@ -2014,7 +2019,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     bad_ext = pa.ExtensionArray.from_storage(wkb_typ, bad)
     ext_chunks = pa.chunked_array([bad_ext, bad_ext], type=wkb_typ)
     with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)):
-        gm.from_arrow(ext_chunks)
+        arrow_geometries(ext_chunks)
 
     # Nested MultiPolygon empty chunks with bad outer start offset.
     mp_typ = (
@@ -2040,7 +2045,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
         bad_mp = pa.ExtensionArray.from_storage(mp_typ, empty_mp_storage)
         bad_mp_chunks = pa.chunked_array([bad_mp, bad_mp], type=mp_typ)
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)):
-            gm.from_arrow(bad_mp_chunks)
+            arrow_geometries(bad_mp_chunks)
     except Exception as exc:  # construction may already reject; either is fine
         if not (
             'offset' in str(exc).lower()
@@ -2053,7 +2058,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     # Positive: well-formed multi-empty binary / extension imports as empty.
     good_chunks = pa.chunked_array([good_empty, good_empty], type=pa.binary())
     for source in (good_chunks,):
-        out = cast('gm.GeometryArray', gm.from_arrow(source))
+        out = cast('gm.GeometryArray', arrow_geometries(source))
         assert len(out) == 0
         assert out.to_wkt() == []
 
@@ -2062,23 +2067,23 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     multi_empty_pts = pa.chunked_array(
         [good_empty_pts, good_empty_pts, good_empty_pts], type=good_pts.type
     )
-    out_pts = cast('gm.GeometryArray', gm.from_arrow(multi_empty_pts))
+    out_pts = cast('gm.GeometryArray', arrow_geometries(multi_empty_pts))
     assert len(out_pts) == 0
     assert out_pts.to_wkt() == []
     assert out_pts.crs.to_epsg() == 4326
 
     # Table / read_all path: empty multi-chunk geometry column.
     table = pa.table({'geometry': multi_empty_pts})
-    out_table = cast('gm.GeometryArray', gm.from_arrow(table))
+    out_table = cast('gm.GeometryArray', arrow_geometries(table))
     assert len(out_table) == 0
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
-    out_reader = cast('gm.GeometryArray', gm.from_arrow(reader))
+    out_reader = cast('gm.GeometryArray', arrow_geometries(reader))
     assert len(out_reader) == 0
 
     # Single empty still rejects via D18 (capsule/stream).
     for source in (bad, CapsuleOnly(bad), StreamZeroRow(bad)):
         with pytest.raises((gm.ParseError, gm.GeometryError, TypeError)):
-            gm.from_arrow(source)
+            arrow_geometries(source)
 
 
 def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
@@ -2088,13 +2093,13 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
 
     multiple_empty = pa.chunked_array([empty, empty], type=arr.type)
     assert multiple_empty.num_chunks == 2
-    empty_out = cast('gm.GeometryArray', gm.from_arrow(multiple_empty))
+    empty_out = cast('gm.GeometryArray', arrow_geometries(multiple_empty))
     assert len(empty_out) == 0
     assert empty_out.crs.to_epsg() == 4326
     assert empty_out.to_wkt() == []
 
     mixed = pa.chunked_array([empty, arr, empty], type=arr.type)
-    mixed_out = cast('gm.GeometryArray', gm.from_arrow(mixed))
+    mixed_out = cast('gm.GeometryArray', arrow_geometries(mixed))
     assert mixed_out.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
     assert mixed_out.crs.to_epsg() == 4326
 
@@ -2125,7 +2130,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
 
     # Exact repro: three empty batches → zero-row product with CRS.
     three_empty = pure_stream([empty_batch(), empty_batch(), empty_batch()])
-    out = cast('gm.GeometryArray', gm.from_arrow(three_empty))
+    out = cast('gm.GeometryArray', arrow_geometries(three_empty))
     assert len(out) == 0
     assert out.crs.to_epsg() == 4326
     assert out.to_wkt() == []
@@ -2137,7 +2142,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
         empty_batch(),
         empty_batch(),
     ])
-    mixed_out = cast('gm.GeometryArray', gm.from_arrow(mixed))
+    mixed_out = cast('gm.GeometryArray', arrow_geometries(mixed))
     assert mixed_out.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
     assert mixed_out.crs.to_epsg() == 4326
 
@@ -2163,7 +2168,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
 
         return StreamOnly()
 
-    large = cast('gm.GeometryArray', gm.from_arrow(many_empty()))
+    large = cast('gm.GeometryArray', arrow_geometries(many_empty()))
     assert produced['n'] == n_empty
     assert len(large) == 0
     assert large.crs.to_epsg() == 4326
@@ -2183,7 +2188,7 @@ def test_geoarrow_outer_empty_polygon_is_polygon_empty() -> None:
         polygon_type,
         pa.array([[], None, [shell], []], type=polygon_type.storage_type),
     )
-    recovered = gm.from_arrow(empty)
+    recovered = arrow_geometries(empty)
     assert recovered.to_wkt() == [
         'POLYGON EMPTY',
         None,
@@ -2214,7 +2219,7 @@ def test_geoarrow_zero_ring_polygon_preserves_xyzm_axes() -> None:
         pa.array([[], None], type=polygon_type.storage_type),
     )
 
-    recovered = cast('gm.GeometryArray', gm.from_arrow(empty))
+    recovered = cast('gm.GeometryArray', arrow_geometries(empty))
 
     assert recovered.to_wkt() == ['POLYGON ZM EMPTY', None]
     assert recovered[0].coordinate_axes == 'XYZM'
@@ -2230,7 +2235,7 @@ def test_geoarrow_zero_ring_polygon_preserves_xyzm_axes() -> None:
 
 def test_from_arrow_accepts_plain_binary_wkb_arrays() -> None:
     arrow = pa.array([(gm.Point(1, 2)).to_wkb()], type=pa.binary())
-    recovered = gm.from_arrow(arrow)
+    recovered = arrow_geometries(arrow)
     assert isinstance(recovered, gm.GeometryArray)
     assert len(recovered) == 1
     assert (recovered[0]).to_wkt() == 'POINT (1 2)'
@@ -2243,9 +2248,9 @@ def test_from_arrow_accepts_table_and_record_batch_geometry_columns() -> None:
     record_batch = pa.record_batch([pa.array([1, 2]), arrow], names=['id', 'geometry'])
     unnamed_geometry_table = pa.table({'geom': arrow})
     ambiguous = pa.table({'left': arrow, 'right': (values).to_wkb()})
-    table_recovered = gm.from_arrow(table)
-    batch_recovered = gm.from_arrow(record_batch)
-    unnamed_recovered = gm.from_arrow(unnamed_geometry_table)
+    table_recovered = arrow_geometries(table)
+    batch_recovered = arrow_geometries(record_batch)
+    unnamed_recovered = arrow_geometries(unnamed_geometry_table)
     assert isinstance(table_recovered, gm.GeometryArray)
     assert isinstance(batch_recovered, gm.GeometryArray)
     assert isinstance(unnamed_recovered, gm.GeometryArray)
@@ -2262,12 +2267,15 @@ def test_from_arrow_accepts_table_and_record_batch_geometry_columns() -> None:
         'POINT (1 2)',
         'POINT (3 4)',
     ]
-    with pytest.raises(TypeError, match='multiple geometry-like columns'):
-        gm.from_arrow(ambiguous)
-    with pytest.raises(TypeError, match='no columns'):
-        gm.from_arrow(pa.table({}))
+    recovered = gm.from_arrow(ambiguous)
+    assert isinstance(recovered, gm.Features)
+    assert recovered.geometries.to_wkt() == values.to_wkt()
+    with pytest.raises(ValueError, match='geometry column'):
+        gm.from_arrow(pa.table({'left': arrow, 'right': arrow}))
     with pytest.raises(TypeError, match='geometry-like column'):
-        gm.from_arrow(pa.table({'id': pa.array([1, 2])}))
+        arrow_geometries(pa.table({}))
+    with pytest.raises(TypeError, match='geometry-like column'):
+        arrow_geometries(pa.table({'id': pa.array([1, 2])}))
 
 
 def test_from_arrow_rejects_duplicate_geometry_column_names() -> None:
@@ -2275,18 +2283,18 @@ def test_from_arrow_rejects_duplicate_geometry_column_names() -> None:
     a = gm.points([1.0], [2.0]).to_arrow()
     b = gm.points([9.0], [8.0]).to_arrow()
     table = pa.Table.from_arrays([a, b], names=['geometry', 'geometry'])
-    with pytest.raises(TypeError, match="multiple columns named 'geometry'"):
-        gm.from_arrow(table)
+    with pytest.raises(ValueError, match='unique column names'):
+        arrow_geometries(table)
     # Positive: single geometry + differently named non-geometry still imports.
     ok = pa.Table.from_arrays(
         [pa.array([1]), a],
         names=['id', 'geometry'],
     )
-    recovered = gm.from_arrow(ok)
+    recovered = arrow_geometries(ok)
     assert recovered.to_wkt() == ['POINT (1 2)']
     # Positive: ordinary single-geometry table.
     single = pa.Table.from_arrays([a], names=['geometry'])
-    assert gm.from_arrow(single).to_wkt() == ['POINT (1 2)']
+    assert arrow_geometries(single).to_wkt() == ['POINT (1 2)']
 
 
 def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
@@ -2295,7 +2303,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
 
     xy = pa.struct([pa.field('x', pa.float64()), pa.field('y', pa.float64())])
     pt = pa.array([{'x': float('nan'), 'y': float('nan')}], type=xy)
-    empty_pt = gm.from_arrow(
+    empty_pt = arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(pa, 'geoarrow.point', xy, None, None),
             pt,
@@ -2313,7 +2321,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
     pt_z = pa.array(
         [{'x': float('nan'), 'y': float('nan'), 'z': float('nan')}], type=xyz
     )
-    empty_pt_z = gm.from_arrow(
+    empty_pt_z = arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(pa, 'geoarrow.point', xyz, None, None),
             pt_z,
@@ -2325,7 +2333,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
     # Partial NaN / Inf still rejected
     partial = pa.array([{'x': float('nan'), 'y': 1.0}], type=xy)
     with pytest.raises(ValueError, match='coordinates must be finite'):
-        gm.from_arrow(
+        arrow_geometries(
             pa.ExtensionArray.from_storage(
                 _extension_type_from_storage(pa, 'geoarrow.point', xy, None, None),
                 partial,
@@ -2333,7 +2341,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
         )
     inf_pt = pa.array([{'x': float('inf'), 'y': float('nan')}], type=xy)
     with pytest.raises(ValueError, match='coordinates must be finite'):
-        gm.from_arrow(
+        arrow_geometries(
             pa.ExtensionArray.from_storage(
                 _extension_type_from_storage(pa, 'geoarrow.point', xy, None, None),
                 inf_pt,
@@ -2341,7 +2349,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
         )
 
     poly = pa.array([[]], type=pa.list_(pa.list_(xy)))
-    empty_poly = gm.from_arrow(
+    empty_poly = arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(pa, 'geoarrow.polygon', poly.type, None, None),
             poly,
@@ -2351,7 +2359,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
 
     # Empty MultiLineString / MultiPolygon keep declared Z/M/ZM axes
     mls = pa.array([[]], type=pa.list_(pa.list_(xyz)))
-    empty_mls = gm.from_arrow(
+    empty_mls = arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(
                 pa, 'geoarrow.multilinestring', mls.type, None, None
@@ -2369,7 +2377,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
         pa.field('m', pa.float64()),
     ])
     mp = pa.array([[]], type=pa.list_(pa.list_(pa.list_(xyzm))))
-    empty_mp = gm.from_arrow(
+    empty_mp = arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(
                 pa, 'geoarrow.multipolygon', mp.type, None, None
@@ -2382,7 +2390,7 @@ def test_from_arrow_geoarrow_empty_point_and_polygon_and_axes() -> None:
 
     # Positive: non-empty XY point still works
     ok = pa.array([{'x': 1.0, 'y': 2.0}], type=xy)
-    assert gm.from_arrow(
+    assert arrow_geometries(
         pa.ExtensionArray.from_storage(
             _extension_type_from_storage(pa, 'geoarrow.point', xy, None, None),
             ok,
@@ -2430,7 +2438,7 @@ def test_geoarrow_ipc_roundtrip_preserves_registered_extension_crs() -> None:
         with pa.ipc.new_stream(sink, table.schema) as writer:
             writer.write_table(table)
         restored_table = pa.ipc.open_stream(pa.py_buffer(sink.getvalue())).read_all()
-        restored = gm.from_arrow(restored_table)
+        restored = arrow_geometries(restored_table)
         assert isinstance(restored, gm.GeometryArray)
         assert restored.crs.to_epsg() == 4326
         assert [(item).to_wkt() for item in restored] == expected_wkt
@@ -2453,7 +2461,7 @@ def test_from_arrow_outer_null_parity_pyarrow_capsule_stream() -> None:
     )
     ext = pa.ExtensionArray.from_storage(typ, storage)
 
-    via_pyarrow = cast('gm.GeometryArray', gm.from_arrow(ext))
+    via_pyarrow = cast('gm.GeometryArray', arrow_geometries(ext))
     assert via_pyarrow.is_missing.tolist() == [True, False]
     assert via_pyarrow.to_wkt()[1] == 'LINESTRING (0 0, 1 1)'
 
@@ -2461,7 +2469,7 @@ def test_from_arrow_outer_null_parity_pyarrow_capsule_stream() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return ext.__arrow_c_array__()
 
-    via_capsule = cast('gm.GeometryArray', gm.from_arrow(CapsuleOnly()))
+    via_capsule = cast('gm.GeometryArray', arrow_geometries(CapsuleOnly()))
     assert via_capsule.is_missing.tolist() == via_pyarrow.is_missing.tolist()
     assert via_capsule.to_wkt() == via_pyarrow.to_wkt()
 
@@ -2469,7 +2477,7 @@ def test_from_arrow_outer_null_parity_pyarrow_capsule_stream() -> None:
         def __arrow_c_stream__(self, requested_schema=None):
             return pa.table({'geometry': ext}).__arrow_c_stream__()
 
-    via_stream = cast('gm.GeometryArray', gm.from_arrow(StreamOnly()))
+    via_stream = cast('gm.GeometryArray', arrow_geometries(StreamOnly()))
     assert via_stream.is_missing.tolist() == via_pyarrow.is_missing.tolist()
     assert via_stream.to_wkt() == via_pyarrow.to_wkt()
 
@@ -2521,7 +2529,7 @@ def _assert_arrow_three_frontend_parity(
 
     results = []
     for frontend in (ext, CapsuleOnly(), StreamOnly()):
-        restored = cast('gm.GeometryArray', gm.from_arrow(frontend))
+        restored = cast('gm.GeometryArray', arrow_geometries(frontend))
         results.append(restored.to_wkt())
         assert restored.is_missing.tolist() == [True, False]
     assert results[0] == expected_wkt
@@ -2561,14 +2569,14 @@ def test_from_arrow_hidden_null_nan_span_parity_all_list_encodings() -> None:
     )
     ext = pa.ExtensionArray.from_storage(typ, present_nan)
     with pytest.raises(gm.ParseError, match='coordinates must be finite'):
-        gm.from_arrow(ext)
+        arrow_geometries(ext)
 
     class CapsuleOnly:
         def __arrow_c_array__(self, requested_schema=None):
             return ext.__arrow_c_array__()
 
     with pytest.raises(gm.ParseError, match='coordinates must be finite'):
-        gm.from_arrow(CapsuleOnly())
+        arrow_geometries(CapsuleOnly())
 
 
 def _sliced_nested_child_null_geometry(
@@ -2682,11 +2690,11 @@ def test_from_arrow_ancestor_masks_cover_struct_list_large_list_and_fixed_size_l
                 gm.ParseError,
                 match=r'(nested geometry values must not contain nulls|geometry arrays require non-null geometry values)',
             ):
-                gm.from_arrow(frontend)
+                arrow_geometries(frontend)
         return
 
     restored = [
-        cast('gm.GeometryArray', gm.from_arrow(frontend)) for frontend in frontends
+        cast('gm.GeometryArray', arrow_geometries(frontend)) for frontend in frontends
     ]
     expected_missing = [outer_null, False]
     assert [value.is_missing.tolist() for value in restored] == [expected_missing] * 3
@@ -2713,7 +2721,7 @@ def test_from_arrow_outer_null_points_and_non_null_positive() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return dense_ext.__arrow_c_array__()
 
-    ok = cast('gm.GeometryArray', gm.from_arrow(CapsuleDense()))
+    ok = cast('gm.GeometryArray', arrow_geometries(CapsuleDense()))
     assert ok.is_missing.tolist() == [False]
     assert ok.to_wkt() == ['LINESTRING (0 0, 1 1)']
 
@@ -2728,7 +2736,7 @@ def test_from_arrow_outer_null_points_and_non_null_positive() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return null_pts.__arrow_c_array__()
 
-    out = cast('gm.GeometryArray', gm.from_arrow(CapsulePts()))
+    out = cast('gm.GeometryArray', arrow_geometries(CapsulePts()))
     assert out.is_missing.tolist() == [False, True]
     assert out.to_wkt()[0] == 'POINT (1 2)'
 
@@ -2752,7 +2760,7 @@ def test_from_arrow_inner_list_null_rejected_not_empty_member() -> None:
     with pytest.raises(
         gm.ParseError, match='nested geometry values must not contain nulls'
     ):
-        gm.from_arrow(ext)
+        arrow_geometries(ext)
 
     # Capsule frontend must agree (not resurrect via a different path).
     class CapsuleOnly:
@@ -2762,7 +2770,7 @@ def test_from_arrow_inner_list_null_rejected_not_empty_member() -> None:
     with pytest.raises(
         gm.ParseError, match='nested geometry values must not contain nulls'
     ):
-        gm.from_arrow(CapsuleOnly())
+        arrow_geometries(CapsuleOnly())
 
 
 def test_from_arrow_empty_inner_member_not_null_still_imports() -> None:
@@ -2781,7 +2789,7 @@ def test_from_arrow_empty_inner_member_not_null_still_imports() -> None:
         pa, 'geoarrow.multilinestring', storage.type, None, None
     )
     ext = pa.ExtensionArray.from_storage(typ, storage)
-    out = cast('gm.GeometryArray', gm.from_arrow(ext))
+    out = cast('gm.GeometryArray', arrow_geometries(ext))
     assert out.is_missing.tolist() == [False]
     assert out.to_wkt() == ['MULTILINESTRING (EMPTY, (0 0, 1 1))'] or out.to_wkt()[
         0
@@ -2802,7 +2810,7 @@ def test_from_arrow_empty_inner_member_not_null_still_imports() -> None:
         ),
         outer_null,
     )
-    missing = cast('gm.GeometryArray', gm.from_arrow(outer_ext))
+    missing = cast('gm.GeometryArray', arrow_geometries(outer_ext))
     assert missing.is_missing.tolist() == [True, False]
 
 
@@ -2823,7 +2831,7 @@ def test_from_arrow_parent_struct_nulls_become_missing_capsule_and_stream() -> N
         def __arrow_c_array__(self, requested_schema=None):
             return root.__arrow_c_array__()
 
-    out = cast('gm.GeometryArray', gm.from_arrow(CapsuleOnly()))
+    out = cast('gm.GeometryArray', arrow_geometries(CapsuleOnly()))
     assert out.is_missing.tolist() == [False, True]
     assert out.to_wkt()[0] == 'POINT (1 2)'
     # Present row only — the deleted parent row must not come back as POINT (9 8).
@@ -2839,7 +2847,7 @@ def test_from_arrow_parent_struct_nulls_become_missing_capsule_and_stream() -> N
             reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
             return reader.__arrow_c_stream__()
 
-    streamed = cast('gm.GeometryArray', gm.from_arrow(StreamOnly()))
+    streamed = cast('gm.GeometryArray', arrow_geometries(StreamOnly()))
     assert streamed.is_missing.tolist() == [False, True]
     assert streamed.to_wkt()[0] == 'POINT (1 2)'
     assert streamed[~streamed.is_missing].to_wkt() == ['POINT (1 2)']
@@ -2857,7 +2865,7 @@ def test_from_arrow_parent_struct_nulls_sliced_and_non_null_positive() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return full.__arrow_c_array__()
 
-    ok = cast('gm.GeometryArray', gm.from_arrow(CapsuleFull()))
+    ok = cast('gm.GeometryArray', arrow_geometries(CapsuleFull()))
     assert ok.is_missing.tolist() == [False, False, False]
     assert ok.to_wkt() == ['POINT (1 2)', 'POINT (9 8)', 'POINT (3 4)']
 
@@ -2873,7 +2881,7 @@ def test_from_arrow_parent_struct_nulls_sliced_and_non_null_positive() -> None:
         def __arrow_c_array__(self, requested_schema=None):
             return sliced.__arrow_c_array__()
 
-    out = cast('gm.GeometryArray', gm.from_arrow(CapsuleSliced()))
+    out = cast('gm.GeometryArray', arrow_geometries(CapsuleSliced()))
     assert out.is_missing.tolist() == [True, False]
     assert out[~out.is_missing].to_wkt() == ['POINT (3 4)']
 
@@ -2885,12 +2893,12 @@ def test_from_arrow_geometry_nulls_become_missing_rows() -> None:
     arrow = pa.array(
         [(gm.Point(0, 0)).to_wkb(), None, (gm.Point(1, 1)).to_wkb()], type=pa.binary()
     )
-    assert gm.from_arrow(arrow).is_missing.tolist() == [False, True, False]
+    assert arrow_geometries(arrow).is_missing.tolist() == [False, True, False]
     chunks = pa.chunked_array([
         pa.array([(gm.Point(0, 0)).to_wkb()], type=pa.binary()),
         pa.array([None], type=pa.binary()),
     ])
-    assert gm.from_arrow(chunks).is_missing.tolist() == [False, True]
+    assert arrow_geometries(chunks).is_missing.tolist() == [False, True]
     linestring_type = (
         gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])]).to_arrow().type
     )
@@ -2901,7 +2909,7 @@ def test_from_arrow_geometry_nulls_become_missing_rows() -> None:
             type=linestring_type.storage_type,
         ),
     )
-    assert gm.from_arrow(linestring_arrow).is_missing.tolist() == [True, False]
+    assert arrow_geometries(linestring_arrow).is_missing.tolist() == [True, False]
     # vertex-level null: the struct row is valid but its x child is null
     point_type = gm.points([0, 1], [0, 1]).to_arrow().type
     point_arrow = pa.ExtensionArray.from_storage(
@@ -2911,7 +2919,7 @@ def test_from_arrow_geometry_nulls_become_missing_rows() -> None:
         ),
     )
     with pytest.raises(ValueError, match='null at index 1'):
-        gm.from_arrow(point_arrow)
+        arrow_geometries(point_arrow)
 
 
 def test_from_arrow_rejects_non_finite_packed_coordinates() -> None:
@@ -2951,28 +2959,28 @@ def test_from_arrow_rejects_non_finite_packed_coordinates() -> None:
         ),
     )
     with pytest.raises(ValueError, match='coordinates must be finite'):
-        gm.from_arrow(point_arrow)
+        arrow_geometries(point_arrow)
     with pytest.raises(ValueError, match='coordinates must be finite'):
-        gm.from_arrow(linestring_arrow)
+        arrow_geometries(linestring_arrow)
     with pytest.raises(ValueError, match='coordinates must be finite'):
-        gm.from_arrow(polygon_arrow)
+        arrow_geometries(polygon_arrow)
 
 
 def test_arrow_roundtrip_preserves_coordinate_epoch() -> None:
     points = gm.points([0.0, 1.0], [0.0, 1.0], crs=4326, epoch=2020.0)
-    back = cast('gm.GeometryArray', gm.from_arrow(points.to_arrow()))
+    back = cast('gm.GeometryArray', arrow_geometries(points.to_arrow()))
     assert back.crs.to_epsg() == 4326
     assert back.epoch == 2020.0
     assert back[0].epoch == 2020.0
     plain = cast(
         'gm.GeometryArray',
-        gm.from_arrow(gm.points([0.0], [0.0], crs=4326).to_arrow()),
+        arrow_geometries(gm.points([0.0], [0.0], crs=4326).to_arrow()),
     )
     assert plain.epoch is None
     mixed = gm.GeometryArray(
         [gm.Point(0, 0), gm.box(0, 0, 1, 1)], crs=4326, epoch=2010.5
     )
-    wkb_back = cast('gm.GeometryArray', gm.from_arrow(mixed.to_arrow()))
+    wkb_back = cast('gm.GeometryArray', arrow_geometries(mixed.to_arrow()))
     assert wkb_back.epoch == 2010.5
     assert [item.epoch for item in wkb_back] == [2010.5, 2010.5]
 
@@ -2986,12 +2994,12 @@ def test_point_outputs_of_mixed_arrays_export_packed_geoarrow() -> None:
     centroids = (mixed).centroid()
     arrow = centroids.to_arrow()
     assert arrow.type.extension_name == 'geoarrow.point'
-    restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+    restored = cast('gm.GeometryArray', arrow_geometries(arrow))
     assert [(g).to_wkt() for g in restored] == [(g).to_wkt() for g in centroids]
     projected = gm.points([21.0, 22.0], [52.0, 53.0], crs=4326).to_crs(3857)
     assert projected.to_arrow().type.extension_name == 'geoarrow.point'
     assert (
-        cast('gm.GeometryArray', gm.from_arrow(projected.to_arrow())).crs.to_epsg()
+        cast('gm.GeometryArray', arrow_geometries(projected.to_arrow())).crs.to_epsg()
         == 3857
     )
 
@@ -3006,7 +3014,7 @@ def test_geometry_collections_export_via_wkb_lane_and_chunked_import() -> None:
         pa.array((values).to_wkb()[:1], type=pa.binary()),
         pa.array((values).to_wkb()[1:], type=pa.binary()),
     ])
-    restored = cast('gm.GeometryArray', gm.from_arrow(chunks))
+    restored = cast('gm.GeometryArray', arrow_geometries(chunks))
     assert [(g).to_wkt() for g in restored] == (values).to_wkt()
 
 
@@ -3014,7 +3022,7 @@ def test_arrow_c_multirow_binary_and_large_binary_round_trip() -> None:
     wkbs = [gm.Point(i, i).to_wkb() for i in range(5)]
     for arrow_type in (pa.binary(), pa.large_binary()):
         arrow = pa.array(wkbs, type=arrow_type)
-        restored = gm.from_arrow(arrow)
+        restored = arrow_geometries(arrow)
         assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(5)]
 
 
@@ -3022,11 +3030,11 @@ def test_arrow_c_nonzero_offset_and_sliced_geoarrow_struct() -> None:
     values = gm.points([0, 1, 2, 3], [0, 1, 2, 3], crs=4326)
     arrow = values.to_arrow()
     sliced = arrow.slice(1, 2)
-    restored = gm.from_arrow(sliced)
+    restored = arrow_geometries(sliced)
     assert restored.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
     # Coordinate child fields of a sliced GeoArrow struct inherit parent offset
     # so the visible span matches the slice, not the full parent allocation.
-    assert len(gm.from_arrow(sliced)) == 2
+    assert len(arrow_geometries(sliced)) == 2
     assert restored.crs is not None
     assert values.crs is not None
     assert restored.crs.same_as(values.crs, mode='exact')
@@ -3040,11 +3048,11 @@ def test_true_nonzero_offset_c_array_capsule_binary() -> None:
     full = pa.array(wkbs, type=pa.binary())
     sliced = full.slice(1, 3)  # offset=1, length=3 in the C ABI
     # Capsule-only forces owned native Arrow admission with a real offset.
-    restored = gm.from_arrow(_capsule_only_from_pyarrow(sliced))
+    restored = arrow_geometries(_capsule_only_from_pyarrow(sliced))
     assert restored.to_wkt() == ['POINT (1 1)', 'POINT (2 2)', 'POINT (3 3)']
     # LargeBinary sibling.
     sliced_l = pa.array(wkbs, type=pa.large_binary()).slice(2, 2)
-    restored_l = gm.from_arrow(_capsule_only_from_pyarrow(sliced_l))
+    restored_l = arrow_geometries(_capsule_only_from_pyarrow(sliced_l))
     assert restored_l.to_wkt() == ['POINT (2 2)', 'POINT (3 3)']
 
 
@@ -3058,14 +3066,14 @@ def test_arrow_c_null_count_unknown_and_excessive() -> None:
         [gm.Point(0, 0).to_wkb(), None, gm.Point(1, 1).to_wkb()],
         type=pa.binary(),
     )
-    restored = gm.from_arrow(binary)
+    restored = arrow_geometries(binary)
     assert restored.is_missing.tolist() == [False, True, False]
 
 
 def test_arrow_c_empty_array_with_unknown_null_count_imports() -> None:
     """Empty arrays with null_count=-1 must not require a validity bitmap."""
     empty = pa.array([], type=pa.binary())
-    restored = gm.from_arrow(empty)
+    restored = arrow_geometries(empty)
     assert len(restored) == 0
 
 
@@ -3077,7 +3085,7 @@ def test_arrow_c_binary_view_wkb_round_trip() -> None:
         pytest.skip('pyarrow binary_view unavailable')
     wkbs = [gm.Point(i, i).to_wkb() for i in range(3)]
     arrow = pa.array(wkbs, type=pa.binary_view())
-    restored = gm.from_arrow(arrow)
+    restored = arrow_geometries(arrow)
     assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
 
 
@@ -3085,11 +3093,11 @@ def test_zero_chunk_binary_view_accepted() -> None:
     """B: zero-chunk BinaryView must share non-empty acceptance (empty GeometryArray)."""
     if not hasattr(pa, 'binary_view'):
         pytest.skip('pyarrow binary_view unavailable')
-    empty = gm.from_arrow(pa.chunked_array([], type=pa.binary_view()))
+    empty = arrow_geometries(pa.chunked_array([], type=pa.binary_view()))
     assert len(empty) == 0
     # Capsule-only zero-chunk is not a ChunkedArray; empty BinaryView array
     # still exercises the same type frame acceptance.
-    empty2 = gm.from_arrow(pa.array([], type=pa.binary_view()))
+    empty2 = arrow_geometries(pa.array([], type=pa.binary_view()))
     assert len(empty2) == 0
 
 
@@ -3112,7 +3120,7 @@ def test_zero_chunk_large_list_geoarrow_extension_admits_empty() -> None:
     ext = _GeoarrowLinestring(storage_type, 'geoarrow.linestring')
     # Zero-chunk extension type (the C zero-chunk frame path).
     zero = pa.chunked_array([], type=ext)
-    empty = gm.from_arrow(zero)
+    empty = arrow_geometries(zero)
     assert len(empty) == 0
 
     # Field-metadata LargeList + zero batches (Table) also admits empty.
@@ -3125,7 +3133,7 @@ def test_zero_chunk_large_list_geoarrow_extension_admits_empty() -> None:
         },
     )
     table = pa.Table.from_batches([], schema=pa.schema([field]))
-    empty_t = gm.from_arrow(table)
+    empty_t = arrow_geometries(table)
     assert len(empty_t) == 0
 
 
@@ -3154,7 +3162,7 @@ def test_geoarrow_closed_3_coord_ring_rejects_like_wkt_wkb() -> None:
         (gm.ParseError, gm.InvalidGeometryError, TypeError, ValueError),
         match=r'three coordinates|RingTooShort|require at least',
     ):
-        gm.from_arrow(batch3)
+        arrow_geometries(batch3)
 
     # Legal triangle (4 verts closed) still round-trips through pickle.
     points4 = pa.array([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], type=xy)
@@ -3168,7 +3176,7 @@ def test_geoarrow_closed_3_coord_ring_rejects_like_wkt_wkb() -> None:
             b'ARROW:extension:metadata': b'{}',
         },
     )
-    arr4 = gm.from_arrow(
+    arr4 = arrow_geometries(
         pa.RecordBatch.from_arrays([polygons4], schema=pa.schema([field4]))
     )
     restored = pickle.loads(pickle.dumps(arr4))
@@ -3181,23 +3189,25 @@ def test_capsule_only_binary_large_binary_binary_view_and_empty() -> None:
     """Capsule-only imports for z / Z / vz / empty — must hit native.rs."""
     wkbs = [gm.Point(i, i).to_wkb() for i in range(3)]
     for arrow_type in (pa.binary(), pa.large_binary()):
-        restored = gm.from_arrow(
+        restored = arrow_geometries(
             _capsule_only_from_pyarrow(pa.array(wkbs, type=arrow_type))
         )
         assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
 
     if hasattr(pa, 'binary_view'):
-        restored = gm.from_arrow(
+        restored = arrow_geometries(
             _capsule_only_from_pyarrow(pa.array(wkbs, type=pa.binary_view()))
         )
         assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
 
     # Empty Binary / LargeBinary / BinaryView — zero-sized buffers may be null.
     for arrow_type in (pa.binary(), pa.large_binary()):
-        empty = gm.from_arrow(_capsule_only_from_pyarrow(pa.array([], type=arrow_type)))
+        empty = arrow_geometries(
+            _capsule_only_from_pyarrow(pa.array([], type=arrow_type))
+        )
         assert len(empty) == 0
     if hasattr(pa, 'binary_view'):
-        empty_v = gm.from_arrow(
+        empty_v = arrow_geometries(
             _capsule_only_from_pyarrow(pa.array([], type=pa.binary_view()))
         )
         assert len(empty_v) == 0
@@ -3206,20 +3216,20 @@ def test_capsule_only_binary_large_binary_binary_view_and_empty() -> None:
 def test_capsule_only_geoarrow_struct_slice_nested_list() -> None:
     """Capsule-only +s (struct point) and nested +l (linestring) + slices."""
     points = gm.points([0, 1, 2, 3], [0, 1, 2, 3], crs=4326)
-    restored = gm.from_arrow(_capsule_only_from_gometry(points))
+    restored = arrow_geometries(_capsule_only_from_gometry(points))
     assert restored.to_wkt() == points.to_wkt()
     assert restored.crs is not None
     assert points.crs is not None
     assert restored.crs.same_as(points.crs, mode='exact')
 
     # Empty WKB capsule path (zero-sized buffers may be null).
-    empty_wkb = gm.from_arrow(
+    empty_wkb = arrow_geometries(
         _capsule_only_from_pyarrow(pa.array([], type=pa.binary()))
     )
     assert len(empty_wkb) == 0
 
     sliced = points[1:3]
-    restored_s = gm.from_arrow(_capsule_only_from_gometry(sliced))
+    restored_s = arrow_geometries(_capsule_only_from_gometry(sliced))
     assert restored_s.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
 
     lines = gm.GeometryArray(
@@ -3229,7 +3239,7 @@ def test_capsule_only_geoarrow_struct_slice_nested_list() -> None:
         ],
         crs=4326,
     )
-    restored_l = gm.from_arrow(_capsule_only_from_gometry(lines))
+    restored_l = arrow_geometries(_capsule_only_from_gometry(lines))
     assert restored_l.to_wkt() == lines.to_wkt()
 
 
@@ -3244,7 +3254,7 @@ def test_capsule_only_large_list_geometry_extension_admits() -> None:
     large = pa.LargeListArray.from_arrays(pa.array([0, 2], type=pa.int64()), coords)
     # Bare LargeList (no geometry encoding) is not a geometry storage type.
     with pytest.raises((TypeError, gm.ParseError, ValueError)):
-        gm.from_arrow(large)
+        arrow_geometries(large)
 
     # Both GeoArrow paths read checked i64 offsets; they must not reinterpret
     # [0, 2] as i32 cells and produce EMPTY/a short line.
@@ -3260,7 +3270,7 @@ def test_capsule_only_large_list_geometry_extension_admits() -> None:
         },
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
-    admitted = gm.from_arrow(batch)
+    admitted = arrow_geometries(batch)
     assert admitted.to_wkt() == ['LINESTRING (0 0, 1 1)']
 
     class _GeoArrowLinestringType(pa.ExtensionType):
@@ -3278,7 +3288,7 @@ def test_capsule_only_large_list_geometry_extension_admits() -> None:
             return cls()
 
     extension = _GeoArrowLinestringType()
-    native = gm.from_arrow(
+    native = arrow_geometries(
         _capsule_only_from_pyarrow(pa.ExtensionArray.from_storage(extension, storage))
     )
     assert native.to_wkt() == admitted.to_wkt()
@@ -3305,7 +3315,7 @@ def test_pyarrow_large_list_geometry_extension_admits() -> None:
         },
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
-    arr = gm.from_arrow(batch)
+    arr = arrow_geometries(batch)
     assert arr.to_wkt() == ['LINESTRING (0 0, 1 1)']
 
 
@@ -3336,7 +3346,7 @@ def test_empty_arrow_c_stream_large_list_geoarrow_admits() -> None:
         def __arrow_c_stream__(self, requested_schema=None):
             return self._obj.__arrow_c_stream__(requested_schema)
 
-    assert len(gm.from_arrow(_StreamOnly(table))) == 0
+    assert len(arrow_geometries(_StreamOnly(table))) == 0
     # i32 List remains equivalent.
     ok_field = pa.field(
         'geometry',
@@ -3347,9 +3357,9 @@ def test_empty_arrow_c_stream_large_list_geoarrow_admits() -> None:
         },
     )
     ok_table = pa.Table.from_batches([], schema=pa.schema([ok_field]))
-    empty = gm.from_arrow(_StreamOnly(ok_table))
+    empty = arrow_geometries(_StreamOnly(ok_table))
     assert len(empty) == 0
-    empty_wkb = gm.from_arrow(
+    empty_wkb = arrow_geometries(
         _StreamOnly(
             pa.Table.from_batches(
                 [],
@@ -3377,8 +3387,8 @@ def test_multichunk_point_import_matches_single_chunk() -> None:
     single = gm.points(xs, ys).to_arrow()
     mid = n // 2
     multi = pa.chunked_array([single.slice(0, mid), single.slice(mid, n - mid)])
-    a = gm.from_arrow(single)
-    b = gm.from_arrow(multi)
+    a = arrow_geometries(single)
+    b = arrow_geometries(multi)
     assert a.to_wkt() == b.to_wkt()
     assert len(a) == n
 
@@ -3408,7 +3418,7 @@ def test_malformed_geoarrow_polygon_offsets_raise_not_panic() -> None:
         (gm.ParseError, TypeError, ValueError, gm.GeometryError),
         match=r'offset|span|range|ordered|vertex|coordinate|buffer',
     ) as exc_info:
-        gm.from_arrow(arrow)
+        arrow_geometries(arrow)
     # Must not be a PanicException / index out of bounds.
     assert 'PanicException' not in type(exc_info.value).__name__
     assert 'index out of bounds' not in str(exc_info.value).lower()
@@ -3425,7 +3435,7 @@ def test_empty_stream_rejects_bare_non_geometry_types() -> None:
     ]:
         table = pa.Table.from_batches([], schema=pa.schema([pa.field('col', typ)]))
         with pytest.raises((TypeError, gm.ParseError, ValueError)):
-            gm.from_arrow(_StreamOnly(table))
+            arrow_geometries(_StreamOnly(table))
 
 
 def test_empty_stream_preserves_geometry_field_crs_epoch() -> None:
@@ -3445,7 +3455,7 @@ def test_empty_stream_preserves_geometry_field_crs_epoch() -> None:
         },
     )
     table = pa.Table.from_batches([], schema=pa.schema([field]))
-    empty = gm.from_arrow(_StreamOnly(table))
+    empty = arrow_geometries(_StreamOnly(table))
     assert len(empty) == 0
     assert empty.crs is not None
     assert empty.crs.to_authority() == ('EPSG', '4326')
@@ -3461,8 +3471,8 @@ def test_stream_table_with_large_list_sibling_imports() -> None:
         'geometry': pa.array(pts, type=pa.binary()),
         'extra': pa.array([[1], [2]], type=pa.large_list(pa.int32())),
     })
-    direct = gm.from_arrow(table)
-    stream = gm.from_arrow(_StreamOnly(table))
+    direct = arrow_geometries(table)
+    stream = arrow_geometries(_StreamOnly(table))
     assert direct.to_wkt() == stream.to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
 
 
@@ -3470,7 +3480,10 @@ def test_stream_wrapper_nonempty_wkb_table_imports() -> None:
     """Valid non-empty one-column WKB table must import through stream-only wrapper."""
     pts = [gm.Point(i, i).to_wkb() for i in range(3)]
     table = pa.table({'geometry': pa.array(pts, type=pa.binary())})
-    assert gm.from_arrow(table).to_wkt() == gm.from_arrow(_StreamOnly(table)).to_wkt()
+    assert (
+        arrow_geometries(table).to_wkt()
+        == arrow_geometries(_StreamOnly(table)).to_wkt()
+    )
 
 
 def test_zero_chunk_tagged_int64_geoarrow_rejected() -> None:
@@ -3486,9 +3499,9 @@ def test_zero_chunk_tagged_int64_geoarrow_rejected() -> None:
 
     ext = _Ext(pa.int64(), 'geoarrow.linestring')
     with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
-        gm.from_arrow(pa.chunked_array([], type=ext))
+        arrow_geometries(pa.chunked_array([], type=ext))
     with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
-        gm.from_arrow(pa.array([1, 2, 3], type=ext))
+        arrow_geometries(pa.array([1, 2, 3], type=ext))
 
 
 class _ArrayOnly:
@@ -3564,7 +3577,7 @@ def test_geoarrow_int64_point_storage_rejected_every_frontend(
         target = _ArrayOnly(col)
 
     with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
-        gm.from_arrow(target)
+        arrow_geometries(target)
 
 
 @pytest.mark.parametrize('frontend', ['direct', 'stream', 'array_capsule'])
@@ -3606,7 +3619,7 @@ def test_geoarrow_duplicate_x_point_storage_rejected_every_frontend(
         KeyError,
         AttributeError,
     )):
-        gm.from_arrow(target)
+        arrow_geometries(target)
 
 
 @pytest.mark.parametrize('frontend', ['direct', 'stream'])
@@ -3631,7 +3644,7 @@ def test_unrecognized_extension_name_errors_every_frontend(
     with pytest.raises(
         (TypeError, gm.ParseError, ValueError), match=r'geoarrow|extension'
     ):
-        gm.from_arrow(target)
+        arrow_geometries(target)
 
 
 @pytest.mark.parametrize('frontend', ['direct', 'stream'])
@@ -3648,7 +3661,7 @@ def test_junk_extension_metadata_without_name_imports_as_bare_wkb(
     if empty:
         table = pa.Table.from_batches([], schema=pa.schema([field]))
         target: object = table if frontend == 'direct' else _StreamOnly(table)
-        out = gm.from_arrow(target)
+        out = arrow_geometries(target)
         assert len(out) == 0
         return
     wkb = gm.Point(1, 2).to_wkb()
@@ -3656,7 +3669,7 @@ def test_junk_extension_metadata_without_name_imports_as_bare_wkb(
         [pa.array([wkb], type=pa.binary())], schema=pa.schema([field])
     )
     target = table if frontend == 'direct' else _StreamOnly(table)
-    assert gm.from_arrow(target).to_wkt() == ['POINT (1 2)']
+    assert arrow_geometries(target).to_wkt() == ['POINT (1 2)']
 
 
 def test_geoarrow_nested_polygon_int64_coords_rejected() -> None:
@@ -3681,9 +3694,9 @@ def test_geoarrow_nested_polygon_int64_coords_rejected() -> None:
         # Construction rejected — also a pass for this invariant.
         return
     with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
-        gm.from_arrow(arrow)
+        arrow_geometries(arrow)
     with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
-        gm.from_arrow(_StreamOnly(pa.table({'geometry': arrow})))
+        arrow_geometries(_StreamOnly(pa.table({'geometry': arrow})))
 
 
 def _geoarrow_polygon_array(
@@ -3773,7 +3786,7 @@ def test_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
     """
     batch = _geoarrow_polygon_array(points, axes=axes)
     with pytest.raises(gm.ParseError, match=r'closed|active ordinate|ring'):
-        gm.from_arrow(batch)
+        arrow_geometries(batch)
     # Capsule frontend (native Arrow-C path).
     storage = batch.column(0)
     field = batch.schema.field(0)
@@ -3781,7 +3794,7 @@ def test_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
     # capsule-only uses the same field metadata through table export.
     table = pa.Table.from_batches([batch])
     with pytest.raises(gm.ParseError, match=r'closed|active ordinate|ring'):
-        gm.from_arrow(_StreamOnly(table))
+        arrow_geometries(_StreamOnly(table))
     del storage, field
 
 
@@ -3793,7 +3806,7 @@ def test_geoarrow_closed_3d_polygon_imports_and_pickles() -> None:
         (0.0, 1.0, 3.0),
         (0.0, 0.0, 1.0),
     ]
-    arr = gm.from_arrow(_geoarrow_polygon_array(closed, axes='xyz'))
+    arr = arrow_geometries(_geoarrow_polygon_array(closed, axes='xyz'))
     assert arr.to_wkt() == ['POLYGON Z ((0 0 1, 1 0 2, 0 1 3, 0 0 1))']
     restored = pickle.loads(pickle.dumps(arr))
     assert restored.to_wkt() == arr.to_wkt()
@@ -3808,6 +3821,6 @@ def test_geoarrow_xy_closed_2d_polygon_unaffected() -> None:
         (0.0, 1.0),
         (0.0, 0.0),
     ]
-    arr = gm.from_arrow(_geoarrow_polygon_array(closed_2d, axes='xy'))
+    arr = arrow_geometries(_geoarrow_polygon_array(closed_2d, axes='xy'))
     assert arr.to_wkt() == ['POLYGON ((0 0, 1 0, 0 1, 0 0))']
     assert pickle.loads(pickle.dumps(arr)).to_wkt() == arr.to_wkt()

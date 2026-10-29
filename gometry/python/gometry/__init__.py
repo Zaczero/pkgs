@@ -40,12 +40,14 @@ from gometry._cpu import ensure_supported_cpu as _ensure_supported_cpu
 _ensure_supported_cpu()
 del _ensure_supported_cpu
 
+from gometry._feature_arrow import from_arrow, from_arrow_batches
 from gometry._from_pandas import from_pandas
-from gometry._geopandas import from_geopandas
+from gometry._geopandas import from_geopandas, to_geopandas
 from gometry._geoparquet import from_geoparquet
 from gometry._lib import (
     CRS,
     AccuracyWarning,
+    ArrowValue,
     CellArray,
     Circle,
     CircleArray,
@@ -123,7 +125,6 @@ from gometry._lib import (
     equals_exact,
     equals_identical,
     frechet_distance,
-    from_arrow,
     from_geojson,
     from_polyline,
     from_wkb,
@@ -201,6 +202,7 @@ from gometry._polars import from_polars
 from gometry._types import (
     Cell,
     Extremes,
+    Feature,
     Features,
     PolygonizeResult,
 )
@@ -208,7 +210,7 @@ from gometry._viz import explore
 
 # Public Python-defined types have the same canonical identity users import
 # and document; the private module is only their implementation home.
-for _public_type in (Cell, Extremes, Features, PolygonizeResult):
+for _public_type in (Cell, Extremes, Feature, Features, PolygonizeResult):
     # Resolve class annotations while their real implementation module still
     # owns the private aliases.  After publishing the canonical module name,
     # `typing.get_type_hints()` must not need fake private globals on gometry.
@@ -250,6 +252,7 @@ del _register_native_sequences
 
 __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Python's sorted() contract
     'AccuracyWarning',
+    'ArrowValue',
     'CRS',
     'CRSError',
     'CRSMismatchError',
@@ -259,6 +262,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'CircleArray',
     'Coordinates',
     'Extremes',
+    'Feature',
     'Features',
     'GeohashCell',
     'Geometry',
@@ -334,6 +338,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'explore',
     'frechet_distance',
     'from_arrow',
+    'from_arrow_batches',
     'from_geojson',
     'from_geopandas',
     'from_geoparquet',
@@ -403,6 +408,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'tile_union',
     'to_feature',
     'to_feature_collection',
+    'to_geopandas',
     'touches',
     'union',
     'union_all',

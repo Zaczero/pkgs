@@ -27,7 +27,9 @@ def countries() -> dict[str, gm.Geometry]:
         'type': 'FeatureCollection',
         'features': [features[code] for code in codes],
     })
-    return dict(zip(codes, gm.from_geojson(selected, crs=4326), strict=True))
+    collection = gm.from_geojson(selected, crs=4326)
+    assert isinstance(collection, gm.Features)
+    return dict(zip(codes, collection.geometries, strict=True))
 
 
 def test_union_keeps_holes_of_a_member_bordering_an_antimeridian_member(

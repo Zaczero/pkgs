@@ -4,7 +4,7 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyModuleNotFoundError, PyTypeError};
+use pyo3::exceptions::{PyModuleNotFoundError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
@@ -313,6 +313,8 @@ pub(crate) fn arrow_import_error(error: NativeArrowImportError) -> PyErr {
     match error {
         NativeArrowImportError::GeoArrow(message) => geoarrow_parse_error(message),
         NativeArrowImportError::Core(error) => error.into(),
+        NativeArrowImportError::Type(message) => PyTypeError::new_err(message),
+        NativeArrowImportError::Overflow(message) => PyOverflowError::new_err(message),
     }
 }
 
@@ -626,6 +628,12 @@ fn arrow_geometry_column_supported(
     )
 }
 
+#[pyfunction(name = "_is_arrow_geometry")]
+#[pyo3(signature = (value, field = None))]
+fn is_arrow_geometry(value: &Bound<'_, PyAny>, field: Option<&Bound<'_, PyAny>>) -> PyResult<bool> {
+    arrow_geometry_column_supported(value, field)
+}
+
 /// Table autodetection treats an ordinary unsupported column as a negative
 /// classification, but provider failures and malformed metadata remain visible.
 fn arrow_probe_type<T>(result: PyResult<T>, py: Python<'_>) -> PyResult<bool> {
@@ -881,6 +889,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(
         m;
         from_arrow,
+        is_arrow_geometry,
         py_from_geoparquet_arrow,
         py_geoparquet_publication,
         metadata::py_parse_geoarrow_extension_metadata,

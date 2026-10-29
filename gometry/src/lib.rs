@@ -264,6 +264,10 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         _token_vocabulary,
     );
     py::arrow::register(m)?;
+    py::feature_selection::register(m)?;
+    py::feature_values::register(m)?;
+    py::feature_views::register(m)?;
+    py::arrow_c::values::register(m)?;
     py::crs::register(m)?;
     py::vectors::register(m)?;
     py::errors::register(m)?;

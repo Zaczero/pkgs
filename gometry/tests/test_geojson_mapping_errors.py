@@ -183,7 +183,7 @@ def _read(reader: str, value: object) -> object:
     if reader == 'from_geojson':
         return gm.from_geojson(value, crs=None)
     if reader == 'from_geojson_features':
-        return gm.from_geojson(value, crs=None, features=True)
+        return gm.from_geojson(value, crs=None, as_features=True)
     if reader == 'require':
         return gm.require(value, crs=None)
     raise AssertionError(f'unexpected reader: {reader}')
@@ -261,7 +261,7 @@ def test_from_geojson_property_depth_matches_text_and_mapping() -> None:
 
     for value in (text, feature):
         with pytest.raises(gm.ParseError) as exc_info:
-            gm.from_geojson(value, crs=None, features=True)
+            gm.from_geojson(value, crs=None, as_features=True)
         assert exc_info.value.format == 'geojson'
         errors.append(exc_info.value)
 

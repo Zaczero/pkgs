@@ -35,6 +35,8 @@ mod node;
 pub(crate) enum NativeArrowImportError {
     GeoArrow(String),
     Core(crate::error::Error),
+    Type(&'static str),
+    Overflow(&'static str),
 }
 
 impl From<crate::error::Error> for NativeArrowImportError {

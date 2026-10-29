@@ -9,6 +9,8 @@ from __future__ import annotations
 import gometry as gm
 import pytest
 
+from tests._support import arrow_geometries
+
 pa = pytest.importorskip('pyarrow')
 
 
@@ -79,7 +81,9 @@ def test_g1_from_arrow_admits_3_corner_open_like_wkt() -> None:
     assert gm.from_wkt(open_wkt).to_wkt() == expected
     wkb = gm.from_wkt(expected).to_wkb()
     # Re-parse open via WKB of closed form is closed; open form via arrow:
-    arr = gm.from_arrow(_geoarrow_polygon_table([[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]]))
+    arr = arrow_geometries(
+        _geoarrow_polygon_table([[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]])
+    )
     assert arr.to_wkt() == [expected]
     assert gm.from_wkb(wkb).to_wkt() == expected
 
@@ -89,7 +93,7 @@ def test_g1_from_arrow_admits_4_corner_unclosed_like_wkt() -> None:
     open_wkt = 'POLYGON ((0 0, 1 0, 1 1, 0 1))'
     expected = 'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'
     assert gm.from_wkt(open_wkt).to_wkt() == expected
-    arr = gm.from_arrow(
+    arr = arrow_geometries(
         _geoarrow_polygon_table([[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]])
     )
     assert arr.to_wkt() == [expected]
@@ -104,7 +108,7 @@ def test_g1_from_arrow_rejects_xy_closed_z_open_like_wkt() -> None:
         (gm.ParseError, TypeError, ValueError),
         match='closed on all active ordinates',
     ):
-        gm.from_arrow(
+        arrow_geometries(
             _geoarrow_polygon_table(
                 [[(0.0, 0.0, 1.0), (1.0, 0.0, 2.0), (1.0, 1.0, 3.0), (0.0, 0.0, 9.0)]],
                 with_z=True,
@@ -120,7 +124,9 @@ def test_g1_from_arrow_rejects_short_closed_ring_like_wkt() -> None:
         (gm.ParseError, TypeError, ValueError),
         match=r'three coordinates|at least',
     ):
-        gm.from_arrow(_geoarrow_polygon_table([[(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)]]))
+        arrow_geometries(
+            _geoarrow_polygon_table([[(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)]])
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +192,7 @@ def test_g3_large_list_linestring_decodes() -> None:
             b'ARROW:extension:metadata': b'{}',
         },
     )
-    arr = gm.from_arrow(
+    arr = arrow_geometries(
         pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     )
     assert arr.to_wkt() == ['LINESTRING (0 0, 1 1, 2 0)']
@@ -204,7 +210,7 @@ def test_g3_interleaved_fixed_size_list_point() -> None:
             b'ARROW:extension:metadata': b'{}',
         },
     )
-    arr = gm.from_arrow(pa.RecordBatch.from_arrays([fsl], schema=pa.schema([field])))
+    arr = arrow_geometries(pa.RecordBatch.from_arrays([fsl], schema=pa.schema([field])))
     assert arr.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 
@@ -221,7 +227,7 @@ def test_g3_interleaved_fixed_size_list_linestring() -> None:
             b'ARROW:extension:metadata': b'{}',
         },
     )
-    arr = gm.from_arrow(
+    arr = arrow_geometries(
         pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     )
     assert arr.to_wkt() == ['LINESTRING (0 0, 1 1, 2 0)']
@@ -244,12 +250,12 @@ def test_g3_interleaved_fixed_size_list_linestring_decodes_native_array_and_stre
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     schema, array = batch.__arrow_c_array__()
-    native_array = gm.from_arrow(_CapsuleArrayOnly(schema, array))
+    native_array = arrow_geometries(_CapsuleArrayOnly(schema, array))
     assert native_array.to_wkt() == ['LINESTRING (0 0, 1 1, 2 0)']
 
     # Array capsules are one-shot; the stream gets a fresh producer tree.
     table = pa.Table.from_batches([batch])
-    native_stream = gm.from_arrow(_CapsuleStreamOnly(table))
+    native_stream = arrow_geometries(_CapsuleStreamOnly(table))
     assert native_stream.to_wkt() == ['LINESTRING (0 0, 1 1, 2 0)']
 
 
@@ -265,7 +271,7 @@ def test_g3_interleaved_xyz_point() -> None:
             b'ARROW:extension:metadata': b'{}',
         },
     )
-    arr = gm.from_arrow(pa.RecordBatch.from_arrays([fsl], schema=pa.schema([field])))
+    arr = arrow_geometries(pa.RecordBatch.from_arrays([fsl], schema=pa.schema([field])))
     assert arr.to_wkt() == ['POINT Z (1 2 3)', 'POINT Z (4 5 6)']
 
 
@@ -286,7 +292,7 @@ def test_g3_interleaved_xyzm_point_preserves_z_and_m_ordinates() -> None:
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
 
-    restored = gm.from_arrow(batch)
+    restored = arrow_geometries(batch)
 
     assert restored.to_wkt() == ['POINT ZM (0 1 2 3)', 'POINT ZM (4 5 6 7)']
 
@@ -319,18 +325,18 @@ def test_g3_interleaved_size3_rejects_noncanonical_field_name() -> None:
         with pytest.raises(
             (TypeError, gm.ParseError, ValueError), match=r'field name|interleaved'
         ):
-            gm.from_arrow(_interleaved_point_batch(flat, 3, bad))
+            arrow_geometries(_interleaved_point_batch(flat, 3, bad))
     # Canonical size-3 names still admit.
-    assert gm.from_arrow(_interleaved_point_batch(flat, 3, 'xyz')).to_wkt() == [
+    assert arrow_geometries(_interleaved_point_batch(flat, 3, 'xyz')).to_wkt() == [
         'POINT Z (1 2 3)',
         'POINT Z (4 5 6)',
     ]
-    assert gm.from_arrow(_interleaved_point_batch(flat, 3, 'xym')).to_wkt() == [
+    assert arrow_geometries(_interleaved_point_batch(flat, 3, 'xym')).to_wkt() == [
         'POINT M (1 2 3)',
         'POINT M (4 5 6)',
     ]
     # Default pyarrow name 'item' still admits as XYZ.
-    assert gm.from_arrow(_interleaved_point_batch(flat, 3, 'item')).to_wkt() == [
+    assert arrow_geometries(_interleaved_point_batch(flat, 3, 'item')).to_wkt() == [
         'POINT Z (1 2 3)',
         'POINT Z (4 5 6)',
     ]
@@ -394,6 +400,6 @@ def test_g6_require_feature_returns_geometry_only() -> None:
     g = gm.require(feature, crs=4326)
     assert isinstance(g, gm.Point)
     assert g.to_wkt() == 'POINT (1 2)'
-    feats = gm.from_geojson(feature, features=True)
+    feats = gm.from_geojson(feature, as_features=True)
     assert feats.properties == ({'name': 'A', 'count': 99},)
     assert feats.ids == (7,)

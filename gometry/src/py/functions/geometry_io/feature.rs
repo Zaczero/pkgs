@@ -5,7 +5,7 @@ use crate::crs::CrsError;
 use crate::crs::frame::WGS84_LONLAT;
 use crate::dispatch::MetricScratch;
 use crate::py::errors;
-use crate::py::support::geojson_domain_metric;
+use crate::py::support::{feature_type, geojson_domain_metric};
 use crate::{
     GeometryError, InvalidGeometryError, PyTypeError, Shape, exact_geometry, exact_geometry_array,
     geometry_type_err, mapping_as_dict, require_geojson_crs,
@@ -284,6 +284,27 @@ pub(crate) fn to_feature(
     id: Option<&Bound<'_, PyAny>>,
     drop_epoch: bool,
 ) -> PyResult<Py<PyDict>> {
+    let feature_values = match geom.filter(|value| !value.is_none()) {
+        Some(value) if value.is_instance(feature_type(py)?)? => {
+            if properties.is_some() || id.is_some() {
+                return Err(PyTypeError::new_err(
+                    "properties and id must be omitted when geom is a Feature",
+                ));
+            }
+            Some((
+                value.getattr("geometry")?,
+                value.call_method0("_geojson_property")?,
+                value.getattr("id")?,
+            ))
+        },
+        _ => None,
+    };
+    let geom = feature_values.as_ref().map(|values| &values.0).or(geom);
+    let properties = feature_values
+        .as_ref()
+        .map(|values| &values.1)
+        .or(properties);
+    let id = feature_values.as_ref().map(|values| &values.2).or(id);
     let geometry = match geom.filter(|value| !value.is_none()) {
         None => None,
         Some(value) => {
@@ -318,7 +339,7 @@ pub(crate) fn to_feature(
         .map(|text| geometry_from_json_text(py, text))
         .transpose()?;
     let geometry = geometry.as_ref().map(|text| text.bind(py));
-    Ok(feature_dict(py, geometry, properties, id, false)?.unbind())
+    Ok(feature_dict(py, geometry, properties, id, feature_values.is_some())?.unbind())
 }
 
 /// Build a GeoJSON FeatureCollection from geometries and aligned side data.
@@ -387,7 +408,7 @@ pub(crate) fn to_feature_collection(
         // Normalize Features once and call the private impl — do not re-enter
         // the public pyfunction.
         let feature_geometries = values.getattr("geometries")?;
-        let feature_properties = values.getattr("properties")?;
+        let feature_properties = values.call_method0("_geojson_properties")?;
         let feature_ids = values.getattr("ids")?;
         return to_feature_collection_impl(
             py,

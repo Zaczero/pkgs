@@ -44,11 +44,16 @@ pub(crate) fn polygonize_result_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3
     CELL.import(py, "gometry._types", "PolygonizeResult")
 }
 
-/// Cached `gometry._types.Features` constructor returned by the native
-/// `from_geojson(..., features=True)` boundary.
+/// Cached `gometry._types.Features` constructor for native feature publication.
 pub(crate) fn features_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
     static CELL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> = pyo3::sync::PyOnceLock::new();
     CELL.import(py, "gometry._types", "Features")
+}
+
+/// Cached single-feature constructor used by aligned row selection.
+pub(crate) fn feature_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
+    static CELL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> = pyo3::sync::PyOnceLock::new();
+    CELL.import(py, "gometry._types", "Feature")
 }
 
 pub(crate) fn gometry_lib_module(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyModule>> {

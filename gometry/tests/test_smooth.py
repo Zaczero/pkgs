@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
 from gometry import GeometryError
 
@@ -23,7 +24,9 @@ def test_chaikin_square_one_iteration_coords() -> None:
         (0.0, 0.25),
         (0.25, 0.0),
     ]
-    assert list(smoothed.exterior.coords) == pytest.approx(expected)
+    np.testing.assert_allclose(
+        smoothed.exterior.coords.to_nested(), expected, rtol=1e-6, atol=1e-12
+    )
 
 
 def test_chaikin_vertex_count_doubles_per_iteration() -> None:

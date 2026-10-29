@@ -588,8 +588,128 @@ def test_from_geopandas_gdf_roundtrip(points: gm.GeometryArray) -> None:
 
     gdf = gpd.GeoDataFrame({'id': [1, 2, 3]}, geometry=points.to_geopandas())
     restored = gm.from_geopandas(gdf)
-    assert canon(restored) == canon(points)
-    assert restored.crs == points.crs
+    assert canon(restored.geometries) == canon(points)
+    assert restored.geometries.crs == points.crs
+    assert restored.column('id')[:] == (1, 2, 3)
+    assert restored.ids == (None, None, None)
+
+
+@pytest.mark.usefixtures('geopandas_available')
+def test_geodataframe_features_preserve_explicit_ids_and_attributes(
+    points: gm.GeometryArray,
+) -> None:
+    import geopandas as gpd
+    import pandas as pd
+
+    frame = gpd.GeoDataFrame(
+        {
+            'fid': pd.array([0, None, 42], dtype='UInt64'),
+            'rank': np.array([3, 5, 7], dtype=np.int16),
+            'name': ['west', None, 'east'],
+            'outline': points.to_geopandas(),
+            'shape': points.to_geopandas(),
+        },
+        geometry='shape',
+    )
+    frame.index = [100, 200, 300]
+    features = gm.from_geopandas(frame, id_column='fid')
+    frame.loc[100, 'rank'] = 99
+    assert features.ids == (0, None, 42)
+    assert features.column('rank')[:] == (3, 5, 7)
+    assert features.column('name')[:] == ('west', None, 'east')
+    assert canon(features.column('outline')[:]) == canon(points)
+    exported = gm.to_geopandas(features[[2, 0]])
+    assert exported.geometry.name == 'shape'
+    assert exported['fid'].tolist() == [42, 0]
+    assert exported['rank'].tolist() == [7, 3]
+    assert list(exported.index) == [0, 1]
+    assert exported.attrs['gometry:feature_id'] == 'fid'
+    restored = gm.from_geopandas(exported)
+    assert restored.ids == (42, 0)
+    assert canon(restored.geometries) == canon(points[[2, 0]])
+    assert canon(restored.column('outline')[:]) == canon(points[[2, 0]])
+    as_property = gm.from_geopandas(exported, id_column=None)
+    assert as_property.ids == (None, None)
+    assert as_property.column('fid')[:] == (42, 0)
+
+
+@pytest.mark.usefixtures('geopandas_available')
+def test_geodataframe_explicit_geometry_and_id_validation(
+    points: gm.GeometryArray,
+) -> None:
+    import geopandas as gpd
+
+    frame = gpd.GeoDataFrame(
+        {
+            'id': [2, 3, 4],
+            'other': points.to_geopandas(),
+            'shape': points.to_geopandas(),
+        },
+        geometry='shape',
+    )
+    selected = gm.from_geopandas(frame, geometry='other', id_column='id')
+    assert selected.ids == (2, 3, 4)
+    assert canon(selected.geometries) == canon(points)
+    with pytest.raises(ValueError, match='id_column'):
+        gm.from_geopandas(frame, id_column='shape')
+    with pytest.raises(TypeError, match='geometry'):
+        gm.from_geopandas(frame, geometry='id')
+    frame.attrs['gometry:feature_id'] = 'missing'
+    with pytest.raises(ValueError, match='id_column'):
+        gm.from_geopandas(frame)
+    assert gm.from_geopandas(frame, id_column=None).column('id')[:] == (2, 3, 4)
+
+
+@pytest.mark.usefixtures('geopandas_available')
+def test_geodataframe_roundtrip_preserves_large_ids_and_absent_role() -> None:
+    features = gm.Features(
+        [gm.Point(1, 2), None],
+        properties=[{'id': 'attribute'}, None],
+        ids=[2**64 - 1, None],
+    )
+    with pytest.raises(ValueError, match='conflicts'):
+        gm.to_geopandas(features)
+    without_collision = features.select_columns([]).with_ids([2**64 - 1, None])
+    frame = gm.to_geopandas(without_collision)
+    assert frame['id'].tolist() == [2**64 - 1, None]
+    assert gm.from_geopandas(frame).ids == (2**64 - 1, None)
+    no_ids = gm.to_geopandas(features.with_ids(None))
+    assert 'gometry:feature_id' not in no_ids.attrs
+    assert gm.from_geopandas(no_ids).column('id')[:] == ('attribute', None)
+
+
+@pytest.mark.usefixtures('geopandas_available')
+def test_geodataframe_selects_only_geometry_without_active_column(
+    points: gm.GeometryArray,
+) -> None:
+    import geopandas as gpd
+
+    frame = gpd.GeoDataFrame({'shape': points.to_geopandas(), 'name': ['a', 'b', 'c']})
+    assert frame.active_geometry_name is None
+    restored = gm.from_geopandas(frame)
+    assert canon(restored.geometries) == canon(points)
+    frame['other'] = points.to_geopandas()
+    with pytest.raises(ValueError, match='geometry column'):
+        gm.from_geopandas(frame)
+    assert canon(gm.from_geopandas(frame, geometry='other').geometries) == canon(points)
+
+
+@pytest.mark.usefixtures('geopandas_available')
+def test_geodataframe_keeps_exact_arrow_origin_temporal_values(
+    points: gm.GeometryArray,
+) -> None:
+    pa = pytest.importorskip('pyarrow')
+    table = pa.table({
+        'shape': points.to_arrow(),
+        'at': pa.array([1, None, 2000], type=pa.timestamp('ns', tz='UTC')),
+    })
+    features = gm.from_arrow(table)
+    result = gm.to_geopandas(features)
+    assert isinstance(result['at'].iloc[0], gm.ArrowValue)
+    assert result['at'].iloc[0].value == 1
+    restored = gm.from_geopandas(result)
+    assert isinstance(restored.column('at')[0], gm.ArrowValue)
+    assert pa.array(restored.column('at')[0])[0].value == 1
 
 
 @pytest.mark.usefixtures('geopandas_available')

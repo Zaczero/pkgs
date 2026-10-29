@@ -36,10 +36,11 @@ import gometry as gm
 import gometry._types as sht
 import numpy as np
 import numpy.typing as npt
-import pyarrow as pa
 
 if TYPE_CHECKING:
     import io
+
+    import pyarrow as pa
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
@@ -218,7 +219,7 @@ def _check_epoch_input_families(
     reveal_type(
         gm.from_geojson(
             '{"type":"Point","coordinates":[0,0]}',
-            features=True,
+            as_features=True,
             crs=4326,
             epoch=index_epoch,
         )
@@ -233,7 +234,7 @@ def _check_epoch_input_families(
     reveal_type(
         gm.from_geojson(
             '{"type":"Point","coordinates":[0,0]}',
-            features=features,
+            as_features=features,
             crs=4326,
             epoch=numpy_index_epoch,
         )
@@ -492,15 +493,15 @@ def _check_geoparquet_binary_stream_types(
 ) -> None:
     assert_type(
         gm.from_geoparquet(binary_stream, bbox=(0.0, 0.0, 2.0, 3.0)),
-        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+        gm.Features,
     )
     assert_type(
         gm.from_geoparquet(arrow_file),
-        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+        gm.Features,
     )
     assert_type(
         gm.from_geoparquet(binary_stream, bbox=np.array([0.0, 0.0, 2.0, 3.0])),
-        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+        gm.Features,
     )
     POINTS.to_geoparquet(binary_stream)
     POINTS.to_geoparquet(arrow_file)
@@ -1370,14 +1371,14 @@ if TYPE_CHECKING:
     reveal_type(gm.from_geojson(feature_collection))
     reveal_type(gm.from_geojson(feature_rows))
     reveal_type(gm.from_geojson(pandas_series))
-    reveal_type(gm.from_geojson(feature_non_null, features=False))
-    reveal_type(gm.from_geojson(feature_non_null, features=True))
+    reveal_type(gm.from_geojson(feature_non_null, as_features=False))
+    reveal_type(gm.from_geojson(feature_non_null, as_features=True))
     reveal_type(gm.from_geojson(arrow_text_column))
-    assert_type(gm.from_geojson(feature_row, features=True), gm.Features)
-    assert_type(gm.from_geojson(feature_rows, features=True), gm.Features)
+    assert_type(gm.from_geojson(feature_row, as_features=True), gm.Features)
+    assert_type(gm.from_geojson(feature_rows, as_features=True), gm.Features)
 
     def _feature_result_for_runtime_flag(features: bool) -> None:
-        reveal_type(gm.from_geojson(feature_text, features=features))
+        reveal_type(gm.from_geojson(feature_text, as_features=features))
 
     def _reveal_serialized_feature_rows() -> None:
         serialized_text = (
@@ -1394,19 +1395,21 @@ if TYPE_CHECKING:
                     'properties': {'name': 'feature'},
                 }
 
-        reveal_type(gm.from_geojson([serialized_text, None], features=True))
-        reveal_type(gm.from_geojson([serialized_bytes, None], features=True))
-        reveal_type(gm.from_geojson(_FeatureInterface(), features=True))
+        reveal_type(gm.from_geojson([serialized_text, None], as_features=True))
+        reveal_type(gm.from_geojson([serialized_bytes, None], as_features=True))
+        reveal_type(gm.from_geojson(_FeatureInterface(), as_features=True))
         assert_type(
-            gm.from_geojson([serialized_text, None], features=True),
+            gm.from_geojson([serialized_text, None], as_features=True),
             gm.Features,
         )
         assert_type(
-            gm.from_geojson([serialized_bytes, None], features=True),
+            gm.from_geojson([serialized_bytes, None], as_features=True),
             gm.Features,
         )
-        assert_type(gm.from_geojson(_FeatureInterface(), features=True), gm.Features)
-        assert_type(gm.from_geojson([_FeatureInterface()], features=True), gm.Features)
+        assert_type(gm.from_geojson(_FeatureInterface(), as_features=True), gm.Features)
+        assert_type(
+            gm.from_geojson([_FeatureInterface()], as_features=True), gm.Features
+        )
 
     def _feature_interface_roundtrips(
         features: gm.Features,
@@ -1424,18 +1427,20 @@ if TYPE_CHECKING:
         nullable_feature = _NullableFeatureInterface()
         collection = _FeatureCollectionInterface()
         assert_type(
-            gm.from_geojson(features.__geo_interface__, features=True),
+            gm.from_geojson(features.__geo_interface__, as_features=True),
             gm.Features,
         )
-        assert_type(gm.from_geojson(gm.to_feature(None), features=True), gm.Features)
-        assert_type(gm.from_geojson(gm.to_feature(POINT), features=True), gm.Features)
-        assert_type(gm.from_geojson(nullable_feature, features=True), gm.Features)
-        assert_type(gm.from_geojson([nullable_feature], features=True), gm.Features)
-        assert_type(gm.from_geojson(collection, features=True), gm.Features)
+        assert_type(gm.from_geojson(gm.to_feature(None), as_features=True), gm.Features)
+        assert_type(
+            gm.from_geojson(gm.to_feature(POINT), as_features=True), gm.Features
+        )
+        assert_type(gm.from_geojson(nullable_feature, as_features=True), gm.Features)
+        assert_type(gm.from_geojson([nullable_feature], as_features=True), gm.Features)
+        assert_type(gm.from_geojson(collection, as_features=True), gm.Features)
         reveal_type(gm.from_geojson(collection))
         assert_type(
             gm.from_geojson(collection),
-            gm.GeometryArray[gm.Geometry | None],
+            gm.Features,
         )
 
     reveal_type(gm.points([(1.0, 2.0)]))
@@ -1529,12 +1534,24 @@ if TYPE_CHECKING:
         str,
     )
     navigation_path: sht.NavigationPath = 'rhumb'
-    features = gm.Features(POINTS)
+    features = gm.Features[gm.Point, sht._FeatureValue, str | int | float](POINTS)
     reveal_type(features.__replace__())
-    assert_type(features.__replace__(), gm.Features)
-    assert_type(features.__replace__(geometries=POINTS), gm.Features)
-    assert_type(features.__replace__(properties=None), gm.Features)
-    assert_type(features.__replace__(ids=None), gm.Features)
+    assert_type(
+        features.__replace__(),
+        gm.Features[gm.Point, sht._FeatureValue, str | int | float],
+    )
+    assert_type(
+        features.__replace__(geometries=POINTS),
+        gm.Features[gm.Point, sht._FeatureValue, str | int | float],
+    )
+    assert_type(
+        features.__replace__(properties=None),
+        gm.Features[gm.Point, sht._FeatureValue, str | int | float],
+    )
+    assert_type(
+        features.__replace__(ids=None),
+        gm.Features[gm.Point, sht._FeatureValue, str | int | float],
+    )
     reveal_type(features.__geo_interface__)
     assert_type(features.__geo_interface__, sht.GeoJsonFeatureCollection)
     with TemporaryDirectory() as _temporary:
@@ -1813,8 +1830,12 @@ if TYPE_CHECKING:
     )
     arrow_array: sht.SupportsArrowArray = _ArrowArray()
     arrow_stream: sht.SupportsArrowStream = _ArrowStream()
-    assert_type(gm.from_arrow(arrow_array), gm.GeometryArray[gm.Geometry | None])
-    assert_type(gm.from_arrow(arrow_stream), gm.GeometryArray[gm.Geometry | None])
+    assert_type(
+        gm.from_arrow(arrow_array), gm.GeometryArray[gm.Geometry | None] | gm.Features
+    )
+    assert_type(
+        gm.from_arrow(arrow_stream), gm.GeometryArray[gm.Geometry | None] | gm.Features
+    )
     assert_type(gm.bearing(POINT, gm.Point(2, 2), path='rhumb'), float)
     assert_type(
         gm.bearing(POINTS, POINT, path=navigation_path), npt.NDArray[np.float64]
@@ -1907,7 +1928,8 @@ assert_type(h3_vertices, gm.H3VertexArray)
 assert_type(h3_vertices[0], gm.H3Vertex)
 assert_type(h3_vertices[:2], gm.H3VertexArray)
 assert_type(h3_vertices[[True, False, True, False, True, False]], gm.H3VertexArray)
-assert_type(h3_vertices[np.asarray([0, 1], dtype=np.int64)], gm.H3VertexArray)
+vertex_indexes: _Int64Array1D = np.asarray([0, 1], dtype=np.int64)
+assert_type(h3_vertices[vertex_indexes], gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.token), gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.to_numpy()), gm.H3VertexArray)
 signed_vertex_ids: _Int64Array1D = np.asarray([h3_vertices[0].id], dtype=np.int64)
@@ -1918,7 +1940,8 @@ assert_type(h3_edges, gm.H3EdgeArray)
 assert_type(h3_edges[0], gm.H3Edge)
 assert_type(h3_edges[:2], gm.H3EdgeArray)
 assert_type(h3_edges[[True, False, True, False, True, False]], gm.H3EdgeArray)
-assert_type(h3_edges[np.asarray([0, 1], dtype=np.int64)], gm.H3EdgeArray)
+edge_indexes: _Int64Array1D = np.asarray([0, 1], dtype=np.int64)
+assert_type(h3_edges[edge_indexes], gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.token), gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.to_numpy()), gm.H3EdgeArray)
 signed_edge_ids: _Int64Array1D = np.asarray([h3_edges[0].id], dtype=np.int64)
@@ -2679,7 +2702,7 @@ assert_type(
 )
 assert_type(
     gm.from_geojson(['{"type": "Point", "coordinates": [0, 0]}']),
-    gm.GeometryArray[gm.Geometry | None],
+    gm.GeometryArray[gm.Geometry | None] | gm.Features,
 )
 assert_type(
     gm.coverage_invalid_edges(POLY),

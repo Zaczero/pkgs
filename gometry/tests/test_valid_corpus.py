@@ -336,17 +336,19 @@ def test_corpus_geoparquet_wkb_and_native_roundtrips(tmp_path: Path) -> None:
 
     wkb_path = tmp_path / 'wkb.parquet'
     values.to_geoparquet(str(wkb_path), encoding='wkb', attributes=attributes)
-    wkb_restored, wkb_attrs = gm.from_geoparquet(str(wkb_path))
+    wkb_features = gm.from_geoparquet(str(wkb_path))
+    wkb_restored = wkb_features.geometries
     assert wkb_restored.to_wkt() == values.to_wkt()
-    assert [int(v) for v in wkb_attrs['id']] == [1, 2]
+    assert list(wkb_features.column('id')) == [1, 2]
     assert wkb_restored.crs is not None
     assert wkb_restored.crs.to_epsg() == 4326
 
     native_path = tmp_path / 'native.parquet'
     values.to_geoparquet(str(native_path), encoding='geoarrow', attributes=attributes)
-    native_restored, native_attrs = gm.from_geoparquet(str(native_path))
+    native_features = gm.from_geoparquet(str(native_path))
+    native_restored = native_features.geometries
     assert native_restored.to_wkt() == values.to_wkt()
-    assert [str(v) for v in native_attrs['name']] == ['a', 'b']
+    assert list(native_features.column('name')) == ['a', 'b']
 
 
 def test_corpus_geoparquet_native_plain_list_struct_linestring(tmp_path: Path) -> None:

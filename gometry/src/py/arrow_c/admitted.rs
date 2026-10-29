@@ -252,7 +252,8 @@ pub(crate) struct AdmittedArrowSchema {
     )]
     pub(crate) name: Arc<String>,
     pub(crate) metadata: Arc<OwnedMetadataPairs>,
-    pub(crate) dictionary_present: bool,
+    pub(crate) flags: i64,
+    pub(crate) dictionary: AdmittedDictionary,
     #[expect(
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
@@ -260,7 +261,28 @@ pub(crate) struct AdmittedArrowSchema {
     pub(crate) children: Arc<Vec<Self>>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum AdmittedDictionary {
+    Absent,
+    Unselected,
+    Captured(Box<AdmittedArrowSchema>),
+}
+
 impl AdmittedArrowSchema {
+    /// Capture all fields and dictionaries for immutable attribute ownership.
+    ///
+    /// # Safety
+    ///
+    /// Same producer lifetime and quiescence obligations as [`Self::capture`].
+    pub(crate) unsafe fn capture_values(owner: &MovedArrowShell<ArrowSchema>) -> PyResult<Self> {
+        // SAFETY: the owner pins the complete producer schema tree.
+        unsafe { Self::capture_node(owner, owner.as_ptr(), CaptureDepth::Values, 0) }
+    }
+
+    pub(crate) const fn has_dictionary(&self) -> bool {
+        !matches!(self.dictionary, AdmittedDictionary::Absent)
+    }
+
     /// Snapshot the schema needed for geometry admission from a moved shell.
     ///
     /// For a bare geometry array this is a full recursive capture of that tree.
@@ -365,7 +387,12 @@ impl AdmittedArrowSchema {
             format,
             name,
             metadata: arc_from_vec(metadata),
-            dictionary_present: !raw.dictionary.is_null(),
+            flags: raw.flags,
+            dictionary: if raw.dictionary.is_null() {
+                AdmittedDictionary::Absent
+            } else {
+                AdmittedDictionary::Unselected
+            },
             children: arc_from_vec(children),
         })
     }
@@ -407,11 +434,20 @@ impl AdmittedArrowSchema {
         };
         // SAFETY: metadata blob is live under the owner shell for this copy only.
         let metadata = unsafe { owned_schema_metadata(schema) }?;
-        let dictionary_present = !schema.dictionary.is_null();
+        let dictionary = if schema.dictionary.is_null() {
+            AdmittedDictionary::Absent
+        } else if matches!(depth, CaptureDepth::Values) {
+            // SAFETY: the producer dictionary schema is pinned by the owner.
+            AdmittedDictionary::Captured(Box::new(unsafe {
+                Self::capture_node(owner, schema.dictionary, depth, nesting.wrapping_add(1))
+            }?))
+        } else {
+            AdmittedDictionary::Unselected
+        };
         let child_count = SchemaChildCount::parse(schema.n_children)?;
         let children = match depth {
             CaptureDepth::Shallow => Vec::new(),
-            CaptureDepth::Deep => {
+            CaptureDepth::Deep | CaptureDepth::Values => {
                 // SAFETY: owner pins this schema's producer-owned child table.
                 let child_ptrs = unsafe { child_count.borrowed_table(owner, schema.children)? };
                 let mut children = Vec::with_capacity(child_ptrs.len());
@@ -422,12 +458,7 @@ impl AdmittedArrowSchema {
                     // SAFETY: this child pointer came from the checked table
                     // kept alive by `owner`.
                     children.push(unsafe {
-                        Self::capture_node(
-                            owner,
-                            child,
-                            CaptureDepth::Deep,
-                            nesting.wrapping_add(1),
-                        )
+                        Self::capture_node(owner, child, depth, nesting.wrapping_add(1))
                     }?);
                 }
                 children
@@ -437,7 +468,8 @@ impl AdmittedArrowSchema {
             format,
             name,
             metadata: arc_from_vec(metadata),
-            dictionary_present,
+            flags: schema.flags,
+            dictionary,
             children: arc_from_vec(children),
         })
     }
@@ -480,6 +512,8 @@ enum CaptureDepth {
     Shallow,
     /// Full recursive capture of the geometry subtree.
     Deep,
+    /// Full recursive capture including dictionaries.
+    Values,
 }
 
 /// Select a geometry column index from shallow-captured top-level children.
@@ -570,7 +604,7 @@ fn classify_stream_geometry_schema_admitted(
 ) -> PyResult<ClassifiedGeometrySchema> {
     // Temporary bridge: reconstruct a minimal walk over owned fields using the
     // same rules as classify_stream_geometry_schema without raw pointers.
-    if schema.dictionary_present {
+    if schema.has_dictionary() {
         return Err(PyTypeError::new_err(
             "Arrow dictionary-encoded arrays are not supported for geometry import",
         ));
@@ -621,7 +655,7 @@ fn classify_admitted_geometry_array(
     Option<String>,
     Option<f64>,
 )> {
-    if schema.dictionary_present {
+    if schema.has_dictionary() {
         return Err(PyTypeError::new_err(
             "Arrow dictionary-encoded arrays are not supported for geometry import",
         ));
@@ -792,7 +826,7 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
     require_admitted_format(schema, "+s")?;
     let mut fields = Vec::with_capacity(schema.children.len());
     for child in schema.children.iter() {
-        if child.dictionary_present {
+        if child.has_dictionary() {
             return Err(PyTypeError::new_err(
                 "Arrow dictionary-encoded arrays are not supported for geometry import",
             ));
@@ -825,7 +859,7 @@ fn validate_admitted_interleaved_coordinates(
             "Arrow fixed-size-list coordinates require exactly one value child",
         ));
     };
-    if values.dictionary_present || !values.children.is_empty() || values.format() != "g" {
+    if values.has_dictionary() || !values.children.is_empty() || values.format() != "g" {
         return Err(PyTypeError::new_err(
             "geoarrow interleaved coordinates require a float64 value leaf",
         ));

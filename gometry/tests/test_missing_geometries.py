@@ -897,12 +897,13 @@ def test_geojson_feature_null_geometry_dict_lanes_become_missing_rows() -> None:
     }
 
     parsed_collection = gm.from_geojson(collection)
-    assert parsed_collection.is_missing.tolist() == [True, False]
-    assert parsed_collection.to_wkt() == [None, 'POINT (1 2)']
+    assert parsed_collection.geometries.is_missing.tolist() == [True, False]
+    assert parsed_collection.geometries.to_wkt() == [None, 'POINT (1 2)']
 
     parsed_iterable = gm.from_geojson([missing_feature, point_feature])
-    assert parsed_iterable.is_missing.tolist() == [True, False]
-    assert parsed_iterable.to_wkt() == [None, 'POINT (1 2)']
+    assert isinstance(parsed_iterable, gm.Features)
+    assert parsed_iterable.geometries.is_missing.tolist() == [True, False]
+    assert parsed_iterable.geometries.to_wkt() == [None, 'POINT (1 2)']
 
 
 def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:

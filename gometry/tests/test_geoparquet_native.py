@@ -64,10 +64,11 @@ def test_native_geometry_roundtrip_and_pyarrow_cross_read(
     path = tmp_path / 'native.parquet'
     source = gm.GeometryArray([gm.Point(7, 13, crs=crs, **axes), None])
     source.to_geoparquet(path, encoding='geometry', attributes={'id': [31, 47]})
-    restored, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    restored = features.geometries
     assert restored.to_wkt() == source.to_wkt()
     assert restored.crs == source.crs
-    assert attributes.to_pydict() == {'id': [31, 47]}
+    assert list(features.column('id')) == [31, 47]
     table = pq.read_table(path)
     assert table['id'].to_pylist() == [31, 47]
     assert table['geometry'].null_count == 1
@@ -86,9 +87,10 @@ def test_native_geometry_preserves_empty_and_missing_rows(
     path = tmp_path / 'empty.parquet'
     source = gm.GeometryArray(rows)
     source.to_geoparquet(path, encoding='geometry')
-    restored, attrs = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    restored = features.geometries
     assert restored.to_wkt() == source.to_wkt()
-    assert attrs.num_rows == len(source)
+    assert len(features) == len(source)
 
 
 @pytest.mark.parametrize('store_schema', [True, False])
@@ -102,12 +104,13 @@ def test_plain_native_file_resolves_contextual_crs(
         path,
         store_schema=store_schema,
     )
-    restored, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    restored = features.geometries
     assert restored.to_wkt() == ['POINT (7 13)']
     assert (None if restored.crs is None else restored.crs.to_epsg()) == (
         None if crs == 'srid:0' else 3857
     )
-    assert attributes.to_pydict() == {'id': [53]}
+    assert list(features.column('id')) == [53]
 
 
 def test_plain_native_multiple_columns_require_explicit_selection(
@@ -124,9 +127,11 @@ def test_plain_native_multiple_columns_require_explicit_selection(
     )
     with pytest.raises(gm.ParseError, match='select one with geometry='):
         gm.from_geoparquet(path)
-    restored, attributes = gm.from_geoparquet(path, geometry='end')
+    features = gm.from_geoparquet(path, geometry='end')
+    restored = features.geometries
     assert restored.to_wkt() == ['POINT (17 13)']
-    assert attributes.to_pydict() == {'id': [59]}
+    assert list(features.column('id')) == [59]
+    assert features.column('start')[0].to_wkt() == 'POINT (7 13)'
 
 
 def test_native_crs_reference_resolves_file_metadata(tmp_path: Path) -> None:
@@ -136,7 +141,7 @@ def test_native_crs_reference_resolves_file_metadata(tmp_path: Path) -> None:
         b'frame': gm.CRS(3857).to_projjson().encode(),
     })
     pq.write_table(table, path)
-    restored, _ = gm.from_geoparquet(path)
+    restored = gm.from_geoparquet(path).geometries
     assert restored.to_wkt() == ['POINT (7 13)']
     assert restored.crs.to_epsg() == 3857
 
@@ -233,11 +238,12 @@ def test_native_crs_survives_a_stored_schema_without_frame_metadata(
         writer.add_key_value_metadata({
             'ARROW:schema': base64.b64encode(stored.serialize()).decode(),
         })
-    restored, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    restored = features.geometries
     assert restored.crs is not None
     assert restored.crs.to_epsg() == 3857
     assert restored.to_wkt() == ['POINT (7 13)']
-    assert attributes.num_rows == 1
+    assert len(features) == 1
 
 
 def test_geography_requires_explicit_curve_conversion(tmp_path: Path) -> None:
@@ -266,10 +272,10 @@ def test_native_bbox_prunes_geometry_decoding(tmp_path: Path) -> None:
     outside = struct.pack('<BIdd', 1, 1, 1007.0, 1013.0)
     assert payload.count(outside) == 1
     path.write_bytes(payload.replace(outside, b'\xff' + outside[1:]))
-    restored, attributes = gm.from_geoparquet(
+    features = gm.from_geoparquet(
         path, bbox=(0, 0, 20, 20), columns=['id'], filters=[('id', '>', 60)]
     )
-    assert restored.to_wkt() == ['POINT (7 13)']
-    assert attributes.to_pydict() == {'id': [61]}
+    assert features.geometries.to_wkt() == ['POINT (7 13)']
+    assert list(features.column('id')) == [61]
     with pytest.raises(gm.ParseError):
         gm.from_geoparquet(path)

@@ -34,7 +34,11 @@ from gometry._optional import missing_optional_dependency
 from gometry._types import FloatScalar, mapping_as_dict
 
 if TYPE_CHECKING:
+    from types import EllipsisType
+
     import pyarrow as pa
+
+    from gometry._types import Features
 
 _READ_TABLE_OPTIONS = frozenset({
     'arrow_extensions_enabled',
@@ -222,7 +226,9 @@ def _normalize_attribute_columns(
     return normalized
 
 
-def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
+def _attributes_table(
+    pa: Any, attributes: Any, row_count: int, geometry_name: str = 'geometry'
+) -> Any | None:
     if attributes is None:
         return None
     if isinstance(attributes, pa.Table):
@@ -235,9 +241,9 @@ def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
         raise TypeError(
             'attributes must be a pyarrow Table, mapping of columns, or None'
         )
-    if 'geometry' in table.column_names:
+    if geometry_name in table.column_names:
         raise GeometryError(
-            "attributes must not contain the reserved 'geometry' column"
+            f'attributes must not contain the geometry column {geometry_name!r}'
         )
     if table.num_rows != row_count:
         raise GeometryError(
@@ -247,7 +253,7 @@ def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
 
 
 def to_geoparquet(
-    values: Geometry | GeometryArray[Geometry | None],
+    values: Geometry | GeometryArray[Geometry | None] | Features,
     path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     attributes: pa.Table | Mapping[str, Any] | None = None,
@@ -258,8 +264,9 @@ def to_geoparquet(
 
     Parameters
     ----------
-    values : Geometry or GeometryArray
-        Geometry rows. A scalar is stored as a single-row table.
+    values : Geometry, GeometryArray or Features
+        Geometry rows or an aligned feature snapshot. A scalar is stored as
+        a single-row table.
         Serialization describes the receiver CRS (use ``with_crs`` first).
     path : str, path-like, or binary stream
         Output Parquet path or caller-owned binary writable stream. Text
@@ -290,7 +297,87 @@ def to_geoparquet(
         If attributes are misaligned or native encoding is not possible.
     """
     pa = _pyarrow()
-    arr = _as_array(values)
+    from gometry._types import Features
+
+    properties: dict[str, Any] = {}
+    if isinstance(values, Features):
+        if attributes is not None:
+            raise TypeError('attributes are already supplied by Features')
+        from gometry._feature_arrow import _property_columns
+
+        geometry_name = values._geometry_column or 'geometry'
+        properties = _property_columns(values)
+        geometries = {
+            geometry_name: values.geometries,
+            **{
+                name: column
+                for name, column in properties.items()
+                if isinstance(column, GeometryArray)
+            },
+        }
+    else:
+        geometry_name = 'geometry'
+        geometries = {geometry_name: _as_array(values)}
+    if encoding not in {'wkb', 'geoarrow', 'geometry'}:
+        raise GeometryError(
+            f"unknown GeoParquet encoding {encoding!r}; expected 'wkb', 'geoarrow', or 'geometry'"
+        )
+    published: dict[str, GeometryArray[Geometry | None]] = {}
+    column_metadata: dict[str, Any] = {}
+    geometry_columns: dict[str, Any] = {}
+    for name, arr in geometries.items():
+        geometry_column, published_array, parquet_encoding = _publish_geometry(
+            pa, arr, encoding
+        )
+        geometry_columns[name] = geometry_column
+        published[name] = published_array
+        column_metadata[name] = _build_geo_metadata(
+            published_array, parquet_encoding, native=encoding == 'geometry'
+        )['columns']['geometry']
+
+    if isinstance(values, Features):
+        from gometry._feature_arrow import _feature_table
+
+        source_table = _feature_table(
+            values,
+            geometry=geometry_name,
+            id_column=None,
+            encoding='auto',
+            columns=properties,
+            geometry_columns=geometry_columns,
+        )
+        attributes = source_table.drop([geometry_name])
+    attributes_table = _attributes_table(
+        pa, attributes, len(geometries[geometry_name]), geometry_name
+    )
+    if attributes_table is None:
+        table = pa.table({geometry_name: geometry_columns[geometry_name]})
+    else:
+        table = attributes_table.add_column(
+            0, geometry_name, geometry_columns[geometry_name]
+        )
+    for name, column in geometry_columns.items():
+        if name != geometry_name:
+            table = table.set_column(table.schema.get_field_index(name), name, column)
+    geo_metadata = {
+        'version': '2.0.0' if encoding == 'geometry' else '1.1.0',
+        'primary_column': geometry_name,
+        'columns': column_metadata,
+    }
+    if encoding != 'geometry':
+        from gometry._geoparquet_bbox import add_covering
+
+        for name, array in published.items():
+            table = add_covering(pa, table, array, column_metadata[name])
+    metadata = dict(table.schema.metadata or {})
+    metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
+    table = table.replace_schema_metadata(metadata)
+    _write_table(table, path, kwargs)
+
+
+def _publish_geometry(
+    pa: Any, arr: GeometryArray[Geometry | None], encoding: str
+) -> tuple[Any, Any, str]:
     # Packed storage keeps its M axis when every row is missing or the array is
     # empty; native encoding writes that axis and the reader rejects it.
     if encoding != 'geometry' and (
@@ -299,11 +386,6 @@ def to_geoparquet(
         raise GeometryError(
             'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
-    if encoding not in {'wkb', 'geoarrow', 'geometry'}:
-        raise GeometryError(
-            f"unknown GeoParquet encoding {encoding!r}; expected 'wkb', 'geoarrow', or 'geometry'"
-        )
-
     from gometry._lib import _geoparquet_publication
 
     arrow, published = _geoparquet_publication(
@@ -318,7 +400,6 @@ def to_geoparquet(
     if encoding == 'geoarrow' and parquet_encoding == 'WKB':
         raise GeometryError('GeoArrow encoding requires one homogeneous geometry type')
 
-    attributes_table = _attributes_table(pa, attributes, len(arr))
     # Native layouts keep the GeoArrow extension type so kind identity
     # (multipoint vs linestring, polygon vs multilinestring) survives Parquet
     # and cannot be silently relabeled by forging geo metadata. 1.1 WKB stays plain
@@ -353,21 +434,7 @@ def to_geoparquet(
             )
     else:
         geometry_column = arrow
-    if attributes_table is None:
-        table = pa.table({'geometry': geometry_column})
-    else:
-        table = attributes_table.add_column(0, 'geometry', geometry_column)
-    geo_metadata = _build_geo_metadata(
-        published, parquet_encoding, native=encoding == 'geometry'
-    )
-    if encoding != 'geometry':
-        from gometry._geoparquet_bbox import add_covering
-
-        table = add_covering(pa, table, published, geo_metadata['columns']['geometry'])
-    metadata = dict(table.schema.metadata or {})
-    metadata[b'geo'] = json.dumps(geo_metadata, separators=(',', ':')).encode('utf-8')
-    table = table.replace_schema_metadata(metadata)
-    _write_table(table, path, kwargs)
+    return geometry_column, published, parquet_encoding
 
 
 def _write_table(table: Any, path: Any, options: dict[str, Any]) -> None:
@@ -732,11 +799,12 @@ def _validate_attribute_columns(
     metadata: Mapping[str, Any],
     columns: Iterable[str] | None,
     *,
+    selected_geometry: str,
     admitted_layouts: dict[str, _GeoParquetPhysicalLayout] | None = None,
     declaration_schema: Any | None = None,
 ) -> list[str]:
     pa = _pyarrow()
-    geometry_columns = _validate_declared_geometry_columns(
+    _validate_declared_geometry_columns(
         pa,
         schema,
         metadata,
@@ -745,7 +813,7 @@ def _validate_attribute_columns(
     )
     schema_names = list(schema.names)
     if columns is None:
-        return [name for name in schema_names if name not in geometry_columns]
+        return [name for name in schema_names if name != selected_geometry]
     if isinstance(columns, (str, bytes)):
         raise TypeError('columns must be a sequence of attribute column names or None')
     # Online validation against the finite schema: unknown or duplicate names
@@ -760,7 +828,7 @@ def _validate_attribute_columns(
             )
         if name in seen:
             raise GeometryError('columns must not contain duplicate names')
-        if name in geometry_columns:
+        if name == selected_geometry:
             raise GeometryError(f'columns must not include geometry column {name!r}')
         if name not in schema_name_set:
             raise GeometryError(
@@ -769,12 +837,6 @@ def _validate_attribute_columns(
         seen.add(name)
         result.append(name)
     return result
-
-
-def _attribute_result(table: Any) -> Any:
-    metadata = dict(table.schema.metadata or {})
-    metadata.pop(b'geo', None)
-    return table.replace_schema_metadata(metadata or None)
 
 
 def _read_filtered_groups(
@@ -813,14 +875,15 @@ def from_geoparquet(
     path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     geometry: str | None = None,
+    id_column: str | EllipsisType | None = ...,
     columns: Iterable[str] | None = None,
     filters: Any = None,
     row_groups: Iterable[int] | None = None,
     bbox: Iterable[FloatScalar] | None = None,
     filesystem: Any = None,
     **kwargs: Any,
-) -> tuple[GeometryArray[Geometry | None], pa.Table]:
-    """Read a GeoParquet geometry column and its aligned attributes.
+) -> Features:
+    """Read a GeoParquet feature table with aligned geometry and attributes.
 
     Parameters
     ----------
@@ -829,6 +892,9 @@ def from_geoparquet(
         are not supported; the reader leaves streams open.
     geometry : str, optional
         Geometry column to decode; the primary column is used by default.
+    id_column : str or None, optional
+        ID column; omitted uses ``gometry:feature_id`` schema metadata.
+        Explicit ``None`` treats every non-geometry column as a property.
     columns : iterable of str, optional
         Attribute columns to preserve; all non-geometry, non-covering columns
         by default. Covering columns remain available by explicit selection.
@@ -851,8 +917,8 @@ def from_geoparquet(
 
     Returns
     -------
-    tuple of GeometryArray and pyarrow.Table
-        Decoded geometry rows and aligned non-geometry attribute columns.
+    Features
+        Immutable decoded geometries and aligned attributes and IDs.
 
     Raises
     ------
@@ -900,6 +966,8 @@ def from_geoparquet(
         path, filesystem=filesystem, **parquet_file_options
     ) as parquet_file:
         schema = parquet_file.schema_arrow
+        if len(set(schema.names)) != len(schema.names):
+            raise GeometryError('GeoParquet column names must be unique')
         stored_schema = _stored_arrow_schema(
             pa, (parquet_file.metadata.metadata or {}).get(b'ARROW:schema')
         )
@@ -945,6 +1013,23 @@ def from_geoparquet(
             raise _metadata_error(
                 f'geometry column {selected_geometry!r} not found in GeoParquet file'
             )
+        if id_column is ...:
+            encoded_id = (schema.metadata or {}).get(b'gometry:feature_id')
+            if encoded_id is None:
+                id_column = None
+            else:
+                try:
+                    id_column = encoded_id.decode('utf-8')
+                except UnicodeDecodeError as error:
+                    raise ValueError('invalid feature ID column metadata') from error
+        if id_column is not None and not isinstance(id_column, str):
+            raise TypeError('id_column must be a column name or None')
+        if id_column is not None and (
+            id_column not in schema.names or id_column in geometry_metadata
+        ):
+            raise ValueError(
+                f'feature ID column {id_column!r} is missing or is geometry'
+            )
         column_metadata, encoding, crs, epoch = _validate_column_metadata(
             geo_metadata, selected_geometry
         )
@@ -965,6 +1050,7 @@ def from_geoparquet(
             schema,
             geo_metadata,
             columns,
+            selected_geometry=selected_geometry,
             admitted_layouts=admitted_layouts,
             declaration_schema=declaration_schema,
         )
@@ -1014,6 +1100,8 @@ def from_geoparquet(
                 selected_row_groups = [group for group in groups if group in candidates]
 
         projected_columns = [selected_geometry, *attribute_columns]
+        if id_column is not None and id_column not in projected_columns:
+            projected_columns.append(id_column)
         if selected_row_groups is not None and filters is not None:
             table = _read_filtered_groups(
                 pa,
@@ -1072,5 +1160,46 @@ def from_geoparquet(
         mask = intersects(geometry_array, rectangle)
         geometry_array = geometry_array[mask]
         table = table.filter(pa.array(mask))
-    attributes = _attribute_result(table).select(attribute_columns)
-    return geometry_array, attributes
+    from gometry._types import (
+        Features,
+        _snapshot_feature_columns,
+        _snapshot_feature_ids,
+    )
+
+    attributes: dict[str, Any] = {}
+    for name in attribute_columns:
+        if name == id_column:
+            continue
+        if name in geometry_metadata:
+            meta, secondary_encoding, secondary_crs, secondary_epoch = (
+                _validate_column_metadata(geo_metadata, name)
+            )
+            column = table[name]
+            if name in native_columns:
+                column = pa.chunked_array(
+                    [getattr(chunk, 'storage', chunk) for chunk in column.chunks],
+                    type=getattr(column.type, 'storage_type', column.type),
+                )
+            attributes[name] = _decode_geometry_column(
+                pa,
+                column,
+                meta,
+                name,
+                secondary_encoding,
+                secondary_crs,
+                secondary_epoch,
+                field=schema.field(name),
+                layout=admitted_layouts[name],
+                allow_m=geo_metadata['version'].startswith('2.'),
+            )
+        else:
+            attributes[name] = table[name]
+    ids = None if id_column is None else table[id_column]
+    return Features._from_property_rows(
+        geometry_array,
+        _snapshot_feature_columns(attributes, len(geometry_array)),
+        _snapshot_feature_ids(ids, len(geometry_array)),
+        id_column,
+        schema,
+        selected_geometry,
+    )

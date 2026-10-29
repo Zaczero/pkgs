@@ -50,8 +50,7 @@ def _assert_roundtrip(original: gm.GeometryArray, restored: gm.GeometryArray) ->
 
 
 def _read_geometry(path: str, **kwargs: object) -> gm.GeometryArray:
-    geometries, _ = gm.from_geoparquet(path, **kwargs)
-    return geometries
+    return gm.from_geoparquet(path, **kwargs).geometries
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geoarrow', 'geometry'])
@@ -90,7 +89,7 @@ def test_geoparquet_binary_streams_are_caller_owned() -> None:
     source.to_geoparquet(stream)
     assert not stream.closed
     stream.seek(0)
-    restored, _ = gm.from_geoparquet(stream)
+    restored = gm.from_geoparquet(stream).geometries
     assert not stream.closed
     _assert_roundtrip(source, restored)
 
@@ -99,7 +98,7 @@ def test_geoparquet_binary_streams_are_caller_owned() -> None:
     assert not native_output.closed
     payload = native_output.getvalue()
     native_input = pa.BufferReader(payload)
-    native_restored, _ = gm.from_geoparquet(native_input)
+    native_restored = gm.from_geoparquet(native_input).geometries
     assert not native_input.closed
     _assert_roundtrip(source, native_restored)
 
@@ -296,12 +295,11 @@ def test_from_geoparquet_preserves_attribute_columns(parquet_path: str) -> None:
         crs=4326,
     )
     gdf.to_parquet(parquet_path)
-    restored, attributes = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path)
     assert len(restored) == 2
-    assert canon(restored) == ['POINT (1 2)', 'POINT (3 4)']
-    assert attributes.column_names == ['id', 'label']
-    assert attributes.to_pydict() == {'id': [1, 2], 'label': ['a', 'b']}
-    assert b'geo' not in (attributes.schema.metadata or {})
+    assert canon(restored.geometries) == ['POINT (1 2)', 'POINT (3 4)']
+    assert list(restored.column('id')) == [1, 2]
+    assert list(restored.column('label')) == ['a', 'b']
 
 
 def test_to_geoparquet_array_crs_attaches_metadata(parquet_path: str) -> None:
@@ -603,12 +601,10 @@ def test_geoparquet_selected_geometry_preserves_all_declared_columns(
         parquet_path,
     )
 
-    restored, attributes = gm.from_geoparquet(
-        parquet_path, geometry='alternate', columns=['id']
-    )
-    assert restored.to_wkt() == ['POINT (3 4)']
-    assert attributes.column_names == ['id']
-    assert attributes['id'].to_pylist() == [7]
+    restored = gm.from_geoparquet(parquet_path, geometry='alternate', columns=['id'])
+    assert restored.geometries.to_wkt() == ['POINT (3 4)']
+    assert list(restored[0].properties) == ['id']
+    assert list(restored.column('id')) == [7]
 
 
 def test_geoparquet_native_point_roundtrip(parquet_path: str) -> None:
@@ -771,9 +767,10 @@ def test_geoparquet_feature_table_roundtrip(parquet_path: str) -> None:
     values = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326)
     attributes = pa.table({'id': [10, 20], 'name': ['a', 'b']})
     values.to_geoparquet(parquet_path, attributes=attributes)
-    restored, restored_attributes = gm.from_geoparquet(parquet_path)
-    assert canon(restored) == canon(values)
-    assert restored_attributes.equals(attributes)
+    restored = gm.from_geoparquet(parquet_path)
+    assert canon(restored.geometries) == canon(values)
+    assert list(restored.column('id')) == [10, 20]
+    assert list(restored.column('name')) == ['a', 'b']
 
 
 def test_geoparquet_filters_geometry_and_attributes_together(parquet_path: str) -> None:
@@ -782,9 +779,10 @@ def test_geoparquet_filters_geometry_and_attributes_together(parquet_path: str) 
         parquet_path,
         attributes={'id': [1, 2, 3], 'name': ['a', 'b', 'c']},
     )
-    restored, attributes = gm.from_geoparquet(parquet_path, filters=[('id', '>', 1)])
-    assert canon(restored) == ['POINT (3 4)', 'POINT (5 6)']
-    assert attributes.to_pydict() == {'id': [2, 3], 'name': ['b', 'c']}
+    restored = gm.from_geoparquet(parquet_path, filters=[('id', '>', 1)])
+    assert canon(restored.geometries) == ['POINT (3 4)', 'POINT (5 6)']
+    assert list(restored.column('id')) == [2, 3]
+    assert list(restored.column('name')) == ['b', 'c']
 
 
 def test_geoparquet_row_group_and_filesystem_read(parquet_path: str) -> None:
@@ -796,13 +794,13 @@ def test_geoparquet_row_group_and_filesystem_read(parquet_path: str) -> None:
         attributes={'id': [1, 2]},
         row_group_size=1,
     )
-    restored, attributes = gm.from_geoparquet(
+    restored = gm.from_geoparquet(
         parquet_path,
         row_groups=[1],
         filesystem=fs.LocalFileSystem(),
     )
-    assert canon(restored) == ['POINT (3 4)']
-    assert attributes.to_pydict() == {'id': [2]}
+    assert canon(restored.geometries) == ['POINT (3 4)']
+    assert list(restored.column('id')) == [2]
 
 
 def test_geoparquet_read_projects_selected_columns(
@@ -823,9 +821,9 @@ def test_geoparquet_read_projects_selected_columns(
         return real_read_table(*args, **kwargs)
 
     monkeypatch.setattr(pq, 'read_table', recording_read_table)
-    _, attributes = gm.from_geoparquet(parquet_path, columns=['id'])
+    features = gm.from_geoparquet(parquet_path, columns=['id'])
     assert calls == [['geometry', 'id']]
-    assert attributes.to_pydict() == {'id': [1]}
+    assert list(features.column('id')) == [1]
 
 
 @pytest.mark.parametrize('version', [None, 1, '0.1.0', '999.0.0'])
@@ -1081,12 +1079,14 @@ def test_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> None:
     )
     pq.write_table(rewritten, parquet_path)
 
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert restored.to_wkt() == values.to_wkt()
     assert restored.crs.same_as(values.crs, mode='exact')
 
     # Exact audit option: read_dictionary=['geometry'].
-    restored_dict, _ = gm.from_geoparquet(parquet_path, read_dictionary=['geometry'])
+    restored_dict = gm.from_geoparquet(
+        parquet_path, read_dictionary=['geometry']
+    ).geometries
     assert restored_dict.to_wkt() == values.to_wkt()
 
     # Retained: non-dictionary WKB still works.
@@ -1203,7 +1203,7 @@ def _from_geoparquet_subprocess(
 import json
 import gometry as gm
 {prelude}try:
-    result, _ = gm.from_geoparquet({path!r}, {options})
+    result = gm.from_geoparquet({path!r}, {options}).geometries
 except Exception as error:
     print(json.dumps({{
         "status": "error",
@@ -1590,7 +1590,7 @@ def test_plain_storage_declared_encoding_resolves_depth(
         geometry_types=['LineString'],
         strip_extension=True,
     )
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert list(restored.geometry_type) == ['LineString']
 
 
@@ -1606,7 +1606,7 @@ def test_plain_storage_polygon_as_multilinestring_via_encoding(
         geometry_types=['MultiLineString'],
         strip_extension=True,
     )
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert list(restored.geometry_type) == ['MultiLineString']
 
 
@@ -1622,7 +1622,7 @@ def test_depth_ambiguous_plain_storage_with_matching_encoding(
         geometry_types=['MultiPoint'],
         strip_extension=True,
     )
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert list(restored.geometry_type) == ['MultiPoint']
     assert restored.to_wkt() == values.to_wkt()
 
@@ -1647,7 +1647,9 @@ def test_declared_columns_must_exist_and_match_encoding() -> None:
         pa.field('id', pa.int64()),
     ])
     with pytest.raises(gm.GeometryError) as raised:
-        _validate_attribute_columns(schema, metadata, None)
+        _validate_attribute_columns(
+            schema, metadata, None, selected_geometry='geometry'
+        )
     message = str(raised.value)
     # Either contradiction must fail closed — never silently return [].
     assert (
@@ -1674,7 +1676,9 @@ def test_ghost_column_raises() -> None:
         gm.GeometryError,
         match=r"geometry column 'ghost' declared in geo metadata is not present",
     ):
-        _validate_attribute_columns(schema, metadata, None)
+        _validate_attribute_columns(
+            schema, metadata, None, selected_geometry='geometry'
+        )
 
 
 def test_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
@@ -1695,7 +1699,9 @@ def test_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
         gm.GeometryError,
         match=r"column 'id' encoding 'WKB' does not match physical storage",
     ):
-        _validate_attribute_columns(schema, metadata, None)
+        _validate_attribute_columns(
+            schema, metadata, None, selected_geometry='geometry'
+        )
 
     # Real attribute path: id not listed under geo.columns remains selectable.
     clean = {
@@ -1703,7 +1709,9 @@ def test_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
             'geometry': {'encoding': 'WKB', 'geometry_types': ['Point']},
         }
     }
-    attrs = _validate_attribute_columns(schema, clean, None)
+    attrs = _validate_attribute_columns(
+        schema, clean, None, selected_geometry='geometry'
+    )
     assert attrs == ['id']
 
 
@@ -1714,16 +1722,18 @@ def test_public_roundtrip_preserves_attributes(parquet_path: str) -> None:
     values = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326)
     attributes = pa.table({'id': [10, 20], 'name': ['a', 'b']})
     values.to_geoparquet(parquet_path, attributes=attributes, encoding='wkb')
-    restored, restored_attrs = gm.from_geoparquet(parquet_path)
-    _assert_roundtrip(values, restored)
-    assert restored_attrs.equals(attributes)
-    assert restored.crs.to_epsg() == 4326
+    restored = gm.from_geoparquet(parquet_path)
+    _assert_roundtrip(values, restored.geometries)
+    assert list(restored.column('id')) == [10, 20]
+    assert list(restored.column('name')) == ['a', 'b']
+    assert restored.geometries.crs.to_epsg() == 4326
 
     values.to_geoparquet(parquet_path, attributes=attributes, encoding='geoarrow')
-    restored_n, restored_attrs_n = gm.from_geoparquet(parquet_path)
-    _assert_roundtrip(values, restored_n)
-    assert restored_attrs_n.equals(attributes)
-    assert restored_n.crs.to_epsg() == 4326
+    restored_n = gm.from_geoparquet(parquet_path)
+    _assert_roundtrip(values, restored_n.geometries)
+    assert list(restored_n.column('id')) == [10, 20]
+    assert list(restored_n.column('name')) == ['a', 'b']
+    assert restored_n.geometries.crs.to_epsg() == 4326
 
 
 def test_geoparquet_sized_array_like_attributes_preserve_native_types(
@@ -1746,10 +1756,10 @@ def test_geoparquet_sized_array_like_attributes_preserve_native_types(
     # numpy datetime64[D] → Arrow date32 (native conversion, not list of dates).
     when = np.array(['2020-01-01', '2020-01-02'], dtype='datetime64[D]')
     values.to_geoparquet(parquet_path, attributes={'when': when})
-    restored, attrs = gm.from_geoparquet(parquet_path)
-    _assert_roundtrip(values, restored)
-    assert pa.types.is_date32(attrs.schema.field('when').type)
-    assert attrs.column('when').to_pylist() == [
+    restored = gm.from_geoparquet(parquet_path)
+    _assert_roundtrip(values, restored.geometries)
+    assert pa.types.is_date32(restored.to_arrow().schema.field('when').type)
+    assert list(restored.column('when')) == [
         dt.date(2020, 1, 1),
         dt.date(2020, 1, 2),
     ]
@@ -1757,18 +1767,19 @@ def test_geoparquet_sized_array_like_attributes_preserve_native_types(
     # pandas.Categorical → dictionary-encoded Arrow (not plain strings).
     cat = pd.Categorical(['a', 'b'], categories=['a', 'b', 'c'])
     values.to_geoparquet(parquet_path, attributes={'label': cat})
-    restored, attrs = gm.from_geoparquet(parquet_path)
-    _assert_roundtrip(values, restored)
-    assert pa.types.is_dictionary(attrs.schema.field('label').type)
-    assert attrs.column('label').to_pylist() == ['a', 'b']
+    restored = gm.from_geoparquet(parquet_path)
+    _assert_roundtrip(values, restored.geometries)
+    assert pa.types.is_dictionary(restored.to_arrow().schema.field('label').type)
+    assert list(restored.column('label')) == ['a', 'b']
 
     # int64 numpy + plain list still work.
     ids = np.array([10, 20], dtype=np.int64)
     values.to_geoparquet(parquet_path, attributes={'id': ids, 'name': ['x', 'y']})
-    restored, attrs = gm.from_geoparquet(parquet_path)
-    _assert_roundtrip(values, restored)
-    assert pa.types.is_int64(attrs.schema.field('id').type)
-    assert attrs.to_pydict() == {'id': [10, 20], 'name': ['x', 'y']}
+    restored = gm.from_geoparquet(parquet_path)
+    _assert_roundtrip(values, restored.geometries)
+    assert pa.types.is_int64(restored.to_arrow().schema.field('id').type)
+    assert list(restored.column('id')) == [10, 20]
+    assert list(restored.column('name')) == ['x', 'y']
 
 
 def test_geoparquet_unsized_attribute_generator_length_mismatch_rejects(
@@ -1968,13 +1979,13 @@ def test_filtered_all_null_wkb_row_group_declared_point_z(parquet_path: str) -> 
     )
     pq.write_table(table, parquet_path, row_group_size=2)
 
-    full, _ = gm.from_geoparquet(parquet_path)
+    full = gm.from_geoparquet(parquet_path).geometries
     assert len(full) == 3
     assert full.is_missing[0] and full.is_missing[1]
     assert full[2].to_wkt() == 'POINT Z (1 2 3)'
 
     # Filtered first row group is all-null binary — must not invent XY inventory.
-    filtered, _ = gm.from_geoparquet(parquet_path, row_groups=[0])
+    filtered = gm.from_geoparquet(parquet_path, row_groups=[0]).geometries
     assert len(filtered) == 2
     assert all(filtered.is_missing)
 
@@ -2319,7 +2330,9 @@ def test_declared_geometry_validation_is_subquadratic() -> None:
         }
     }
     # Fresh names list after materialization inside the helper.
-    selected = _validate_attribute_columns(attr_schema, meta_one, ['attr'] * 1)
+    selected = _validate_attribute_columns(
+        attr_schema, meta_one, ['attr'] * 1, selected_geometry='g0'
+    )
     assert selected == ['attr']
     # Materialize names once + set construction may iterate; must not do
     # per-selected-column membership against the live schema.names object.
@@ -2386,7 +2399,9 @@ def test_generator_columns_honored_by_validator() -> None:
             'geometry': {'encoding': 'WKB', 'geometry_types': []},
         }
     }
-    selected = _validate_attribute_columns(schema, metadata, (x for x in ['id']))
+    selected = _validate_attribute_columns(
+        schema, metadata, (x for x in ['id']), selected_geometry='geometry'
+    )
     assert selected == ['id']
 
 
@@ -2407,15 +2422,15 @@ def test_generator_columns_and_row_groups_public_path(
         encoding='wkb',
         row_group_size=1,
     )
-    restored, attrs = gm.from_geoparquet(
+    restored = gm.from_geoparquet(
         parquet_path,
         columns=(name for name in ['id']),
         row_groups=(i for i in [0, 2]),
     )
-    assert restored.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
-    assert attrs.column_names == ['id']
-    assert attrs['id'].to_pylist() == [10, 30]
-    assert restored.crs.to_epsg() == 4326
+    assert restored.geometries.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
+    assert list(restored[0].properties) == ['id']
+    assert list(restored.column('id')) == [10, 30]
+    assert restored.geometries.crs.to_epsg() == 4326
 
 
 # --- Cross-defect positives: WKB + native public round-trips stay green ---
@@ -2436,11 +2451,12 @@ def test_geoparquet_wkb_and_native_roundtrips_preserve_metadata(
 
     for encoding in ('wkb', 'geoarrow'):
         values.to_geoparquet(parquet_path, attributes=attributes, encoding=encoding)
-        restored, restored_attrs = gm.from_geoparquet(parquet_path)
-        _assert_roundtrip(values, restored)
-        assert restored.epoch == 2020.5
-        assert list(restored.geometry_type) == ['Point', 'Point']
-        assert restored_attrs.equals(attributes)
+        restored = gm.from_geoparquet(parquet_path)
+        _assert_roundtrip(values, restored.geometries)
+        assert restored.geometries.epoch == 2020.5
+        assert list(restored.geometries.geometry_type) == ['Point', 'Point']
+        assert list(restored.column('id')) == [1, 2]
+        assert list(restored.column('label')) == ['x', 'y']
         # Writer-emitted bbox/type declaration is accepted on the way back.
         import pyarrow.parquet as pq
 
@@ -2466,20 +2482,18 @@ def test_from_geoparquet_iterable_columns_and_row_groups(parquet_path: str) -> N
         row_group_size=1,
     )
 
-    restored, attrs = gm.from_geoparquet(
+    restored = gm.from_geoparquet(
         parquet_path,
         columns=iter(['id']),
         row_groups=iter([0, 2]),
     )
-    assert restored.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
-    assert attrs.column_names == ['id']
-    assert attrs['id'].to_pylist() == [10, 30]
+    assert restored.geometries.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
+    assert list(restored[0].properties) == ['id']
+    assert list(restored.column('id')) == [10, 30]
 
-    restored2, attrs2 = gm.from_geoparquet(
-        parquet_path, columns=['id'], row_groups=[0, 2]
-    )
-    assert restored2.to_wkt() == restored.to_wkt()
-    assert attrs2['id'].to_pylist() == [10, 30]
+    restored2 = gm.from_geoparquet(parquet_path, columns=['id'], row_groups=[0, 2])
+    assert restored2.geometries.to_wkt() == restored.geometries.to_wkt()
+    assert list(restored2.column('id')) == [10, 30]
 
 
 # ---------------------------------------------------------------------------
@@ -2547,7 +2561,7 @@ def test_native_matching_axes_still_imports(parquet_path: str) -> None:
         metadata={b'geo': json.dumps(md).encode()},
     )
     pq.write_table(pa.table({'geometry': column}, schema=schema), parquet_path)
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert restored.to_wkt() == ['POINT (1 2)']
 
 
@@ -2578,7 +2592,7 @@ def test_wkb_point_z_declaration_still_trusted(parquet_path: str) -> None:
         metadata={b'geo': json.dumps(md).encode()},
     )
     pq.write_table(pa.table({'geometry': column}, schema=schema), parquet_path)
-    restored, _ = gm.from_geoparquet(parquet_path)
+    restored = gm.from_geoparquet(parquet_path).geometries
     assert restored.to_wkt() == ['POINT (1 2)']
 
 

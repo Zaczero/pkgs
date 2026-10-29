@@ -126,7 +126,9 @@ def test_crs_free_geojson_round_trip_declares_crs84() -> None:
     assert decoded.crs == gm.CRS('OGC:CRS84')
 
     feature = gm.to_feature(point)
-    assert gm.from_geojson(feature, features=True).geometries.crs == gm.CRS('OGC:CRS84')
+    assert gm.from_geojson(feature, as_features=True).geometries.crs == gm.CRS(
+        'OGC:CRS84'
+    )
 
 
 def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
@@ -208,7 +210,7 @@ def test_b1_to_feature_requires_explicit_epoch_drop() -> None:
     feature = gm.to_feature(point, drop_epoch=True)
     assert 'epoch' not in feature
     assert set(feature) >= {'type', 'geometry', 'properties'}
-    decoded = gm.from_geojson(feature, features=True)
+    decoded = gm.from_geojson(feature, as_features=True)
     assert decoded.geometries[0].epoch is None
 
 
@@ -313,7 +315,7 @@ def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
         table.replace_schema_metadata({b'geo': json.dumps(meta).encode()}),
         path,
     )
-    geoms, _table = gp.from_geoparquet(path)
+    geoms = gp.from_geoparquet(path).geometries
     assert geoms.crs == gm.CRS('OGC:CRS84')
     assert gm.equals(gj, geoms[0])
     assert gm.distance(gj, geoms[0]) == 0.0
@@ -363,7 +365,7 @@ def test_spherical_edges_accepted_on_point() -> None:
         },
     )
     batch = pa.RecordBatch.from_arrays([coords], schema=pa.schema([field]))
-    assert gm.from_arrow(batch).to_wkt() == ['POINT (1 2)']
+    assert gm.from_arrow(batch).geometries.to_wkt() == ['POINT (1 2)']
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +459,7 @@ def test_hole_polygons_with_missing_stay_packed() -> None:
             {'type': 'Feature', 'geometry': g, 'properties': {}},
         ],
     }
-    arr = gm.from_geojson(fc)
+    arr = gm.from_geojson(fc).geometries
     # Packed polygon payload — not the mixed WKB path.
     callable_, args = arr.__reduce__()
     assert callable_.__name__ == '_unpickle_packed_array_v1'

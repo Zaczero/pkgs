@@ -17,7 +17,12 @@ import textwrap
 import gometry as gm
 import pytest
 
-from tests._support import _capsule_only_from_pyarrow, _CapsuleOnly, _StreamOnly
+from tests._support import (
+    _capsule_only_from_pyarrow,
+    _CapsuleOnly,
+    _StreamOnly,
+    arrow_geometries,
+)
 
 pa = pytest.importorskip('pyarrow')
 
@@ -106,14 +111,14 @@ def test_interleaved_child_null_under_outer_valid_rejects() -> None:
     fsl = pa.FixedSizeListArray.from_arrays(flat, 2)
     assert fsl.null_count == 0
     with pytest.raises((TypeError, gm.ParseError, ValueError), match=r'null'):
-        gm.from_arrow(_geoarrow_point_batch(fsl))
+        arrow_geometries(_geoarrow_point_batch(fsl))
 
 
 def test_interleaved_child_null_hidden_by_outer_null_ok() -> None:
     """Child nulls wholly hidden by an outer null may be ignored."""
     flat = pa.array([1.0, 2.0, 99.0, None], type=pa.float64())
     fsl = pa.FixedSizeListArray.from_arrays(flat, 2, mask=pa.array([False, True]))
-    arr = gm.from_arrow(_geoarrow_point_batch(fsl))
+    arr = arrow_geometries(_geoarrow_point_batch(fsl))
     assert arr.to_wkt() == ['POINT (1 2)', None]
     assert arr.is_missing.tolist() == [False, True]
 
@@ -179,7 +184,7 @@ def test_parent_forged_n_buffers_rejects_capsule() -> None:
     assert arr.n_buffers == 1
     arr.n_buffers = 2
     with pytest.raises((TypeError, gm.ParseError, ValueError)):
-        gm.from_arrow(_capsule_provider(schema_c, array_c))
+        arrow_geometries(_capsule_provider(schema_c, array_c))
 
 
 def test_parent_null_count_validity_mismatch_rejects_capsule() -> None:
@@ -196,7 +201,7 @@ def test_parent_null_count_validity_mismatch_rejects_capsule() -> None:
     # validity bitmap (or with a mismatch) must reject.
     arr.null_count = 1
     with pytest.raises((TypeError, gm.ParseError, ValueError)):
-        gm.from_arrow(_capsule_provider(schema_c, array_c))
+        arrow_geometries(_capsule_provider(schema_c, array_c))
 
 
 def test_parent_forged_n_buffers_rejects_stream() -> None:
@@ -320,7 +325,7 @@ def test_parent_forged_n_buffers_rejects_stream() -> None:
 
     StreamOnly._keep = (stream_cap, stream)  # type: ignore[attr-defined]
     with pytest.raises((TypeError, gm.ParseError, ValueError)):
-        gm.from_arrow(StreamOnly())
+        arrow_geometries(StreamOnly())
 
     # Honest stream path still succeeds.
     class HonestStream:
@@ -330,19 +335,19 @@ def test_parent_forged_n_buffers_rejects_stream() -> None:
         def __arrow_c_stream__(self, requested_schema=None):
             return self._obj.__arrow_c_stream__(requested_schema)
 
-    assert gm.from_arrow(HonestStream(table)).to_wkt() == [
+    assert arrow_geometries(HonestStream(table)).to_wkt() == [
         'POINT (1 2)',
         'POINT (3 4)',
     ]
 
 
 # ---------------------------------------------------------------------------
-# B / C12 — deep irrelevant schema sibling must not stack-overflow
+# B / C12 — deep attribute schema must not stack-overflow
 # ---------------------------------------------------------------------------
 
 
-def test_deep_unused_struct_sibling_imports_in_subprocess() -> None:
-    """Valid geometry beside a ~50k-level unused Struct must import (exit 0)."""
+def test_deep_invalid_struct_attribute_rejects_without_stack_overflow() -> None:
+    """A deeply nested malformed attribute is rejected without crashing."""
     script = textwrap.dedent(
         r"""
         import ctypes
@@ -518,9 +523,12 @@ def test_deep_unused_struct_sibling_imports_in_subprocess() -> None:
             release_schema, release_array, schema_c, array_c, ext,
         )
 
-        arr = gm.from_arrow(Provider())
-        assert arr.to_wkt() == ["POINT (1 2)"], arr.to_wkt()
-        print("OK", arr.to_wkt())
+        try:
+            gm.from_arrow(Provider())
+        except (TypeError, ValueError, gm.ParseError):
+            print("REJECTED")
+        else:
+            raise AssertionError("malformed nested attribute was accepted")
         """
     )
     result = subprocess.run(
@@ -534,7 +542,7 @@ def test_deep_unused_struct_sibling_imports_in_subprocess() -> None:
         f'expected exit 0, got {result.returncode}\n'
         f'stdout={result.stdout!r}\nstderr={result.stderr!r}'
     )
-    assert 'OK' in result.stdout
+    assert 'REJECTED' in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -726,7 +734,7 @@ def test_release_callback_once_on_success() -> None:
             return schema_c, array_c
 
     Provider._keep = (wrapped, schema_c, array_c)  # type: ignore[attr-defined]
-    decoded = gm.from_arrow(Provider())
+    decoded = arrow_geometries(Provider())
     assert decoded[0] == gm.Point(1, 2)
     del decoded
     gc.collect()
@@ -762,7 +770,7 @@ def test_release_callback_once_on_rejection() -> None:
 
     Provider._keep = (wrapped, schema_c, array_c)  # type: ignore[attr-defined]
     with pytest.raises((TypeError, gm.ParseError, ValueError, OverflowError)):
-        gm.from_arrow(Provider())
+        arrow_geometries(Provider())
     gc.collect()
     assert counts[0] == 1, f'release count on reject={counts[0]}'
 
@@ -773,7 +781,7 @@ def test_arrow_c_malformed_payload_rejected() -> None:
     # layout_validation_tests battery (native_buffer_len / checked_byte_span /
     # binary terminal-offset width; fallible format parse rejects Other).
     with pytest.raises((gm.ParseError, TypeError, ValueError)):
-        gm.from_arrow(pa.array([b'\x01'], type=pa.binary()))
+        arrow_geometries(pa.array([b'\x01'], type=pa.binary()))
 
 
 def test_arrow_c_sliced_struct_child_null_count_raw_length() -> None:
@@ -783,7 +791,7 @@ def test_arrow_c_sliced_struct_child_null_count_raw_length() -> None:
     values = gm.points([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [0] * 10, crs=4326)
     arrow = values.to_arrow()
     sliced = arrow.slice(2, 3)
-    restored = gm.from_arrow(sliced)
+    restored = arrow_geometries(sliced)
     assert restored.to_wkt() == ['POINT (2 0)', 'POINT (3 0)', 'POINT (4 0)']
 
 
@@ -813,7 +821,7 @@ def test_binary_view_multi_buffer_external_wkb_import() -> None:
     assert len(arrow.buffers()) >= 4, (
         f'expected multi-buffer BinaryView, got {len(arrow.buffers())}'
     )
-    restored = gm.from_arrow(arrow)
+    restored = arrow_geometries(arrow)
     assert len(restored) == 8
     assert (
         restored[0].to_wkt()
@@ -824,7 +832,7 @@ def test_binary_view_multi_buffer_external_wkb_import() -> None:
         == gm.LineString([(float(j + 10), float(j)) for j in range(30)]).to_wkt()
     )
     # Capsule-only forces native BinaryView materialization over multi buffers.
-    restored_c = gm.from_arrow(_capsule_only_from_pyarrow(arrow))
+    restored_c = arrow_geometries(_capsule_only_from_pyarrow(arrow))
     assert restored_c.to_wkt() == restored.to_wkt()
 
 
@@ -946,7 +954,7 @@ def test_from_arrow_positive_unrepresentable_span_is_overflow_error() -> None:
     """A positive i64 length whose Binary offsets span cannot fit usize."""
     provider, counts, _keepalive = _arrow_c_binary_capsule_provider(2**63 - 1)
     with pytest.raises(OverflowError, match='Arrow offset window length overflows'):
-        gm.from_arrow(provider)
+        arrow_geometries(provider)
     assert counts == {'schema': 1, 'array': 1}
 
 
@@ -954,7 +962,7 @@ def test_from_arrow_negative_length_remains_type_error() -> None:
     """Negative C fields remain malformed input, not positive-size overflow."""
     provider, counts, _keepalive = _arrow_c_binary_capsule_provider(-1)
     with pytest.raises(TypeError, match='Arrow array length is negative'):
-        gm.from_arrow(provider)
+        arrow_geometries(provider)
     assert counts == {'schema': 1, 'array': 1}
 
 
@@ -1102,7 +1110,7 @@ def test_zero_batch_binary_with_illegal_child_rejected() -> None:
         gm.GeometryError,
         ValueError,
     )) as exc_info:
-        gm.from_arrow(_StreamCapsuleOnly())
+        arrow_geometries(_StreamCapsuleOnly())
     assert type(exc_info.value).__name__ != 'PanicException'
     msg = str(exc_info.value).lower()
     assert 'child' in msg or 'children' in msg or 'binary' in msg or '0' in msg
@@ -1118,7 +1126,7 @@ def test_zero_batch_binary_with_illegal_child_rejected() -> None:
             )
         ]),
     )
-    empty = gm.from_arrow(_StreamOnly(ok))
+    empty = arrow_geometries(_StreamOnly(ok))
     assert len(empty) == 0
 
     # Nonempty array with the same illegal layout is still rejected (parity).
@@ -1152,7 +1160,7 @@ def test_zero_batch_binary_with_illegal_child_rejected() -> None:
         gm.GeometryError,
         ValueError,
     )) as exc2:
-        gm.from_arrow(_ArrayCapsuleOnly(schema_cap, array_cap))
+        arrow_geometries(_ArrayCapsuleOnly(schema_cap, array_cap))
     assert type(exc2.value).__name__ != 'PanicException'
 
 
@@ -1348,7 +1356,7 @@ def test_arrow_c_stream_callback_errno_maps_to_python_error(
         capsule,
     )
     with pytest.raises(expected, match='producer callback failed') as error:
-        gm.from_arrow(_ErrorStream())
+        arrow_geometries(_ErrorStream())
     if expected is OSError:
         assert error.value.errno == status
 
@@ -1458,7 +1466,7 @@ def test_arrow_c_child_index_out_of_range_rejects() -> None:
     with pytest.raises(
         gm.ParseError, match=r'child index|n_children|out of range'
     ) as exc:
-        gm.from_arrow(_StreamCapsuleOnly())
+        arrow_geometries(_StreamCapsuleOnly())
     assert type(exc.value).__name__ != 'PanicException'
     assert exc.value.format == 'geoarrow'
 
@@ -1469,9 +1477,9 @@ def test_arrow_c_child_index_out_of_range_rejects() -> None:
         'geometry': ok.to_arrow(),
     })
     batch = table.to_batches()[0]
-    restored = gm.from_arrow(_CapsuleOnly(*batch.__arrow_c_array__()))
+    restored = arrow_geometries(_CapsuleOnly(*batch.__arrow_c_array__()))
     assert restored.to_wkt() == ['POINT (1 2)']
-    restored_s = gm.from_arrow(_StreamOnly(table))
+    restored_s = arrow_geometries(_StreamOnly(table))
     assert restored_s.to_wkt() == ['POINT (1 2)']
 
 
@@ -1573,7 +1581,7 @@ def test_arrow_c_null_child_pointer_rejects() -> None:
             return stream_cap
 
     with pytest.raises(gm.ParseError, match=r'child.*null|null.*child') as exc:
-        gm.from_arrow(_StreamCapsuleOnly())
+        arrow_geometries(_StreamCapsuleOnly())
     assert type(exc.value).__name__ != 'PanicException'
     assert exc.value.format == 'geoarrow'
 
@@ -1888,7 +1896,7 @@ def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> No
     # Schema callbacks cover root + point struct + x/y; the extra array child
     # makes the mismatched array tree one callback longer than the valid tree.
     with pytest.raises(TypeError, match=r'n_children.*schema'):
-        gm.from_arrow(invalid)
+        arrow_geometries(invalid)
     assert invalid_releases == {
         'schema': 4,
         'array': 5,
@@ -1898,7 +1906,7 @@ def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> No
     valid, valid_releases, _keepvalid = _selected_struct_child_count_provider(
         protocol, array_children=1
     )
-    assert gm.from_arrow(valid).to_wkt() == ['POINT (1 2)']
+    assert arrow_geometries(valid).to_wkt() == ['POINT (1 2)']
     assert valid_releases == {
         'schema': 4,
         'array': 4,
@@ -2112,7 +2120,7 @@ def test_arrow_c_foreign_schema_child_table_span_overflow_is_type_error(
     with pytest.raises(
         TypeError, match='Arrow schema n_children is negative or too large'
     ):
-        gm.from_arrow(provider)
+        arrow_geometries(provider)
 
     del provider
     gc.collect()
@@ -2150,7 +2158,7 @@ def test_arrow_c_foreign_schema_child_table_span_overflow_is_type_error(
             0,
             False,
             True,
-            'Arrow table or record batch has no columns',
+            'no geometry-like column',
             id='zero-count-null-table',
         ),
         pytest.param(
@@ -2179,7 +2187,7 @@ def test_arrow_c_schema_child_table_admission_preserves_count_and_null_rules(
         child_entry_present=child_entry_present,
     )
     with pytest.raises(TypeError, match=message):
-        gm.from_arrow(provider)
+        arrow_geometries(provider)
 
     del provider
     gc.collect()

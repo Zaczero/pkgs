@@ -90,5 +90,5 @@ def test_from_geojson_resolves_frame_before_all_input_lanes() -> None:
     feature = {'type': 'Feature', 'properties': {}}
     for value in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.CRSError) as raised:
-            gm.from_geojson(value, crs='not-a-crs', features=True)
+            gm.from_geojson(value, crs='not-a-crs', as_features=True)
         assert type(raised.value) is gm.CRSError

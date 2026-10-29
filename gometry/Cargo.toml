@@ -27,6 +27,10 @@ ahash = { version = "0.8.12", default-features = false, features = [
   "runtime-rng",
   "std"
 ] }
+arrow-array = { version = "60", default-features = false, features = ["ffi"] }
+arrow-buffer = { version = "60", default-features = false }
+arrow-data = { version = "60", default-features = false }
+arrow-schema = { version = "60", default-features = false, features = ["ffi"] }
 bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
 fast_hilbert = { version = "2.1.0", default-features = false }
 geographiclib-rs = { version = "0.2.7", default-features = false, features = [

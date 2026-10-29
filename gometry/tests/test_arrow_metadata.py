@@ -12,6 +12,8 @@ from typing import Any, cast
 import gometry as gm
 import pytest
 
+from tests._support import arrow_geometries
+
 pa = pytest.importorskip('pyarrow')
 
 
@@ -36,7 +38,7 @@ def test_arrow_round_trip_preserves_native_geographic_coordinates(
 ) -> None:
     """Arrow frame metadata must not reinterpret native angular ordinates."""
     source = gm.points([coordinates[0]], [coordinates[1]], crs=crs)
-    restored = gm.from_arrow(source.to_arrow())
+    restored = arrow_geometries(source.to_arrow())
 
     assert restored.to_wkt() == source.to_wkt()
     assert restored.crs is not None
@@ -52,8 +54,8 @@ def test_geoarrow_extension_types_and_arrays_pickle_round_trip() -> None:
     assert restored_type == arrow.type
     assert restored_array == arrow
     assert restored_array.type == arrow.type
-    assert gm.from_arrow(restored_array).crs.to_epsg() == 4326
-    assert gm.from_arrow(restored_array).epoch == 2020.0
+    assert arrow_geometries(restored_array).crs.to_epsg() == 4326
+    assert arrow_geometries(restored_array).epoch == 2020.0
 
 
 @pytest.mark.parametrize(
@@ -99,7 +101,7 @@ def test_from_arrow_malformed_geoarrow_metadata_is_tagged_parse_error(
     )
     table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
     with pytest.raises(gm.ParseError, match=match) as excinfo:
-        gm.from_arrow(table)
+        arrow_geometries(table)
     assert excinfo.value.format == 'geoarrow'
 
 
@@ -125,7 +127,7 @@ def test_from_arrow_rejects_private_crs_definition_that_conflicts_with_projjson(
     table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
 
     with pytest.raises(gm.ParseError, match='gometry:crs_definition conflicts'):
-        gm.from_arrow(table)
+        arrow_geometries(table)
 
 
 def test_from_arrow_keeps_standard_only_geoarrow_crs_fallback() -> None:
@@ -145,7 +147,7 @@ def test_from_arrow_keeps_standard_only_geoarrow_crs_fallback() -> None:
     )
     table = pa.Table.from_arrays([arrow.storage], schema=pa.schema([field]))
 
-    restored = gm.from_arrow(table)
+    restored = arrow_geometries(table)
 
     assert restored.crs is not None
     assert restored.crs.same_as(source_crs, mode='ignore_axis_order')
@@ -166,7 +168,7 @@ def test_geoarrow_spherical_edges_rejected_on_linestring_accepted_on_point() -> 
         },
     )
     point_table = pa.Table.from_arrays([point_storage], schema=pa.schema([point_field]))
-    assert gm.from_arrow(point_table).to_wkt() == ['POINT (0 0)']
+    assert arrow_geometries(point_table).to_wkt() == ['POINT (0 0)']
 
     # linestring: list of point structs
     coord = pa.struct([('x', pa.float64()), ('y', pa.float64())])
@@ -186,7 +188,7 @@ def test_geoarrow_spherical_edges_rejected_on_linestring_accepted_on_point() -> 
     with pytest.raises(
         gm.ParseError, match=r'edges "spherical" are unsupported'
     ) as excinfo:
-        gm.from_arrow(line_table)
+        arrow_geometries(line_table)
     assert excinfo.value.format == 'geoarrow'
 
 
@@ -203,7 +205,7 @@ def test_reserved_extension_name_must_be_utf8_on_all_arrow_frontends() -> None:
         with pytest.raises(
             gm.ParseError, match='extension name metadata is not UTF-8'
         ) as exc:
-            gm.from_arrow(source)
+            arrow_geometries(source)
         assert exc.value.format == 'geoarrow'
 
 
@@ -332,16 +334,16 @@ def test_from_arrow_rejects_extension_type_vs_field_metadata_conflict_pyarrow_pa
     table = _conflicted_point_table()
     match = 'conflicting GeoArrow extension metadata'
     with pytest.raises(gm.ParseError, match=match) as direct:
-        gm.from_arrow(table)
+        arrow_geometries(table)
     assert direct.value.format == 'geoarrow'
 
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
     with pytest.raises(gm.ParseError, match=match):
-        gm.from_arrow(reader)
+        arrow_geometries(reader)
 
     empty_reader = pa.RecordBatchReader.from_batches(table.schema, [])
     with pytest.raises(gm.ParseError, match=match):
-        gm.from_arrow(empty_reader)
+        arrow_geometries(empty_reader)
 
     arr = table.column(0).chunk(0)
     mismatch = pa.field(
@@ -354,9 +356,9 @@ def test_from_arrow_rejects_extension_type_vs_field_metadata_conflict_pyarrow_pa
     )
     mismatch_table = pa.Table.from_arrays([arr], schema=pa.schema([mismatch]))
     with pytest.raises(gm.ParseError, match=match):
-        gm.from_arrow(mismatch_table)
+        arrow_geometries(mismatch_table)
     with pytest.raises(gm.ParseError, match=match):
-        gm.from_arrow(
+        arrow_geometries(
             pa.RecordBatchReader.from_batches(
                 mismatch_table.schema, mismatch_table.to_batches()
             )
@@ -365,18 +367,18 @@ def test_from_arrow_rejects_extension_type_vs_field_metadata_conflict_pyarrow_pa
     # Pure C of the same dual-source table trusts the collapsed export (field
     # wins: empty field metadata → CRS-free). Coordinates still import.
     batch = table.to_batches()[0]
-    pure_c = gm.from_arrow(_ArrowCArrayOnly(batch))
+    pure_c = arrow_geometries(_ArrowCArrayOnly(batch))
     assert pure_c.crs is None
     assert pure_c.to_wkt() == ['POINT (1 2)']
-    pure_stream = gm.from_arrow(_pure_stream_freevar(table))
+    pure_stream = arrow_geometries(_pure_stream_freevar(table))
     assert pure_stream.crs is None
     assert pure_stream.to_wkt() == ['POINT (1 2)']
 
     # Capsule of the bare ExtensionArray still has only ExtensionType (no field).
     bare = gm.points([1.0], [2.0], crs=4326).to_arrow()
-    assert gm.from_arrow(bare).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCArrayOnly(bare)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_pure_array_freevar(bare)).crs.to_epsg() == 4326
+    assert arrow_geometries(bare).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCArrayOnly(bare)).crs.to_epsg() == 4326
+    assert arrow_geometries(_pure_array_freevar(bare)).crs.to_epsg() == 4326
 
 
 def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> None:
@@ -402,7 +404,7 @@ def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> Non
             return pa.table({'geometry': good}).__arrow_c_stream__(requested_schema)
 
     for provider in (HonestArrayProvider(), HonestStreamProvider()):
-        restored = gm.from_arrow(provider)
+        restored = arrow_geometries(provider)
         assert restored.crs.to_epsg() == 4326
         assert restored.to_wkt() == ['POINT (1 2)']
 
@@ -410,7 +412,7 @@ def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> Non
     with pytest.raises(
         gm.ParseError, match='conflicting GeoArrow extension metadata'
     ) as exc:
-        gm.from_arrow(bad)
+        arrow_geometries(bad)
     assert exc.value.format == 'geoarrow'
 
 
@@ -434,7 +436,7 @@ def test_from_arrow_geoarrow_wkb_over_point_storage_same_verdict_all_frontends()
     errors: list[tuple[str, type[BaseException], str]] = []
     for frontend_id, frontend in _arrow_frontends(table):
         with pytest.raises(TypeError) as excinfo:
-            gm.from_arrow(frontend)
+            arrow_geometries(frontend)
         errors.append((frontend_id, type(excinfo.value), str(excinfo.value)))
         assert match in str(excinfo.value), (frontend_id, excinfo.value)
     # Same exception class on every frontend (no silent accept / divergent type).
@@ -447,13 +449,13 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
     # ExtensionType-only (field metadata absent).
     arr = gm.points([1.0], [2.0], crs=4326).to_arrow()
     table = pa.table({'geometry': arr})
-    assert gm.from_arrow(table).crs.to_epsg() == 4326
-    assert gm.from_arrow(arr).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCArrayOnly(arr)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_pure_stream_freevar(table)).crs.to_epsg() == 4326
+    assert arrow_geometries(table).crs.to_epsg() == 4326
+    assert arrow_geometries(arr).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCArrayOnly(arr)).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
+    assert arrow_geometries(_pure_stream_freevar(table)).crs.to_epsg() == 4326
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
-    assert gm.from_arrow(reader).crs.to_epsg() == 4326
+    assert arrow_geometries(reader).crs.to_epsg() == 4326
 
     # Field-metadata-only (no ExtensionType wrapper).
     storage = pa.StructArray.from_arrays(
@@ -468,14 +470,14 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
         },
     )
     field_table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
-    assert gm.from_arrow(field_table).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCStreamOnly(field_table)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_pure_stream_freevar(field_table)).crs.to_epsg() == 4326
+    assert arrow_geometries(field_table).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCStreamOnly(field_table)).crs.to_epsg() == 4326
+    assert arrow_geometries(_pure_stream_freevar(field_table)).crs.to_epsg() == 4326
     field_reader = pa.RecordBatchReader.from_batches(
         field_table.schema, field_table.to_batches()
     )
-    assert gm.from_arrow(field_reader).crs.to_epsg() == 4326
-    assert gm.from_arrow(field_table).to_wkt() == ['POINT (1 2)']
+    assert arrow_geometries(field_reader).crs.to_epsg() == 4326
+    assert arrow_geometries(field_table).to_wkt() == ['POINT (1 2)']
 
     # Agreeing dual sources (same CRS) must not reject on any frontend.
     agree = pa.field(
@@ -487,9 +489,9 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
         },
     )
     agree_table = pa.Table.from_arrays([arr], schema=pa.schema([agree]))
-    assert gm.from_arrow(agree_table).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCStreamOnly(agree_table)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_pure_stream_freevar(agree_table)).crs.to_epsg() == 4326
+    assert arrow_geometries(agree_table).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCStreamOnly(agree_table)).crs.to_epsg() == 4326
+    assert arrow_geometries(_pure_stream_freevar(agree_table)).crs.to_epsg() == 4326
 
 
 def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> None:
@@ -508,7 +510,7 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
     )
     table = pa.Table.from_arrays([arrow], schema=pa.schema([field]))
 
-    restored = gm.from_arrow(table)
+    restored = arrow_geometries(table)
     assert restored.crs.to_epsg() == 4326
     assert restored.to_wkt() == ['POINT (1 2)']
 
@@ -516,34 +518,34 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
 def test_from_arrow_plain_stream_preserves_crs() -> None:
     """D07 positive: plain crs=4326 through pure stream keeps EPSG:4326."""
     table = pa.table({'geometry': gm.points([1.0], [2.0], crs=4326).to_arrow()})
-    assert gm.from_arrow(_pure_stream_freevar(table)).crs.to_epsg() == 4326
-    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
+    assert arrow_geometries(_pure_stream_freevar(table)).crs.to_epsg() == 4326
+    assert arrow_geometries(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
-    assert gm.from_arrow(reader).crs.to_epsg() == 4326
+    assert arrow_geometries(reader).crs.to_epsg() == 4326
 
 
 def test_from_arrow_empty_and_zero_batch_preserve_crs_epoch() -> None:
     """D07 positive: empty/zero-chunk framed readers keep CRS+epoch (no over-rejection)."""
     arr = gm.points([1.0], [2.0], crs=4326, epoch=2020.0).to_arrow()
     table = pa.table({'geometry': arr})
-    full = gm.from_arrow(table)
+    full = arrow_geometries(table)
     assert full.crs.to_epsg() == 4326
     assert full.epoch == 2020.0
 
     empty_reader = pa.RecordBatchReader.from_batches(table.schema, [])
-    empty = gm.from_arrow(empty_reader)
+    empty = arrow_geometries(empty_reader)
     assert len(empty) == 0
     assert empty.crs.to_epsg() == 4326
     assert empty.epoch == 2020.0
 
     empty_table = table.slice(0, 0)
-    via_stream = gm.from_arrow(_pure_stream_freevar(empty_table))
+    via_stream = arrow_geometries(_pure_stream_freevar(empty_table))
     assert len(via_stream) == 0
     assert via_stream.crs.to_epsg() == 4326
     assert via_stream.epoch == 2020.0
 
     empty_arr = arr.slice(0, 0)
-    via_arr = gm.from_arrow(empty_arr)
+    via_arr = arrow_geometries(empty_arr)
     assert len(via_arr) == 0
     assert via_arr.crs.to_epsg() == 4326
     assert via_arr.epoch == 2020.0
@@ -598,7 +600,7 @@ def test_multichunk_packed_arrow_import_preserves_all_rows(
 ) -> None:
     arrow = gm.GeometryArray(values).to_arrow()
     chunks = pa.chunked_array([arrow.slice(0, 3), arrow.slice(3, 4), arrow.slice(7, 5)])
-    restored = gm.from_arrow(chunks, crs=None)
+    restored = arrow_geometries(chunks, crs=None)
     assert restored.to_wkt() == gm.GeometryArray(values).to_wkt()
 
 
@@ -621,5 +623,5 @@ def test_binary_view_wkb_import_handles_inline_and_external_rows() -> None:
         _extension_type_from_storage(pa, GEOARROW_WKB, storage.type, None, None),
         storage,
     )
-    restored = gm.from_arrow(arrow, crs=None)
+    restored = arrow_geometries(arrow, crs=None)
     assert restored.to_wkt() == values.to_wkt()

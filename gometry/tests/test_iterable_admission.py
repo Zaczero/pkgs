@@ -108,7 +108,7 @@ def test_userdict_properties_are_preserved() -> None:
         'geometry': {'type': 'Point', 'coordinates': [0.0, 1.0]},
         'properties': props,
     }
-    features = gm.from_geojson([feat], features=True)
+    features = gm.from_geojson([feat], as_features=True)
     assert len(features.geometries) == 1
     assert features.properties[0]['name'] == 'a'
 
@@ -172,7 +172,8 @@ except Exception as e:
     assert completed.returncode != 0
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
-    assert 'duplicate key' in blob
+    assert 'duplicate' in blob
+    assert 'key' in blob
     assert 'GeometryError' in blob
 
 
@@ -200,7 +201,8 @@ except Exception as e:
     completed = _assert_terminates(script)
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
-    assert 'duplicate key' in blob
+    assert 'duplicate' in blob
+    assert 'key' in blob
     assert 'GeometryError' in blob
 
 
@@ -231,7 +233,7 @@ def test_keys_only_properties_to_feature_and_features() -> None:
                 'properties': {'k': 1},
             }[key]
 
-    parsed = gm.from_geojson([Feat()], features=True)
+    parsed = gm.from_geojson([Feat()], as_features=True)
     assert parsed.geometries[0].to_wkt() == 'POINT (3 4)'
     assert parsed.properties[0]['k'] == 1
 
@@ -260,7 +262,7 @@ def test_nested_userdict_geometry_from_geojson() -> None:
         'geometry': collections.UserDict({'type': 'Point', 'coordinates': [1.0, 2.0]}),
         'properties': {},
     })
-    assert g.x == 1.0 and g.y == 2.0
+    assert g.geometry.x == 1.0 and g.geometry.y == 2.0
 
 
 def test_nested_mapping_proxy_and_keys_duck() -> None:
@@ -279,7 +281,7 @@ def test_nested_mapping_proxy_and_keys_duck() -> None:
             'type': 'Feature',
             'geometry': proxy_geom,
             'properties': {},
-        }).to_wkt()
+        }).geometry.to_wkt()
         == 'POINT (3 4)'
     )
     assert (
@@ -287,7 +289,7 @@ def test_nested_mapping_proxy_and_keys_duck() -> None:
             'type': 'Feature',
             'geometry': Geom(),
             'properties': {},
-        }).to_wkt()
+        }).geometry.to_wkt()
         == 'POINT (7 8)'
     )
     # GeometryArray / require / from_geojson nested geometry
@@ -312,7 +314,7 @@ def test_nested_mapping_proxy_and_keys_duck() -> None:
                 'properties': {'k': 1},
             }
         ],
-        features=True,
+        as_features=True,
     )
     assert feats.geometries[0].to_wkt() == 'POINT (13 14)'
 
@@ -359,7 +361,7 @@ def test_from_geojson_accepts_keys_only_mapping() -> None:
                 'properties': {'name': 'ok'},
             }[key]
 
-    parsed = gm.from_geojson(Feat(), features=True)
+    parsed = gm.from_geojson(Feat(), as_features=True)
     assert parsed.geometries[0].to_wkt() == 'POINT (2 3)'
     assert parsed.properties[0]['name'] == 'ok'
 
@@ -493,7 +495,7 @@ def test_collection_and_features_accept_finite_inputs() -> None:
                 'properties': {},
             }
         ],
-        features=True,
+        as_features=True,
     )
     assert len(feats.geometries) == 1
     assert feats.geometries[0].to_wkt() == 'POINT (1 2)'
@@ -598,9 +600,9 @@ def test_to_geoparquet_userdict_attributes_succeeds() -> None:
             path, attributes=attrs
         )
         assert Path(path).is_file()
-        restored, table = gm.from_geoparquet(path)
+        restored = gm.from_geoparquet(path)
         assert len(restored) == 1
-        assert table.to_pydict() == {'v': [1]}
+        assert list(restored.column('v')) == [1]
 
 
 def test_to_geoparquet_infinite_attribute_column_terminates() -> None:
@@ -646,9 +648,9 @@ def test_geoparquet_and_viz_accept_finite_attributes() -> None:
             gm.Point(1, 1, crs=4326),
         ])
         arr.to_geoparquet(path, attributes={'x': [1, 2]})
-        restored, table = gm.from_geoparquet(path)
+        restored = gm.from_geoparquet(path)
         assert len(restored) == 2
-        assert table.to_pydict() == {'x': [1, 2]}
+        assert list(restored.column('x')) == [1, 2]
     from gometry._viz import _attribute_table
 
     table = _attribute_table({'x': [1]}, 1)
@@ -688,12 +690,12 @@ def test_from_geoparquet_honest_columns_selection() -> None:
         gm.GeometryArray([gm.Point(0, 0, crs=4326)]).to_geoparquet(
             path, attributes={'id': [1], 'label': ['a']}
         )
-        _geoms, attrs = gm.from_geoparquet(path, columns=['id'])
-        assert attrs.column_names == ['id']
-        assert attrs.to_pydict() == {'id': [1]}
+        features = gm.from_geoparquet(path, columns=['id'])
+        assert list(features[0].properties) == ['id']
+        assert list(features.column('id')) == [1]
         # One-shot generator still works.
-        _geoms, attrs2 = gm.from_geoparquet(path, columns=(c for c in ['id', 'label']))
-        assert attrs2.column_names == ['id', 'label']
+        features = gm.from_geoparquet(path, columns=(c for c in ['id', 'label']))
+        assert list(features[0].properties) == ['id', 'label']
 
 
 def test_geometry_array_and_from_wkt_accept_iterators() -> None:

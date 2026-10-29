@@ -227,7 +227,7 @@ def test_match_cells_coverages_reports_and_features() -> None:
             'geometry': {'type': 'Point', 'coordinates': [1, 2]},
             'properties': {'name': 'A'},
         },
-        features=True,
+        as_features=True,
     )
     match features:
         case gm.Features(geometries, properties, ids):
@@ -851,7 +851,7 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
                 'geometry': {'type': 'Point', 'coordinates': [1, 2]},
                 'properties': {},
             },
-            features=True,
+            as_features=True,
         ),
     ]
     for value in values:

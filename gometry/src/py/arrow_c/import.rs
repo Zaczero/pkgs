@@ -224,7 +224,7 @@ pub(crate) unsafe fn import_stream(
 
 /// Map an Arrow C Stream callback status to Python while retaining the
 /// producer's optional diagnostic.
-unsafe fn stream_callback_error(
+pub(super) unsafe fn stream_callback_error(
     py: Python<'_>,
     stream: *mut ArrowArrayStream,
     status: i32,

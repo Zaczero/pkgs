@@ -941,13 +941,9 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath<'_>, depth: usize) ->
         ));
     }
     if geometry_type == "FeatureCollection" {
-        // A FeatureCollection is a set of rows, not one geometry: it decodes
-        // to a GeometryArray via `from_geojson`, never
-        // silently collapses into a GeometryCollection.
         return Err(IoError::geojson(
             "GeoJSON FeatureCollection is a feature set, not one geometry; \
-            use from_geojson (returns a GeometryArray, or Features with \
-            features=True)",
+            use from_geojson to obtain Features",
         ));
     }
     let coordinates_path = path.key("coordinates");

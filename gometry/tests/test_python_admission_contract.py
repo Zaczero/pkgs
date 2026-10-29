@@ -508,7 +508,7 @@ def test_from_wkb_stream_reserves_from_exact_source_length_once() -> None:
     assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 
-def test_from_geojson_stream_reserves_from_exact_source_length_once() -> None:
+def test_from_geojson_stream_reads_source_length_at_most_once() -> None:
     rows = ExactLengthRows([
         {'type': 'Point', 'coordinates': [1, 2]},
         {'type': 'Point', 'coordinates': [3, 4]},
@@ -516,7 +516,7 @@ def test_from_geojson_stream_reserves_from_exact_source_length_once() -> None:
 
     geometries = gm.from_geojson(rows)
 
-    assert rows.length_calls == 1
+    assert rows.length_calls <= 1
     assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 

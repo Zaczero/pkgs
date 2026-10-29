@@ -27,6 +27,7 @@ import sys
 import typing
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
+from types import EllipsisType
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _TOOLS = _ROOT / 'tools'
@@ -103,6 +104,8 @@ def _check_optional_adapter_hints(errors: list[str]) -> None:
         'pl': pl,
         'pa': pa,
         'Map': lonboard.Map,
+        'Features': gometry.Features,
+        'EllipsisType': EllipsisType,
         '_ArrowArray': pa.Array | pa.ChunkedArray,
         'ListLike': ListLike,
         # The public pandas alias retains these names as unresolved ForwardRefs.
@@ -134,13 +137,21 @@ def _check_optional_adapter_hints(errors: list[str]) -> None:
                     'GeoSeries | GeoDataFrame',
                     gpd.GeoSeries | gpd.GeoDataFrame,
                 ),
-                'return': ('GeometryArray[Geometry | None]', geometry_rows),
+                'return': (
+                    'GeometryArray[Geometry | None] | Features',
+                    geometry_rows | gometry.Features,
+                ),
             },
         ),
         (
             'gometry._geopandas',
             'to_geopandas',
-            {'return': ('geopandas.GeoSeries', gpd.GeoSeries)},
+            {
+                'return': (
+                    'geopandas.GeoSeries | geopandas.GeoDataFrame',
+                    gpd.GeoSeries | gpd.GeoDataFrame,
+                )
+            },
         ),
         (
             'gometry._polars',
@@ -201,8 +212,8 @@ def _check_optional_adapter_hints(errors: list[str]) -> None:
             'from_geoparquet',
             {
                 'return': (
-                    'tuple[GeometryArray[Geometry | None], pyarrow.Table]',
-                    tuple[geometry_rows, pa.Table],
+                    'Features',
+                    gometry.Features,
                 ),
             },
         ),

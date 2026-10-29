@@ -44,12 +44,13 @@ def test_bbox_refines_candidates_and_aligns_projected_attributes(
         row_group_size=2,
         write_statistics=statistics,
     )
-    restored, attributes = gm.from_geoparquet(
+    features = gm.from_geoparquet(
         path, bbox=(0, 0, 2, 2), columns=['label'], filters=[('id', '>', 12)]
     )
+    restored = features.geometries
     assert restored.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
-    assert attributes.to_pydict() == {'label': ['b', 'c']}
-    unfiltered, _ = gm.from_geoparquet(path, bbox=(0, 0, 2, 2))
+    assert list(features.column('label')) == ['b', 'c']
+    unfiltered = gm.from_geoparquet(path, bbox=(0, 0, 2, 2)).geometries
     assert unfiltered.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
 
 
@@ -87,9 +88,10 @@ def test_covering_filter_prunes_geometry_decoding(tmp_path: Path) -> None:
     pq.write_table(
         table.replace_schema_metadata({b'geo': json.dumps(metadata).encode()}), path
     )
-    restored, attrs = gm.from_geoparquet(path, bbox=(0, 0, 20, 20))
+    features = gm.from_geoparquet(path, bbox=(0, 0, 20, 20))
+    restored = features.geometries
     assert restored.to_wkt() == ['POINT (7 13)']
-    assert attrs.to_pydict() == {'id': [71]}
+    assert list(features.column('id')) == [71]
     with pytest.raises(gm.ParseError):
         gm.from_geoparquet(path)
 
@@ -106,15 +108,16 @@ def test_bbox_row_groups_keep_order_duplicates_and_stream_ownership(
         attributes={'id': [31, 37, 41], 'label': ['a', 'b', 'c']},
     )
     stream.seek(0)
-    restored, attributes = gm.from_geoparquet(
+    features = gm.from_geoparquet(
         stream,
         row_groups=iter([2, 0, 2, 1]),
         bbox=iter([0, 0, 10, 10]),
         filters=[('id', '!=', 37)],
         columns=['label'],
     )
+    restored = features.geometries
     assert restored.to_wkt() == ['POINT (5 6)', 'POINT (1 2)', 'POINT (5 6)']
-    assert attributes.to_pydict() == {'label': ['c', 'a', 'c']}
+    assert list(features.column('label')) == ['c', 'a', 'c']
     assert not stream.closed
 
 
@@ -125,16 +128,17 @@ def test_covering_does_not_replace_user_bbox_attribute(
     path = tmp_path / 'covering.parquet'
     source = gm.GeometryArray([gm.Point(1, 2), gm.from_wkt('POINT EMPTY'), None])
     source.to_geoparquet(path, encoding=encoding, attributes={'bbox': [43, 47, 53]})
-    restored, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    restored = features.geometries
     assert restored.to_wkt() == source.to_wkt()
-    assert attributes.to_pydict() == {'bbox': [43, 47, 53]}
+    assert list(features.column('bbox')) == [43, 47, 53]
     table = pq.read_table(path)
     geo = json.loads(table.schema.metadata[b'geo'])
     covering_name = geo['columns']['geometry']['covering']['bbox']['xmin'][0]
     assert table[covering_name].is_null().to_pylist() == [False, False, True]
-    selected, attrs = gm.from_geoparquet(path, bbox=(0, 0, 3, 3), columns=['bbox'])
-    assert selected.to_wkt() == ['POINT (1 2)']
-    assert attrs.to_pydict() == {'bbox': [43]}
+    selected = gm.from_geoparquet(path, bbox=(0, 0, 3, 3), columns=['bbox'])
+    assert selected.geometries.to_wkt() == ['POINT (1 2)']
+    assert list(selected.column('bbox')) == [43]
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geometry'])
@@ -144,9 +148,9 @@ def test_bbox_includes_degenerate_rectangle_contacts(
 ) -> None:
     path = tmp_path / 'degenerate.parquet'
     gm.points([1, 2], [2, 3]).to_geoparquet(path, encoding=encoding)
-    restored, attrs = gm.from_geoparquet(path, bbox=bbox, columns=[])
-    assert restored.to_wkt() == ['POINT (1 2)']
-    assert attrs.num_rows == 1
+    restored = gm.from_geoparquet(path, bbox=bbox, columns=[])
+    assert restored.geometries.to_wkt() == ['POINT (1 2)']
+    assert len(restored) == 1
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geometry'])
@@ -161,14 +165,14 @@ def test_geographic_bbox_keeps_seam_and_pole_aliases(
     ]).to_geoparquet(
         path, encoding=encoding, row_group_size=1, attributes={'id': [59, 61, 67]}
     )
-    seam, seam_attrs = gm.from_geoparquet(path, bbox=(179.5, 9, 180, 11))
+    seam = gm.from_geoparquet(path, bbox=(179.5, 9, 180, 11))
     assert len(seam) == 1
-    assert seam_attrs.to_pydict() == {'id': [59]}
-    pole, pole_attrs = gm.from_geoparquet(path, bbox=(-80, 89, -70, 90))
+    assert list(seam.column('id')) == [59]
+    pole = gm.from_geoparquet(path, bbox=(-80, 89, -70, 90))
     assert len(pole) == 1
-    assert gm.intersects(pole, gm.Point(0, 90, crs=4326)).tolist() == [True]
-    assert pole.crs == gm.CRS(4326)
-    assert pole_attrs.to_pydict() == {'id': [61]}
+    assert gm.intersects(pole.geometries, gm.Point(0, 90, crs=4326)).tolist() == [True]
+    assert pole.geometries.crs == gm.CRS(4326)
+    assert list(pole.column('id')) == [61]
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geometry'])
@@ -185,13 +189,14 @@ def test_bbox_keeps_admitted_exterior_pole_neighbors(
     path = tmp_path / 'pole-neighbor.parquet'
     source = gm.GeometryArray([gm.Point(73, latitude, crs=4326)])
     source.to_geoparquet(path, encoding=encoding, attributes={'id': [101]})
-    restored, attrs = gm.from_geoparquet(path, bbox=bbox)
+    features = gm.from_geoparquet(path, bbox=bbox)
+    restored = features.geometries
     assert len(restored) == 1
     assert gm.intersects(
         restored, gm.Point(0, math.copysign(90, latitude), crs=4326)
     ).tolist() == [True]
     assert restored.crs == source.crs
-    assert attrs.to_pydict() == {'id': [101]}
+    assert list(features.column('id')) == [101]
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geometry'])
@@ -206,12 +211,13 @@ def test_bbox_retains_geographic_polar_faces_beyond_vertex_latitudes(
     gm.GeometryArray([cap]).to_geoparquet(
         path, encoding=encoding, attributes={'id': [97]}
     )
-    restored, attrs = gm.from_geoparquet(path, bbox=(10, 85, 20, 89))
+    features = gm.from_geoparquet(path, bbox=(10, 85, 20, 89))
+    restored = features.geometries
     assert len(restored) == 1
     assert gm.intersects(restored, gm.Point(15, 87, crs=4326)).tolist() == [True]
     assert gm.intersects(restored, gm.Point(15, 0, crs=4326)).tolist() == [False]
     assert restored.crs == cap.crs
-    assert attrs.to_pydict() == {'id': [97]}
+    assert list(features.column('id')) == [97]
 
 
 @pytest.mark.parametrize('encoding', ['wkb', 'geometry'])
@@ -225,6 +231,6 @@ def test_wrapped_bbox_uses_automatic_geographic_box_split(
         row_group_size=1,
         attributes={'id': [79, 83, 89]},
     )
-    restored, attrs = gm.from_geoparquet(path, bbox=(179.5, 9, -179.5, 11))
-    assert restored.to_wkt() == ['POINT (179.75 10)', 'POINT (-179.75 10)']
-    assert attrs.to_pydict() == {'id': [79, 83]}
+    restored = gm.from_geoparquet(path, bbox=(179.5, 9, -179.5, 11))
+    assert restored.geometries.to_wkt() == ['POINT (179.75 10)', 'POINT (-179.75 10)']
+    assert list(restored.column('id')) == [79, 83]

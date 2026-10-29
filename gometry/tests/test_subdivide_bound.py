@@ -155,7 +155,9 @@ def _assert_subdivision_contract(
 def countries() -> list[tuple[str, gm.Geometry]]:
     features = json.loads(_COUNTRIES.read_text(encoding='utf-8'))['features']
     collection = json.dumps({'type': 'FeatureCollection', 'features': features})
-    geometries = gm.from_geojson(collection, crs=4326)
+    parsed = gm.from_geojson(collection, crs=4326)
+    assert isinstance(parsed, gm.Features)
+    geometries = parsed.geometries
     return [
         (
             feature['properties']['tags'].get('ISO3166-1:alpha2', f'feature-{index}'),

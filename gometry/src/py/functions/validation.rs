@@ -348,10 +348,8 @@ fn parse_require_geojson_value(
     )?
     else {
         return Err(crate::io::IoError::geojson(
-            "Feature has null geometry (an unlocated feature); parse the \
-             FeatureCollection with from_geojson, where null geometries \
-             become missing rows, or use from_geojson(..., features=True) \
-             to retain its properties and ID",
+            "Feature has null geometry (an unlocated feature); use \
+             from_geojson to retain its properties and ID",
         )
         .into());
     };

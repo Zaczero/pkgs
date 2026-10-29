@@ -2,6 +2,7 @@ import math
 from typing import Any, cast
 
 import gometry as gm
+import numpy as np
 import pytest
 
 from tests._support import (
@@ -276,8 +277,11 @@ def test_geometry_to_crs_transforms_xyz_with_proj_oracle() -> None:
     ])
     assert line.crs == gm.CRS('EPSG:4978')
     assert line.coordinate_axes == 'XYZ'
-    assert list(line.coords) == pytest.approx(
-        list(zip(expected_xs, expected_ys, expected_zs, strict=True))
+    np.testing.assert_allclose(
+        line.coords.to_nested(),
+        list(zip(expected_xs, expected_ys, expected_zs, strict=True)),
+        rtol=1e-6,
+        atol=1e-12,
     )
 
 

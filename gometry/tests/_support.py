@@ -46,6 +46,12 @@ def gil_is_disabled() -> bool:
     return callable(probe) and not probe()
 
 
+def arrow_geometries(data: object, **kwargs: Any) -> gm.GeometryArray:
+    """Extract geometry rows from either Arrow array or table admission."""
+    result = gm.from_arrow(data, **kwargs)
+    return result.geometries if isinstance(result, gm.Features) else result
+
+
 def box_in_frame(
     geometry: gm.Geometry | gm.GeometryArray,
     bounds: tuple[float, float, float, float],
@@ -452,7 +458,7 @@ def _nullable_packed_linestring_arrow() -> gm.GeometryArray:
         },
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
-    arr = gm.from_arrow(batch)
+    arr = arrow_geometries(batch)
     callable_, args = arr.drop_missing().__reduce_ex__(5)
     assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == 1
@@ -497,7 +503,7 @@ def _nullable_packed_polygon_arrow() -> gm.GeometryArray:
         },
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
-    arr = gm.from_arrow(batch)
+    arr = arrow_geometries(batch)
     callable_, args = arr.drop_missing().__reduce_ex__(5)
     assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == 2

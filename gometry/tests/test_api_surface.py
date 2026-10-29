@@ -548,7 +548,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     )
     assert (
         signatures['from_geojson']
-        == "(data, *, features=False, crs='OGC:CRS84', epoch=None)"
+        == "(data, *, as_features=False, crs='OGC:CRS84', epoch=None)"
     )
     assert (
         signatures['Polygon']
@@ -654,6 +654,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     }
     expected = [
         'AccuracyWarning',
+        'ArrowValue',
         'CRS',
         'CRSError',
         'CRSMismatchError',
@@ -662,6 +663,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'CircleArray',
         'Coordinates',
         'Extremes',
+        'Feature',
         'Features',
         'GeohashCell',
         'Geometry',
@@ -718,6 +720,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'explore',
         'frechet_distance',
         'from_arrow',
+        'from_arrow_batches',
         'from_geojson',
         'from_geopandas',
         'from_geoparquet',
@@ -755,6 +758,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'symmetric_difference_all',
         'to_feature',
         'to_feature_collection',
+        'to_geopandas',
         'touches',
         'union',
         'union_all',

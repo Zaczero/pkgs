@@ -165,7 +165,7 @@ def test_geojson_inexact_integers_rejected() -> None:
                     ],
                 },
                 crs=None,
-                features=True,
+                as_features=True,
             )
 
 
@@ -196,7 +196,7 @@ def test_feature_side_data_keeps_arbitrary_json_integers_exact_on_every_lane() -
         ('BUFFER', bytearray(text, 'utf-8')),
         ('MAPPING', mapping),
     ):
-        features = gm.from_geojson(source, features=True)
+        features = gm.from_geojson(source, as_features=True)
         properties = features.properties[0]
         assert isinstance(properties['n'], int), lane
         assert properties['n'] == value, lane
@@ -247,9 +247,9 @@ def test_feature_side_data_at_accepted_depth_keeps_one_large_payload_once() -> N
         + ']' * depth
         + '}}'
     )
-    nested = gm.from_geojson(text, features=True).properties[0]['nested']
+    nested = gm.from_geojson(text, as_features=True).properties[0]['nested']
     for _ in range(depth):
-        assert isinstance(nested, list) and len(nested) == 1
+        assert isinstance(nested, tuple) and len(nested) == 1
         nested = nested[0]
     assert nested == payload
 
@@ -285,7 +285,7 @@ def test_geojson_cast_saturation_edges_rejected_all_paths() -> None:
                         ],
                     },
                     crs=None,
-                    features=True,
+                    as_features=True,
                 ),
             ),
         ):
@@ -332,7 +332,7 @@ def test_geojson_text_mapping_exact_int_equivalence() -> None:
                 ],
             },
             crs=None,
-            features=True,
+            as_features=True,
         )
         _assert_bits_equal(feats.geometries[0].z, map_geom.z, label=f'features int {n}')
 

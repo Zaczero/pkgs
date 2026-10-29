@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from gometry._arrow import _extension_type_from_storage
 
-from tests._support import _capsule_only_from_pyarrow, _StreamOnly
+from tests._support import _capsule_only_from_pyarrow, _StreamOnly, arrow_geometries
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,7 +39,7 @@ def _import(column: Any, frontend: str) -> gm.GeometryArray[gm.Geometry | None]:
         column = _capsule_only_from_pyarrow(column)
     elif frontend == 'stream':
         column = _StreamOnly(pa.table({'geometry': column}))
-    return gm.from_arrow(column)
+    return arrow_geometries(column)
 
 
 def _export(
@@ -102,7 +102,7 @@ def test_adjacent_binary64_heights_produce_a_finite_long_branch_drawing(
 
 def test_geographic_export_canonicalizes_aliases_without_mutating_source() -> None:
     source = gm.LineString([(530, 2), (190, 4)], z=[7, 19], crs=4326)
-    result = gm.from_arrow(source.to_arrow())[0]
+    result = arrow_geometries(source.to_arrow())[0]
     assert result is not None
     xy = np.asarray(list(result.coords.select('XY')))
     assert np.abs(xy[:, 0]).max() <= 180
@@ -141,7 +141,7 @@ def test_adjacent_binary64_heights_export_as_a_finite_seam_drawing(
     low = 0.1
     high = math.nextafter(low, math.inf)
     source = gm.LineString([(170, low), (-170, high)], crs=4326)
-    result = gm.from_arrow(_export(gm.GeometryArray([source]), frontend))[0]
+    result = arrow_geometries(_export(gm.GeometryArray([source]), frontend))[0]
     assert result is not None
     coordinates = list(result.coords)
     assert (170, low) in coordinates
@@ -157,14 +157,14 @@ def test_literal_turn_expansion_uses_the_existing_generated_work_budget() -> Non
     source = gm.GeometryArray([gm.LineString([(0, 1), (360_000_000_000, 2)])])
     column = _foreign_column(source, 'wkb')
     with pytest.raises(gm.ResourceLimitError, match='literal edge subdivision'):
-        gm.from_arrow(column)
+        arrow_geometries(column)
 
 
 @pytest.mark.parametrize('frontend', ['pyarrow', 'cdata', 'stream', 'wkb'])
 def test_outgoing_seam_drawing_uses_source_arclength_ordinates(frontend: str) -> None:
     line = gm.LineString([(170, 70), (-170, 80)], z=[0, 1000], m=[0, 1000], crs=4326)
     values = gm.GeometryArray([line, None, gm.LineString([(1, 2), (3, 4)], crs=4326)])
-    restored = gm.from_arrow(_export(values, frontend))
+    restored = arrow_geometries(_export(values, frontend))
     assert restored.is_missing.tolist() == [False, True, False]
     first = restored[0]
     assert first is not None
@@ -191,7 +191,7 @@ def test_polar_drawing_extends_incident_ordinates(axes: str, frontend: str) -> N
     extra = ' 17 29' if axes == 'ZM' else ' 17'
     ring = ', '.join(f'{x} 80{extra}' for x in (-135, -45, 45, 135, -135))
     source = gm.from_wkt(f'POLYGON {axes} (({ring}))', crs=4326)
-    result = gm.from_arrow(_export(source, frontend))[0]
+    result = arrow_geometries(_export(source, frontend))[0]
     assert result is not None
     drawing = gm.from_wkb(result.to_wkb())
     assert gm.intersects(drawing, gm.Point(0, 89))
@@ -217,17 +217,18 @@ def test_parquet_metadata_covering_and_rows_follow_published_drawing(
     )
     metadata = json.loads(pq.read_schema(path).metadata[b'geo'])
     assert metadata['columns']['geometry']['geometry_types'] == ['MultiLineString']
-    restored, attributes = gm.from_geoparquet(path, row_groups=[2, 0, 2, 1])
+    features = gm.from_geoparquet(path, row_groups=[2, 0, 2, 1])
+    restored = features.geometries
     assert restored.is_missing.tolist() == [False, False, False, True]
-    assert attributes['id'].to_pylist() == [59, 31, 59, 47]
+    assert list(features.column('id')) == [59, 31, 59, 47]
     cut = restored[1]
     assert cut is not None
     drawing = gm.from_wkb(cut.to_wkb())
     assert gm.intersects(drawing, gm.Point(180, 0))
     assert not gm.intersects(drawing, gm.Point(0, 0))
-    selected, selected_attributes = gm.from_geoparquet(path, bbox=(179, -1, 180, 1))
+    selected = gm.from_geoparquet(path, bbox=(179, -1, 180, 1))
     assert len(selected) == 1
-    assert selected_attributes['id'].to_pylist() == [31]
+    assert list(selected.column('id')) == [31]
 
 
 def test_plain_native_parquet_admits_literal_long_edges(tmp_path: Path) -> None:
@@ -235,10 +236,11 @@ def test_plain_native_parquet_admits_literal_long_edges(tmp_path: Path) -> None:
     literal = gm.GeometryArray([gm.LineString([(170, 0), (-170, 0)]), None])
     column = _foreign_column(literal, 'wkb')
     pq.write_table(pa.table({'geometry': column, 'id': [31, 47]}), path)
-    result, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
+    result = features.geometries
     assert result.is_missing.tolist() == [False, True]
     line = result[0]
     assert line is not None
     assert gm.intersects(line, gm.Point(0, 0, crs=4326))
     assert not gm.intersects(line, gm.Point(180, 0, crs=4326))
-    assert attributes['id'].to_pylist() == [31, 47]
+    assert list(features.column('id')) == [31, 47]

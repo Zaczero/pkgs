@@ -94,6 +94,7 @@ from gometry._types import (
     CrsUnitInfo,
     DistanceUnit,
     Extremes,
+    Feature,
     FeatureId,
     Features,
     FloatColumn,
@@ -183,6 +184,7 @@ __version__: Final[str]
 __all__ = [
     'CRS',
     'AccuracyWarning',
+    'ArrowValue',
     'CRSError',
     'CRSMismatchError',
     'CellArray',
@@ -398,38 +400,6 @@ _Bounds3D: TypeAlias = tuple[float, float, float, float, float, float]
 #: ``__geo_interface__``-bearing object.
 _GeoJsonScalar: TypeAlias = (
     str | bytes | bytearray | memoryview | Mapping[str, Any] | SupportsGeoInterface
-)
-
-_GeoJsonFeatureRow: TypeAlias = (
-    str
-    | Buffer
-    | GeoJsonFeature
-    | GeoJsonFeatureNonNull
-    | SupportsGeoInterface[GeoJsonFeature]
-    | SupportsGeoInterface[GeoJsonFeatureNonNull]
-)
-_GeoJsonFeatureBatch: TypeAlias = (
-    Sequence[_GeoJsonFeatureRow | None]
-    | Iterator[_GeoJsonFeatureRow | None]
-    | Iterable[
-        GeoJsonFeature
-        | GeoJsonFeatureNonNull
-        | SupportsGeoInterface[GeoJsonFeature]
-        | SupportsGeoInterface[GeoJsonFeatureNonNull]
-        | None
-    ]
-    | np.ndarray[Any, np.dtype[Any]]
-)
-_GeoJsonFeatureInput: TypeAlias = (
-    str
-    | Buffer
-    | GeoJsonFeature
-    | GeoJsonFeatureNonNull
-    | GeoJsonFeatureCollection
-    | SupportsGeoInterface[GeoJsonFeature]
-    | SupportsGeoInterface[GeoJsonFeatureNonNull]
-    | SupportsGeoInterface[GeoJsonFeatureCollection]
-    | _GeoJsonFeatureBatch
 )
 
 # One geometry-like row accepted by the canonical collection-ingest boundary.
@@ -21836,6 +21806,182 @@ def _geoparquet_publication(
 ) -> tuple[PyArrowArray, GeometryArray[Geometry | None]]:
     """Publish one typed geometry column and retain its rows for file metadata."""
 
+@final
+class _ArrowArray:
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int, /) -> Any: ...
+    def __arrow_c_schema__(self) -> PyArrowCapsule: ...
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowCapsule | None = None
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]: ...
+
+@final
+class _ArrowColumn(Sequence[Any]):
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int | slice, /) -> Any: ...
+    def _take(self, indices: tuple[int, ...]) -> _ArrowColumn: ...
+    def _materialize(self) -> _ArrowColumn: ...
+    def _chunks(self) -> list[_ArrowArray]: ...
+    def _indices(self) -> list[int] | None: ...
+    def _validate_feature_type(self, path: str) -> None: ...
+    def _validate_ids(self) -> None: ...
+
+@final
+class _ArrowSchema:
+    @property
+    def names(self) -> list[str]: ...
+    @property
+    def metadata(self) -> dict[bytes, bytes]: ...
+    @property
+    def geometry_columns(self) -> list[str]: ...
+    @property
+    def geoarrow_columns(self) -> list[str]: ...
+    def __arrow_c_schema__(self) -> PyArrowCapsule: ...
+
+@final
+class _ArrowTable:
+    def __len__(self) -> int: ...
+    @property
+    def schema(self) -> _ArrowSchema: ...
+    def column(self, index: int) -> _ArrowColumn: ...
+
+@final
+class _ArrowStreamReader(Iterator[_ArrowColumn | _ArrowTable]):
+    def __iter__(self) -> _ArrowStreamReader: ...
+    def __next__(self) -> _ArrowColumn | _ArrowTable: ...
+    def close(self) -> None: ...
+
+@final
+class ArrowValue:
+    """An immutable Arrow-backed property value.
+
+    Values retain their Arrow type and can be converted to a Python value or
+    detached from the parent Arrow storage.
+    """
+    @property
+    def type(self) -> str:
+        """The Arrow data type.
+
+        Returns
+        -------
+        str
+            The Arrow data type as a string.
+        """
+    @property
+    def value(self) -> int:
+        """The integer value of a temporal Arrow scalar.
+
+        Returns
+        -------
+        int
+            The value in the Arrow type's native units.
+
+        Raises
+        ------
+        TypeError
+            If the Arrow value is not temporal.
+        """
+    def as_py(self) -> Any:
+        """Convert this value to its Python representation.
+
+        Returns
+        -------
+        object
+            The converted value.
+        """
+    def materialize(self) -> ArrowValue:
+        """Detach this value from its parent Arrow storage.
+
+        Returns
+        -------
+        ArrowValue
+            An independently owned value with the same Arrow type.
+        """
+    def __arrow_c_schema__(self) -> PyArrowCapsule: ...
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowCapsule | None = None
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]: ...
+
+def _snapshot_arrow_array(value: object) -> _ArrowArray: ...
+def _arrow_column(chunks: tuple[_ArrowArray, ...]) -> _ArrowColumn: ...
+def _arrow_value(array: _ArrowArray, index: int) -> ArrowValue: ...
+def _snapshot_arrow_c(value: object) -> _ArrowColumn | _ArrowTable | None: ...
+def _arrow_stream_reader(value: object) -> _ArrowStreamReader: ...
+def _restore_arrow_schema(schema: object) -> _ArrowSchema: ...
+def _restore_arrow_column(
+    schema: object, chunks: tuple[object, ...]
+) -> _ArrowColumn: ...
+def _restore_arrow_value(schema: object, data: object) -> ArrowValue: ...
+def _snapshot_feature_value(value: object, path: str) -> Any: ...
+def _snapshot_feature_rows(
+    values: Iterable[Mapping[str, Any] | None], expected: int
+) -> tuple[dict[str, Any] | None, ...]: ...
+
+@final
+class _FeaturePropertyMapping(Mapping[str, Any]):
+    def __getitem__(self, key: str, /) -> Any: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def __len__(self) -> int: ...
+    def get(self, key: str, default: Any = None) -> Any: ...
+
+@final
+class _FeaturePropertyColumn(Sequence[Any]):
+    def __getitem__(self, index: int | slice, /) -> Any: ...
+    def __len__(self) -> int: ...
+    def _take(self, indices: tuple[int, ...]) -> _FeaturePropertyColumn: ...
+    def _snapshot(self, *, detach: bool = True) -> Any: ...
+    def _materialize(self) -> _FeaturePropertyColumn: ...
+
+@final
+class _FeaturePropertyRows(Sequence[Mapping[str, Any] | None]):
+    def __new__(
+        cls, rows: tuple[dict[str, Any] | None, ...]
+    ) -> _FeaturePropertyRows: ...
+    @staticmethod
+    def from_columns(columns: dict[str, Any], len: int) -> _FeaturePropertyRows: ...
+    @staticmethod
+    def concatenate(parts: list[_FeaturePropertyRows]) -> _FeaturePropertyRows: ...
+    def _compact(self) -> _FeaturePropertyRows: ...
+    def _materialize(self) -> _FeaturePropertyRows: ...
+    @overload
+    def __getitem__(self, index: int, /) -> Mapping[str, Any] | None: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> tuple[Mapping[str, Any] | None, ...]: ...
+    def __len__(self) -> int: ...
+    def select(
+        self,
+        geometries: GeometryArray[Geometry | None],
+        ids: Sequence[Any],
+        id_column: str | None,
+        index: Any,
+    ) -> Any: ...
+    def column(self, name: str) -> Sequence[Any]: ...
+    def project(self, names: tuple[str, ...]) -> _FeaturePropertyRows: ...
+    def project_admitted(self, names: tuple[str, ...]) -> _FeaturePropertyRows: ...
+    def with_columns(self, additions: _FeaturePropertyRows) -> _FeaturePropertyRows: ...
+    def mutable_rows(self) -> tuple[dict[str, Any] | None, ...]: ...
+    def _projection_snapshot(self) -> tuple[str, ...] | None: ...
+    def _column_snapshot(self, *, detach: bool = True) -> dict[str, Any] | None: ...
+    def _mixed_snapshot(self, *, detach: bool = True) -> Any: ...
+
+def _expose_feature_value(value: Any) -> Any: ...
+def _thaw_feature_value(value: Any) -> Any: ...
+def _iter_feature_rows(
+    geometries: GeometryArray[Geometry | None],
+    properties: _FeaturePropertyRows,
+    ids: Sequence[Any],
+) -> Iterator[Feature]: ...
+def _select_feature_rows(
+    geometries: GeometryArray[Geometry | None],
+    properties: object,
+    ids: Sequence[Any],
+    id_column: str | None,
+    index: Any,
+) -> Any: ...
+def _materialize_feature_geometries(
+    geometries: GeometryArray[Geometry | None],
+) -> GeometryArray[Geometry | None]: ...
+def _is_arrow_geometry(value: object, field: object | None = None) -> bool: ...
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
 ) -> GeometryArray[Geometry | None]:
@@ -21926,6 +22072,15 @@ def from_arrow(
     ['POINT (1 2)']
     """
 
+@overload
+def to_feature(
+    geom: Feature,
+    *,
+    properties: None = None,
+    id: None = None,
+    drop_epoch: bool = False,
+) -> GeoJsonFeature: ...
+@overload
 def to_feature(
     geom: Geometry | None,
     *,
@@ -22055,64 +22210,74 @@ def to_feature_collection(
 
 @overload
 def from_geojson(
-    data: GeoJsonFeatureCollection,
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> GeometryArray[Geometry | None]: ...
-@overload
-def from_geojson(
-    data: GeoJsonGeometry | GeoJsonFeatureNonNull,
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> Geometry: ...
-@overload
-def from_geojson(
-    data: SupportsGeoInterface[GeoJsonGeometry],
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> Geometry: ...
-@overload
-def from_geojson(
-    data: SupportsGeoInterface[GeoJsonFeatureNonNull],
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> Geometry: ...
-@overload
-def from_geojson(
-    data: SupportsGeoInterface[GeoJsonFeatureCollection],
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> GeometryArray[Geometry | None]: ...
-@overload
-def from_geojson(
-    data: _GeoJsonScalar,
-    *,
-    features: Literal[False] = False,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> Geometry | GeometryArray[Geometry | None]: ...
-@overload
-def from_geojson(
-    data: PandasSeries
+    data: _GeoJsonScalar
+    | PandasSeries
     | PolarsSeries
     | PyArrowArray
     | PyArrowChunkedArray
     | Iterable[_GeoJsonScalar | None],
     *,
-    features: Literal[False] = False,
+    as_features: Literal[True],
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Features: ...
+@overload
+def from_geojson(
+    data: GeoJsonGeometry | SupportsGeoInterface[GeoJsonGeometry],
+    *,
+    as_features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Geometry: ...
+@overload
+def from_geojson(
+    data: GeoJsonFeature
+    | GeoJsonFeatureNonNull
+    | SupportsGeoInterface[GeoJsonFeature]
+    | SupportsGeoInterface[GeoJsonFeatureNonNull],
+    *,
+    as_features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Feature: ...
+@overload
+def from_geojson(
+    data: GeoJsonFeatureCollection | SupportsGeoInterface[GeoJsonFeatureCollection],
+    *,
+    as_features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Features: ...
+@overload
+def from_geojson(
+    data: str | bytes | bytearray | memoryview,
+    *,
+    as_features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Geometry | GeometryArray[Geometry | None] | Feature | Features: ...
+@overload
+def from_geojson(
+    data: Iterable[GeoJsonGeometry | SupportsGeoInterface[GeoJsonGeometry] | None],
+    *,
+    as_features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_geojson(
+    data: Sequence[_GeoJsonScalar | None]
+    | Iterator[_GeoJsonScalar | None]
+    | Iterable[Mapping[str, Any] | SupportsGeoInterface | None]
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray,
+    *,
+    as_features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> GeometryArray[Geometry | None] | Features: ...
 @overload
 def from_geojson(
     data: _GeoJsonScalar
@@ -22122,40 +22287,28 @@ def from_geojson(
     | PyArrowChunkedArray
     | Iterable[_GeoJsonScalar | None],
     *,
-    features: Literal[False] = False,
+    as_features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: _EpochInput | None = None,
-) -> Geometry | GeometryArray[Geometry | None]: ...
+) -> Geometry | GeometryArray[Geometry | None] | Feature | Features: ...
 @overload
 def from_geojson(
-    data: _GeoJsonFeatureInput
+    data: _GeoJsonScalar
     | PandasSeries
     | PolarsSeries
     | PyArrowArray
-    | PyArrowChunkedArray,
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
     *,
-    features: Literal[True],
+    as_features: bool,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: _EpochInput | None = None,
-) -> Features: ...
-@overload
-def from_geojson(
-    data: _GeoJsonFeatureInput
-    | PandasSeries
-    | PolarsSeries
-    | PyArrowArray
-    | PyArrowChunkedArray,
-    *,
-    features: bool,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: _EpochInput | None = None,
-) -> Geometry | GeometryArray[Geometry | None] | Features:
+) -> Geometry | GeometryArray[Geometry | None] | Feature | Features:
     """Parse GeoJSON geometry, rows, or feature metadata.
 
-    A geometry or ``Feature`` decodes to a ``Geometry`` by default; a
-    ``FeatureCollection`` decodes to a ``GeometryArray`` with one geometry per
-    feature. Set ``features=True`` to retain feature properties and IDs in a
-    ``Features`` result.
+    Geometry, Feature and FeatureCollection documents decode to ``Geometry``,
+    ``Feature`` and ``Features`` respectively. A mixed row batch becomes
+    ``Features``; a geometry-only batch becomes ``GeometryArray``.
 
     Coordinate sequences are **axis-uniform**: every position in one sequence
     (LineString, MultiPoint member list, ring, …) must share the same axes
@@ -22172,11 +22325,10 @@ def from_geojson(
         PyArrow Array/ChunkedArray. Feature and FeatureCollection inputs are
         accepted. Missing column values become missing rows.
 
-    features : bool, default varies by call form
-        Preserve Feature properties and IDs in a ``Features`` result. Geometry-
-        only inputs are not valid when this is ``True``. Feature row iterables
-        accept Feature mappings or serialized Feature text/bytes; ``None`` rows
-        retain alignment with a missing geometry, missing properties, and no ID.
+    as_features : bool
+        When true, normalize any supported input to ``Features``, including
+        geometry-only and empty batches. Missing rows retain null properties
+        and no ID. When omitted, this is false.
 
     crs : CRS-like, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
@@ -22192,12 +22344,8 @@ def from_geojson(
 
     Returns
     -------
-    Geometry or GeometryArray
-        The decoded geometry, or one geometry per feature for a
-        ``FeatureCollection``.
-    Features
-        When ``features=True``, one geometry and its aligned properties and ID
-        per input feature.
+    Geometry, GeometryArray, Feature or Features
+        The decoded value, preserving the semantic shape of the input.
 
     Raises
     ------
@@ -22227,13 +22375,14 @@ def from_geojson(
     See Also
     --------
     Geometry.to_geojson : Serialize a geometry to GeoJSON.
-    Features : The aligned feature properties and IDs returned by
-        ``features=True``.
+    Features : Immutable, aligned geometry, property and ID columns.
 
     Examples
     --------
     >>> import gometry as gm
-    >>> gm.from_geojson('{"type": "Point", "coordinates": [1, 2]}').to_wkt()
+    >>> geometry = gm.from_geojson('{"type": "Point", "coordinates": [1, 2]}')
+    >>> assert isinstance(geometry, gm.Geometry)
+    >>> geometry.to_wkt()
     'POINT (1 2)'
     """
 

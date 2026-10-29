@@ -341,16 +341,23 @@ pub(crate) const fn used_stream_capsule_name() -> *const c_char {
 }
 
 mod admitted;
+mod attribute_values;
 mod build;
 mod capsule_lifecycle;
+pub(crate) mod column;
 mod export;
 mod export_plan;
 mod foreign_buffer;
 mod import;
 mod native;
 mod release;
+mod schema;
+mod snapshot_admission;
+mod state;
+mod table;
 #[cfg(test)]
 mod tests;
+pub(crate) mod values;
 
 pub(crate) use admitted::{
     ArrowReleaseGuard, ClassifiedGeometrySchema, MovedArrowShell, admit_and_classify_raw_schema,

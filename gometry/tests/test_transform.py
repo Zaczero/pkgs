@@ -7,6 +7,7 @@ import struct
 import sys
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -58,7 +59,9 @@ import pytest
     ],
 )
 def test_affine_basics_move_coordinates(apply, make, expected):
-    assert apply(make()).coords.to_nested() == pytest.approx(expected)
+    np.testing.assert_allclose(
+        apply(make()).coords.to_nested(), expected, rtol=1e-6, atol=1e-12
+    )
 
 
 def test_rotate_default_origin_is_centroid():

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from lonboard import Map
 
+    from gometry._types import Features
+
 _LONBOARD_INSTALL = "install the 'gometry[viz]' extra"
 _lonboard_available: bool | None = None
 _VIZ_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -75,7 +77,7 @@ def _require_lonboard() -> Any:
     return lonboard
 
 
-def _is_map_suitable(arr: GeometryArray) -> bool:
+def _is_map_suitable(arr: GeometryArray[Geometry | None]) -> bool:
     if len(arr) == 0:
         return False
     bounds = arr.total_bounds
@@ -84,7 +86,9 @@ def _is_map_suitable(arr: GeometryArray) -> bool:
     return arr.crs is not None
 
 
-def _array_for_map(arr: GeometryArray) -> GeometryArray:
+def _array_for_map(
+    arr: GeometryArray[Geometry | None],
+) -> GeometryArray[Geometry | None]:
     crs = arr.crs
     assert crs is not None
     if crs.to_epsg() == 4326:
@@ -92,18 +96,22 @@ def _array_for_map(arr: GeometryArray) -> GeometryArray:
     return arr.to_crs(4326)
 
 
-def _attribute_table(attributes: Any, row_count: int) -> Any | None:
+def _attribute_table(
+    attributes: Any, row_count: int, geometry_name: str = 'geometry'
+) -> Any | None:
     if attributes is None:
         return None
     import numpy as np
-    from arro3.core import Array, Table
+    from arro3.core import Array, ChunkedArray, Table
+
+    from gometry._lib import _ArrowColumn
 
     if isinstance(attributes, Mapping) or callable(getattr(attributes, 'keys', None)):
         # Shared keys()+seen copier (N4): keys()-only ducks + repeated-key reject.
         columns = mapping_as_dict(attributes)
-        if 'geometry' in columns:
+        if geometry_name in columns:
             raise GeometryError(
-                "attributes must not contain the reserved 'geometry' column"
+                f'attributes must not contain the geometry column {geometry_name!r}'
             )
         if not columns:
             return None
@@ -114,15 +122,30 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
         for name, values in columns.items():
             if not isinstance(name, str):
                 raise TypeError('attribute column names must be strings')
-            if hasattr(values, '__arrow_c_array__') or hasattr(
+            array: Array | ChunkedArray
+            if isinstance(values, _ArrowColumn):
+                if values._indices() is not None:
+                    values = values._materialize()
+                array = ChunkedArray([
+                    Array.from_arrow(chunk) for chunk in values._chunks()
+                ])
+            elif hasattr(values, '__arrow_c_array__') or hasattr(
                 values, '__arrow_c_stream__'
             ):
                 array = Array.from_arrow(values)
             else:
-                column = np.asarray(list(itertools.islice(values, row_count + 1)))
+                column = (
+                    np.asarray(values)
+                    if isinstance(values, np.ndarray)
+                    else np.asarray(list(itertools.islice(values, row_count + 1)))
+                )
                 if column.ndim != 1:
                     raise TypeError('attribute columns must be one-dimensional')
-                array = Array.from_numpy(column)
+                array = (
+                    _object_attribute_array(column)
+                    if column.dtype.kind == 'O'
+                    else Array.from_numpy(column)
+                )
             names.append(name)
             arrays.append(array)
         table = Table.from_arrays(arrays, names=names)
@@ -132,9 +155,9 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
         raise TypeError(
             'attributes must be an Arrow table, mapping of columns, or None'
         )
-    if 'geometry' in table.column_names:
+    if geometry_name in table.column_names:
         raise GeometryError(
-            "attributes must not contain the reserved 'geometry' column"
+            f'attributes must not contain the geometry column {geometry_name!r}'
         )
     if table.num_rows != row_count:
         raise GeometryError(
@@ -143,7 +166,50 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
     return table
 
 
-def _lonboard_data(arr: GeometryArray, attributes: Any | None) -> Any:
+def _object_attribute_array(values: Any) -> Any:
+    import numpy as np
+    from arro3.core import Array, DataType
+
+    kind = None
+    minimum = 0
+    maximum = 0
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, np.generic):
+            value = value.item()
+        current = type(value)
+        if current not in (bool, int, float, str, bytes) or (
+            kind is not None and current is not kind
+        ):
+            raise TypeError('attribute values must have a compatible Arrow scalar type')
+        kind = current
+        if current is int:
+            minimum = min(minimum, value)
+            maximum = max(maximum, value)
+    if kind is None:
+        data_type = DataType.null()
+    elif kind is int:
+        if minimum < -(1 << 63) or maximum > (1 << 64) - 1:
+            raise OverflowError('integer attribute is outside the Arrow integer range')
+        if minimum < 0 and maximum > (1 << 63) - 1:
+            raise OverflowError('integer attributes do not fit one Arrow integer type')
+        data_type = DataType.uint64() if maximum > (1 << 63) - 1 else DataType.int64()
+    else:
+        data_type = {
+            bool: DataType.bool,
+            float: DataType.float64,
+            str: DataType.string,
+            bytes: DataType.binary,
+        }[kind]()
+    return Array(values, type=data_type)
+
+
+def _lonboard_data(
+    arr: GeometryArray[Geometry | None],
+    attributes: Any | None,
+    geometry_name: str = 'geometry',
+) -> Any:
     if attributes is None:
         return arr
     from arro3.core import Array
@@ -151,7 +217,7 @@ def _lonboard_data(arr: GeometryArray, attributes: Any | None) -> Any:
     # Import the native GeoArrow capsule directly.  `GeometryArray.to_arrow()`
     # intentionally materializes a PyArrow object and therefore belongs to the
     # `arrow` extra; visualization needs only lonboard's own arro3 dependency.
-    return attributes.add_column(0, 'geometry', Array.from_arrow(arr))
+    return attributes.add_column(0, geometry_name, Array.from_arrow(arr))
 
 
 def _viz_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -163,30 +229,38 @@ def _viz_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     return configured
 
 
-def _lonboard_viz(arr: GeometryArray, attributes: Any | None, **kwargs: Any) -> Any:
+def _lonboard_viz(
+    arr: GeometryArray[Geometry | None],
+    attributes: Any | None,
+    *,
+    geometry_name: str = 'geometry',
+    **kwargs: Any,
+) -> Any:
     """Hand lonboard one Arrow-compatible geometry object."""
     lonboard = _require_lonboard()
     configured = _viz_kwargs(kwargs)
-    return lonboard.viz(_lonboard_data(arr, attributes), **configured)
+    return lonboard.viz(_lonboard_data(arr, attributes, geometry_name), **configured)
 
 
 def explore(
-    values: Geometry | GeometryArray,
+    values: Geometry | GeometryArray[Geometry | None] | Features,
     *,
     attributes: pa.Table | Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> Map:
-    """Build an interactive lonboard map from gometry geometries.
+    """Build an interactive lonboard map from geometries or aligned features.
 
     Geometries are handed to lonboard through the Arrow capsule interface.
     Reprojection, attribute assembly, and widget construction may allocate.
 
     Parameters
     ----------
-    values : Geometry or GeometryArray
-        Input geometries. A scalar geometry is wrapped as a one-row array.
+    values : Geometry, GeometryArray or Features
+        Input geometries or aligned feature data. A scalar geometry is wrapped
+        as a one-row array.
     attributes : Arrow table or mapping, optional
-        Aligned feature columns carried into lonboard.
+        Aligned feature columns carried into lonboard. Feature collections
+        already own their attributes and do not accept this argument.
     kwargs : mapping, optional
         Keyword arguments forwarded to ``lonboard.viz``. The default map keeps
         points, lines, and polygons visually distinct and makes features
@@ -207,14 +281,33 @@ def explore(
     GeometryError
         If the input is empty, CRS-free, or lacks finite bounds.
     """
-    from gometry._lib import GeometryError
+    from gometry._lib import GeometryError, _FeaturePropertyColumn
+    from gometry._types import Features
 
-    if isinstance(values, GeometryArray):
+    geometry_name = 'geometry'
+    if isinstance(values, Features):
+        if attributes is not None:
+            raise TypeError('Features already contain attributes')
+        from gometry._feature_arrow import _property_columns
+
+        arr = values.geometries
+        geometry_name = values._geometry_column or 'geometry'
+        columns = _property_columns(values)
+        if values._id_column is not None:
+            if values._id_column in columns or values._id_column == geometry_name:
+                raise GeometryError('feature ID column conflicts with another column')
+            columns[values._id_column] = (
+                values.ids._snapshot(detach=False)
+                if isinstance(values.ids, _FeaturePropertyColumn)
+                else values.ids
+            )
+        attributes = columns
+    elif isinstance(values, GeometryArray):
         arr = values
     elif isinstance(values, Geometry):
         arr = GeometryArray([values])
     else:
-        raise TypeError('explore() expects a Geometry or GeometryArray')
+        raise TypeError('explore() expects a Geometry, GeometryArray or Features')
 
     if not _is_map_suitable(arr):
         raise GeometryError(
@@ -222,11 +315,13 @@ def explore(
         )
 
     display_arr = _array_for_map(arr)
-    attribute_table = _attribute_table(attributes, len(display_arr))
-    return _lonboard_viz(display_arr, attribute_table, **kwargs)
+    attribute_table = _attribute_table(attributes, len(display_arr), geometry_name)
+    return _lonboard_viz(
+        display_arr, attribute_table, geometry_name=geometry_name, **kwargs
+    )
 
 
-def array_repr_html(arr: GeometryArray) -> str | None:
+def array_repr_html(arr: GeometryArray[Geometry | None]) -> str | None:
     """Return standalone lonboard HTML, or ``None`` to fall back to SVG."""
     if not _lonboard_importable() or not _is_map_suitable(arr):
         return None
@@ -236,7 +331,7 @@ def array_repr_html(arr: GeometryArray) -> str | None:
     # returns. Materialize the Arrow object so workers do not outlive the
     # direct C-capsule handoff owned by ``display_arr``.
     try:
-        data: pa.Array | GeometryArray
+        data: pa.Array | GeometryArray[Geometry | None]
         data = display_arr.to_arrow()
     except ModuleNotFoundError:
         # Without PyArrow, lonboard serializes the direct capsule through arro3.

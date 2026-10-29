@@ -17,6 +17,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import arrow_geometries
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -424,7 +426,7 @@ def test_erroring_arrow_stream_propagates() -> None:
 
     reader = pa.RecordBatchReader.from_batches(batch.schema, batches())
     with pytest.raises(RuntimeError, match='boom'):
-        gm.from_arrow(reader)
+        arrow_geometries(reader)
 
 
 def test_arrow_stream_returns_all_rows() -> None:
@@ -433,6 +435,6 @@ def test_arrow_stream_returns_all_rows() -> None:
     arr = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326).to_arrow()
     batch = pa.record_batch([arr], names=['geometry'])
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    restored = gm.from_arrow(reader)
+    restored = arrow_geometries(reader)
     assert len(restored) == 2
     assert restored.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']

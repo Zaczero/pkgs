@@ -142,6 +142,53 @@ def test_explore_carries_attributes_into_lonboard(
     assert table.column('name').to_pylist() == ['a', 'b']
 
 
+def test_explore_features_preserves_selected_attributes_and_ids(
+    geographic_points: gm.GeometryArray,
+) -> None:
+    pytest.importorskip('lonboard')
+    features = gm.Features.from_columns(
+        geographic_points,
+        columns={'name': ['west', 'east'], 'rank': [3, 5]},
+        ids=[0, 7],
+    )
+    result = gm.explore(features[[1, 0]])
+    table = result.layers[0].table
+    assert table.column_names == ['geometry', 'name', 'rank', 'id']
+    assert table.column('name').to_pylist() == ['east', 'west']
+    assert table.column('rank').to_pylist() == [5, 3]
+    assert table.column('id').to_pylist() == [7, 0]
+    with pytest.raises(TypeError, match='already contain'):
+        gm.explore(features, attributes={'extra': [1, 2]})
+
+
+def test_explore_features_preserves_nullable_large_ids(
+    geographic_points: gm.GeometryArray,
+) -> None:
+    pytest.importorskip('lonboard')
+    features = gm.Features(
+        geographic_points,
+        properties=[{'name': 'west'}, {'name': None}],
+        ids=[2**64 - 1, None],
+    )
+    table = gm.explore(features).layers[0].table
+    assert table.column('id').to_pylist() == [2**64 - 1, None]
+    assert table.column('name').to_pylist() == ['west', None]
+
+
+def test_explore_features_keeps_named_active_geometry(
+    geographic_points: gm.GeometryArray,
+) -> None:
+    pytest.importorskip('lonboard')
+    pytest.importorskip('pyarrow')
+    features = gm.Features.from_columns(
+        geographic_points, columns={'geometry': ['west', 'east']}
+    )
+    named = gm.from_arrow(features.to_arrow(geometry='shape'))
+    table = gm.explore(named).layers[0].table
+    assert table.column_names == ['shape', 'geometry']
+    assert table.column('geometry').to_pylist() == ['west', 'east']
+
+
 def test_explore_applies_readable_defaults_and_keeps_overrides(
     geographic_points: gm.GeometryArray,
 ) -> None:

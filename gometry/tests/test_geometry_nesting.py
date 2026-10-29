@@ -98,7 +98,7 @@ def test_geojson_structural_limit_precedes_default_serde_recursion() -> None:
         (gm.from_geojson, feature, True),
     ):
         with pytest.raises(gm.ParseError, match='structural limit of 272'):
-            reader(payload, features=retain_features)
+            reader(payload, as_features=retain_features)
 
 
 @pytest.mark.parametrize('depth', [127, 128])
@@ -112,7 +112,7 @@ def test_feature_geometry_accepts_boundary(depth: int, as_bytes: bool) -> None:
     }
     text = json.dumps(feature)
     restored = gm.from_geojson(
-        text.encode() if as_bytes else text, features=True
+        text.encode() if as_bytes else text, as_features=True
     ).geometries[0]
     assert restored.to_wkt() == shape.to_wkt()
 
@@ -126,7 +126,7 @@ def test_feature_geometry_rejects_129(as_bytes: bool) -> None:
     }
     text = json.dumps(feature)
     with pytest.raises(gm.ParseError, match='nesting exceeds'):
-        gm.from_geojson(text.encode() if as_bytes else text, features=True)
+        gm.from_geojson(text.encode() if as_bytes else text, as_features=True)
 
 
 def test_structure_preserving_operations_accept_boundary() -> None:

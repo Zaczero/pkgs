@@ -292,7 +292,7 @@ def test_authored_definition_crosses_pickle_arrow_geoparquet_and_pandas(
     for encoding in ('wkb', 'geoarrow', 'geometry'):
         path = tmp_path / f'{encoding}.parquet'
         values.to_geoparquet(path, encoding=encoding)
-        restored, _ = gm.from_geoparquet(path)
+        restored = gm.from_geoparquet(path).geometries
         _assert_same_axis_meaning(authored, restored.crs)
         assert gm.crs_transform(restored.crs, 3857, 100.0, 0.5) == (
             WGS84_A * 100.0 * 0.02,
@@ -403,7 +403,7 @@ def test_geoparquet_roundtrip_preserves_exact_crs_definition_and_epoch(
     path = tmp_path / f'{encoding}.parquet'
 
     values.to_geoparquet(path, encoding=encoding)
-    restored, _ = gm.from_geoparquet(path)
+    restored = gm.from_geoparquet(path).geometries
 
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.crs is not None
