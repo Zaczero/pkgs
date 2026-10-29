@@ -30,6 +30,7 @@ Issues = "https://github.com/Zaczero/pkgs/issues"
 Repository = "https://github.com/Zaczero/pkgs/tree/main/osm-shortlink"
 
 [dependency-groups]
+pgo = []
 dev = ["pyperf>=2.9", "pytest>=9.1", "pytest-timeout>=2.4", "pytest-xdist[psutil]>=3.8"]
 
 [build-system]
@@ -45,6 +46,11 @@ include = [
 module-name = "osm_shortlink._lib"
 python-source = "python"
 exclude = ["**/__pycache__/**", "**/*.py[co]"]
+
+[tool.ci.pgo]
+build = "cp315-manylinux_x86_64"
+target = "x86_64-unknown-linux-gnu"
+adapter = "tools.pgo"
 
 [tool.pyright]
 extraPaths = ["python"]

@@ -47,6 +47,17 @@ files with their hashes. `pgo_profile.py` checks these inputs, rejects empty or
 incomplete contributions, and merges each leaf before applying integer
 coefficients proportional to `weight / units`. It retains zero-count functions.
 
+The shared builder owns compiler-pipeline settings for all three build phases.
+Build receipts and accepted profiles bind these flags so a profile cannot be
+collected or consumed under a different pipeline.
+The standard LLVM pipeline is the default. A package can set `preinline = false`
+when qualification demonstrates that early inlining hurts its workload.
+
+For a single-process workload, `pgo_process.py` runs the adapter's `train` entry
+point in a fresh interpreter and collects its exit-flushed profile. The entry
+point reports completed operations and the loaded extension's digest through
+`completed`; `collect` verifies both before producing the receipt.
+
 The accepted profile has an immutable content-addressed path. Its manifest binds
 it to the generator wheel, compiler, target, Python build, source and dependency
 inputs, corpus, and merge coefficients. A changed compiler, source, target, or

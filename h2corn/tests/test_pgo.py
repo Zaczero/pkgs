@@ -10,10 +10,14 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pgo import check_profile
+from pgo import check_profile, pipeline_flags
+from pgo_process import collect as collect_process
 from pgo_profile import integer_weights, merge
 from wheels import compilation_identity
+
+from bench.pgo.adapter import known_profile_diagnostic
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = {'target': 'x86_64-unknown-linux-gnu'}
@@ -32,15 +36,29 @@ def profile(tmp_path, monkeypatch):
         'compiler': subprocess.check_output(['rustc', '-vV'], text=True, timeout=15),
         'compilation': compilation_identity(PACKAGE),
         'target': CONFIG['target'],
+        'rustflags': pipeline_flags(CONFIG),
         'python': sys.version,
     }
     path.with_suffix('.json').write_text(json.dumps(manifest))
     return path, manifest
 
 
-def test_matching_profile_is_admitted(profile):
+@pytest.mark.parametrize(
+    ('preinline', 'rustflags'),
+    [
+        (None, []),
+        (True, []),
+        (False, ['-Cllvm-args=-disable-preinline']),
+    ],
+)
+def test_matching_profile_is_admitted(profile, preinline, rustflags):
     path, manifest = profile
-    assert check_profile(path, PACKAGE, CONFIG) == manifest
+    manifest['rustflags'] = rustflags
+    path.with_suffix('.json').write_text(json.dumps(manifest))
+    config = dict(CONFIG)
+    if preinline is not None:
+        config['preinline'] = preinline
+    assert check_profile(path, PACKAGE, config) == manifest
 
 
 @pytest.mark.parametrize(
@@ -49,6 +67,7 @@ def test_matching_profile_is_admitted(profile):
         ('sha256', 'changed', 'digest changed'),
         ('compiler', 'different compiler', 'different Rust compiler'),
         ('compilation', {}, 'different source or dependencies'),
+        ('rustflags', ['-Cllvm-args=-disable-preinline'], 'different target flags'),
         ('target', 'aarch64-unknown-linux-gnu', 'different target or Python'),
         ('python', 'different Python', 'different target or Python'),
     ],
@@ -67,6 +86,41 @@ def test_even_empty_environment_flags_cannot_disable_pgo(profile, monkeypatch, n
     monkeypatch.setenv(name, '')
     with pytest.raises(RuntimeError, match='overrides the target PGO configuration'):
         check_profile(path, PACKAGE, CONFIG)
+
+
+@pytest.mark.parametrize(
+    ('symbol', 'discarded', 'known'),
+    [
+        pytest.param('15init_lib_module', 0, True, id='collection-initializer'),
+        pytest.param('15init_lib_module', 1, False, id='discarded-executions'),
+        pytest.param(
+            'NtNtB2_15init_lib_module10ModuleExec18___pyo3_module_exec',
+            0,
+            True,
+            id='inlined-initializer',
+        ),
+        pytest.param(
+            'NtNtB2_15init_lib_module10ModuleExec18___pyo3_module_exec',
+            1,
+            False,
+            id='inlined-discarded-executions',
+        ),
+        pytest.param('9serve_fds', 0, False, id='runtime-function'),
+        pytest.param(
+            '15init_lib_module10ModuleExec', 0, False, id='different-function'
+        ),
+    ],
+)
+def test_only_zero_count_collection_initializer_mismatch_is_known(
+    symbol, discarded, known
+):
+    line = (
+        'warning: _lib.2eca8a47fe7e16ac-cgu.0: '
+        'function control flow change detected (hash mismatch) '
+        f'_RNvCs414eAY2k0Yy_4__lib{symbol} Hash = 896858936009260866 '
+        f'up to {discarded} count discarded'
+    )
+    assert known_profile_diagnostic(line) is known
 
 
 def test_weights_normalize_by_useful_work():
@@ -106,3 +160,40 @@ def test_changed_collection_plan_is_rejected(tmp_path, defect):
     with pytest.raises(RuntimeError, match=r'plan|planned work'):
         merge(receipt, tmp_path / 'accepted', build={})
     assert not (tmp_path / 'accepted').exists()
+
+
+@pytest.mark.parametrize('defect', ['image', 'units'])
+def test_process_collection_rejects_wrong_worker(tmp_path, monkeypatch, defect):
+    monkeypatch.delenv('LD_PRELOAD', raising=False)
+    image = tmp_path / 'extension.so'
+    image.write_bytes(b'extension image')
+    expected_image = hashlib.sha256(image.read_bytes()).hexdigest()
+    worker = tmp_path / 'worker.py'
+    worker.write_text(
+        'import json, os\n'
+        'from pathlib import Path\n'
+        "Path(os.environ['LLVM_PROFILE_FILE']).write_bytes(b'profile')\n"
+        "print(json.dumps({'units': int(os.environ['UNITS']), "
+        "'image_sha256': os.environ['IMAGE']}))\n"
+    )
+    monkeypatch.setenv('IMAGE', 'different' if defect == 'image' else expected_image)
+    monkeypatch.setenv('UNITS', '2' if defect == 'units' else '1')
+    output = tmp_path / 'collection'
+    with pytest.raises(RuntimeError, match='wrong image or completed work'):
+        collect_process(output, worker, image, units=1, functions=['entry'])
+    assert not (output / 'collection.json').exists()
+
+
+def test_process_collection_retains_worker_failure(tmp_path, monkeypatch):
+    monkeypatch.delenv('LD_PRELOAD', raising=False)
+    image = tmp_path / 'extension.so'
+    image.write_bytes(b'extension image')
+    worker = tmp_path / 'worker.py'
+    worker.write_text(
+        "import sys\nprint('training failed', file=sys.stderr)\nsys.exit(1)\n"
+    )
+    output = tmp_path / 'collection'
+    with pytest.raises(RuntimeError, match='training process failed'):
+        collect_process(output, worker, image, units=1, functions=['entry'])
+    assert (output / 'workload/training.log').read_text() == 'training failed\n'
+    assert not (output / 'collection.json').exists()

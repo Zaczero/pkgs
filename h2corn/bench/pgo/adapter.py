@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import sysconfig
@@ -40,10 +41,16 @@ def collect(root: Path) -> Path:
 
 
 def known_profile_diagnostic(line: str) -> bool:
+    # Collection-only registrations change the initializer and its inlined wrapper.
     return (
         'function control flow change detected (hash mismatch)' in line
-        and 'init_lib_module10ModuleExec' in line
-        and 'up to 0 count discarded' in line
+        and '_4__lib' in line
+        and re.search(
+            r'15init_lib_module(?:10ModuleExec18___pyo3_module_exec)? '
+            r'Hash = [0-9]+ up to 0 count discarded$',
+            line,
+        )
+        is not None
     )
 
 
