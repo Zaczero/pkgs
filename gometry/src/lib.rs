@@ -22,10 +22,10 @@ use boundary::{
     DefaultedF64Input, DefaultedI64Input, F64Param, GridOrigin, I64Param, TransformOptionArgs,
     angle_radians, broadcast_coordinate_group, broadcast_coordinate_input,
     broadcast_crs_coordinate_inputs, buffer_to_vec_u64, cdt_refinement_values,
-    check_python_signals, collect_bool_mask, collect_bytes_rows, collect_i64_sequence,
-    collect_py_iter, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
-    collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
-    collect_sequence_items, collect_u64_sequence, coordinate_column_values,
+    check_detached_python_signals, check_python_signals, collect_bool_mask, collect_bytes_rows,
+    collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
+    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
+    collect_py_strings, collect_sequence_items, collect_u64_sequence, coordinate_column_values,
     coordinate_column_values_exact, coordinate_column_values_from_buffer, coordinate_epoch_option,
     coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
     coordinates, coordinates_object, copy_one_byte_buffer, f64_required, f64_scalar_named,
@@ -79,6 +79,7 @@ pub(crate) use heap_size::HeapSize;
 mod pymethod_macros;
 mod io;
 mod measures;
+mod mvt;
 mod numeric;
 use numeric::{DwithinDistance, Finite, NonNegative, Positive};
 mod text;
@@ -267,6 +268,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py::feature_selection::register(m)?;
     py::feature_values::register(m)?;
     py::feature_views::register(m)?;
+    mvt::register(m)?;
     py::arrow_c::values::register(m)?;
     py::crs::register(m)?;
     py::vectors::register(m)?;

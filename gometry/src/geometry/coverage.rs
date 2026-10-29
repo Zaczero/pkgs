@@ -31,7 +31,10 @@ pub(crate) use rank::{
     BorderTieBreak, ScaledLength, ScaledLengthSum, longest_border_owner,
     longest_border_ranked_owner, scaled_point_distance,
 };
-pub(in crate::geometry) use simplify::{TopologyGuard, simplify_chain_guarded, triangle_area};
+pub(in crate::geometry) use simplify::{
+    TopologyGuard, coverage_simplify_protected, simplify_chain_guarded,
+    simplify_chain_kept_with_try_remove, triangle_area,
+};
 pub(crate) use simplify::{vw_area_tolerance, *};
 #[cfg(test)]
 pub(crate) use validate::coverage_invalid_edges;

@@ -23,6 +23,17 @@ pub(crate) fn check_python_signals(py: Python<'_>, item: usize) -> PyResult<()> 
     Ok(())
 }
 
+#[expect(
+    clippy::redundant_closure_for_method_calls,
+    reason = "the method item is not higher-ranked over the attachment lifetime"
+)]
+pub(crate) fn check_detached_python_signals(item: usize) -> PyResult<()> {
+    if item.is_multiple_of(PYTHON_SIGNAL_STRIDE) {
+        Python::attach(|py| py.check_signals())?;
+    }
+    Ok(())
+}
+
 /// Acquire a Python iterator while distinguishing a plain non-iterable from
 /// an iterable provider whose protocol raised. The latter exception is part
 /// of the caller's input and must not be rewritten as a type classification.

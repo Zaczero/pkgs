@@ -29,10 +29,10 @@ pub(crate) use input::{
     strict_u64, validate_subdivide_max_vertices,
 };
 pub(crate) use reserve::{
-    check_python_signals, collect_bool_mask, collect_bytes_rows, collect_i64_sequence,
-    collect_py_iter, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
-    collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
-    collect_sequence_items, collect_u64_sequence, copy_one_byte_buffer, has_iter_protocol,
-    is_one_byte_buffer, optional_len, py_iter_or_error, py_iter_or_none, reserve_from_py_len,
-    visit_py_iter_from_iter, with_one_byte_buffer,
+    check_detached_python_signals, check_python_signals, collect_bool_mask, collect_bytes_rows,
+    collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
+    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
+    collect_py_strings, collect_sequence_items, collect_u64_sequence, copy_one_byte_buffer,
+    has_iter_protocol, is_one_byte_buffer, optional_len, py_iter_or_error, py_iter_or_none,
+    reserve_from_py_len, visit_py_iter_from_iter, with_one_byte_buffer,
 };

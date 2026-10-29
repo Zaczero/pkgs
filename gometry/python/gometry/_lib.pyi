@@ -21902,6 +21902,56 @@ class ArrowValue:
         self, requested_schema: PyArrowCapsule | None = None
     ) -> tuple[PyArrowCapsule, PyArrowCapsule]: ...
 
+def _mvt_encode_layer(
+    name: str,
+    geometries: GeometryArray[Geometry | None],
+    properties: _FeaturePropertyRows,
+    ids: Sequence[FeatureId],
+    extent: int,
+) -> bytes: ...
+def _mvt_decode_local(
+    data: object, layers: list[str] | None = None, properties: list[str] | None = None
+) -> dict[str, tuple[Features, int]]: ...
+def _mvt_validate_layer(
+    geometries: GeometryArray[Geometry | None],
+    properties: _FeaturePropertyRows,
+    ids: Sequence[FeatureId],
+    extent: int,
+) -> None: ...
+def _mvt_validate_inputs(
+    geometries: GeometryArray[Geometry | None],
+    properties: _FeaturePropertyRows,
+    ids: Sequence[FeatureId],
+    rows: int,
+) -> None: ...
+
+@final
+class _MVTSpatialIndex:
+    def __new__(
+        cls, geometries: GeometryArray[Geometry | None], periodic: bool
+    ) -> _MVTSpatialIndex: ...
+    def candidates(
+        self, regions: list[tuple[float, float, float, float]], periodic: bool
+    ) -> list[int]: ...
+
+def _mvt_prepare_grid(
+    geometries: GeometryArray[Geometry | None],
+    bounds: tuple[float, float, float, float] | None,
+    tile: tuple[int, int, int] | None,
+    extent: int,
+    buffer: bytes,
+    clip: bool,
+    raise_on_collapse: bool,
+    tolerance: float,
+    douglas_peucker: bool,
+    coverage: bool,
+) -> tuple[GeometryArray[Geometry], list[int]]: ...
+def _mvt_locate_grid(
+    geometries: GeometryArray[Geometry],
+    bounds: tuple[float, float, float, float] | None,
+    tile: tuple[int, int, int] | None,
+    extent: int,
+) -> GeometryArray[Geometry]: ...
 def _snapshot_arrow_array(value: object) -> _ArrowArray: ...
 def _arrow_column(chunks: tuple[_ArrowArray, ...]) -> _ArrowColumn: ...
 def _arrow_value(array: _ArrowArray, index: int) -> ArrowValue: ...

@@ -273,6 +273,25 @@ impl FeaturePropertyRows {
         Ok(Self::from_columns(columns, len))
     }
 
+    pub(crate) fn from_tags(
+        keys: Py<PyTuple>,
+        values: Py<PyTuple>,
+        offsets: Vec<usize>,
+        pairs: Vec<(usize, usize)>,
+    ) -> Self {
+        Self {
+            data: Some(PropertyData::Tags {
+                keys,
+                values,
+                offsets: offsets.into(),
+                pairs: pairs.into(),
+                nulls: None,
+            }),
+            selection: RowSelection::Identity,
+            projection: None,
+        }
+    }
+
     fn select_admitted(&self, py: Python<'_>, selected: &RowSelection) -> PyResult<Self> {
         let selection = if selected.is_identity() {
             self.selection.clone()

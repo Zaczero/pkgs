@@ -77,6 +77,72 @@ pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     }))
 }
 
+pub(in crate::geometry) fn clip_polygonal_rectangle_exact_paths(
+    polygons: &[Polygon],
+    rectangle: &Polygon,
+    bounds: Bounds,
+) -> Result<Vec<Vec<Vec<[crate::geometry::ExactRational; 2]>>>> {
+    if polygons.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (inventory, intervals) =
+        match ExactSourceInventory::from_polygon_rect_clip(polygons, rectangle, bounds, false)? {
+            Some((inventory, intervals)) => (inventory, Some(intervals)),
+            None => (
+                ExactSourceInventory::from_polygon_operands(
+                    polygons,
+                    std::slice::from_ref(rectangle),
+                )?,
+                None,
+            ),
+        };
+    let mut budget = ExpansionBudget::new("intersection", "rectangle-local exact partition");
+    let mut partition = if let Some(intervals) = &intervals {
+        inventory.partition_in_window(intervals, bounds, &mut budget)?
+    } else {
+        inventory.partition(&mut budget)?
+    };
+    partition.kept_nodes = KeptNodes::All;
+    let (topology, edges) = partition.local_topology()?;
+    let global = partition.global_faces(&topology, &edges)?;
+    if intervals.is_some() {
+        partition.winding_seed =
+            inventory.rectangle_winding_seed(&partition, &topology, &edges, &global, bounds)?;
+    }
+    let cells = inventory.select_cells(
+        &partition,
+        &topology,
+        &edges,
+        &global,
+        crate::geometry::OverlayOp::Intersection,
+        false,
+    )?;
+    let plan = cells.emission_plan(&partition, &topology, &edges, &global)?;
+    let emission = plan.emission(&topology, &edges);
+    let parts = plan.build_node_parts(&partition, &topology, &emission)?;
+    let mut output = Vec::with_capacity(parts.polygons.len());
+    for polygon in parts.polygons {
+        let mut rings = Vec::with_capacity(polygon.len());
+        for ring in polygon {
+            let mut points = Vec::with_capacity(ring.len());
+            for node in ring {
+                let exact = partition.points.exact(node.0)?;
+                let [x, y, w] = exact.as_ref();
+                let denominator = crate::geometry::ExactRational::from_dyadic(w.clone());
+                points.push([
+                    crate::geometry::ExactRational::from_dyadic(x.clone())
+                        .try_quotient(&denominator)?,
+                    crate::geometry::ExactRational::from_dyadic(y.clone())
+                        .try_quotient(&denominator)?,
+                ]);
+            }
+            rings.push(points);
+        }
+        output.push(rings);
+    }
+    Ok(output)
+}
+
 impl ExactSourceInventory {
     pub(in crate::geometry) fn node_shape<M: ChartMetric>(
         &self,
@@ -591,5 +657,37 @@ impl ExactSourceInventory {
         let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
         plan.emit_xy_parts(partition, &topology, &edges, embedding_operation)
+    }
+}
+
+#[cfg(test)]
+mod exact_tile_clip_tests {
+    use super::*;
+
+    #[test]
+    fn polygon_clipping_retains_exact_fractional_intersection() {
+        let Shape::Polygon(subject) =
+            crate::io::parse_wkt("POLYGON ((-1 0,2 1,2 3,-1 0))").unwrap()
+        else {
+            panic!("expected a polygon");
+        };
+        let Shape::Polygon(rectangle) =
+            crate::io::parse_wkt("POLYGON ((0 -1,1 -1,1 4,0 4,0 -1))").unwrap()
+        else {
+            panic!("expected a rectangle");
+        };
+        let paths = clip_polygonal_rectangle_exact_paths(
+            &[subject],
+            &rectangle,
+            Bounds::new_raw(0.0, -1.0, 1.0, 4.0),
+        )
+        .unwrap();
+        let zero = crate::geometry::ExactRational::from_f64(0.0);
+        let one_third = crate::geometry::ExactRational::from_f64(1.0)
+            .try_quotient(&crate::geometry::ExactRational::from_f64(3.0))
+            .unwrap();
+        assert!(paths.iter().flatten().flatten().any(|[x, y]| {
+            x.try_cmp(&zero).unwrap().is_eq() && y.try_cmp(&one_third).unwrap().is_eq()
+        }));
     }
 }

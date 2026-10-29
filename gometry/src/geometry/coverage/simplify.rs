@@ -15,7 +15,9 @@ pub(crate) use chain::vw_area_tolerance;
 use chain::{
     Chain, CoverageEdgeIntent, CoverageEdgeRoles, SimplifiedChain, exact_chain, simplify_chain_kept,
 };
-pub(in crate::geometry) use chain::{simplify_chain_guarded, triangle_area};
+pub(in crate::geometry) use chain::{
+    simplify_chain_guarded, simplify_chain_kept_with_try_remove, triangle_area,
+};
 pub(in crate::geometry) use guard::TopologyGuard;
 use publication::{publish_coverage_edge_roles, simplify_unshared_geographic_rows};
 use rebuild::{RebuildRoots, rebuild_row};
@@ -45,6 +47,29 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     method: SimplifyMethod,
     simplify_boundary: bool,
     source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+) -> Result<Vec<Shape>> {
+    coverage_simplify_protected(
+        rows,
+        tolerance,
+        method,
+        simplify_boundary,
+        source_context,
+        None,
+    )
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "pinned flags match the chain length, and cyclic neighbors are accessed only after the length guards"
+)]
+pub(in crate::geometry) fn coverage_simplify_protected<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    tolerance: f64,
+    method: SimplifyMethod,
+    simplify_boundary: bool,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    protected: Option<&dyn Fn(XY) -> Result<bool>>,
 ) -> Result<Vec<Shape>> {
     if !(tolerance.is_finite() && tolerance >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("tolerance", tolerance).into());
@@ -178,20 +203,51 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
                     .first()
                     .zip(chain.points.last())
                     .is_some_and(|(&first, &last)| same_point(first, last));
-            let kept = simplify_chain_kept(
-                chain.points.len(),
-                |index| {
-                    *chain
-                        .points
-                        .get(index)
-                        .expect("simplification index is within its chain")
-                },
-                cyclic,
-                tolerance,
-                method,
-                &guard,
-                &chain.source_segments,
-            )?;
+            let xy = |index| {
+                *chain
+                    .points
+                    .get(index)
+                    .expect("simplification index is within its chain")
+            };
+            let kept = if let Some(protected) = protected {
+                let mut pinned = vec![false; chain.points.len()];
+                for (index, &point) in chain.points.iter().enumerate() {
+                    if protected(point)? {
+                        pinned[index] = true;
+                        if index > 0 {
+                            pinned[index - 1] = true;
+                        } else if cyclic && chain.points.len() > 1 {
+                            pinned[chain.points.len() - 2] = true;
+                        }
+                        if index + 1 < chain.points.len() {
+                            pinned[index + 1] = true;
+                        } else if cyclic && chain.points.len() > 1 {
+                            pinned[1] = true;
+                        }
+                    }
+                }
+                simplify_chain_kept_with_try_remove(
+                    chain.points.len(),
+                    xy,
+                    cyclic,
+                    tolerance,
+                    method,
+                    |_, vertex, _, previous, point, next| {
+                        Ok(!pinned[vertex]
+                            && guard.removal_is_safe(previous, point, next, &chain.source_segments))
+                    },
+                )?
+            } else {
+                simplify_chain_kept(
+                    chain.points.len(),
+                    xy,
+                    cyclic,
+                    tolerance,
+                    method,
+                    &guard,
+                    &chain.source_segments,
+                )?
+            };
             Ok(SimplifiedChain { kept })
         })
         .collect::<Result<Vec<_>>>()?;

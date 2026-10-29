@@ -15,6 +15,8 @@ pub(in crate::geometry) struct NodeId(pub u32);
 #[derive(Debug)]
 pub(in crate::geometry) enum NodeRecipe {
     Stored,
+    Grid([i64; 2]),
+    LargeGrid(Box<[ExactDyadic; 2]>),
     Constructed {
         exact: std::cell::OnceCell<Box<[ExactDyadic; 3]>>,
     },

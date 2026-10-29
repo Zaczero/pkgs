@@ -715,7 +715,7 @@ def test_feature_iterator_can_be_shared_across_threads() -> None:
     assert length_hint(iterator) == 0
 
 
-@pytest.mark.parametrize('storage', ['rows', 'columns', 'mixed'])
+@pytest.mark.parametrize('storage', ['rows', 'columns', 'mixed', 'batches'])
 def test_property_and_iterator_cycles_are_collectable(storage: str) -> None:
     class Key(str):
         __slots__ = ('__weakref__', 'owner')
@@ -729,6 +729,11 @@ def test_property_and_iterator_cycles_are_collectable(storage: str) -> None:
         })
     else:
         rows = gm.Features([gm.Point(1, 2)], properties={key: 'value'})
+        if storage == 'batches':
+            rows = gm.mvt_prepare(
+                gm.MVTSource([rows, rows], crs=None),
+                frame=gm.TileFrame((0, 0, 4, 4), crs=None),
+            ).features
     iterator = iter(rows)
     key.owner = iterator
     reference = weakref.ref(key)

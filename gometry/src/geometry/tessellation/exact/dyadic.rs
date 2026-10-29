@@ -427,6 +427,16 @@ impl ExactDyadic {
         }
     }
 
+    pub(crate) fn try_from_unsigned_limbs(limbs: Vec<u64>) -> Result<Self> {
+        let mut value = Self {
+            negative: false,
+            limbs: CompactLimbs::from_vec(limbs),
+            exponent: 0,
+        };
+        value.try_trim()?;
+        Ok(value)
+    }
+
     /// Construct an adversarial exact value from its canonical limb sequence.
     ///
     /// Internal tests use this for exponent and multi-limb boundaries that

@@ -151,6 +151,7 @@ pub(crate) enum ParseFormat {
     GeoJson,
     GeoArrow,
     GeoParquet,
+    Mvt,
     H3,
     S2,
     Geohash,
@@ -163,12 +164,13 @@ pub(crate) enum ParseFormat {
 }
 
 impl ParseFormat {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::Wkt,
         Self::Wkb,
         Self::GeoJson,
         Self::GeoArrow,
         Self::GeoParquet,
+        Self::Mvt,
         Self::H3,
         Self::S2,
         Self::Geohash,
@@ -187,6 +189,7 @@ impl ParseFormat {
             Self::GeoJson => "geojson",
             Self::GeoArrow => "geoarrow",
             Self::GeoParquet => "geoparquet",
+            Self::Mvt => "mvt",
             Self::H3 => "h3",
             Self::S2 => "s2",
             Self::Geohash => "geohash",
@@ -206,6 +209,7 @@ impl ParseFormat {
             Self::GeoJson => "GeoJSON",
             Self::GeoArrow => "GeoArrow",
             Self::GeoParquet => "GeoParquet",
+            Self::Mvt => "MVT",
             Self::H3 => "H3",
             Self::S2 => "S2",
             Self::Geohash => "geohash",

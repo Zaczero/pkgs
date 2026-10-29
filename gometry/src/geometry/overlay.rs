@@ -110,6 +110,7 @@ mod clip;
 mod exact_partition;
 mod line_merge;
 pub(in crate::geometry) use exact_partition::EmbeddingDomain;
+pub(in crate::geometry) use exact_partition::grid::polygonize_grid;
 mod nary;
 mod noding;
 mod rect;
@@ -127,7 +128,7 @@ pub(in crate::geometry) use exact_partition::model::{
     NodeId, StagedExactSources, StagedRelationItem, StagedSourceComponent,
 };
 pub(in crate::geometry) use exact_partition::operations::{
-    clip_non_areal_rectangle, clip_polygonal_rectangle,
+    clip_non_areal_rectangle, clip_polygonal_rectangle, clip_polygonal_rectangle_exact_paths,
 };
 pub(in crate::geometry) use exact_partition::serialize::ExactLineEmission;
 pub(in crate::geometry) use exact_partition::subdivision::{

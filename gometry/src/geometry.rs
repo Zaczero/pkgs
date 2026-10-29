@@ -210,6 +210,8 @@ pub(crate) use source_support::{
     cartesian_point_location, edge_winding, ring_kind_columns,
 };
 mod tessellation;
+mod tile_grid;
+pub(crate) use tile_grid::{TileGrid, buffer_from_bytes, floor_exact};
 mod topology;
 pub(crate) use topology::overlay::exact_geographic_polygonize_full_from_shapes;
 pub(crate) use topology::{

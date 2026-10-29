@@ -57,6 +57,7 @@ mod construction;
 mod coverage;
 mod embedding;
 mod emission;
+pub(super) mod grid;
 mod incidence;
 mod ingress;
 mod line_polygon;

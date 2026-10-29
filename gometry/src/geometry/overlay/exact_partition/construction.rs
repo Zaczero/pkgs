@@ -34,6 +34,7 @@ use crate::geometry::segments::{
     crossing_homogeneous, crossing_homogeneous_with_work, crossing_point, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
+use crate::geometry::tile_grid::GridPoint;
 use crate::geometry::{
     Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY, same_point,
     same_topological_coordinate, single_chain,
@@ -101,6 +102,18 @@ impl<'a> PointArena<'a> {
     /// A stored endpoint, keeping the source spelling of signed zero.
     pub(in crate::geometry) fn push_stored(&mut self, point: XY) -> Result<u32> {
         self.push(NodeRecipe::Stored, point)
+    }
+
+    pub(super) fn push_grid(&mut self, point: &GridPoint) -> Result<u32> {
+        use crate::geometry::tile_grid::GridCoordinate;
+        let rounded = XY::new(point[0].rounded()?, point[1].rounded()?);
+        let recipe = match point {
+            [GridCoordinate::Small(x), GridCoordinate::Small(y)] => NodeRecipe::Grid([*x, *y]),
+            [x, y] => {
+                NodeRecipe::LargeGrid(Box::new([x.exact().into_owned(), y.exact().into_owned()]))
+            },
+        };
+        self.push(recipe, rounded)
     }
 
     /// The crossing of two unique segments' carriers, lower index first,
@@ -203,6 +216,16 @@ impl<'a> PointArena<'a> {
                     ExactDyadic::from_f64(1.0),
                 ]))
             },
+            NodeRecipe::Grid([x, y]) => Ok(Cow::Owned([
+                ExactDyadic::from_i64(*x),
+                ExactDyadic::from_i64(*y),
+                ExactDyadic::one(),
+            ])),
+            NodeRecipe::LargeGrid(point) => Ok(Cow::Owned([
+                point[0].clone(),
+                point[1].clone(),
+                ExactDyadic::one(),
+            ])),
             NodeRecipe::Constructed { exact } => Ok(Cow::Borrowed(
                 &**exact.get().expect("constructed nodes carry exact points"),
             )),
@@ -438,7 +461,7 @@ impl<'a> Forest<'a> {
         let right_recipe = &self.points.recipes[b as usize];
         let priority = |recipe: &NodeRecipe| match recipe {
             NodeRecipe::Stored => 0,
-            NodeRecipe::Constructed { .. } => 1,
+            NodeRecipe::Grid(_) | NodeRecipe::LargeGrid(_) | NodeRecipe::Constructed { .. } => 1,
             NodeRecipe::Crossing { .. } => 2,
         };
         let (keep, merge) = match (priority(left_recipe), priority(right_recipe)) {

@@ -2140,6 +2140,7 @@ ParseFormat: TypeAlias = Literal[
     'geojson',
     'geoarrow',
     'geoparquet',
+    'mvt',
     'h3',
     's2',
     'geohash',

@@ -49,6 +49,7 @@ libc = { workspace = true, default-features = false }
 libm = { workspace = true, default-features = false }
 mimalloc.workspace = true
 numpy = { path = "../vendor/rust-numpy", version = "0.30.0", default-features = false }
+prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 proj-sys = { path = "../vendor/proj-sys", default-features = false, features = [
   "bundled_proj",
   "tiff",

@@ -191,8 +191,8 @@ struct ClipHit {
     exact: Option<[ExactDyadic; 3]>,
 }
 
-/// A position on a segment in exact arithmetic: an endpoint, or the interior
-/// ratio `num / den` of the way from start to end.
+/// A position along a segment's carrier: an endpoint, or the exact ratio
+/// `num / den` of the way from start to end, possibly outside the segment.
 #[derive(Clone, Debug)]
 pub(in crate::geometry) enum SegmentParameter {
     Start,

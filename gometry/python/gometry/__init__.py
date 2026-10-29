@@ -198,6 +198,16 @@ from gometry._lib import (
 from gometry._lib import (
     __version__ as __version__,
 )
+from gometry._mvt import (
+    MVTLayer,
+    MVTSource,
+    TileFrame,
+    from_mvt,
+    mvt_prepare,
+    mvt_query_regions,
+    mvt_tiles,
+    to_mvt,
+)
 from gometry._polars import from_polars
 from gometry._types import (
     Cell,
@@ -279,6 +289,8 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'H3VertexArray',
     'InvalidGeometryError',
     'LineString',
+    'MVTLayer',
+    'MVTSource',
     'MultiLineString',
     'MultiPoint',
     'MultiPolygon',
@@ -290,6 +302,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'S2Cell',
     'SpatialIndex',
     'Tile',
+    'TileFrame',
     'TransformError',
     'ValidationReport',
     'area',
@@ -342,6 +355,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'from_geojson',
     'from_geopandas',
     'from_geoparquet',
+    'from_mvt',
     'from_pandas',
     'from_polars',
     'from_polyline',
@@ -372,6 +386,9 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'multi_line_strings',
     'multi_points',
     'multi_polygons',
+    'mvt_prepare',
+    'mvt_query_regions',
+    'mvt_tiles',
     'nearest',
     'nearest_points',
     'osm_shortlink_encode',
@@ -409,6 +426,7 @@ __all__ = [  # ruff: ignore[unsorted-dunder-all] - public API order follows Pyth
     'to_feature',
     'to_feature_collection',
     'to_geopandas',
+    'to_mvt',
     'touches',
     'union',
     'union_all',

@@ -1,11 +1,12 @@
 use super::{
-    ExactPartition, GeometryErrorKind, IndexedTopology, IndexedTopologyScratch, NodeId, Ordering,
-    ResourceError, Result, XY, remove_antenna_vertices, stored_cross_sign,
+    ExactPartition, GeometryErrorKind, IndexedTopology, IndexedTopologyScratch, NodeId, NodeRecipe,
+    Ordering, ResourceError, Result, XY, remove_antenna_vertices, stored_cross_sign,
 };
 #[cfg(debug_assertions)]
 use super::{same_point, stored_orientation_sign};
 use crate::geometry::graph::{GlobalFaces, RayAxis as Axis, shoot_left};
 use crate::geometry::numerics::product::ExactSign;
+use crate::geometry::segments::ordering::try_sort_by;
 
 pub(super) fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
     if nodes.first() == nodes.last() {
@@ -38,7 +39,49 @@ impl ExactPartition<'_> {
         clippy::indexing_slicing,
         reason = "departure indexes are span IDs in the same partition used to build the local topology"
     )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "differences of two i64 grid coordinates fit i128 and products of their unsigned magnitudes fit u128"
+    )]
     pub(super) fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Ordering {
+        if let NodeRecipe::Grid(point) = self.points.recipes[origin.0 as usize] {
+            let direction = |index: usize| {
+                let span = self.spans[index];
+                let target = if span.start == origin {
+                    span.end
+                } else {
+                    span.start
+                };
+                let NodeRecipe::Grid(end) = self.points.recipes[target.0 as usize] else {
+                    unreachable!("grid partitions contain only grid nodes");
+                };
+                [
+                    i128::from(end[0]) - i128::from(point[0]),
+                    i128::from(end[1]) - i128::from(point[1]),
+                ]
+            };
+            let [ax, ay] = direction(left);
+            let [bx, by] = direction(right);
+            let upper = |x: i128, y: i128| y > 0 || (y == 0 && x > 0);
+            let halves = upper(bx, by).cmp(&upper(ax, ay));
+            if halves != Ordering::Equal {
+                return halves;
+            }
+            let product_cmp = |a: i128, b: i128, c: i128, d: i128| {
+                let left_sign = a.signum() * b.signum();
+                let right_sign = c.signum() * d.signum();
+                left_sign.cmp(&right_sign).then_with(|| {
+                    let left = a.unsigned_abs() * b.unsigned_abs();
+                    let right = c.unsigned_abs() * d.unsigned_abs();
+                    if left_sign < 0 {
+                        right.cmp(&left)
+                    } else {
+                        left.cmp(&right)
+                    }
+                })
+            };
+            return product_cmp(ax, by, ay, bx).reverse();
+        }
         let departure = |index: usize| {
             let span = self.spans[index];
             debug_assert!(span.start == origin || span.end == origin);
@@ -67,6 +110,63 @@ impl ExactPartition<'_> {
             ExactSign::Negative => Ordering::Greater,
             ExactSign::Zero => Ordering::Equal,
         }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span and node IDs belong to this partition; exact points are two-coordinate arrays"
+    )]
+    fn try_compare_departures(
+        &self,
+        origin: NodeId,
+        left: usize,
+        right: usize,
+    ) -> Result<Ordering> {
+        let target = |index: usize| {
+            let span = self.spans[index];
+            if span.start == origin {
+                span.end
+            } else {
+                span.start
+            }
+        };
+        let left_target = target(left);
+        let right_target = target(right);
+        let is_grid = |node: NodeId| {
+            matches!(
+                self.points.recipes[node.0 as usize],
+                NodeRecipe::Grid(_) | NodeRecipe::LargeGrid(_)
+            )
+        };
+        let is_large = |node: NodeId| {
+            matches!(
+                self.points.recipes[node.0 as usize],
+                NodeRecipe::LargeGrid(_)
+            )
+        };
+        if !is_grid(origin)
+            || ![origin, left_target, right_target]
+                .into_iter()
+                .any(is_large)
+        {
+            return Ok(self.compare_departures(origin, left, right));
+        }
+        let point = self.points.exact(origin.0)?;
+        let a = self.points.exact(left_target.0)?;
+        let b = self.points.exact(right_target.0)?;
+        let ax = a[0].clone().try_subtract(point[0].clone())?;
+        let ay = a[1].clone().try_subtract(point[1].clone())?;
+        let bx = b[0].clone().try_subtract(point[0].clone())?;
+        let by = b[1].clone().try_subtract(point[1].clone())?;
+        let upper = |x: &super::ExactDyadic, y: &super::ExactDyadic| {
+            y.sign() == ExactSign::Positive
+                || (y.sign() == ExactSign::Zero && x.sign() == ExactSign::Positive)
+        };
+        let halves = upper(&bx, &by).cmp(&upper(&ax, &ay));
+        if halves != Ordering::Equal {
+            return Ok(halves);
+        }
+        Ok(ax.try_product(&by)?.cmp(&ay.try_product(&bx)?).reverse())
     }
 
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
@@ -128,12 +228,28 @@ impl ExactPartition<'_> {
                 cursor[node] = cursor[node].wrapping_add(1);
             }
         }
+        let has_large_grid = self.points.recipes.first().is_some_and(|recipe| {
+            matches!(recipe, NodeRecipe::Grid(_) | NodeRecipe::LargeGrid(_))
+                && self
+                    .points
+                    .recipes
+                    .iter()
+                    .any(|recipe| matches!(recipe, NodeRecipe::LargeGrid(_)))
+        });
         for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
             let range = start as usize..end as usize;
             // Degree-two nodes are ordered too: visibility wedges read the
             // angular origin.
             let row = &mut edge_of_slot[range];
-            if let [left, right] = row {
+            if has_large_grid {
+                try_sort_by(row, |left, right| {
+                    self.try_compare_departures(
+                        NodeId(node as u32),
+                        span_at(*left as usize),
+                        span_at(*right as usize),
+                    )
+                })?;
+            } else if let [left, right] = row {
                 if self.compare_departures(
                     NodeId(node as u32),
                     span_at(*left as usize),
@@ -233,7 +349,7 @@ impl ExactPartition<'_> {
                 continue;
             }
             let prior = chosen.expect("a departure was selected before comparing its successor");
-            if self.compare_departures(root, edges[prior] as usize, edges[slot] as usize)
+            if self.try_compare_departures(root, edges[prior] as usize, edges[slot] as usize)?
                 == Ordering::Less
             {
                 chosen = Some(slot);
