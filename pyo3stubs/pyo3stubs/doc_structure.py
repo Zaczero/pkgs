@@ -1120,6 +1120,40 @@ def _runtime_location(obj: Any, fallback: DocLocation) -> DocLocation:
     return fallback
 
 
+def _facade_function_source(
+    ctx: CheckContext,
+    obj: Any,
+) -> tuple[list[ast.FunctionDef | ast.AsyncFunctionDef], DocLocation] | None:
+    """Find a package-owned Python facade even when a native stub shares its name."""
+    if not inspect.isfunction(obj) or '.' in obj.__qualname__:
+        return None
+    package = ctx.cfg.module.rpartition('.')[0] or ctx.cfg.module
+    module_name = obj.__module__
+    if not isinstance(module_name, str):
+        return None
+    if module_name == package:
+        source = ctx.cfg.stub_path.parent / '__init__.py'
+    elif module_name.startswith(f'{package}.'):
+        parts = module_name.removeprefix(f'{package}.').split('.')
+        source = ctx.cfg.stub_path.parent.joinpath(*parts).with_suffix('.py')
+        if not source.is_file():
+            source = ctx.cfg.stub_path.parent.joinpath(*parts, '__init__.py')
+    else:
+        return None
+    if not source.is_file():
+        return None
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+    declarations = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == obj.__name__
+    ]
+    if not declarations:
+        return None
+    return declarations, _doc_location(str(source), declarations[-1])
+
+
 def _is_public(name: str) -> bool:
     return not name.startswith('_')
 
@@ -1196,6 +1230,9 @@ def _class_subjects(
         else runtime_doc_for_stub(name, cls)
     )
     groups = function_groups(class_node.body) if class_node is not None else {}
+    source_groups = (
+        function_groups(source_class.node.body) if source_class is not None else {}
+    )
     new_defs = groups.get('__new__', [])
     prohibited_stub_constructor = (
         class_node is not None and class_prohibits_construction(class_node)
@@ -1365,7 +1402,9 @@ def _class_subjects(
                 source_member.prose,
                 _parameters(runtime_member) if runtime_member is not None else None,
                 source_member.source,
-                declarations=(source_member.node,),
+                declarations=tuple(
+                    source_groups.get(member_name, (source_member.node,))
+                ),
             )
             seen.add(member_name)
             continue
@@ -1465,18 +1504,23 @@ def iter_doc_subjects(
             if not callable(obj):
                 continue
             defs = groups.get(name, [])
-            source = (
-                _doc_location(str(ctx.cfg.stub_path), defs[-1])
-                if defs
-                else _runtime_location(obj, DocLocation(str(ctx.cfg.stub_path), 1))
-            )
+            facade = _facade_function_source(ctx, obj)
+            if facade is not None:
+                declarations, source = facade
+            else:
+                declarations = list[ast.FunctionDef | ast.AsyncFunctionDef](defs)
+                source = (
+                    _doc_location(str(ctx.cfg.stub_path), defs[-1])
+                    if defs
+                    else _runtime_location(obj, DocLocation(str(ctx.cfg.stub_path), 1))
+                )
             subject = _subject(
                 name,
                 'callable',
                 runtime_doc_for_stub(name, obj),
                 _parameters(obj),
                 source,
-                declarations=tuple(defs),
+                declarations=tuple(declarations),
             )
             key = (subject.qualname, subject.kind)
             if key not in seen_subjects:

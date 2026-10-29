@@ -942,6 +942,13 @@ class Public(Base):
 
     value: int
     """The retained value."""
+
+    @overload
+    def convert(self, value: int) -> int: ...
+    @overload
+    def convert(self, value: str) -> str: ...
+    def convert(self, value):
+        """Convert a value without changing its type."""
 '''
     )
     base_node, public_node = source.body
@@ -961,12 +968,23 @@ class Public(Base):
     value_node = next(
         node for node in public_node.body if isinstance(node, ast.AnnAssign)
     )
+    convert_nodes = [
+        node
+        for node in public_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'convert'
+    ]
     assert isinstance(origin_node, ast.FunctionDef)
     assert isinstance(value_node.target, ast.Name)
     source_class = DocClassSource(
         node=public_node,
         source=DocLocation('src/models.py', public_node.body[0].lineno),
         members={
+            'convert': DocMemberSource(
+                node=convert_nodes[-1],
+                kind='callable',
+                prose=ast.get_docstring(convert_nodes[-1]),
+                source=DocLocation('src/models.py', convert_nodes[-1].lineno),
+            ),
             '__init__': DocMemberSource(
                 node=init_node,
                 kind='callable',
@@ -1048,6 +1066,13 @@ class Public(Base):
     (inherited,) = tuple(
         subject for subject in subjects if subject.qualname == 'Public.origin'
     )
+    (converted,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.convert'
+    )
+    assert [
+        ast.unparse(node.returns) if node.returns is not None else None
+        for node in converted.declarations
+    ] == ['int', 'str', None]
     assert constructor.source == DocLocation(
         'src/models.py',
         public_node.body[0].lineno,
@@ -1066,6 +1091,81 @@ class Public(Base):
     assert inherited.source.path == 'src/base.py'
     assert len([s for s in subjects if s.qualname == 'Public.label']) == 1
     assert len([s for s in subjects if s.qualname == 'Public.origin']) == 1
+
+
+@pytest.mark.parametrize('prefix', ['', 'async '])
+@pytest.mark.parametrize('package', ['fakepkg', 'fakepkg.nested'])
+def test_python_facade_owns_documentation_when_native_stub_shares_name(
+    tmp_path, prefix, package
+):
+    import importlib.util
+    import types
+    from dataclasses import replace
+
+    from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_structure import iter_doc_subjects
+    from tests._support import make_config
+
+    cfg = make_config(
+        tmp_path,
+        stub_text='def from_arrow(data: object, *, crs: str | None = None) -> object: ...\n',
+    )
+    if package == 'fakepkg.nested':
+        nested = cfg.stub_path.parent / 'nested'
+        nested.mkdir()
+        stub = nested / '_lib.pyi'
+        stub.write_text(cfg.stub_path.read_text())
+        cfg = replace(cfg, module=f'{package}._lib', stub_path=stub)
+    facade_path = cfg.stub_path.parent / '_facade.py'
+    facade_source = '''\
+from typing import overload
+
+@overload
+def from_arrow(data: bytes, *, geometry: str | None = None) -> int: ...
+@overload
+def from_arrow(data: str, *, geometry: str | None = None) -> str: ...
+def from_arrow(data, *, geometry=None):
+    """Import one value.
+
+    Parameters
+    ----------
+    data : bytes or str
+        The value to import.
+    geometry : str, optional
+        The selected geometry.
+
+    Returns
+    -------
+    int or str
+        The imported value.
+    """
+    return data
+'''
+    facade_path.write_text(
+        facade_source.replace('def from_arrow', f'{prefix}def from_arrow')
+    )
+    spec = importlib.util.spec_from_file_location(f'{package}._facade', facade_path)
+    assert spec is not None and spec.loader is not None
+    facade = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(facade)
+    runtime = types.ModuleType(package)
+    runtime.__all__ = ['from_arrow']
+    runtime.from_arrow = facade.from_arrow
+    ctx = CheckContext(cfg, _runtime_module=runtime)
+    subject = next(
+        subject
+        for subject in iter_doc_subjects(
+            ctx, runtime_module=runtime, constructor_sources={}
+        )
+        if subject.qualname == 'from_arrow'
+    )
+    assert subject.source.path == str(facade_path)
+    assert len(subject.declarations) == 3
+    assert all(
+        'geometry' in {argument.arg for argument in declaration.args.kwonlyargs}
+        for declaration in subject.declarations
+    )
+    assert check_doc_subject(subject) == []
 
 
 STUB_OVERRIDE = cast(
