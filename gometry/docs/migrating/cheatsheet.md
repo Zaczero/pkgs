@@ -149,7 +149,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | EWKB | `gm.from_wkb(b)` / `g.to_wkb(include_srid=True)` |
 | [WKT](https://www.ogc.org/standard/sfa/) `from_wkt(s)` / `to_wkt(g)` | [`gm.from_wkt(s)`][gometry.from_wkt] / `g.to_wkt()` |
 | [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) | `gm.from_geojson(obj)` / `g.to_geojson()` |
-| GeoJSON features w/ attributes | [`gm.from_geojson(fc, features=True)`][gometry.from_geojson] → validated [`Features`][gometry.Features] record; serialize it with [`Features.__geo_interface__`](../ecosystem/text-formats.md#features__geo_interface__), or use [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] for separate columns |
+| GeoJSON features w/ attributes | [`gm.from_geojson(fc)`][gometry.from_geojson] → validated [`Features`][gometry.Features] record; serialize it with [`Features.__geo_interface__`](../ecosystem/text-formats.md#features__geo_interface__), or use [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] for separate columns |
 | `geom.__geo_interface__` | [`geom.__geo_interface__`](../ecosystem/text-formats.md#__geo_interface__) |
 | [GeoArrow](https://geoarrow.org/) | [`gm.from_arrow(obj)`][gometry.from_arrow] / [`geom.to_arrow()`][gometry.Geometry.to_arrow] |
 | `shapely.to_wkb(Point(...))` / `shapely.to_wkb(box(...))` | [`gm.Point(x, y).to_wkb(precision=...)`][gometry.Geometry.to_wkb] / `gm.box(...).to_wkb(include_srid=..., precision=...)` |

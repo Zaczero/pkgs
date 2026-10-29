@@ -284,7 +284,10 @@ def test_features_constructor_and_field_prose_matches_the_python_declaration() -
         entry.names[0]: entry
         for entry in parameter_entries(parse_doc(initializer.prose))
     }
-    assert parameters['geometries'].type_text == 'GeometryArray[Geometry | None]'
+    assert (
+        parameters['geometries'].type_text
+        == 'GeometryArray[Geometry | None] or iterable'
+    )
     assert parameters['properties'].default_text is None
     assert parameters['ids'].default_text is None
     assert {
@@ -295,10 +298,10 @@ def test_features_constructor_and_field_prose_matches_the_python_declaration() -
         'TypeError',
         'GeometryError',
     }
-    assert features.members['geometries'].kind == 'attribute'
+    assert features.members['geometries'].kind == 'property'
     assert 'One parsed geometry' in features.members['geometries'].prose
-    assert 'shallow-copied for each row' in features.members['properties'].prose
-    assert 'independent shallow copy per row' in initializer.prose
+    assert 'Immutable row-aligned snapshots' in features.members['properties'].prose
+    assert 'snapshotted once' in initializer.prose
     assert 'non-boolean integer' in initializer.prose
     assert 'frozen slots' not in (ast.get_docstring(features.node) or '').lower()
     assert 'cold import' not in (ast.get_docstring(features.node) or '').lower()

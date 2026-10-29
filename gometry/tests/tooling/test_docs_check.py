@@ -599,17 +599,36 @@ def test_source_form_oracle_matches_real_constructor_and_function_output(
 
     rendered_class = _render_class_reference(point)
     rendered_function = _render_function_reference(from_wkb)
+    rendered_function += _render_function_reference(pkg.members['from_mvt'])
     rendered_method = _render_function_reference(getitem)
     rendered_array = _render_function_reference(to_numpy)
+    facade_paths = {
+        'gometry.Features.__getitem__',
+        'gometry.Features.from_columns',
+        'gometry.Features.with_columns',
+        'gometry.Features.with_ids',
+        'gometry.MVTLayer.to_features',
+    }
+    rendered_facades = ''
+    for path in sorted(facade_paths):
+        _, class_name, method_name = path.split('.')
+        rendered_facades += _render_function_reference(
+            pkg.members[class_name].members[method_name]
+        )
     rendered = check.rendered_call_forms(
-        rendered_class + rendered_function + rendered_method + rendered_array
+        rendered_class
+        + rendered_function
+        + rendered_method
+        + rendered_array
+        + rendered_facades
     )
     paths = {
         'gometry.Point',
         'gometry.from_wkb',
+        'gometry.from_mvt',
         'gometry.GeometryArray.__getitem__',
         'gometry.GeometryArray.to_numpy',
-    }
+    } | facade_paths
     expected = SimpleNamespace(
         call_forms={path: contracts.call_forms[path] for path in paths}
     )
@@ -1383,6 +1402,12 @@ def test_griffe_canonicalizes_private_classes_to_public_paths(
     assert isinstance(private_cell, griffe.Alias)
     assert private_cell.canonical_path == 'gometry.Cell'
 
+    mvt = pkg.members['_mvt']
+    for name in ('MVTLayer', 'MVTSource', 'TileFrame'):
+        private = mvt.members[name]
+        assert isinstance(private, griffe.Alias)
+        assert private.canonical_path == f'gometry.{name}'
+
     # coverage_clean return annotation must resolve publicly after materialize.
     # Absence of the symbol or its returns is a hard failure (not a skip).
     assert 'coverage_clean' in pkg.members, (
@@ -1578,6 +1603,7 @@ def test_exported_namedtuple_forms_match_runtime_and_construct(
 
     expected_unavailable = {
         'AccuracyWarning',
+        'ArrowValue',
         'CRSError',
         'CRSMismatchError',
         'Cell',
@@ -2397,6 +2423,77 @@ class Broken:
         match=r':2: gometry\.Broken\.__init__',
     ):
         loader.load('gometry')
+
+
+def test_type_only_new_overloads_define_the_runtime_initializer_call(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    (package / '__init__.py').write_text(
+        """\
+from typing import TYPE_CHECKING, overload
+
+class Feature:
+    if TYPE_CHECKING:
+        @overload
+        def __new__(cls, value: int) -> "Feature": ...
+        @overload
+        def __new__(cls, value: str) -> "Feature": ...
+        def __new__(cls, *args, **kwargs): ...
+
+    def __init__(self, value):
+        \"\"\"Initialize the feature.
+
+        Parameters
+        ----------
+        value : int or str
+            The feature value.
+        \"\"\"
+""",
+        encoding='utf-8',
+    )
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(expand.PromoteStubOverloads()),
+        allow_inspection=False,
+    )
+    model = loader.load('gometry')
+    feature = model.members['Feature']
+    binding = expand.constructor_binding(feature)
+    assert binding is not None
+    assert binding.runtime
+    assert len(binding.overloads) == 2
+    assert [str(form.parameters['value'].annotation) for form in binding.overloads] == [
+        'int',
+        'str',
+    ]
+    expand._prepare_constructor_docstrings(feature, binding)
+    resolution = binding.extra['gometry']['parameter_resolution']
+    assert not resolution.errors
+    assert resolution.rows[0].name == 'value'
+
+
+def test_constructor_variadic_parameters_have_no_context_defaults(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    (package / '__init__.py').write_text(
+        'class Source:\n    def __init__(self, *args, **options): ...\n',
+        encoding='utf-8',
+    )
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(expand.PromoteStubOverloads()),
+        allow_inspection=False,
+    )
+    binding = expand.constructor_binding(loader.load('gometry').members['Source'])
+    assert binding is not None
+    assert binding.parameters['args'].default is None
+    assert binding.parameters['options'].default is None
 
 
 def test_inherited_generic_constructor_self_and_specialized_returns_match_stub_ast(

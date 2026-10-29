@@ -54,12 +54,88 @@ PyArrow, and all GeoParquet encodings follow the same conversion rules.
 Use [raw WKT/WKB](text-formats.md) when you need literal stored coordinates
 without this typed geographic adaptation.
 
+## Feature tables
+
+`gm.from_arrow` returns a `GeometryArray` for a geometry column and `Features`
+for a geometry-bearing table, record batch or reader. It also accepts providers
+of the Arrow C array and stream interfaces without requiring PyArrow for import.
+The feature snapshot keeps attributes and explicit feature IDs aligned with its
+geometries:
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+import numpy as np
+import pyarrow as pa
+
+features = gm.Features.from_columns(
+    gm.points([10, 20, 30], [40, 50, 60], crs=3857),
+    columns={
+        "name": pa.array(["west", "center", "east"]),
+        "rank": np.array([2, 4, 6], dtype=np.int16),
+    },
+    ids=np.array([1000, 1001, 1002], dtype=np.uint64),
+)
+selected = features[[2, 0]].with_columns(
+    {"rank": np.array([7, 9], dtype=np.int16)}
+)
+table = selected.to_arrow()
+restored = gm.from_arrow(table)
+
+print("names:", list(restored.column("name")))
+print("IDs:", list(restored.ids))
+print("rank type:", table.schema.field("rank").type)
+```
+
+Input buffers are snapshotted at admission, so later changes to the producer
+cannot change the features. Replacements share unchanged columns. Whole-column
+and contiguous-window exports share compatible owned buffers; gathers may
+allocate. Use `features.materialize()` to detach a small selection from its
+larger backing storage.
+
+For a record-batch stream, `gm.from_arrow_batches(reader)` yields one feature
+snapshot at a time. Closing the iterator releases its stream; the caller owns
+the original reader.
+
+Values with no faithful ordinary Python representation use `ArrowValue`.
+For example, a nanosecond timestamp keeps its exact unit and value rather than
+being truncated to Python's microsecond precision:
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+import pyarrow as pa
+
+times = gm.Features.from_columns(
+    gm.points([1], [2]),
+    columns={"observed": pa.array([1], type=pa.timestamp("ns", tz="UTC"))},
+)
+observed = times.column("observed")[0]
+print(observed.type, observed.value)
+print(pa.array(observed).type)
+```
+
+An `ArrowValue` exports a one-element Arrow array and supports `as_py()` when
+conversion preserves its meaning and precision. The result does not depend on
+which optional Python Arrow provider is installed.
+
+Feature IDs have an explicit role. Export records the ID column's name in the
+schema metadata key `gometry:feature_id`; import honors that declaration. A
+column merely named `id` remains an ordinary property unless declared as the
+ID column. Use `gm.from_arrow(table, id_column="fid")` to select the role, or
+`id_column=None` to import all non-geometry columns as properties. ID zero is
+preserved.
+
+When a table contains several recognized geometry columns, pass
+`geometry="column_name"` to select the active geometry. Other geometry columns
+remain typed attributes. Sparse Python properties become rectangular columns
+on Arrow export: an absent key and an explicitly null value both become an
+Arrow null. The original feature snapshot retains that distinction.
+
 ## GeoParquet — durable columnar storage
 
-[`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] writes
-geometry and aligned attributes to a file;
-[`gm.from_geoparquet`][gometry.from_geoparquet] reads both back. CRS, coordinate
-epoch, and missing rows are preserved.
+[`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] and
+`Features.to_geoparquet()` write geometry and aligned attributes to a file.
+[`gm.from_geoparquet`][gometry.from_geoparquet] returns `Features`, retaining
+CRS, coordinate epoch, missing rows and any declared ID role.
 
 ```python exec="on" source="block" result="text"
 import tempfile
@@ -76,13 +152,18 @@ attributes = {"name": ["west", None, "east"]}
 with tempfile.TemporaryDirectory() as tmp:
     path = f"{tmp}/places.parquet"
     geoms.to_geoparquet(path, attributes=attributes)
-    from_file, attributes = gm.from_geoparquet(path)
+    features = gm.from_geoparquet(path)
 
-print("GeoParquet:", from_file, from_file.crs.to_authority())
-print("file mask:", from_file.is_missing.tolist())
-print("attribute columns:", attributes.column_names)
+print("GeoParquet:", features.geometries, features.geometries.crs.to_authority())
+print("file mask:", features.geometries.is_missing.tolist())
+print("names:", list(features.column("name")))
 
 ```
+
+An explicit feature ID is stored as a named column and its role is recorded
+in `gometry:feature_id` schema metadata. `columns=` selects properties while
+retaining the active geometry and ID role. Pass `id_column=None` when reading
+to treat that column as an ordinary property instead.
 
 ### Encodings
 

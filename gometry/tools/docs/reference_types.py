@@ -212,6 +212,21 @@ def _resolve_name(module: _Module, expression: ast.expr) -> str | None:
     return None
 
 
+def _follow_reexports(target: str, modules: dict[str, _Module]) -> str:
+    seen = set()
+    while target.startswith(f'{_PACKAGE}.') and target not in seen:
+        seen.add(target)
+        module_name, _, name = target.rpartition('.')
+        module = modules.get(module_name)
+        if module is None or name in module.declarations:
+            break
+        replacement = module.imports.get(name) or module.module_imports.get(name)
+        if replacement is None:
+            break
+        target = replacement
+    return target
+
+
 def _last_name(expression: ast.expr | None) -> str | None:
     name = _dotted_name(expression) if expression is not None else None
     return name.rsplit('.', 1)[-1] if name else None
@@ -709,6 +724,50 @@ def _expression_references(
     return list(dict.fromkeys(references))
 
 
+def _guarded_self_recursive_alias(declaration: _Declaration) -> bool:
+    """Recognize aliases whose self-references occur inside container values."""
+    if declaration.kind != 'alias' or declaration.expression is None:
+        return False
+    guards: list[bool] = []
+    containers = {
+        'list',
+        'tuple',
+        'dict',
+        'set',
+        'frozenset',
+        'typing.Mapping',
+        'typing.Sequence',
+        'typing.Iterable',
+        'collections.abc.Mapping',
+        'collections.abc.Sequence',
+        'collections.abc.Iterable',
+    }
+
+    def visit(node: ast.expr, guarded: bool) -> None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                visit(ast.parse(node.value, mode='eval').body, guarded)
+            except SyntaxError:
+                pass
+        elif isinstance(node, (ast.Name, ast.Attribute)):
+            if _resolve_name(declaration.module, node) == declaration.path:
+                guards.append(guarded)
+        elif isinstance(node, ast.Subscript):
+            target = _resolve_name(declaration.module, node.value)
+            if target in {'typing.Literal', 'typing_extensions.Literal'}:
+                return
+            visit(node.value, guarded)
+            container = target or _dotted_name(node.value)
+            visit(node.slice, guarded or container in containers)
+        else:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.expr):
+                    visit(child, guarded)
+
+    visit(declaration.expression, False)
+    return bool(guards) and all(guards)
+
+
 def _declaration_expressions(declaration: _Declaration) -> list[ast.expr]:
     if declaration.kind == 'alias':
         return [declaration.expression] if declaration.expression is not None else []
@@ -784,6 +843,9 @@ def build_type_graph(
     ) -> None:
         for target in _expression_references(expression, module):
             public_target = public_targets.get(target)
+            if public_target is None:
+                target = _follow_reexports(target, modules_by_name)
+                public_target = public_targets.get(target)
             if public_target is None and target.startswith(f'{_PACKAGE}.'):
                 exported_name = target.removeprefix(f'{_PACKAGE}.')
                 if '.' not in exported_name and exported_name in public_names:
@@ -805,6 +867,23 @@ def build_type_graph(
                     source_line,
                     chain,
                 )
+            if target in definitions:
+                if owner is not None:
+                    references.setdefault(owner, set()).add(target)
+                continue
+            if _guarded_self_recursive_alias(declaration):
+                definitions[target] = declaration
+                if owner is not None:
+                    references.setdefault(owner, set()).add(target)
+                visit_expression(
+                    declaration.expression,
+                    declaration.module,
+                    declaration.module.path,
+                    declaration.line,
+                    target,
+                    public_owner=public_owner,
+                )
+                continue
             if declaration.kind == 'alias' and (
                 declaration.name.startswith('_') or _is_literal_alias(declaration)
             ):
@@ -841,8 +920,6 @@ def build_type_graph(
 
             if owner is not None:
                 references.setdefault(owner, set()).add(target)
-            if target in definitions:
-                continue
             definitions[target] = declaration
             for child in _declaration_expressions(declaration):
                 visit_expression(

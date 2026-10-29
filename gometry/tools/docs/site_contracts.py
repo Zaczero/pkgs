@@ -299,6 +299,12 @@ def _module_aliases() -> frozenset[str]:
             continue
         tree = ast.parse(path.read_text(encoding='utf-8'))
         for statement in ast.walk(tree):
+            if (
+                isinstance(statement, ast.ImportFrom)
+                and statement.level == 0
+                and statement.module is not None
+            ):
+                aliases.add(statement.module.split('.', 1)[0])
             if not isinstance(statement, ast.Import):
                 continue
             aliases.update(

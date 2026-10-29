@@ -64,8 +64,8 @@ warning. A warning names the replacement when one exists.
 WKT and GeoJSON ingest parse ordinates as binary64 values. A finite decimal that
 gometry writes in its shortest round-trip form re-imports to the same `float64`;
 mapping integers must be exactly representable as binary64 when they are used as
-geometry coordinates. Feature properties and IDs remain Python side data and are
-not converted to binary64 merely because they arrived as GeoJSON text.
+geometry coordinates. Feature properties and IDs are not converted to binary64
+merely because they arrived as GeoJSON text.
 
 ## No legacy aliases
 

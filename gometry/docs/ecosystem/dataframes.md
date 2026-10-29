@@ -11,7 +11,7 @@ geometry computation, then attach the results to your dataframe.
 | --- | --- | --- | --- |
 | `pandas` (`gometry[pandas]`, `pandas>=3.0.3`; add `gometry[arrow]` for GeoArrow-backed `ArrowDtype`) | `GeometryExtensionArray`, GeoArrow-backed `ArrowDtype`, or object Series | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
 | `polars` | WKB/EWKB `Binary` Series | [`gm.from_polars(series)`][gometry.from_polars] | [`array.to_polars()`][gometry.GeometryArray.to_polars] |
-| `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`array.to_geopandas()`][gometry.GeometryArray.to_geopandas] |
+| `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`gm.to_geopandas(geometry_or_features)`][gometry.to_geopandas] |
 
 Install the adapters you use:
 
@@ -149,25 +149,38 @@ expressions.
 
 ## GeoPandas interchange
 
-`gm.from_geopandas()` decodes a GeoSeries or GeoDataFrame geometry column
-through vectorized WKB. `GeometryArray.to_geopandas()` returns a GeoSeries with
-the array CRS.
+`gm.from_geopandas()` decodes a GeoSeries to a `GeometryArray`, or a
+GeoDataFrame to aligned `Features`. Geometry conversion uses vectorized WKB.
+`gm.to_geopandas()` returns a GeoSeries for geometries and a GeoDataFrame for
+features.
 
 ```python exec="on" source="block" result="text"
 import geopandas as gpd
 import gometry as gm
 
 frame = gpd.GeoDataFrame(
-    {"name": ["A", "B"]},
+    {"fid": [0, 7], "name": ["A", "B"]},
     geometry=gpd.points_from_xy([21.0, 22.0], [52.0, 52.5], crs=4326),
 )
-geometry = gm.from_geopandas(frame)
-back = geometry.to_geopandas()
+features = gm.from_geopandas(frame, id_column="fid")
+back = gm.to_geopandas(features)
 print(type(back).__name__, len(back), back.crs)
+print(list(gm.from_geopandas(back).ids))
 ```
 
-This boundary copies. Use the pandas extension path when native shared storage
-is the goal.
+The ID role is recorded in `GeoDataFrame.attrs["gometry:feature_id"]`; a
+dataframe operation that drops `attrs` also drops that hint. Supply `id_column`
+again to restore it, or pass `id_column=None` to treat the column as an ordinary
+property. Neither the dataframe index nor a column named `id` is inferred as
+the feature ID. Sparse properties become nullable dataframe columns.
+
+This boundary copies. Use the pandas extension path when native shared geometry
+storage is the goal. Epoch-bearing geometries require `drop_epoch=True` when
+exporting because GeoPandas cannot represent the coordinate epoch.
+
+For interactive maps, pass the aligned snapshot directly to `gm.explore(features)`.
+Its selected properties and IDs travel with the geometry into lonboard; no
+separate attribute table is needed.
 
 ## Import behavior
 

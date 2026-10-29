@@ -173,6 +173,7 @@ nav:
     - Geometry & dimensions: guide/geometry.md
     - CRS, units & measurement: guide/crs.md
     - Arrays & performance: guide/arrays.md
+    - Features & attributes: guide/features.md
     - Spatial predicates: guide/predicates.md
     - Constructive operations: guide/constructive.md
     - Spatial indexing & joins: guide/indexing.md
@@ -185,6 +186,7 @@ nav:
     - Arrow & storage: ecosystem/arrow.md
     - DataFrames: ecosystem/dataframes.md
     - Text & binary formats: ecosystem/text-formats.md
+    - Mapbox Vector Tiles: ecosystem/vector-tiles.md
   - Reference:
     - api/index.md
     - API conventions: about/design.md
@@ -204,6 +206,7 @@ nav:
       - Geometry types: api/geometry/geometry-types.md
       - GeometryArray: api/geometry/geometryarray.md
       - Coordinates, parts & groups: api/geometry/coordinates.md
+    - Features & attributes: api/features.md
     - CRS: api/crs.md
     - Grids & geocodes:
       - Cells & coverages: api/grids.md
@@ -212,6 +215,7 @@ nav:
       - geohash: api/geohash.md
       - tiles: api/tiles.md
       - geocode: api/geocode.md
+    - Mapbox Vector Tiles: api/vector-tiles.md
     - Spatial index: api/spatial-index.md
     - Results: api/results.md
     - Errors: api/errors.md

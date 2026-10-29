@@ -544,6 +544,10 @@ def test_docs_type_corpus_uses_retained_parser_fences(
         ```python exec="on" session="docs"
         executable = gm.Point(3, 4)
         ```
+        ```python title="partial: external archive"
+        from pmtiles.writer import write
+        archived = gm.mvt_tiles(sources, tiles=addresses)
+        ```
         ````text
         ```python
         literal = gm.Point(5, 6)
@@ -562,4 +566,5 @@ def test_docs_type_corpus_uses_retained_parser_fences(
     assert '# from docs/nested.md:3' in corpus
     assert 'fragment = gm.Point(1, 2)' in corpus
     assert 'executable = gm.Point(3, 4)' not in corpus
+    assert 'archived = gm.mvt_tiles' not in corpus
     assert 'literal = gm.Point(5, 6)' not in corpus

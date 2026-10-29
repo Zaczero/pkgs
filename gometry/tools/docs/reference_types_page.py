@@ -96,9 +96,7 @@ def _public_type_links(declaration: _Declaration, graph: TypeGraph) -> str:
     targets = [
         target
         for target in graph.references.get(declaration.path, ())
-        if target.startswith('gometry.')
-        and '._lib.' not in target
-        and '._types.' not in target
+        if target in graph.public_targets.values()
     ]
     return ', '.join(
         f'[{target.removeprefix("gometry.")}][{target}]' for target in targets
@@ -127,7 +125,14 @@ def _annotation_shape(
     declarations: dict[str, _Declaration],
 ) -> tuple[str, bool]:
     private_names: dict[str, str] = {}
-    for node in ast.walk(expression):
+    nodes = list(ast.walk(expression))
+    for node in tuple(nodes):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                nodes.extend(ast.walk(ast.parse(node.value, mode='eval')))
+            except SyntaxError:
+                continue
+    for node in nodes:
         if not isinstance(node, ast.Name):
             continue
         target = _resolve_name(module, node)

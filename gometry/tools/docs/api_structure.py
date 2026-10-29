@@ -198,6 +198,7 @@ PAGES: tuple[Page, ...] = (
         (
             section(
                 'from_arrow',
+                'from_arrow_batches',
                 'from_geojson',
                 'from_polyline',
                 'from_wkb',
@@ -235,6 +236,13 @@ PAGES: tuple[Page, ...] = (
         'Coordinate views, multipart views, and grouped results.',
         (section('Coordinates', 'GeometryParts', 'Groups'),),
         (('Arrays & performance', '../../guide/arrays.md'),),
+    ),
+    Page(
+        'features',
+        'Features & attributes',
+        'Immutable geometry, property and ID snapshots, aligned selections, and exact Arrow values.',
+        (section('Feature', 'Features', 'ArrowValue'),),
+        (('Arrow & storage', '../ecosystem/arrow.md'),),
     ),
     Page(
         'crs',
@@ -301,6 +309,23 @@ PAGES: tuple[Page, ...] = (
         (('Grid-generic API', 'grids.md'),),
     ),
     Page(
+        'vector-tiles',
+        'Mapbox Vector Tiles',
+        'Prepare, encode and decode vector tiles, reuse indexed sources, and generate addressed tiles.',
+        (
+            section('TileFrame', 'MVTLayer', 'MVTSource', title='Types'),
+            section(
+                'mvt_prepare',
+                'to_mvt',
+                'from_mvt',
+                'mvt_query_regions',
+                'mvt_tiles',
+                title='Functions',
+            ),
+        ),
+        (('Vector-tile guide', '../ecosystem/vector-tiles.md'),),
+    ),
+    Page(
         'geocode',
         'Point codes',
         'Plus-code and OSM-shortlink codecs using explicit longitude/latitude order.',
@@ -317,14 +342,13 @@ PAGES: tuple[Page, ...] = (
     Page(
         'results',
         'Result types',
-        'Named result values and aligned feature records returned by multi-output operations.',
+        'Named result values returned by multi-output geometry operations.',
         (
             section(
                 'Circle',
                 'CircleArray',
                 'ValidationReport',
                 'Extremes',
-                'Features',
                 'PolygonizeResult',
             ),
         ),
@@ -351,6 +375,7 @@ PAGES: tuple[Page, ...] = (
                 'from_geoparquet',
                 'from_pandas',
                 'from_polars',
+                'to_geopandas',
             ),
         ),
         (('Interoperability guide', '../ecosystem/index.md'),),

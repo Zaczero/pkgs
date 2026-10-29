@@ -37,7 +37,11 @@
   The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
 - **Exchange data** — [GeoArrow](https://geoarrow.org/)
   packed arrays for homogeneous XY/XYZ/XYM/XYZM geometries, WKB fallback for
-  mixed types, and WKT/WKB/EWKB/GeoJSON codecs
+  mixed types, WKT/WKB/EWKB/GeoJSON codecs, and
+  [Mapbox Vector Tiles](https://gometry.monicz.dev/ecosystem/vector-tiles/)
+- **Keep features together** — immutable
+  [feature snapshots](https://gometry.monicz.dev/guide/features/) keep
+  geometries, properties, and IDs aligned
 - **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
   share a typed `CellArray`; spatial indexes keep bounding-box `candidates`
   separate from exact `query`

@@ -56,7 +56,7 @@ print('service area m²:', round(service_area.area))
 
 ## 3. Ingest named tutorial blocks
 
-[`gm.from_geojson(..., features=True)`][gometry.from_geojson] parses a GeoJSON feature collection into a [`Features`][gometry.Features]
+[`gm.from_geojson(...)`][gometry.from_geojson] parses a GeoJSON feature collection into a [`Features`][gometry.Features]
 result with geometries in a [`GeometryArray`][gometry.GeometryArray] and parallel
 properties as ordinary Python mappings.
 
@@ -71,7 +71,7 @@ payload = '''
    "geometry":{"type":"Polygon","coordinates":[[[2.305,48.865],[2.311,48.865],[2.311,48.870],[2.305,48.870],[2.305,48.865]]]}}
 ]}
 '''
-features = gm.from_geojson(payload, crs=4326, features=True)
+features = gm.from_geojson(payload, crs=4326)
 blocks, properties, ids = features.geometries, features.properties, features.ids
 names = [row['name'] for row in properties]
 print(len(blocks), 'tutorial blocks loaded:', names)
@@ -151,4 +151,6 @@ print(figure(
 | migrate existing Shapely code | [Coming from Shapely](../migrating/index.md#coming-from-shapely) |
 | replace pyproj `Transformer` / `Geod` workflows | [Coming from pyproj](../migrating/index.md#coming-from-pyproj) |
 | tune joins and candidate/refine pipelines | [Spatial indexing & joins](../guide/indexing.md) |
+| keep geometries, properties, and IDs together | [Features & attributes](../guide/features.md) |
+| prepare or read vector tiles | [Mapbox Vector Tiles](../ecosystem/vector-tiles.md) |
 | look up any callable | [API reference](../api/index.md) |

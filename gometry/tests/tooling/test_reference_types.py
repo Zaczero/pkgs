@@ -79,6 +79,34 @@ def _graph_for_public_function(
     )
 
 
+def test_private_facade_bases_do_not_become_public_api_links(tmp_path: Path) -> None:
+    package = tmp_path / 'gometry'
+    _, stub_path, _ = _write_package(
+        package,
+        initializer="__all__ = ['describe']\n",
+        stub="""\
+from ._options import _Options
+def describe(value: _Options) -> None: ...
+""",
+        types='',
+    )
+    (package / '_options.py').write_text(
+        """\
+from typing import TypedDict
+class _Base(TypedDict):
+    extent: int
+class _Options(_Base):
+    clip: bool
+""",
+        encoding='utf-8',
+    )
+    graph = _graph_for_public_function(package, stub_path, 'describe')
+    rendered = _reference_type_page().render_type_page(graph)
+    assert '| `extent` |' in rendered
+    assert '| `clip` |' in rendered
+    assert '][gometry._options._Base]' not in rendered
+
+
 def test_reachable_definitions_keep_identity_schema_contract_and_typevar_default(
     tmp_path: Path,
 ) -> None:
@@ -267,6 +295,39 @@ PublicAlias: TypeAlias = _First
         match=r'private alias cycle: gometry\._types\._First.*gometry\._types\._First',
     ):
         _graph_for_public_function(package, stub_path, 'describe')
+
+
+def test_recursive_container_alias_is_a_finite_documented_shape(tmp_path: Path) -> None:
+    package = tmp_path / 'gometry'
+    _, stub_path, _ = _write_package(
+        package,
+        initializer="__all__ = ['describe']\n",
+        stub='from ._types import _Value\n\ndef describe(value: _Value) -> None: ...\n',
+        types="""\
+from typing import Mapping, TypeAlias
+
+_Value: TypeAlias = int | list['_Value'] | Mapping[str, '_Value']
+""",
+    )
+    graph = _graph_for_public_function(package, stub_path, 'describe')
+    assert 'gometry._types._Value' in {item.path for item in graph.definitions}
+    rendered = _reference_type_page().render_type_page(graph)
+    assert 'Value annotation shape' in rendered
+    assert 'list[Value annotation shape]' in rendered
+
+
+def test_reexported_external_type_does_not_become_a_missing_local_type(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    _, stub_path, _ = _write_package(
+        package,
+        initializer="__all__ = ['describe']\n",
+        stub='from ._types import Buffer\n\ndef describe(value: Buffer) -> None: ...\n',
+        types='from collections.abc import Buffer\n',
+    )
+    graph = _graph_for_public_function(package, stub_path, 'describe')
+    assert not any(item.path.endswith('.Buffer') for item in graph.definitions)
 
 
 def test_same_spelling_resolves_to_the_imported_declaration_identity(

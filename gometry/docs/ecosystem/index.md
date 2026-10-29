@@ -17,6 +17,8 @@ The adapters make copying and metadata loss explicit.
   storage, Polars WKB Series, and GeoPandas round-trip).
 - **Files, wire formats, databases** → [Text & binary formats](text-formats.md)
   (WKB/EWKB, WKT/EWKT, GeoJSON, `__geo_interface__`, pickle).
+- **Map tiles** → [Mapbox Vector Tiles](vector-tiles.md) (tile preparation,
+  encoding, decoding, and reusable sources).
 
 ## Partner matrix
 

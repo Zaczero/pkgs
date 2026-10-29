@@ -55,10 +55,10 @@ import gometry as gm
 '''
 
 _DOCS = _ROOT / 'docs'
-#: Fences importing (or assigning through) the competitor stacks are the
-#: migration guides' "before" side — not gometry call sites.
+#: External-stack examples are checked by their integration workflows rather
+#: than the gometry-only static corpus.
 _FOREIGN = re.compile(
-    r'^\s*(?:import|from)\s+(?:shapely|pyproj|h3|s2sphere|rtree|geopandas|pandas)\b',
+    r'^\s*(?:import|from)\s+(?:shapely|pyproj|h3|s2sphere|rtree|geopandas|pandas|pmtiles)\b',
     re.MULTILINE,
 )
 

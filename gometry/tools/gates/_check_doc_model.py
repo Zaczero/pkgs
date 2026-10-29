@@ -1061,6 +1061,23 @@ def _source_facade_constructor_contracts(
             phase: _stub_constructor_declarations(class_node, phase)
             for phase in ('__new__', '__init__')
         }
+        if not phases['__new__'] and phases['__init__']:
+            type_only_new = [
+                member
+                for branch in class_node.body
+                if isinstance(branch, ast.If)
+                and isinstance(branch.test, ast.Name)
+                and branch.test.id == 'TYPE_CHECKING'
+                for member in branch.body
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and member.name == '__new__'
+                and any(
+                    isinstance(decorator, ast.Name) and decorator.id == 'overload'
+                    for decorator in member.decorator_list
+                )
+            ]
+            if type_only_new:
+                phases = {'__new__': type_only_new}
         phases = {phase: forms for phase, forms in phases.items() if forms}
         if not phases:
             continue
@@ -1444,10 +1461,13 @@ def source_documentation_contracts() -> SourceDocumentationContracts:
     for subject in subjects:
         if subject.kind != 'callable':
             continue
+        source_module = _source_module_for_path(pkg, Path(subject.source.path))
+        if source_module is None:
+            raise ValueError(f'cannot load source module for {subject.qualname!r}')
         forms = _source_function_forms(
             subject.qualname,
             subject.declarations,
-            lib,
+            source_module,
             aliases,
         )
         if forms:
@@ -1486,6 +1506,14 @@ def source_documentation_contracts() -> SourceDocumentationContracts:
         class_node = class_nodes.get(class_name)
         if class_node is None:
             continue
+        source_class = inventory.source_classes.get(class_name)
+        source_module = (
+            _source_module_for_path(pkg, Path(source_class.source.path))
+            if source_class is not None
+            else lib
+        )
+        if source_module is None:
+            raise ValueError(f'cannot load source module for {class_name!r}')
         groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
         for member in class_node.body:
             if isinstance(
@@ -1500,7 +1528,7 @@ def source_documentation_contracts() -> SourceDocumentationContracts:
             if not visible:
                 continue
             path = f'gometry.{class_name}.{member_name}'
-            forms = _source_function_forms(path, declarations, lib, aliases)
+            forms = _source_function_forms(path, declarations, source_module, aliases)
             function = _griffe_function(pkg, path)
             if forms and function is None:
                 raise ValueError(
@@ -1692,6 +1720,8 @@ def collect_errors() -> list[str]:
         variants = [function, *(function.overloads or ())]
         if any(_is_never(variant) for variant in variants):
             errors.append(f'{function.canonical_path}: public Never overload')
+        if any(part.startswith('_') for part in path.split('.')[1:-1]):
+            continue
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)

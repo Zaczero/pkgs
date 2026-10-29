@@ -36,6 +36,13 @@ Each workload uses six to twelve paired measurements after warm-up, alternating
 which library runs first. Outputs are checked for equivalent rows, types,
 coordinates, and topology before timing.
 
+A separate MVT profile compares tile-local encoding and decoding with the
+Python `mapbox-vector-tile` package, using point and mixed-geometry layers.
+These codec measurements start with prepared tile-local geometry; source
+selection, projection, and clipping are outside their timing boundary.
+Encoding and decoding compare equivalent values, while their Python result
+representations differ.
+
 Ratios summarize paired call times. Labels use confidence intervals with at
 least 95% coverage and a 3% practical-equivalence margin:
 

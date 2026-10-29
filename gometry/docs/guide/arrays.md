@@ -590,24 +590,22 @@ gometry once per batch — that keeps memory bounded without falling back to per
 overhead.
 
 !!! note "Pass raw GeoJSON to the parser"
-    `gm.from_geojson(text)` parses the JSON in Rust and skips the discarded `properties`
-    entirely. Calling [`json.loads`](https://docs.python.org/3/library/json.html#json.loads) first and passing the resulting `dict` forces a full
-    Python object tree to be built and re-walked before the native parser sees it.
-    Pass the raw `str`/`bytes` (a file's contents, a `polars`/`duckdb` binary column) and
-    let the Rust reader do the scan.
+    `gm.from_geojson(text)` parses raw `str` or `bytes` in Rust. Passing the
+    raw input avoids first building and traversing a Python object tree with
+    `json.loads`. Feature collections retain their properties and IDs.
 
 | Ingest | Per-item or expanded form | Batched/direct form |
 | --- | --- | --- |
 | GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
-| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_geojson(text, features=True)`][gometry.from_geojson] |
+| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_geojson(text)`][gometry.from_geojson] |
 
-When you need the per-feature `properties`/`id` alongside geometry, pass
-`features=True` to [`gm.from_geojson`][gometry.from_geojson]. It parses the whole
+To retain per-feature `properties` and `id`, pass the FeatureCollection to
+[`gm.from_geojson`][gometry.from_geojson]. It parses the whole
 FeatureCollection in Rust and returns a validated
-[`Features(geometries, properties, ids)`][gometry.Features] record — one crossing
-instead of a Python loop.
+[`Features`][gometry.Features] snapshot — one crossing instead of a Python loop.
+See [Features & attributes](features.md) for selecting and updating rows.
 
 ## Crossing the dataframe / Arrow boundary
 

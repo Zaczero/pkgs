@@ -217,8 +217,7 @@ except gm.InvalidGeometryError as e:
 gometry geometries implement the `__geo_interface__` protocol, so they interoperate
 with any library that speaks it. [`gm.from_geojson`][gometry.from_geojson] is the
 inverse — it ingests anything exposing that protocol (or a raw GeoJSON-like
-mapping), including a GeoJSON `Feature`. By default it returns the geometry and
-drops feature side data; pass `features=True` to retain properties and IDs.
+mapping), including GeoJSON features with their properties and IDs.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -231,9 +230,8 @@ back = gm.from_geojson(mapping, crs=4326)
 feature = gm.from_geojson(
     {"type": "Feature", "properties": {"name": "site"}, "geometry": mapping},
     crs=4326,
-    features=True,
 )
-print("round-trip:", back.to_wkt(), "| Feature:", feature.geometries[0].to_wkt())
+print("round-trip:", back.to_wkt(), "| Feature:", feature.geometry.to_wkt())
 ```
 
 [`gm.from_geojson`][gometry.from_geojson] is the one entry point for everything
@@ -244,10 +242,9 @@ geometry declares `OGC:CRS84` by default (matching GeoParquet); pass
 `crs=4326` for EPSG:4326, `crs=None` to opt out, or `crs=4979` for a
 WGS84-family 3D frame.
 
-A `FeatureCollection` is a feature *set*: by default it
-decodes to a [`GeometryArray`][gometry.GeometryArray], one geometry per feature.
-Set `features=True` on the same reader to return [`Features`][gometry.Features]
-with the aligned properties and IDs.
+A `FeatureCollection` decodes to [`Features`][gometry.Features] with aligned
+geometries, properties and IDs. A single Feature decodes to [`Feature`][gometry.Feature],
+and a geometry document decodes to a geometry.
 
 !!! note "Uniform axes per coordinate sequence"
     RFC 7946 makes the third ordinate optional per *position*, but a gometry
@@ -273,23 +270,25 @@ fc = {
     ],
 }
 print(gm.from_geojson(fc))
-features = gm.from_geojson(fc, features=True)
-geoms, props, ids = features
-print(features.properties, ids, len(features.geometries))
+features = gm.from_geojson(fc)
+print(features.properties, features.ids, len(features))
 ```
 
-`features=True` returns a [`Features`][gometry.Features] container with three
-parallel fields. Destructure it as
-`geoms, props, ids = gm.from_geojson(..., features=True)`.
-Use `len(features.geometries)` for the row count.
+The [`Features`][gometry.Features] container has aligned
+`geometries`, `properties` and `ids` fields. Iterating over it yields `Feature`
+rows, and `len(features)` gives the row count. Use `as_features=True` to
+normalize geometry documents or geometry-only batches to the same container.
 
-The outer [`properties`][gometry.Features.properties] and [`ids`][gometry.Features.ids] columns are tuples, so their alignment cannot
-drift after parsing; individual property dictionaries remain editable. A missing
+[`Features`][gometry.Features] is an immutable, row-aligned snapshot. Integer
+indexing returns one `Feature`; slices, masks and gathers select geometry,
+properties and IDs together. Property mappings are read-only, including nested
+mappings; input lists become immutable sequences. A missing
 `properties` member normalizes to `{}`, while an explicit GeoJSON
 `"properties": null` remains `None` and round-trips as JSON null.
 When constructing [`Features`][gometry.Features] directly, omitted or explicit
 `properties=None` records `None` for every row; pass `properties={}` when
-independently editable empty mappings are wanted.
+empty mappings are wanted. Edits return replacement snapshots rather than
+changing an existing row.
 
 ### `Features.__geo_interface__`
 
@@ -338,11 +337,30 @@ view, preserving its selected layout and flattened row indexes; iterator types
 are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
 immutable parent view; it is reconstructed from its geometry when unpickled.
 
-`copy.copy(features)` returns a new record sharing its geometry, property, and ID
-columns, so edits to a shared property dictionary are visible through either
-record. `copy.deepcopy(features)` recursively copies property mappings and their
-values. On Python 3.13 and newer, `copy.replace(features, ...)` preserves each
-omitted column by identity and validates supplied columns.
+Both `copy.copy(features)` and `copy.deepcopy(features)` share the admitted
+immutable geometry, property and ID storage. Neither operation needs to walk
+every row. Use `features.materialize()` when a small selection should stop
+retaining its larger parent buffers.
+
+On Python 3.13 and newer, `copy.replace` works with both `Feature` and `Features`.
+It shares omitted fields and validates replacement values. An explicit `None`
+clears a field; omitting it retains the original.
+
+```python exec="on" source="block" result="text"
+from copy import replace
+
+import gometry as gm
+
+feature = gm.Feature(gm.Point(1, 2))
+features = gm.Features([feature.geometry])
+transformed_geometries = gm.points([3], [4])
+updated_row = replace(feature, id=42)
+updated_features = replace(features, geometries=transformed_geometries)
+```
+
+For named property columns, use `features.with_columns({"rank": new_ranks})`.
+The supplied columns must match the feature count. `with_geometries`, `with_ids`
+and `select_columns` compose with the same immutable snapshot and alignment rules.
 
 With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
 can be sent out of band when the pickler uses `buffer_callback`. Those buffers

@@ -28,6 +28,10 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_DefaultT': 'DefaultT',
     '_ExtremeT': 'ExtremeT',
     '_CellT_co': 'CellT_co',
+    '_FeatureG_co': 'FeatureG_co',
+    '_FeatureId_co': 'FeatureId_co',
+    '_FeatureScalarT': 'FeatureScalarT',
+    '_FeatureV_co': 'FeatureV_co',
     '_GeometryOtherT': 'GeometryOtherT',
     '_GeometryRowT': 'GeometryRowT',
     '_GeometryT': 'GeometryT',
@@ -36,6 +40,8 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_GroupMissingT_co': 'GroupMissingT_co',
     '_GroupValuesT': 'GroupValuesT',
     '_GroupRowT_co': 'GroupRowT_co',
+    '_NewFeatureG': 'NewFeatureG',
+    '_NewFeatureId': 'NewFeatureId',
 }
 _SEE_ALSO_ENTRY = re.compile(
     r'(?:^|(?<=\. ))(?P<ticks>`?)'
@@ -475,13 +481,18 @@ def _documentation_parameters(
             for item in annotations[1:]:
                 annotation = griffe.ExprBinOp(annotation, '|', item)
 
-        default = next(
-            (
-                parameter.default
-                for parameter in variants
-                if parameter.default is not None
-            ),
-            None,
+        default = (
+            None
+            if variants[0].kind
+            in {griffe.ParameterKind.var_positional, griffe.ParameterKind.var_keyword}
+            else next(
+                (
+                    parameter.default
+                    for parameter in variants
+                    if parameter.default is not None
+                ),
+                None,
+            )
         )
         parameters.append(
             griffe.Parameter(
@@ -765,8 +776,29 @@ def _constructor_outcome(
             'cannot resolve an inherited external constructor into a '
             'package-owned call form'
         )
-    if len(local) != 1:
-        return unsupported('both __new__ and __init__ contribute local call forms')
+    binding_runtime = None
+    prose_function = None
+    if len(local) == 2:
+        new = effective.get('__new__')
+        init = effective.get('__init__')
+        if (
+            new is not None
+            and init is not None
+            and new[1]
+            and init[1]
+            and new[0] is not None
+            and init[0] is not None
+            and not new[0].runtime
+            and init[0].runtime
+            and new[0].overloads
+            and all(not variant.runtime for variant in new[0].overloads)
+        ):
+            local = [('__new__', new[0])]
+            effective.pop('__init__')
+            binding_runtime = True
+            prose_function = init[0]
+        else:
+            return unsupported('both __new__ and __init__ contribute local call forms')
     if len(effective) != 1:
         return unsupported(
             'the class combines a local constructor phase with an inherited opposite phase'
@@ -807,7 +839,7 @@ def _constructor_outcome(
         parent=class_obj,
         lineno=source_function.lineno,
         endlineno=source_function.endlineno,
-        runtime=source_function.runtime,
+        runtime=source_function.runtime if binding_runtime is None else binding_runtime,
         lines_collection=class_obj.lines_collection,
         modules_collection=class_obj.modules_collection,
         git_info=class_obj.git_info,
@@ -816,6 +848,7 @@ def _constructor_outcome(
     binding.overloads = forms
     binding.extra[_CONSTRUCTOR_NAMESPACE] = {
         'source_function': source_function,
+        'prose_function': prose_function or source_function,
         'constructor_name': constructor_name,
     }
     return RenderableConstructor(
@@ -1016,25 +1049,26 @@ def _bind_public_class_constructors(pkg: griffe.Module) -> None:
 def _canonicalize_public_classes(pkg: griffe.Module) -> None:
     """Make public materialized classes canonical in the docs model.
 
-    Private ``_lib``/``_types`` classes become aliases of the public
+    Private source classes become aliases of the public
     materialization so annotation crossrefs (signatures and numpydoc type
     columns) resolve to ``gometry.X`` anchors instead of unresolved private
     paths.
     """
-    for module_name in ('_lib', '_types'):
-        module = pkg.members.get(module_name)
-        if not isinstance(module, griffe.Module):
+    for public in list(pkg.members.values()):
+        if not isinstance(public, griffe.Class):
             continue
-        for name, public in list(pkg.members.items()):
-            private = module.members.get(name)
-            if not isinstance(public, griffe.Class) or not isinstance(
-                private, griffe.Class
-            ):
-                continue
-            module.set_member(
-                name,
-                griffe.Alias(name, public, parent=module),
-            )
+        provenance = public.extra.get(_CONSTRUCTOR_NAMESPACE, {}).get('class_source')
+        if not isinstance(provenance, ConstructorSource):
+            continue
+        source = provenance.qualname
+        if not source.startswith(f'{pkg.path}.') or source == public.path:
+            continue
+        module_path, _, name = source.rpartition('.')
+        module: Any = pkg
+        for part in module_path.removeprefix(f'{pkg.path}.').split('.'):
+            module = getattr(module, 'members', {}).get(part)
+        if isinstance(module, griffe.Module):
+            module.set_member(name, griffe.Alias(name, public, parent=module))
 
 
 class PromoteStubOverloads(griffe.Extension):
@@ -1454,7 +1488,7 @@ def _prepare_constructor_docstrings(
     )
 
     extra = binding.extra[_CONSTRUCTOR_NAMESPACE]
-    source_function = extra.get('source_function')
+    source_function = extra.get('prose_function', extra.get('source_function'))
     class_docstring = class_obj.docstring
     class_source = _class_source(class_obj)
     carriers = []
@@ -1577,6 +1611,18 @@ def annotation_aliases(pkg: griffe.Module) -> dict[str, Any]:
 
     graph = build_public_type_graph(package_root, gometry)
     aliases: dict[str, Any] = {}
+    modules = [pkg]
+    while modules:
+        module = modules.pop()
+        for member in module.members.values():
+            if isinstance(member, griffe.Module):
+                modules.append(member)
+            elif (
+                isinstance(member, griffe.Alias)
+                and not member.target_path.startswith(f'{pkg.path}.')
+                and '.' in member.target_path
+            ):
+                aliases[member.path] = griffe.ExprName(member.target_path)
     names: dict[str, list[Any]] = {}
     for path, source in graph.expansions.items():
         module: Any = pkg
@@ -1595,6 +1641,15 @@ def annotation_aliases(pkg: griffe.Module) -> dict[str, Any]:
             continue
         aliases[path] = expression
         names.setdefault(path.rsplit('.', 1)[-1], []).append(expression)
+
+    for definition in graph.definitions:
+        if definition.name.startswith('_') and definition.kind in {
+            'alias',
+            'typed-dict',
+        }:
+            expression = griffe.ExprName(definition.name.lstrip('_'))
+            aliases[definition.path] = expression
+            names.setdefault(definition.name, []).append(expression)
 
     aliases.update({
         name: variants[0]

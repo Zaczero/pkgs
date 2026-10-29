@@ -9,7 +9,7 @@ const { version } = await Bun.file(
 ).json();
 const identity = Bun.spawn(
     [
-        join(root, ".venv/bin/python"),
+        "python",
         "-c",
         "import json,sys;from pathlib import Path;sys.path.insert(0,'tools');from artifact_content import source_input_digests;print(json.dumps(source_input_digests(Path.cwd()),sort_keys=True))",
     ],

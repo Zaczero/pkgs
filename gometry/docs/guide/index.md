@@ -45,5 +45,7 @@ For signatures and return types, use the [API reference](../api/index.md).
 
 - [Arrays & performance](arrays.md) — use packed arrays, pairwise broadcasting,
   ragged results, and bulk ingestion.
+- [Features & attributes](features.md) — keep geometries, properties, and IDs
+  aligned while selecting and updating rows.
 - [Ecosystem & interoperability](../ecosystem/index.md) — choose NumPy, Arrow,
   dataframe, or text/binary interchange boundaries.
