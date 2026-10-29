@@ -236,6 +236,73 @@ def test_callable_mutation_fails_before_measured_acceptance() -> None:
     assert calls == 0
 
 
+@pytest.mark.parametrize('invalid_pair', [False, True])
+def test_pair_block_closes_fixture_on_success_and_failure(
+    tmp_path: Path, invalid_pair: bool
+) -> None:
+    resource = (tmp_path / 'fixture').open('w')
+
+    class _ClosableCase(_Case):
+        def close(self) -> None:
+            resource.close()
+
+    pair = _Pair(lambda: [1], None if invalid_pair else lambda: [2])
+    if invalid_pair:
+        with pytest.raises(SystemExit, match='lacks competitor callable'):
+            worker.run_block(
+                operation=_Operation(),
+                block_id='block',
+                pair_id='pair',
+                lead='ab',
+                warmups=1,
+                repetitions=1,
+                min_sample_ns=1,
+                clock_ns=_clock(),
+                identity=_identity,
+                builder=lambda: _ClosableCase(pair),
+            )
+    else:
+        worker.run_block(
+            operation=_Operation(),
+            block_id='block',
+            pair_id='pair',
+            lead='ab',
+            warmups=1,
+            repetitions=1,
+            min_sample_ns=1,
+            clock_ns=_clock(),
+            identity=_identity,
+            builder=lambda: _ClosableCase(pair),
+        )
+    assert resource.closed
+
+
+def test_pair_block_closes_fixture_when_a_measured_call_fails(tmp_path: Path) -> None:
+    resource = (tmp_path / 'fixture').open('w')
+
+    class _ClosableCase(_Case):
+        def close(self) -> None:
+            resource.close()
+
+    def fail() -> list[int]:
+        raise RuntimeError('measured call failed')
+
+    with pytest.raises(RuntimeError, match='measured call failed'):
+        worker.run_block(
+            operation=_Operation(),
+            block_id='block',
+            pair_id='pair',
+            lead='ab',
+            warmups=1,
+            repetitions=1,
+            min_sample_ns=1,
+            clock_ns=_clock(),
+            identity=_identity,
+            builder=lambda: _ClosableCase(_Pair(lambda: [1], fail)),
+        )
+    assert resource.closed
+
+
 def test_local_oracle_is_not_run_in_timed_worker() -> None:
     clock_calls = 0
     timed_calls = 0

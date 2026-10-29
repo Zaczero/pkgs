@@ -22,7 +22,7 @@ TEXT = (
 
 
 def parse(text: str = TEXT) -> object:
-    features = gm.from_geojson(text, features=True)
+    features = gm.from_geojson(text, as_features=True)
     assert len(features.geometries) == len(features.properties) == len(features.ids)
     return features
 

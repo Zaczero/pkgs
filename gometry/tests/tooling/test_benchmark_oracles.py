@@ -518,6 +518,17 @@ def test_public_oracle_registries_cover_every_operation_once() -> None:
     assert set(PUBLIC_SCALING_CASE_BUILDERS) == set(scaling_identities)
 
 
+def test_mvt_codec_oracles_match_independent_tile_points() -> None:
+    pytest.importorskip('mapbox_vector_tile')
+    import _bench_mvt_cases  # ruff: ignore[unused-import]
+
+    for operation in _bench_registry.MVT_OPERATIONS:
+        if not operation.competitor.startswith('mapbox_vector_tile.'):
+            continue
+        case = _bench_oracles.MVT_CASE_BUILDERS[operation.gometry]()
+        case.verify(OracleContext(operation=operation, kind='mvt'))
+
+
 def test_run_oracle_dispatches_local_release_and_scaling_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

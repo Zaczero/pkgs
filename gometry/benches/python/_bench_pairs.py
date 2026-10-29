@@ -9,7 +9,7 @@ _SUPPORT = Path(__file__).resolve().parents[1] / 'support'
 if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
-from _bench_registry import ALL_PUBLIC_OPERATIONS, operation_for_row
+from _bench_registry import REGISTERED_OPERATIONS, operation_for_row
 
 
 def find_competitor(gometry_name: str, available: set[str]) -> str | None:
@@ -30,7 +30,7 @@ def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], .
     used: set[str] = set()
     units: list[tuple[str, ...]] = []
 
-    for operation in ALL_PUBLIC_OPERATIONS:
+    for operation in REGISTERED_OPERATIONS:
         if operation.suite != suite:
             continue
         members = tuple(name for name in operation.rows if name in available)

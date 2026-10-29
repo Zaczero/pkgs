@@ -864,6 +864,63 @@ def _derive_scaling_operations() -> tuple[ScalingOperation, ...]:
 RELEASE_OPERATIONS = _attach_reused_scaling_membership(_BASE_RELEASE_OPERATIONS)
 SCALING_OPERATIONS = _derive_scaling_operations()
 ALL_PUBLIC_OPERATIONS = RELEASE_OPERATIONS + SCALING_OPERATIONS
+MVT_OPERATIONS: tuple[ReleaseOperation, ...] = (
+    _op(
+        'Array construction & I/O',
+        'MVT indexed source to bytes',
+        '5k projected points, one buffered XYZ tile',
+        ('MVTSource', 'to_mvt'),
+        'gometry.to_mvt.source/5k_points_xyz',
+        'postgis.st_asmvt.source/5k_points_xyz',
+        'PostGIS',
+    ),
+    _op(
+        'Array construction & I/O',
+        'MVT encode local layer',
+        '1.3k prepared tile-local points',
+        ('MVTLayer', 'to_mvt'),
+        'gometry.to_mvt.local/points',
+        'mapbox_vector_tile.encode.local/points',
+        'mapbox-vector-tile',
+    ),
+    _op(
+        'Array construction & I/O',
+        'MVT decode local layer',
+        '1.3k prepared tile-local points',
+        ('from_mvt',),
+        'gometry.from_mvt.local/points',
+        'mapbox_vector_tile.decode.local/points',
+        'mapbox-vector-tile',
+    ),
+    _op(
+        'Array construction & I/O',
+        'MVT indexed mixed source to bytes',
+        '7k projected points, roads and buildings, one XYZ tile',
+        ('MVTSource', 'to_mvt'),
+        'gometry.to_mvt.source/7k_mixed_xyz',
+        'postgis.st_asmvt.source/7k_mixed_xyz',
+        'PostGIS',
+    ),
+    _op(
+        'Array construction & I/O',
+        'MVT encode mixed local layer',
+        '1.75k prepared points, roads and buildings',
+        ('MVTLayer', 'to_mvt'),
+        'gometry.to_mvt.local/mixed',
+        'mapbox_vector_tile.encode.local/mixed',
+        'mapbox-vector-tile',
+    ),
+    _op(
+        'Array construction & I/O',
+        'MVT decode mixed local layer',
+        '1.75k prepared points, roads and buildings',
+        ('from_mvt',),
+        'gometry.from_mvt.local/mixed',
+        'mapbox_vector_tile.decode.local/mixed',
+        'mapbox-vector-tile',
+    ),
+)
+REGISTERED_OPERATIONS = ALL_PUBLIC_OPERATIONS + MVT_OPERATIONS
 
 
 def scaling_record(
@@ -975,7 +1032,7 @@ def _suite_rows(
 def operation_for_row(
     name: str,
 ) -> ReleaseOperation | ScalingOperation | None:
-    for op in ALL_PUBLIC_OPERATIONS:
+    for op in REGISTERED_OPERATIONS:
         if name in op.rows:
             return op
     return None
@@ -992,7 +1049,7 @@ def paired_block_identity(
 
 def expand_filter_to_pairs(names: set[str]) -> set[str]:
     expanded = set(names)
-    for op in ALL_PUBLIC_OPERATIONS:
+    for op in REGISTERED_OPERATIONS:
         if expanded.intersection(op.rows):
             expanded.update(op.rows)
     return expanded
@@ -1057,7 +1114,17 @@ SMOKE = dataclasses.replace(
     scaling_operations=(),
 )
 
-PROFILES = {'smoke': SMOKE, 'release': RELEASE}
+MVT = dataclasses.replace(
+    RELEASE,
+    operations=tuple(
+        operation
+        for operation in MVT_OPERATIONS
+        if operation.competitor.startswith('mapbox_vector_tile.')
+    ),
+    scaling_operations=(),
+    row_timeout=180,
+)
+PROFILES = {'smoke': SMOKE, 'release': RELEASE, 'mvt': MVT}
 SUITES = ('competitors',)
 RESOURCE_MODES = ('bearing', 'features', 'intersects', 'mixed')
 PAIR_WORKER = 'bench_paired.py'

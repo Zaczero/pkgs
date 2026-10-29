@@ -288,6 +288,7 @@ _ENGINE_LIBRARY_TOKENS: dict[str, tuple[str, ...]] = {
     'shapely': ('geos',),
     'pyproj': ('proj',),
     'geopandas': ('geos', 'proj'),
+    'mapbox_vector_tile': ('geos', 'pyclipper', '_upb'),
 }
 
 
@@ -848,7 +849,9 @@ PACKAGES: dict[str, str] = {
     'pyarrow': 'pyarrow',
     'mercantile': 'Mercantile',
     'pygeohash': 'pygeohash',
+    'mapbox_vector_tile': 'mapbox-vector-tile',
 }
+_OPTIONAL_BENCHMARK_PACKAGES = {'mapbox_vector_tile'}
 _PACKAGE_BY_LABEL = {label: name for name, label in PACKAGES.items()}
 
 
@@ -860,12 +863,14 @@ def packages_required_by_operations(operations: Any) -> set[str]:
     """
     if operations is None:
         # Standalone doctor / full public release surface.
-        return set(PACKAGES)
+        return set(PACKAGES) - _OPTIONAL_BENCHMARK_PACKAGES
     required = {'gometry', 'numpy'}
     for op in operations:
         gometry = getattr(op, 'gometry', '') or ''
         if 'from_arrow' in gometry or 'arrow' in gometry:
             required.add('pyarrow')
+        if gometry.startswith('gometry.to_mvt.source/'):
+            required.add('mapbox_vector_tile')
         competitor = getattr(op, 'competitor', None)
         if competitor:
             prefix = str(competitor).split('.', 1)[0]

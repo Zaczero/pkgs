@@ -54,18 +54,6 @@ from benchmark_observation import validate_observation
 from benchmark_evidence import expand_artifact, read_admission
 from benchmark_evidence import identity_digest as identity_sha256
 
-_DEPENDENCIES = (
-    'gometry',
-    'numpy',
-    'shapely',
-    'pyproj',
-    'h3',
-    'geopandas',
-    'pyarrow',
-    'mercantile',
-    'pygeohash',
-)
-
 
 def _file_identity(path: Path) -> dict[str, Any]:
     resolved = path.resolve()
@@ -285,7 +273,7 @@ class BenchmarkRuntime:
         distribution = _distribution_identity(self.admission.distribution)
         packages = {
             name: identity
-            for name in _DEPENDENCIES
+            for name in PACKAGES
             if name in sys.modules
             if (identity := _package_identity(name)) is not None
         }

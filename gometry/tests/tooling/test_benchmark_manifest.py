@@ -53,6 +53,72 @@ def test_release_operations_pair_comparators_in_every_domain() -> None:
     assert all('Real-world' not in op.domain for op in RELEASE_OPERATIONS)
 
 
+def test_mvt_profile_selects_python_codec_pairs() -> None:
+    profile = _bench_registry.PROFILES['mvt']
+    units = pair_units(profile.rows('competitors'), suite='competitors')
+    assert set(units) == {
+        ('gometry.to_mvt.local/points', 'mapbox_vector_tile.encode.local/points'),
+        ('gometry.from_mvt.local/points', 'mapbox_vector_tile.decode.local/points'),
+        ('gometry.to_mvt.local/mixed', 'mapbox_vector_tile.encode.local/mixed'),
+        ('gometry.from_mvt.local/mixed', 'mapbox_vector_tile.decode.local/mixed'),
+    }
+    selected = {units[0][0]}
+    assert expand_filter_to_pairs(selected) == set(units[0])
+    validate_canonical_symbols(profile.operations)
+    doctor = importlib.import_module('bench_doctor')
+    assert 'mapbox_vector_tile' in doctor.packages_required_by_operations((
+        profile.operations[0],
+    ))
+
+
+def test_mvt_server_evidence_excludes_planning_and_checks_affinity(
+    tmp_path: Path,
+) -> None:
+    plans = []
+    for index, execution_ms in enumerate((1.2, 1.8, 1.5)):
+        path = tmp_path / f'block-{index}.json'
+        path.write_text(
+            json.dumps({
+                'fixture_metadata': {
+                    'postgis': {
+                        'jit': 'off',
+                        'worker_affinity': [2],
+                        'postgres_affinity': '2',
+                        'server_execution_ms': execution_ms,
+                        'image_id': 'sha256:example',
+                        'postgres': '18',
+                        'postgis': '3.6',
+                    }
+                },
+            })
+        )
+        plans.append({
+            'operation': _bench_registry.MVT_OPERATIONS[0].gometry,
+            'output': str(path),
+        })
+    result = _bench_driver._mvt_postgis_evidence(plans)[
+        _bench_registry.MVT_OPERATIONS[0].gometry
+    ]
+    assert result['samples'] == [1.2, 1.8, 1.5]
+    assert result['median'] == 1.5
+    assert result['range'] == [1.2, 1.8]
+    assert 'planning' in result['description']
+    path.write_text(
+        json.dumps({
+            'fixture_metadata': {
+                'postgis': {
+                    'jit': 'off',
+                    'worker_affinity': [2],
+                    'postgres_affinity': '3',
+                    'server_execution_ms': 1.5,
+                }
+            },
+        })
+    )
+    with pytest.raises(SystemExit, match='affinity'):
+        _bench_driver._mvt_postgis_evidence(plans)
+
+
 def test_release_operations_name_canonical_public_endpoints() -> None:
     validate_canonical_symbols()
     assert all(op.canonical_symbols for op in RELEASE_OPERATIONS)

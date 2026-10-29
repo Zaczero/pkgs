@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import importlib
 import json
 import math
 import os
 import platform
+import signal
 import sys
 import time
 import uuid
@@ -33,6 +35,7 @@ prepend_tools_import_paths()
 from benchroom.sampling import next_batch_size
 
 from _bench_oracles import (
+    MVT_CASE_BUILDERS,
     PUBLIC_CASE_BUILDERS,
     PUBLIC_SCALING_CASE_BUILDERS,
     public_oracle_identity,
@@ -219,6 +222,39 @@ def run_block(
     builder: Callable[[], Any] | None = None,
     min_sample_ns: int = MIN_SAMPLE_NS,
 ) -> dict[str, Any]:
+    """Build, measure, and release one complete paired block."""
+    with ExitStack() as resources:
+        return _run_block(
+            operation=operation,
+            block_id=block_id,
+            pair_id=pair_id,
+            lead=lead,
+            warmups=warmups,
+            repetitions=repetitions,
+            clock_ns=clock_ns,
+            identity=identity,
+            completion=completion,
+            builder=builder,
+            min_sample_ns=min_sample_ns,
+            resources=resources,
+        )
+
+
+def _run_block(
+    *,
+    operation: Any,
+    block_id: str,
+    pair_id: str,
+    lead: str,
+    warmups: int,
+    repetitions: int,
+    clock_ns: Callable[[], int] = time.perf_counter_ns,
+    identity: Callable[[], dict[str, Any]],
+    completion: Callable[[], dict[str, Any]] | None = None,
+    builder: Callable[[], Any] | None = None,
+    min_sample_ns: int = MIN_SAMPLE_NS,
+    resources: ExitStack,
+) -> dict[str, Any]:
     """Build and execute one complete paired block."""
     if lead not in {'ab', 'ba'}:
         raise SystemExit(f'paired block lead must be ab or ba, got {lead!r}')
@@ -241,17 +277,22 @@ def run_block(
         # oracle-gate checks; importing it constructs native-backed fixtures.
         import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
         import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
+        import _bench_mvt_cases as _mvt_cases  # ruff: ignore[unused-import]
 
         case_builder = (
             PUBLIC_SCALING_CASE_BUILDERS.get(operation.gometry)
             if hasattr(operation, 'curve_id')
             else PUBLIC_CASE_BUILDERS.get(operation.gometry)
+            or MVT_CASE_BUILDERS.get(operation.gometry)
         )
     else:
         case_builder = builder
     if case_builder is None:
         raise SystemExit(f'missing public paired case builder: {operation.gometry}')
     case = case_builder()
+    close = getattr(case, 'close', None)
+    if callable(close):
+        resources.callback(close)
     pair = getattr(case, 'pair', None)
     if pair is None or not callable(getattr(pair, 'gometry_call', None)):
         raise SystemExit(f'public paired case is malformed: {operation.gometry}')
@@ -337,7 +378,7 @@ def run_block(
         }
         measured[side]['case_process'] = case_process
         measured[side]['observation']['case_process'] = case_process
-    return {
+    result = {
         'schema_version': PAIR_ARTIFACT_SCHEMA_VERSION,
         'artifact_type': 'gometry-paired-block',
         'block_id': block_id,
@@ -375,6 +416,10 @@ def run_block(
             'measurement': measurement_ended - measurement_started,
         },
     }
+    fixture_metadata = getattr(case, 'fixture_metadata', None)
+    if fixture_metadata is not None:
+        result['fixture_metadata'] = fixture_metadata
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,4 +488,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     raise SystemExit(main())

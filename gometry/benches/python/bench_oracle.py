@@ -21,6 +21,7 @@ import gc
 import json
 import os
 import sys
+import signal
 import time
 from pathlib import Path
 
@@ -31,13 +32,20 @@ for _path in (_PYTHON, _SUPPORT):
         sys.path.insert(0, str(_path))
 
 from _bench_oracles import (
+    MVT_CASE_BUILDERS,
     PUBLIC_CASE_BUILDERS,
     PUBLIC_SCALING_CASE_BUILDERS,
     OracleContext,
     OracleMismatch,
     public_oracle_identity,
 )
-from _bench_registry import ALL_PUBLIC_OPERATIONS, RELEASE_OPERATIONS, ScalingOperation
+from _bench_registry import (
+    ALL_PUBLIC_OPERATIONS,
+    MVT_OPERATIONS,
+    REGISTERED_OPERATIONS,
+    RELEASE_OPERATIONS,
+    ScalingOperation,
+)
 
 _RUNTIME = None
 if os.environ.get('GOMETRY_BENCH_SUBJECT_PATH'):
@@ -53,13 +61,14 @@ _FIXTURE_STARTED = time.perf_counter()
 # Register the public PairCase builders (side-effect import).
 import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
 import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
+import _bench_mvt_cases as _mvt_cases  # ruff: ignore[unused-import]
 
 
 def _selected_operations(names: set[str] | None) -> list[object]:
     if names is None:
         return list(ALL_PUBLIC_OPERATIONS)
-    known = {op.gometry: op for op in ALL_PUBLIC_OPERATIONS}
-    by_any = {row: op for op in ALL_PUBLIC_OPERATIONS for row in op.rows}
+    known = {op.gometry: op for op in REGISTERED_OPERATIONS}
+    by_any = {row: op for op in REGISTERED_OPERATIONS for row in op.rows}
     unknown: list[str] = []
     seen: set[str] = set()
     selected: list[object] = []
@@ -76,7 +85,7 @@ def _selected_operations(names: set[str] | None) -> list[object]:
         raise SystemExit(
             'unknown oracle operation name(s): ' + ', '.join(sorted(unknown))
         )
-    order = {op.gometry: i for i, op in enumerate(ALL_PUBLIC_OPERATIONS)}
+    order = {op.gometry: i for i, op in enumerate(REGISTERED_OPERATIONS)}
     selected.sort(key=lambda op: order[op.gometry])
     return selected
 
@@ -114,7 +123,12 @@ def run_oracle(
     builders: dict | None = None,
     output: Path | None = None,
 ) -> int:
-    base = [op for op in operations if not isinstance(op, ScalingOperation)]
+    mvt = [op for op in operations if op in MVT_OPERATIONS]
+    base = [
+        op
+        for op in operations
+        if not isinstance(op, ScalingOperation) and op not in MVT_OPERATIONS
+    ]
     scaling = [op for op in operations if isinstance(op, ScalingOperation)]
     if builders is not None:
         builder_maps = (builders,)
@@ -124,9 +138,15 @@ def run_oracle(
             public_operations=tuple(operations),
         )
     else:
-        builder_maps = (PUBLIC_CASE_BUILDERS, PUBLIC_SCALING_CASE_BUILDERS)
+        builder_maps = (
+            PUBLIC_CASE_BUILDERS,
+            PUBLIC_SCALING_CASE_BUILDERS,
+            MVT_CASE_BUILDERS,
+        )
         # Fail closed before any verification work when the map is incomplete.
         validate_builders(base, PUBLIC_CASE_BUILDERS)
+        if mvt:
+            validate_builders(mvt, MVT_CASE_BUILDERS, public_operations=MVT_OPERATIONS)
         if scaling:
             (
                 validate_builders(
@@ -174,6 +194,9 @@ def run_oracle(
             )
             return 1
         finally:
+            close = getattr(case, 'close', None)
+            if callable(close):
+                close()
             # Drop case + timed closures + fixture memo so the next op does not
             # retain the previous op's multi-100 MB working set.
             del case
@@ -246,4 +269,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     raise SystemExit(main())

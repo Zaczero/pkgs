@@ -1,4 +1,4 @@
-"""Run the bounded smoke or release benchmark manifest."""
+"""Run a bounded gometry benchmark profile."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import signal
+import statistics
 import shutil
 import subprocess
 import sys
@@ -45,6 +47,8 @@ from _bench_registry import (
     PAIR_WORKER,
     RESOURCE_MODES,
     RELEASE_OPERATIONS,
+    MVT_OPERATIONS,
+    REGISTERED_OPERATIONS,
     SCALING_OPERATIONS,
     SUITES,
     Profile,
@@ -175,9 +179,14 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
     row; orphans against the full public set are also rejected.
     """
     # Local import: builders register numpy-heavy public cases.
-    from _bench_oracles import PUBLIC_CASE_BUILDERS, PUBLIC_SCALING_CASE_BUILDERS
+    from _bench_oracles import (
+        MVT_CASE_BUILDERS,
+        PUBLIC_CASE_BUILDERS,
+        PUBLIC_SCALING_CASE_BUILDERS,
+    )
     import _bench_public_cases as _public_cases  # ruff: ignore[unused-import]
     import _bench_scaling_cases as _scaling_cases  # ruff: ignore[unused-import]
+    import _bench_mvt_cases as _mvt_cases  # ruff: ignore[unused-import]
     from bench_oracle import validate_builders
 
     gometry_names = [
@@ -186,8 +195,8 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
         for name in suite_rows
         if name.startswith('gometry.')
     ]
-    by_name = {op.gometry: op for op in ALL_PUBLIC_OPERATIONS}
-    by_any = {row: op for op in ALL_PUBLIC_OPERATIONS for row in op.rows}
+    by_name = {op.gometry: op for op in REGISTERED_OPERATIONS}
+    by_any = {row: op for op in REGISTERED_OPERATIONS for row in op.rows}
     seen: set[str] = set()
     operations = []
     for name in gometry_names:
@@ -199,9 +208,16 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
     if not operations:
         # Full-manifest oracle path (--all) when no gometry rows selected.
         operations = list(RELEASE_OPERATIONS)
-    base = [op for op in operations if not isinstance(op, ScalingOperation)]
+    mvt = [op for op in operations if op in MVT_OPERATIONS]
+    base = [
+        op
+        for op in operations
+        if not isinstance(op, ScalingOperation) and op not in MVT_OPERATIONS
+    ]
     scaling = [op for op in operations if isinstance(op, ScalingOperation)]
     validate_builders(base, PUBLIC_CASE_BUILDERS)
+    if mvt:
+        validate_builders(mvt, MVT_CASE_BUILDERS, public_operations=MVT_OPERATIONS)
     if scaling:
         validate_builders(
             scaling,
@@ -561,6 +577,63 @@ def _paired_block_ratio(
     if gometry <= 0 or competitor <= 0:
         raise SystemExit(f'paired block {path} has non-positive duration estimates')
     return competitor / gometry
+
+
+def _mvt_postgis_evidence(plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    postgis_rows = {
+        op.gometry for op in MVT_OPERATIONS if op.competitor.startswith('postgis.')
+    }
+    samples: dict[str, list[float]] = {}
+    identities: dict[str, set[tuple[Any, Any, Any]]] = {}
+    for plan in plans:
+        operation = plan.get('operation')
+        if operation not in postgis_rows:
+            continue
+        payload = _read_json_object(Path(plan['output']), label='MVT paired block')
+        fixture = payload.get('fixture_metadata')
+        postgis = fixture.get('postgis') if isinstance(fixture, dict) else None
+        if not isinstance(postgis, dict) or postgis.get('jit') != 'off':
+            raise SystemExit('MVT benchmark is missing JIT-disabled PostGIS evidence')
+        affinity = postgis.get('worker_affinity')
+        if (
+            not isinstance(affinity, list)
+            or len(affinity) != 1
+            or str(affinity[0]) != postgis.get('postgres_affinity')
+        ):
+            raise SystemExit(
+                'MVT benchmark has mismatched worker and PostGIS CPU affinity'
+            )
+        milliseconds = postgis.get('server_execution_ms')
+        if (
+            not isinstance(milliseconds, (int, float))
+            or not math.isfinite(milliseconds)
+            or milliseconds <= 0
+        ):
+            raise SystemExit('MVT benchmark is missing PostGIS server execution time')
+        identities.setdefault(operation, set()).add((
+            postgis.get('image_id'),
+            postgis.get('postgres'),
+            postgis.get('postgis'),
+        ))
+        samples.setdefault(operation, []).append(float(milliseconds))
+    result = {}
+    for operation, values in samples.items():
+        versions = identities[operation]
+        if len(versions) != 1 or any(value is None for value in next(iter(versions))):
+            raise SystemExit('PostGIS identity changed between benchmark blocks')
+        image_id, postgres, postgis = next(iter(versions))
+        result[operation] = {
+            'metric': 'server execution, milliseconds',
+            'description': 'EXPLAIN ANALYZE execution only; planning and client transport excluded',
+            'samples': values,
+            'median': statistics.median(values),
+            'range': [min(values), max(values)],
+            'image_id': image_id,
+            'postgres': postgres,
+            'postgis': postgis,
+            'jit': 'off',
+        }
+    return result
 
 
 def _initial_plan_is_complete(
@@ -1840,10 +1913,13 @@ def _validate_run_environment(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Run the bounded gometry smoke or release benchmark manifest.'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--profile',
+        choices=PROFILES,
+        default='smoke',
+        help='mvt compares tile-local codecs with the Python mapbox-vector-tile package',
     )
-    parser.add_argument('--profile', choices=PROFILES, default='smoke')
     parser.add_argument('--plan-only', action='store_true')
     parser.add_argument(
         '--cpu',
@@ -2472,6 +2548,16 @@ def main() -> None:
         'artifacts': artifacts,
         'resources': resource_summaries,
     }
+    if args.profile == 'mvt' and commands_complete:
+        postgis_evidence = _mvt_postgis_evidence(chosen_plans)
+        if postgis_evidence:
+            result['postgis_server_execution'] = postgis_evidence
+            for operation, evidence in postgis_evidence.items():
+                print(
+                    f'PostGIS server execution for {operation}, excluding planning and transport: '
+                    f'{evidence["median"]:.3f} ms median '
+                    f'({evidence["range"][0]:.3f}-{evidence["range"][1]:.3f} ms)'
+                )
     if admission_completion is not None:
         result['artifact_admission'] = {
             'path': 'admission.json',

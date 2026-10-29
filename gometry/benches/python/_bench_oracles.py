@@ -111,6 +111,7 @@ class OracleMismatch(Exception):  # ruff: ignore[error-suffix-on-exception-name]
 # ``register_public_builders``). Keys must be RELEASE_OPERATIONS gometry names.
 PUBLIC_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
 PUBLIC_SCALING_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
+MVT_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
 
 
 def register_public_builders(

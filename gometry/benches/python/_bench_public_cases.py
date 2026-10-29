@@ -102,6 +102,8 @@ class PublicCase:
         default_factory=lambda: {'count': 1, 'unit': 'equivalent-case-invocation'}
     )
     output_validator: Callable[[object], None] | None = None
+    close: Callable[[], None] | None = None
+    fixture_metadata: dict[str, object] | None = None
 
     def verify(self, context: OracleContext) -> None:
         ctx = OracleContext(
