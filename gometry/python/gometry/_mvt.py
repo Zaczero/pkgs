@@ -1277,6 +1277,15 @@ def _tile_block_regions(
     ]
 
 
+def _start_tile_generator(
+    generator: Generator[tuple[Tile, bytes] | None, None, None],
+) -> Generator[tuple[Tile, bytes], None, None]:
+    # CPython 3.12 does not clear an unstarted generator's frame on close.
+    # Suspend before consuming any input so close releases the retained sources.
+    next(generator)
+    return cast('Generator[tuple[Tile, bytes], None, None]', generator)
+
+
 @overload
 def mvt_tiles(
     sources: Mapping[str, MVTSource], *, tiles: Iterable[Tile]
@@ -1340,13 +1349,14 @@ def mvt_tiles(
         iterator = iter(tiles)
         named_layers = dict(layers)
 
-        def explicit() -> Generator[tuple[Tile, bytes], None, None]:
+        def explicit() -> Generator[tuple[Tile, bytes] | None, None, None]:
+            yield None
             for tile in iterator:
                 if not isinstance(tile, Tile):
                     raise TypeError('tiles must contain Tile objects')
                 yield tile, to_mvt(named_layers, tile=tile)
 
-        return explicit()
+        return _start_tile_generator(explicit())
     if min_zoom is None or max_zoom is None:
         raise TypeError('supply tiles or both min_zoom and max_zoom')
     if isinstance(min_zoom, (bool, np.bool_)) or isinstance(max_zoom, (bool, np.bool_)):
@@ -1357,7 +1367,9 @@ def mvt_tiles(
     if any(not source._policy.clip for _, source in layers):
         raise ValueError('automatic tile traversal requires clip=True')
 
-    def automatic() -> Generator[tuple[Tile, bytes], None, None]:
+    def automatic() -> Generator[tuple[Tile, bytes] | None, None, None]:
+        yield None
+
         def visit(
             zoom: int, xmin: int, xmax: int, ymin: int, ymax: int
         ) -> Generator[tuple[Tile, bytes], None, None]:
@@ -1391,4 +1403,4 @@ def mvt_tiles(
         for zoom in range(low, high + 1):
             yield from visit(zoom, 0, (1 << zoom) - 1, 0, (1 << zoom) - 1)
 
-    return automatic()
+    return _start_tile_generator(automatic())
