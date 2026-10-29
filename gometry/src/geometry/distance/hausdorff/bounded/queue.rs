@@ -99,6 +99,10 @@ impl PatchQueue {
         Ok(maximum)
     }
 
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Kani 0.68's standard library lacks const BinaryHeap queries"
+    )]
     pub(super) fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }

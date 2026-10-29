@@ -670,7 +670,7 @@ impl BoxedRows {
     }
 
     #[cfg(test)]
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Self::Dense(rows) => rows.len(),
             Self::Sparse(rows) => rows.len(),
@@ -678,7 +678,7 @@ impl BoxedRows {
     }
 
     #[cfg(test)]
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
