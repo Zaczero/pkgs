@@ -118,6 +118,35 @@ fn work_ratio_rounding_matches_one_third_and_an_even_midpoint() {
     assert_eq!(paid.to_bits(), ordinary.to_bits());
 }
 
+#[rstest::rstest]
+#[case::shared_odd_denominator([1, 7], [2, 7], [3, 7], [-1, 7], Ordering::Less)]
+#[case::reduced_sum([1, 9], [2, 9], [1, 3], [-1, 9], Ordering::Less)]
+#[case::opposite_signs([-5, 7], [2, 7], [-3, 7], [-1, 1], Ordering::Less)]
+#[case::cancellation([5, 7], [-5, 7], [0, 1], [10, 7], Ordering::Greater)]
+#[case::negative_denominator([1, -7], [2, -7], [-3, 7], [1, 7], Ordering::Greater)]
+#[case::equivalent_ratios([1, 3], [2, 6], [2, 3], [0, 1], Ordering::Equal)]
+#[case::distinct_denominators([1, 3], [2, 7], [13, 21], [1, 21], Ordering::Greater)]
+fn rational_arithmetic_preserves_reduced_values(
+    #[case] left: [i64; 2],
+    #[case] right: [i64; 2],
+    #[case] sum: [i64; 2],
+    #[case] difference: [i64; 2],
+    #[case] order: Ordering,
+) {
+    let ratio = |[numerator, denominator]: [i64; 2]| {
+        ExactRational::new(
+            ExactDyadic::from_i64(numerator),
+            ExactDyadic::from_i64(denominator),
+        )
+        .unwrap()
+    };
+    let left = ratio(left);
+    let right = ratio(right);
+    assert_eq!(left.try_add(&right).unwrap(), ratio(sum));
+    assert_eq!(left.try_subtract(&right).unwrap(), ratio(difference));
+    assert_eq!(left.try_cmp(&right).unwrap(), order);
+}
+
 fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
     let difference =
         |left: f64, right: f64| ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right));

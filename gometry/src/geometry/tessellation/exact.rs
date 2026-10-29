@@ -230,6 +230,18 @@ impl ExactRational {
         self.try_add_with_work(other, &mut Unmetered)
     }
 
+    fn same_denominator_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<bool> {
+        work.charge_into_error(1)?;
+        if self.denominator.exponent != other.denominator.exponent {
+            return Ok(false);
+        }
+        slices_equal_with_work(
+            self.denominator.limbs.as_slice(),
+            other.denominator.limbs.as_slice(),
+            work,
+        )
+    }
+
     pub(crate) fn try_add_with_work<W: Work>(&self, other: &Self, work: &mut W) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             let numerator = if self.numerator.is_zero() {
@@ -245,6 +257,16 @@ impl ExactRational {
                 )?
             };
             return Ok(Self::from_dyadic(numerator));
+        }
+        if self.same_denominator_with_work(other, work)? {
+            let numerator = ExactDyadic::try_combine_refs_with_work(
+                &self.numerator,
+                &other.numerator,
+                false,
+                work,
+            )?;
+            let denominator = self.denominator.try_clone_with_work(work)?;
+            return Self::new_with_work(numerator, denominator, work);
         }
         let left = self
             .numerator
@@ -273,6 +295,13 @@ impl ExactRational {
                 self.numerator
                     .try_subtract_ref_with_work(&other.numerator, work)?,
             ));
+        }
+        if self.same_denominator_with_work(other, work)? {
+            let numerator = self
+                .numerator
+                .try_subtract_ref_with_work(&other.numerator, work)?;
+            let denominator = self.denominator.try_clone_with_work(work)?;
+            return Self::new_with_work(numerator, denominator, work);
         }
         let left = self
             .numerator
@@ -381,13 +410,16 @@ impl ExactRational {
         if self.denominator.is_one() && other.denominator.is_one() {
             return self.numerator.cmp_with_work(&other.numerator, work);
         }
-        let left = self
-            .numerator
-            .try_product_with_work(&other.denominator, work)?;
-        let right = other
-            .numerator
-            .try_product_with_work(&self.denominator, work)?;
-        left.cmp_with_work(&right, work)
+        if self.same_denominator_with_work(other, work)? {
+            return self.numerator.cmp_with_work(&other.numerator, work);
+        }
+        compare_ratios_with_work(
+            &self.numerator,
+            &self.denominator,
+            &other.numerator,
+            &other.denominator,
+            work,
+        )
     }
 
     pub(crate) const fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {

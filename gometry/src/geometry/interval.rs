@@ -1,4 +1,4 @@
-//! Outward binary64 intervals for geographic distance certificates.
+//! Outward binary64 intervals for certified geometric computations.
 //!
 //! The lower and upper binary64 values below bracket the real π constants.
 //! Each arithmetic method expands a correctly rounded IEEE-754 operation by
@@ -76,36 +76,45 @@ impl Interval {
         {
             return Self::exact(0.0);
         }
-        let products = [
-            (self.lower, other.lower),
-            (self.lower, other.upper),
-            (self.upper, other.lower),
-            (self.upper, other.upper),
-        ];
-        let mut lower = f64::INFINITY;
-        let mut upper = f64::NEG_INFINITY;
-        for (left, right) in products {
-            let product = left * right;
-            if product.is_nan() {
-                return Self::from_bounds(f64::NEG_INFINITY, f64::INFINITY);
-            }
-            lower = lower.min(product.next_down());
-            upper = upper.max(product.next_up());
-        }
-        Self { lower, upper }
+        Self::enclose_extrema([
+            self.lower * other.lower,
+            self.lower * other.upper,
+            self.upper * other.lower,
+            self.upper * other.upper,
+        ])
     }
 
-    /// Enclose division through an outward reciprocal; zero-crossing divisors
+    fn enclose_extrema(values: [f64; 4]) -> Self {
+        let mut lower = f64::INFINITY;
+        let mut upper = f64::NEG_INFINITY;
+        for value in values {
+            if value.is_nan() {
+                return Self::from_bounds(f64::NEG_INFINITY, f64::INFINITY);
+            }
+            lower = lower.min(value);
+            upper = upper.max(value);
+        }
+        Self {
+            lower: lower.next_down(),
+            upper: upper.next_up(),
+        }
+    }
+
+    /// Enclose all endpoint quotients; zero-crossing divisors
     /// have no finite enclosure.
     pub(crate) fn div(self, other: Self) -> Self {
         if other.contains_zero() {
             return Self::from_bounds(f64::NEG_INFINITY, f64::INFINITY);
         }
-        let reciprocal = Self {
-            lower: (1.0 / other.upper).next_down(),
-            upper: (1.0 / other.lower).next_up(),
-        };
-        self.mul(reciprocal)
+        if self.is_exact_zero() && !other.lower.is_nan() && !other.upper.is_nan() {
+            return Self::exact(0.0);
+        }
+        Self::enclose_extrema([
+            self.lower / other.lower,
+            self.lower / other.upper,
+            self.upper / other.lower,
+            self.upper / other.upper,
+        ])
     }
 
     /// Enclose the nonnegative square root, clipping a rounded lower endpoint at zero.
@@ -179,5 +188,34 @@ mod tests {
         assert_eq!(value.mul(zero), zero);
         assert_eq!(zero.sqrt(), zero);
         assert_eq!(zero.neg(), zero);
+        assert_eq!(zero.div(value), zero);
+    }
+
+    #[test]
+    fn endpoint_extrema_enclose_mixed_sign_products_and_quotients() {
+        let left = Interval::from_bounds(-3.0, 5.0);
+        let right = Interval::from_bounds(-4.0, -2.0);
+        let product = left.mul(right);
+        assert!(product.lower() <= -20.0);
+        assert!(product.upper() >= 12.0);
+        let quotient = left.div(right);
+        assert!(quotient.lower() <= -2.5);
+        assert!(quotient.upper() >= 1.5);
+    }
+
+    #[test]
+    fn direct_quotients_enclose_subnormal_and_overflow_limits() {
+        let tiny = f64::from_bits(1);
+        for value in [tiny, f64::MAX] {
+            let quotient = Interval::exact(value).div(Interval::exact(value));
+            assert!(quotient.lower() > 0.0 && quotient.lower() <= 1.0);
+            assert!(quotient.upper() >= 1.0 && quotient.upper().is_finite());
+        }
+        let overflow = Interval::exact(f64::MAX).div(Interval::exact(tiny));
+        assert_eq!(overflow.lower(), f64::MAX);
+        assert_eq!(overflow.upper(), f64::INFINITY);
+        let undefined = Interval::exact(1.0).div(Interval::from_bounds(-1.0, 1.0));
+        assert_eq!(undefined.lower(), f64::NEG_INFINITY);
+        assert_eq!(undefined.upper(), f64::INFINITY);
     }
 }
