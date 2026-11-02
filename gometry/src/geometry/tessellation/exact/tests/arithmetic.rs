@@ -1,10 +1,21 @@
 use crate::work::Unmetered;
 #[test]
-fn rational_integrality_includes_the_dyadic_numerator_exponent() {
+fn rational_integrality_accounts_for_both_dyadic_exponents() {
     assert!(ExactRational::zero().is_integer());
     assert!(ExactRational::from_f64(-12.0).is_integer());
     assert!(!ExactRational::from_f64(0.5).is_integer());
     assert!(!ExactRational::from_f64(-1.5).is_integer());
+    let fraction = |numerator, denominator| {
+        ExactRational::new(
+            ExactDyadic::from_f64(numerator),
+            ExactDyadic::from_f64(denominator),
+        )
+        .unwrap()
+    };
+    assert!(fraction(1.0, 0.5).is_integer());
+    assert!(fraction(-1.0, 0.25).is_integer());
+    assert!(!fraction(1.0, 2.0).is_integer());
+    assert!(!fraction(1.0, 1.5).is_integer());
 }
 
 #[test]

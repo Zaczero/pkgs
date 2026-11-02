@@ -219,7 +219,10 @@ impl ExactRational {
     }
 
     pub(crate) fn is_integer(&self) -> bool {
-        self.denominator.is_one() && (self.numerator.is_zero() || self.numerator.exponent >= 0)
+        // The reduced odd denominator must be one; powers of two can be
+        // distributed across both exponents by the unit-numerator shortcut.
+        self.denominator.limbs.as_slice() == [1]
+            && self.numerator.exponent >= self.denominator.exponent
     }
 
     pub(crate) const fn sign(&self) -> ExactSign {
