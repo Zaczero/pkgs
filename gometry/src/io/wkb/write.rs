@@ -73,14 +73,9 @@ fn write_columns(
         (true, false) | (false, true) => 3,
         (true, true) => 4,
     };
-    let byte_len = count
-        .checked_mul(dimension)
-        .and_then(|count| count.checked_mul(size_of::<f64>()))
-        .expect("WKB coordinate width was checked during preflight");
-    let expected_end = out
-        .len()
-        .checked_add(byte_len)
-        .expect("WKB output width was checked during preflight");
+    // Preflight has already checked and reserved the complete output.
+    let byte_len = count.wrapping_mul(dimension).wrapping_mul(size_of::<f64>());
+    let expected_end = out.len().wrapping_add(byte_len);
     debug_assert!(out.capacity().saturating_sub(out.len()) >= byte_len);
     match (zs, ms) {
         (None, None) => {
