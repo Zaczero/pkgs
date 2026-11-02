@@ -225,6 +225,7 @@ impl CompactLimbs {
     }
 
     fn try_remove_prefix_with_work<W: Work>(&mut self, count: usize, work: &mut W) -> Result<()> {
+        debug_assert!(count <= self.len(), "removed prefix fits the limb bank");
         if count == 0 {
             return Ok(());
         }
@@ -1363,11 +1364,12 @@ impl ExactDyadic {
         Ok(quotient)
     }
 
-    /// Greatest common divisor in the exact dyadic domain.
+    /// A nonnegative common factor for exact dyadic rational reduction.
     ///
-    /// `trim` keeps each nonzero limb bank odd, so the common power-of-two
-    /// factor is the smaller exponent and the odd banks can use ordinary
-    /// integer Euclid. The result is positive and exact.
+    /// Nonzero limb banks are odd, so their integer GCD removes every shared
+    /// odd factor. Powers of two are interchangeable between a dyadic
+    /// numerator and denominator; the unit shortcut can retain a different
+    /// exponent from the general path. Two zero inputs return zero.
     pub(crate) fn gcd(&self, other: &Self) -> Self {
         self.gcd_with_work(other, &mut Unmetered)
             .expect("unmetered dyadic GCD cannot fail")
