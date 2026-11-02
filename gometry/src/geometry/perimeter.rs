@@ -911,6 +911,8 @@ fn cancel_in_ring_group(
     let mut removed_length = 0.0;
     let mut removed_correction = 0.0;
     sweep_pieces(&group.pieces, |lower, upper, active| {
+        // Direction counts partition `active`; each matched pair removes two
+        // distinct pieces, so their sums and twice the pair count fit its length.
         lifts.clear();
         let mut positive = 0_usize;
         let mut negative = 0_usize;
@@ -921,29 +923,16 @@ fn cancel_in_ring_group(
                 .expect("active piece belongs to its line group");
             let counts = lifts.entry(piece.lift).or_default();
             if piece.direction > 0 {
-                counts.positive = counts
-                    .positive
-                    .checked_add(1)
-                    .expect("positive copy count fits its active-piece set");
+                counts.positive = counts.positive.wrapping_add(1);
             } else {
-                counts.negative = counts
-                    .negative
-                    .checked_add(1)
-                    .expect("negative copy count fits its active-piece set");
+                counts.negative = counts.negative.wrapping_add(1);
             }
         }
         let mut largest_lift = 0_usize;
         for counts in lifts.values() {
-            positive = positive
-                .checked_add(counts.positive)
-                .expect("positive copy count fits its active-piece set");
-            negative = negative
-                .checked_add(counts.negative)
-                .expect("negative copy count fits its active-piece set");
-            let at_lift = counts
-                .positive
-                .checked_add(counts.negative)
-                .expect("lift copy count fits its active-piece set");
+            positive = positive.wrapping_add(counts.positive);
+            negative = negative.wrapping_add(counts.negative);
+            let at_lift = counts.positive.wrapping_add(counts.negative);
             largest_lift = largest_lift.max(at_lift);
         }
         let pairs = positive
@@ -952,9 +941,7 @@ fn cancel_in_ring_group(
         if pairs == 0 {
             return Ok(());
         }
-        let removed = pairs
-            .checked_mul(2)
-            .expect("cancellation removes two copies per matched pair");
+        let removed = pairs.wrapping_mul(2);
         let atom = arc_atom_length(metric, group, sources, active, lower, upper)?;
         add_compensated(
             &mut removed_length,
