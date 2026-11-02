@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import gometry as gm
@@ -22,6 +23,18 @@ def test_bearing_scalar_and_array() -> None:
     assert isinstance(bearings, np.ndarray)
     assert np.isfinite(bearings).all()
     assert bearings[0] == pytest.approx(90.0)
+
+
+def test_planar_bearing_preserves_extreme_coordinate_direction() -> None:
+    left = gm.Point(-1e308, -9e307)
+    right = gm.Point(1e308, 9e307)
+    expected = math.degrees(math.atan2(1.0, 0.9))
+    assert gm.bearing(left, right) == pytest.approx(expected)
+    assert gm.bearing(right, left) == pytest.approx(expected + 180.0)
+    np.testing.assert_allclose(
+        gm.bearing(gm.GeometryArray([left, right]), gm.GeometryArray([right, left])),
+        [expected, expected + 180.0],
+    )
 
 
 def test_destination_scalar_and_array() -> None:

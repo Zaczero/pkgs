@@ -131,7 +131,14 @@ struct BearingKernel;
 
 impl PointBinaryF64Kernel for BearingKernel {
     fn eval_planar(self, _to_metre: f64, from: Point, to: Point) -> PyResult<f64> {
-        Ok(bearing_degrees(to.x - from.x, to.y - from.y))
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        if dx.abs().max(dy.abs()).is_infinite() {
+            return Ok(bearing_degrees(
+                to.x * 0.5 - from.x * 0.5,
+                to.y * 0.5 - from.y * 0.5,
+            ));
+        }
+        Ok(bearing_degrees(dx, dy))
     }
 
     fn eval_geodesic(self, metric: &crs::GeodesicMetric, from: Point, to: Point) -> PyResult<f64> {
