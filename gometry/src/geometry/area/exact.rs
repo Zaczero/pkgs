@@ -69,9 +69,33 @@ impl ExactRationalArea {
     }
 
     pub(in crate::geometry) fn round_abs_half(&self) -> Result<f64> {
-        let numerator = self.numerator.clone().abs();
+        self.round_abs_half_scaled(1.0)
+    }
+
+    pub(in crate::geometry) fn round_abs_half_scaled(&self, scale: f64) -> Result<f64> {
+        let native = self.round_abs_half_unscaled()?;
+        if !((native.is_infinite() && scale < 1.0)
+            || (native.is_finite() && !native.is_normal() && scale > 1.0))
+        {
+            return Ok(native * scale * scale);
+        }
+        let factor = ExactDyadic::from_f64(scale);
+        let numerator = self
+            .numerator
+            .clone()
+            .abs()
+            .try_product(&factor)?
+            .try_product(&factor)?;
+        self.round_numerator_abs_half(&numerator)
+    }
+
+    fn round_abs_half_unscaled(&self) -> Result<f64> {
+        self.round_numerator_abs_half(&self.numerator.clone().abs())
+    }
+
+    fn round_numerator_abs_half(&self, numerator: &ExactDyadic) -> Result<f64> {
         let denominator = self.denominator.try_product(&ExactDyadic::from_f64(2.0))?;
-        match round_ratio(&numerator, &denominator) {
+        match round_ratio(numerator, &denominator) {
             Ok(value) => Ok(value),
             Err(error)
                 if matches!(

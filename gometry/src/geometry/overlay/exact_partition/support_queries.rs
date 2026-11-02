@@ -15,6 +15,7 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn occupied_cartesian_area(
         &self,
         partition: &ExactPartition<'_>,
+        scale: f64,
     ) -> Result<f64> {
         debug_assert_eq!(
             self.operand_count(),
@@ -65,7 +66,7 @@ impl ExactSourceInventory {
                 )?;
             }
         }
-        area.round_abs_half()
+        area.round_abs_half_scaled(scale)
     }
 
     /// Serialize the occupied Cartesian support from the same selected faces
@@ -83,12 +84,16 @@ impl ExactSourceInventory {
 }
 
 pub(crate) fn occupied_cartesian_area(shape: &Shape) -> Result<f64> {
+    occupied_cartesian_area_scaled(shape, 1.0)
+}
+
+pub(crate) fn occupied_cartesian_area_scaled(shape: &Shape, scale: f64) -> Result<f64> {
     let Some(inventory) = ExactSourceInventory::from_occupied_area_shape(shape)? else {
         return Ok(0.0);
     };
     let mut budget = ExpansionBudget::new("area", "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    inventory.occupied_cartesian_area(&partition)
+    inventory.occupied_cartesian_area(&partition, scale)
 }
 
 pub(crate) fn occupied_cartesian_support(shape: &Shape) -> Result<Shape> {

@@ -991,17 +991,31 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -> Res
     let collection = matches!(shape, Shape::GeometryCollection(_));
     match metric {
         ResolvedMetric::Planar { to_metre } => {
-            let area = match ctx.domain {
-                crate::geometry::TopologyDomain::Cartesian if collection => {
-                    crate::geometry::occupied_cartesian_area(shape)?
-                },
+            let scale = to_metre.get();
+            if collection && matches!(ctx.domain, crate::geometry::TopologyDomain::Cartesian) {
+                return if scale.to_bits() == 1.0_f64.to_bits() {
+                    crate::geometry::occupied_cartesian_area(shape)
+                } else {
+                    crate::geometry::occupied_cartesian_area_scaled(shape, scale)
+                };
+            }
+            let support;
+            let measured = match ctx.domain {
                 domain @ crate::geometry::TopologyDomain::Geographic(_) if collection => {
-                    crate::geometry::occupied_support_shape(shape, domain)?.area()
+                    support = crate::geometry::occupied_support_shape(shape, domain)?;
+                    &support
                 },
                 crate::geometry::TopologyDomain::Cartesian
-                | crate::geometry::TopologyDomain::Geographic(_) => shape.area(),
+                | crate::geometry::TopologyDomain::Geographic(_) => shape,
             };
-            Ok(scale_area(area, to_metre.get()))
+            let area = measured.area();
+            if (!area.is_finite() && scale < 1.0)
+                || (area.is_finite() && !area.is_normal() && scale > 1.0)
+            {
+                crate::geometry::shape_area_scaled(measured, scale)
+            } else {
+                Ok(scale_area(area, scale))
+            }
         },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, shape)?;

@@ -1,4 +1,6 @@
 use super::*;
+use crate::geometry::Shape;
+use crate::geometry::numerics::product_sum::PRODUCT_MIN_EXP;
 
 /// Polygon area in one common, power-of-two-normalized frame for the shell
 /// and every hole. Per-ring rescues are insufficient at extreme magnitudes:
@@ -67,6 +69,10 @@ pub(crate) fn polygon_area_measure_with(
 pub(super) fn exact_polygon_area_measure_with(
     visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
 ) -> f64 {
+    exact_polygon_area_sum_with(visit).round_to_area()
+}
+
+fn exact_polygon_area_sum_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool))) -> ExactSum {
     let mut total = ExactSum::zero();
     visit(&mut |xs, ys, hole| {
         let pairs = xs.len().saturating_sub(1);
@@ -100,7 +106,95 @@ pub(super) fn exact_polygon_area_measure_with(
             }
         }
     });
-    total.round_to_area()
+    total
+}
+
+fn exact_scaled_area(
+    visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
+    scale: f64,
+) -> Result<f64> {
+    let total = exact_polygon_area_sum_with(visit);
+    let (sign, magnitude) = total.signed_magnitude();
+    if sign == std::cmp::Ordering::Equal {
+        return Ok(0.0);
+    }
+    let mut area = ExactDyadic::try_from_unsigned_limbs(magnitude.to_vec())?;
+    area.exponent = area.exponent.wrapping_add(i64::from(PRODUCT_MIN_EXP - 1));
+    area.negative = sign == std::cmp::Ordering::Less;
+    let scale = ExactDyadic::from_f64(scale);
+    let area = area.try_product(&scale)?.try_product(&scale)?;
+    match round_ratio(&area, &ExactDyadic::from_f64(1.0)) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                )
+            ) =>
+        {
+            Ok(if area.negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            })
+        },
+        Err(error) => Err(error),
+    }
+}
+
+/// Rescale a stored polygon or multipart polygon before rounding its source area.
+pub(crate) fn shape_area_scaled(shape: &Shape, scale: f64) -> Result<f64> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "the visitor lends shell and hole columns without staging coordinates"
+    )]
+    fn visit_shape(shape: &Shape, visit: &mut dyn FnMut(&[f64], &[f64], bool)) {
+        match shape {
+            Shape::Polygon(polygon) => {
+                for (index, ring) in polygon.rings().enumerate() {
+                    visit(ring.coords().xs(), ring.coords().ys(), index != 0);
+                }
+            },
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons.iter() {
+                    for (index, ring) in polygon.rings().enumerate() {
+                        visit(ring.coords().xs(), ring.coords().ys(), index != 0);
+                    }
+                }
+            },
+            Shape::GeometryCollection(shapes) => {
+                for shape in shapes {
+                    visit_shape(shape, visit);
+                }
+            },
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Empty(..) => {},
+        }
+    }
+    exact_scaled_area(|visit| visit_shape(shape, visit), scale)
+}
+
+/// Rescale one packed polygon's source area before rounding.
+pub(crate) fn polygon_area_columns_scaled(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i32],
+    rings: std::ops::Range<usize>,
+    scale: f64,
+) -> Result<f64> {
+    exact_scaled_area(
+        |visit| {
+            for ring_index in rings.clone() {
+                let (ring_xs, ring_ys, _) = selected_ring_columns(ring_offsets, xs, ys, ring_index);
+                visit(ring_xs, ring_ys, ring_index != rings.start);
+            }
+        },
+        scale,
+    )
 }
 
 pub(super) fn selected_ring_columns<'a>(

@@ -659,6 +659,66 @@ def test_lengths_preserve_extreme_segment_scaling() -> None:
         )
 
 
+def test_area_preserves_extreme_unit_scaling() -> None:
+    polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
+    expected = (1.5e154 * FOOT_UNIT_M) ** 2
+    collection = gm.GeometryCollection([polygon, polygon], crs=FOOT_CRS)
+    for shape in (polygon, collection):
+        assert gm.area(shape, unit='meters') == pytest.approx(expected, rel=1e-14)
+    np.testing.assert_allclose(
+        gm.area(gm.GeometryArray([polygon]), unit='meters'),
+        [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+    ordinary = gm.box(0.0, 0.0, 1.0, 1.0, crs=FOOT_CRS)
+    np.testing.assert_allclose(
+        gm.area(gm.GeometryArray([ordinary] * 15 + [polygon]), unit='meters'),
+        [FOOT_UNIT_M**2] * 15 + [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+    outer = [(0.0, 0.0), (2e154, 0.0), (2e154, 2e154), (0.0, 2e154)]
+    inner = [(0.0, 0.0), (1e154, 0.0), (1e154, 1e154), (0.0, 1e154)]
+    multipart = gm.MultiPolygon(
+        [
+            gm.Polygon(outer, crs=FOOT_CRS),
+            gm.Polygon(inner, holes=[outer], crs=FOOT_CRS),
+        ],
+        crs=FOOT_CRS,
+    )
+    assert gm.area(multipart, unit='meters') == pytest.approx(
+        (1e154 * FOOT_UNIT_M) ** 2, rel=1e-14
+    )
+
+    for factor, side, expected in (
+        (1e-200, 1e154, 1e-92),
+        (1e200, 1e-154, 1e92),
+        (1e200, 1e-200, 1.0),
+    ):
+        crs = f'+proj=utm +zone=32 +datum=WGS84 +to_meter={factor} +type=crs'
+        polygon = gm.box(0.0, 0.0, side, side, crs=crs)
+        assert gm.area(polygon, unit='meters') == pytest.approx(
+            expected, rel=1e-14, abs=0
+        )
+        np.testing.assert_allclose(
+            gm.area(gm.GeometryArray([polygon]), unit='meters'),
+            [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+        if side == 1e-200:
+            batch = gm.GeometryArray(
+                [gm.box(0.0, 0.0, 1.0, 1.0, crs=crs)] * 15 + [polygon]
+            )
+            np.testing.assert_allclose(
+                gm.area(batch, unit='meters'),
+                [math.inf] * 15 + [expected],
+                rtol=1e-14,
+                atol=0,
+            )
+
+
 def test_minimum_clearance_meter_distance_survives_native_unit_overflow() -> None:
     line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], crs=FOOT_CRS)
     projected = gm.GeometryCollection([

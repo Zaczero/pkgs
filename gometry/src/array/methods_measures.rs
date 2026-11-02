@@ -8,7 +8,6 @@ use crate::array::{
 use crate::dispatch::{MetricOp, kernels};
 use crate::error::BatchError;
 use crate::geometry::publication::PublicationRows;
-use crate::geometry::storage;
 use crate::geometry::storage::kernels::{
     bounds_values_from_columns_masked, geodesic_line_measure, geodesic_polygon_measure,
     geographic_bounds_values_from_columns, geographic_bounds_values_from_columns_masked,
@@ -16,6 +15,7 @@ use crate::geometry::storage::kernels::{
 };
 use crate::geometry::storage::packed_columns::{PackedColumns, XyColumns};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
+use crate::geometry::{REDUCE_LANES, ReduceSimd, storage};
 use crate::py::errors;
 use crate::py::numpy::float64_array;
 
@@ -483,22 +483,74 @@ impl PyGeometryArray {
         else {
             return Ok(None);
         };
-        let scale = to_metre.get() * to_metre.get();
+        let scale = to_metre.get();
+        let scale_squared = scale * scale;
         self.reduce_packed_columns_detached(py, move |columns| {
+            use std::simd::cmp::SimdPartialOrd as _;
+            use std::simd::num::SimdFloat as _;
+
             let PackedColumns::Polygons(polygon_columns) = columns else {
                 unreachable!("area packed lane requires polygon storage");
             };
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let ring_offsets = polygon_columns.ring_offsets();
             let mut values = Vec::with_capacity(polygon_columns.rows());
-            for row in 0..polygon_columns.rows() {
-                let area = crate::geometry::polygon_area_measure_columns(
-                    xs,
-                    ys,
-                    ring_offsets,
-                    polygon_columns.polygon_rings(row),
-                );
-                values.push(area * scale);
+            // Dispatch once so the ordinary polygon loop has no per-row
+            // squared-factor classification.
+            macro_rules! collect_areas {
+                ($convert:expr) => {
+                    for row in 0..polygon_columns.rows() {
+                        let area = crate::geometry::polygon_area_measure_columns(
+                            xs,
+                            ys,
+                            ring_offsets,
+                            polygon_columns.polygon_rings(row),
+                        );
+                        values.push(($convert)(area));
+                    }
+                };
+            }
+            if scale_squared.is_normal() {
+                collect_areas!(|area| area * scale_squared);
+            } else {
+                collect_areas!(|area| area * scale * scale);
+            }
+            if scale.to_bits() != 1.0_f64.to_bits() {
+                let threshold = if scale < 1.0 {
+                    f64::INFINITY
+                } else {
+                    (f64::MIN_POSITIVE * scale) * scale
+                };
+                let exceptional = |value: f64| {
+                    if scale < 1.0 {
+                        value.is_infinite()
+                    } else {
+                        value.abs() <= threshold
+                    }
+                };
+                let (chunks, remainder) = values.as_chunks::<REDUCE_LANES>();
+                let threshold_vector = ReduceSimd::splat(threshold);
+                let needs_replay = chunks.iter().any(|chunk| {
+                    let area = ReduceSimd::from_array(*chunk).abs();
+                    if scale < 1.0 {
+                        area.simd_ge(threshold_vector).any()
+                    } else {
+                        area.simd_le(threshold_vector).any()
+                    }
+                }) || remainder.iter().copied().any(exceptional);
+                if needs_replay {
+                    for (row, value) in values.iter_mut().enumerate() {
+                        if exceptional(*value) {
+                            *value = crate::geometry::polygon_area_columns_scaled(
+                                xs,
+                                ys,
+                                ring_offsets,
+                                polygon_columns.polygon_rings(row),
+                                scale,
+                            )?;
+                        }
+                    }
+                }
             }
             Ok(values)
         })

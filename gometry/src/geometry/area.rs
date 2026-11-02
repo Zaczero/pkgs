@@ -23,7 +23,8 @@ pub(in crate::geometry) use self::lifted::lifted_ring_area_sign;
 #[cfg(test)]
 pub(crate) use self::polygon::open_point_cycle_magnitude;
 pub(crate) use self::polygon::{
-    open_xy_cycle_magnitude, polygon_area_measure_columns, polygon_area_measure_with,
+    open_xy_cycle_magnitude, polygon_area_columns_scaled, polygon_area_measure_columns,
+    polygon_area_measure_with, shape_area_scaled,
 };
 use self::shoelace::{
     SHOELACE_SIMD_MIN, open_cycle_sum, shoelace_shifted_with_roundoff, unsigned_area,

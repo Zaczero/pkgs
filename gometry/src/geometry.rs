@@ -69,7 +69,8 @@ pub(crate) use area::open_point_cycle_magnitude;
 pub(crate) use area::{
     ExactFactorialArea, ExactRationalArea, RingWinding, closed_columns_winding,
     open_point_cycle_winding, open_xy_cycle_magnitude, open_xy_cycle_winding,
-    polygon_area_measure_columns, polygon_area_measure_with, ring_winding,
+    polygon_area_columns_scaled, polygon_area_measure_columns, polygon_area_measure_with,
+    ring_winding, shape_area_scaled,
 };
 pub(crate) use geographic_area::{
     GeographicAreaDensity, MAX_AUTHALIC_HARMONICS, polygon_area as geographic_polygon_area,
@@ -183,8 +184,8 @@ pub(crate) mod output;
 mod overlay;
 pub(in crate::geometry) use overlay::overlay_all_geographic_chart_with_sources;
 pub(crate) use overlay::{
-    occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
-    overlay_all_geographic_output_with_metric_and_frame,
+    occupied_cartesian_area, occupied_cartesian_area_scaled, occupied_support_shape, overlay_all,
+    overlay_all_geographic_chart, overlay_all_geographic_output_with_metric_and_frame,
     overlay_all_geographic_with_metric_and_frame, overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
