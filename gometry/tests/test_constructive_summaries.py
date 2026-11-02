@@ -14,6 +14,17 @@ import pytest
 from tests._support import box_in_frame
 
 
+def test_inscribed_circle_default_tolerance_handles_extreme_scales() -> None:
+    large = gm.box(-1e308, -1e308, 1e308, 1e308)
+    small = gm.box(0, 0, 1e-322, 1e-322, crs='EPSG:2263')
+    for shape, unit, radius in ((large, None, 1e308), (small, 'meters', 1.5e-323)):
+        for circle in (
+            shape.maximum_inscribed_circle(unit=unit),
+            gm.GeometryArray([shape]).maximum_inscribed_circle(unit=unit)[0],
+        ):
+            assert circle.radius == radius
+
+
 @pytest.mark.parametrize('aspect', [100, 100_000, 1_000_000])
 def test_inscribed_circle_on_high_aspect_ratio_triangle(aspect: int) -> None:
     polygon = gm.Polygon([(0, 0), (aspect, 1), (2 * aspect, 0), (0, 0)])

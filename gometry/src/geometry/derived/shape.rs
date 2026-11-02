@@ -304,7 +304,9 @@ impl Shape {
         if !finite {
             return Err(GeometryErrorKind::unrepresentable_output(operation));
         }
-        let tolerance = tolerance.unwrap_or_else(|| scale_aware_default_tolerance(self) * scale);
+        let tolerance = tolerance.unwrap_or_else(|| {
+            (scale_aware_default_tolerance(self) * scale).clamp(f64::from_bits(1), f64::MAX)
+        });
         directed_inradius_scaled(self, tolerance, scale)
     }
 }

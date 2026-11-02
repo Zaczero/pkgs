@@ -103,8 +103,16 @@ pub(crate) fn scale_aware_default_tolerance(shape: &Shape) -> f64 {
     };
     let min = frame.frame_xy(bounds.minx(), bounds.miny());
     let max = frame.frame_xy(bounds.maxx(), bounds.maxy());
-    (((max.x - min.x).abs() / frame.scale_x()).min((max.y - min.y).abs() / frame.scale_y()) / 500.0)
-        .max(f64::from_bits(1))
+    let width = (max.x - min.x).abs();
+    let height = (max.y - min.y).abs();
+    let extent = (width / frame.scale_x()).min(height / frame.scale_y());
+    let tolerance = if extent.is_finite() {
+        extent / 500.0
+    } else {
+        // The full extent can overflow even though its 1/500 tolerance fits.
+        (width / 500.0 / frame.scale_x()).min(height / 500.0 / frame.scale_y())
+    };
+    tolerance.max(f64::from_bits(1))
 }
 
 pub(crate) const fn degenerate_polygon_center(bounds: Bounds) -> Point {
