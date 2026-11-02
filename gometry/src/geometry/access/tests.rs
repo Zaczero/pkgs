@@ -760,6 +760,12 @@ fn column_mean_rescues_overflowing_sum_of_finite_values() {
     let values = [1e308, 1e308];
     assert!((column_sum(&values) / values.len() as f64).is_infinite());
     assert_eq!(column_mean(&values), Some(1e308));
+    for sign in [-1.0, 1.0] {
+        let extreme = sign * f64::MAX;
+        let mean = column_mean(&[extreme, extreme, -extreme]).expect("non-empty");
+        assert!(mean.is_finite());
+        approx::assert_relative_eq!(mean, extreme / 3.0, max_relative = 4.0 * f64::EPSILON);
+    }
     // A genuinely non-finite input still propagates (its mean IS non-finite).
     assert!(
         column_mean(&[f64::INFINITY, 1.0])

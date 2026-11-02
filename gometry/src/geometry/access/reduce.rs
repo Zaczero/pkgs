@@ -62,7 +62,7 @@ pub(crate) fn column_all_finite(column: &[f64]) -> bool {
     !non_finite.any() && tail.iter().all(|value| value.is_finite())
 }
 
-/// First-minimum index under `f64::total_cmp` (NaN ordering preserved).
+/// First-minimum index under `f64::total_cmp` for scores with positive zero.
 /// Full `REDUCE_LANES` chunks evaluate `vector_score` when every lane is
 /// finite; otherwise the chunk falls back to `scalar_score` lane-by-lane.
 /// Inputs below [`REDUCE_SIMD_MIN`] and the tail use `scalar_score` only.
@@ -89,8 +89,8 @@ pub(crate) fn simd_argmin_f64(
         if scores.is_finite().all() {
             // Vector min + first-set-bit: preserves first-minimum ties (the
             // lowest lane with the chunk min) without eight scalar branches.
-            // All-finite scores use IEEE min, which agrees with `total_cmp`
-            // for finite values (NaN is gated out above).
+            // IEEE minimum agrees with `total_cmp` for finite scores when
+            // zero is positive, as it is for squared-distance scores.
             let chunk_min = scores.reduce_min();
             if chunk_min.total_cmp(&best_score).is_lt() {
                 let bitmask = scores.simd_eq(ReduceSimd::splat(chunk_min)).to_bitmask();
@@ -512,15 +512,20 @@ pub(crate) fn column_mean(values: &[f64]) -> Option<f64> {
     Some(online_mean(values))
 }
 
-/// Overflow-safe running mean, `m += (x - m) / n` (Welford). The correctness
-/// fallback for [`column_mean`] when the flat `Σ` overflows though the finite
-/// inputs have a finite mean: each increment stays bounded by the value range,
-/// so no oversized total is ever formed. Plain arithmetic — this is a
-/// correctness rescue, not a measurement fold, so it is never reassociated.
+/// Running mean for finite inputs when the flat sum overflows.
+///
+/// The usual Welford update avoids an oversized total. If the difference between
+/// opposite-sign values overflows, its equivalent weighted form remains finite.
 fn online_mean(values: &[f64]) -> f64 {
     let mut mean = 0.0_f64;
     for (index, &value) in values.iter().enumerate() {
-        mean += (value - mean) / index.wrapping_add(1) as f64;
+        let count = index.wrapping_add(1) as f64;
+        let difference = value - mean;
+        if difference.is_finite() {
+            mean += difference / count;
+        } else {
+            mean = mean * (1.0 - 1.0 / count) + value / count;
+        }
     }
     mean
 }
