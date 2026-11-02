@@ -53,6 +53,23 @@ def test_big_endian_float64_with_coordinates_and_crs_transform() -> None:
     assert float(out_be[0, 1]) == 2.0
 
 
+@pytest.mark.parametrize('layout', ['reverse-rows', 'reverse-columns', 'broadcast'])
+def test_strided_numpy_linestring_preserves_coordinate_order(layout: str) -> None:
+    base = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    if layout == 'reverse-rows':
+        coords = base[::-1, :]
+        expected = [[5.0, 6.0], [3.0, 4.0], [1.0, 2.0]]
+    elif layout == 'reverse-columns':
+        coords = base[:, ::-1]
+        expected = [[2.0, 1.0], [4.0, 3.0], [6.0, 5.0]]
+    else:
+        coords = np.broadcast_to(base[:1], (3, 2))
+        expected = [[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]]
+    line = gm.LineString(coords)
+    np.testing.assert_array_equal(line.coords.x, np.array(expected)[:, 0])
+    np.testing.assert_array_equal(line.coords.y, np.array(expected)[:, 1])
+
+
 def test_native_endian_float64_unchanged() -> None:
     native = '>' if sys.byteorder == 'big' else '<'
     x = np.array([3.5, -7.25], dtype=f'{native}f8')

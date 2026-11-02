@@ -82,11 +82,9 @@ fn strided_buffer_to_column_f64(
             // a cell matches PyBuffer::as_slice for the contiguous case.
             let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
             for (i, value) in values.iter_mut().enumerate() {
-                // The admission above proved every index fits the signed offset domain.
+                // The admitted final byte offset bounds every element offset.
                 let index = i as isize;
-                let offset = index.checked_mul(step).ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
-                })?;
+                let offset = index.wrapping_mul(step);
                 // SAFETY: PyBuffer is held; length and stride were validated;
                 // no suboffsets are present, so each step addresses an element
                 // in the declared range for CPython and NumPy exporters.
@@ -329,7 +327,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     }
     check_2d_byte_stride_corners(n, ordinate_count, row_stride, col_stride)?;
     let swap = !buffer_endian::buffer_format_is_native_endian(buffer.format());
-    let fill_column = |col: usize| -> crate::error::Result<Vec<f64>> {
+    let fill_column = |col: usize| {
         use pyo3::buffer::ReadOnlyCell;
 
         let mut values = vec![0.0; n];
@@ -339,12 +337,13 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
         let column = col as isize;
         for (i, value) in values.iter_mut().enumerate() {
-            // The preceding corner admission proves the enumerated offsets fit.
+            // Each stride is an exact multiple of the element size. The
+            // admitted byte corners bound every row, column, and combined
+            // offset, including when the two strides have opposite signs.
             let row = i as isize;
             let offset = row
-                .checked_mul(row_step)
-                .and_then(|row| row.checked_add(column.checked_mul(col_step)?))
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                .wrapping_mul(row_step)
+                .wrapping_add(column.wrapping_mul(col_step));
             // SAFETY: buffer is held; shape/strides and `col < ordinate_count` were
             // validated; no suboffsets are present, so this is in the declared
             // range. The provider must remain quiescent during capture.
@@ -354,31 +353,13 @@ pub(crate) fn try_coordseq_from_nd_buffer(
             }
             *value = ordinate;
         }
-        Ok(values)
+        values
     };
 
-    let xs = fill_column(0).map_err(pyo3::PyErr::from)?;
-    let ys = match fill_column(1) {
-        Ok(values) => values,
-        Err(error) => {
-            drop(xs);
-            return Err(pyo3::PyErr::from(error));
-        },
-    };
-    let mut zs = match (ordinate_count >= 3).then(|| fill_column(2)).transpose() {
-        Ok(values) => values,
-        Err(error) => {
-            drop((xs, ys));
-            return Err(pyo3::PyErr::from(error));
-        },
-    };
-    let mut ms = match (ordinate_count >= 4).then(|| fill_column(3)).transpose() {
-        Ok(values) => values,
-        Err(error) => {
-            drop((xs, ys, zs));
-            return Err(pyo3::PyErr::from(error));
-        },
-    };
+    let xs = fill_column(0);
+    let ys = fill_column(1);
+    let mut zs = (ordinate_count >= 3).then(|| fill_column(2));
+    let mut ms = (ordinate_count >= 4).then(|| fill_column(3));
     if let Some(z_col) = z {
         zs = Some(float_values_exact(
             z_col.py(),
