@@ -31,6 +31,25 @@ fn chart_pole_degeneracy_uses_native_axis_magnitude_on_reversed_latitude_axis() 
 }
 
 #[test]
+fn equator_to_pole_sincos_uses_the_destination_hemisphere() {
+    for frame in [degrees(), south_axis_degrees()] {
+        for latitude in [-90.0, 90.0] {
+            for zero in [0.0, -0.0] {
+                let edge = ChartEdge::new(
+                    Point::new_raw_xy(0.0, zero),
+                    Point::new_raw_xy(90.0, latitude),
+                    frame,
+                )
+                .unwrap();
+                let (sin, cos) = edge.latitude_sincos(1.0);
+                assert_eq!(sin, latitude.signum() * frame.latitude_orientation_sign());
+                assert_eq!(cos, 0.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn reversed_native_latitude_uses_the_same_physical_meridian_measure() {
     let geodesic = wgs84();
     let edge = ChartEdge::new(

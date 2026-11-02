@@ -747,6 +747,22 @@ def test_geodesic_series_domain_rejection_is_shared_across_entry_points(
     assert all(operation_message == message for _, operation_message in messages)
 
 
+def test_chart_edge_length_is_symmetric_near_the_poles() -> None:
+    near_pole = math.nextafter(90.0, 0.0)
+    north = gm.LineString([(0.0, 90.0), (90.0, near_pole)], crs=4326)
+    south = gm.LineString([(0.0, -90.0), (90.0, -near_pole)], crs=4326)
+
+    # At this polar distance the limiting ellipsoid metric gives the integral
+    # a/(1-f) * delta * integral_0^1 sqrt(1 + (pi*t/2)^2) dt.
+    k = math.pi / 2.0
+    delta = math.radians(90.0 - near_pole)
+    radius = 6_378_137.0 / (1.0 - 1.0 / 298.257_223_563)
+    expected = radius * delta * (math.hypot(1.0, k) + math.asinh(k) / k) / 2.0
+    assert north.length == pytest.approx(expected, rel=1e-14, abs=0.0)
+    # Reflection across the equator preserves lengths on the WGS84 ellipsoid.
+    assert south.length == pytest.approx(north.length, rel=1e-14, abs=0.0)
+
+
 def test_geodesic_distance_and_chart_area_use_wgs84_ellipsoid() -> None:
     start = gm.Point(0, 0, crs=4326)
     end = gm.Point(1, 0, crs=4326)

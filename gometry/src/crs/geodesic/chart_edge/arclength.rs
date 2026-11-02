@@ -534,8 +534,14 @@ impl ChartEdge {
         let latitude_delta = self.latitude_delta * orientation;
         let pole = self.chart_pole;
         let latitude_unit = self.latitude_unit * orientation;
-        let sign0 = latitude0.signum().copysign(1.0);
-        let sign1 = latitude1.signum().copysign(1.0);
+        // At the equator, use the direction of travel to select the pole.
+        let anchor_latitude = if latitude0 == 0.0 {
+            latitude1
+        } else {
+            latitude0
+        };
+        let sign0 = 1.0_f64.copysign(anchor_latitude);
+        let sign1 = 1.0_f64.copysign(latitude1);
         let crosses_equator =
             (latitude0 < 0.0 && latitude1 > 0.0) || (latitude1 < 0.0 && latitude0 > 0.0);
         let (anchor, parameter, sign) = if crosses_equator {
