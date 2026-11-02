@@ -122,15 +122,13 @@ pub(in crate::geometry::topology::q_embedding) fn chord_dependencies(
         let mut high = emission.cut_nodes.len();
         while low < high {
             budget.charge_into_error(1)?;
-            let middle = low
-                .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let middle = low.midpoint(high);
             let cut = emission.cut_nodes.get(middle).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cut dependency search index is unknown".into())
             })?;
             match cut.node.cmp(&port.node) {
                 Ordering::Less => {
-                    low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                    low = middle.wrapping_add(1);
                 },
                 Ordering::Greater => high = middle,
                 Ordering::Equal => {
@@ -217,15 +215,13 @@ pub(in crate::geometry::topology::q_embedding) fn port_swept_radius(
         let mut cut = None;
         while low < high {
             budget.charge_into_error(1)?;
-            let middle = low
-                .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let middle = low.midpoint(high);
             let candidate = emission.cut_nodes.get(middle).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q cut radius index is unknown".into())
             })?;
             match candidate.node.cmp(&port.node) {
                 Ordering::Less => {
-                    low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                    low = middle.wrapping_add(1);
                 },
                 Ordering::Greater => high = middle,
                 Ordering::Equal => {

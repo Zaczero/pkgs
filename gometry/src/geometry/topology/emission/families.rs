@@ -359,16 +359,14 @@ impl FeatureFamilyRegistry {
         let mut found = None;
         while low < high {
             work.charge_into_error(1)?;
-            let middle = low
-                .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let middle = low.midpoint(high);
             let interval = range.intervals.get(middle).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native cut period interval is unknown".into())
             })?;
             if seam_period_index < interval.low_period {
                 high = middle;
             } else if seam_period_index > interval.high_period {
-                low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                low = middle.wrapping_add(1);
             } else {
                 found = Some(interval);
                 break;
@@ -450,15 +448,13 @@ impl FeatureFamilyRegistry {
         let mut found = false;
         while low < high {
             work.charge_into_error(1)?;
-            let middle = low
-                .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let middle = low.midpoint(high);
             let candidate = self.region_families.get(middle).ok_or_else(|| {
                 GeometryErrorKind::Invalid("native region family index is unknown".into())
             })?;
             match candidate.cmp(&family) {
                 std::cmp::Ordering::Less => {
-                    low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                    low = middle.wrapping_add(1);
                 },
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => {

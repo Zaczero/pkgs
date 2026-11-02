@@ -23,7 +23,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_events_for_span(
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
         if event.span < span {
-            low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            low = middle.wrapping_add(1);
         } else {
             high = middle;
         }
@@ -37,7 +37,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_events_for_span(
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
         if event.span <= span {
-            low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            low = middle.wrapping_add(1);
         } else {
             high = middle;
         }

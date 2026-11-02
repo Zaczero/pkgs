@@ -334,15 +334,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut found = false;
             while low < high {
                 budget.charge_into_error(1)?;
-                let middle = low
-                    .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                    .ok_or(ResourceError::SizeOverflow)?;
+                let middle = low.midpoint(high);
                 let fact = emission.selected_regions.get(middle).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q selected region index is unknown".into())
                 })?;
                 match fact.root.cmp(&region) {
                     Ordering::Less => {
-                        low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                        low = middle.wrapping_add(1);
                     },
                     Ordering::Greater => high = middle,
                     Ordering::Equal => {

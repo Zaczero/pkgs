@@ -126,7 +126,7 @@ pub(super) fn native_seam_vertex_index(
             GeometryErrorKind::Invalid("native seam event index is unknown".into())
         })?;
         if event.latitude.try_cmp_with_work(latitude, work)?.is_lt() {
-            low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            low = middle.wrapping_add(1);
         } else {
             high = middle;
         }

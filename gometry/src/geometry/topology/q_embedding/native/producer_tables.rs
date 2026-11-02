@@ -582,15 +582,13 @@ pub(in crate::geometry::topology::q_embedding) fn native_producer_atom_uses<'a>(
     let mut key_index = None;
     while low < high {
         budget.charge_into_error(1)?;
-        let middle = low
-            .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-            .ok_or(ResourceError::SizeOverflow)?;
+        let middle = low.midpoint(high);
         let candidate = graph.producer_uses.keys.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native producer-use key index is unknown".into())
         })?;
         match candidate.cmp(&key) {
             Ordering::Less => {
-                low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                low = middle.wrapping_add(1);
             },
             Ordering::Greater => high = middle,
             Ordering::Equal => {
@@ -605,9 +603,7 @@ pub(in crate::geometry::topology::q_embedding) fn native_producer_atom_uses<'a>(
     let start = *graph.producer_uses.offsets.get(key_index).ok_or_else(|| {
         GeometryErrorKind::Invalid("native producer-use start offset is unknown".into())
     })? as usize;
-    let next = key_index
-        .checked_add(1)
-        .ok_or(ResourceError::SizeOverflow)?;
+    let next = key_index.wrapping_add(1);
     let end = *graph.producer_uses.offsets.get(next).ok_or_else(|| {
         GeometryErrorKind::Invalid("native producer-use end offset is unknown".into())
     })? as usize;

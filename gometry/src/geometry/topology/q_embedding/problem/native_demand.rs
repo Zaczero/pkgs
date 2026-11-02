@@ -579,7 +579,7 @@ impl<'topology, M: ChartMetric> QEmbeddingProblem<'topology, '_, '_, '_, M> {
                         )
                     })?;
                     if candidate.root < ring.region {
-                        low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                        low = middle.wrapping_add(1);
                     } else {
                         high = middle;
                     }

@@ -219,14 +219,12 @@ pub(in crate::geometry::topology::q_embedding) fn trace_source_nodes(
         let mut high = row.len();
         while low < high {
             budget.charge_into_error(1)?;
-            let middle = low
-                .checked_add(high.checked_sub(low).ok_or(ResourceError::SizeOverflow)? / 2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let middle = low.midpoint(high);
             let range = row.get(middle).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source-span search ordinal is unknown".into())
             })?;
             if range.end.try_cmp_with_work(requested_low, budget)?.is_lt() {
-                low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                low = middle.wrapping_add(1);
             } else {
                 high = middle;
             }
