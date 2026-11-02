@@ -1,4 +1,4 @@
-from math import isfinite, log
+from math import frexp, isfinite
 
 __version__ = '2.0.0'
 
@@ -45,7 +45,8 @@ def sizestr(size: float) -> str:
     if size < 1024:
         return f'{prefix}{int(size)} B'
 
-    exp = int(log(size, 1024))
+    binary_exponent = size.bit_length() if isinstance(size, int) else frexp(size)[1]
+    exp = (binary_exponent - 1) // 10
     if exp > 7:
         return '(too large to display)'
 
