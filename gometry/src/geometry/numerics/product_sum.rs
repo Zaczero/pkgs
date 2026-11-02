@@ -515,14 +515,13 @@ fn add_shifted_words<const N: usize>(target: &mut [u64; N], words: &[u64], shift
     }
 }
 
-/// Place a 106-bit finite product at bit `shift` of the degree-2 accumulator.
+/// Place a product at bit `shift` of the degree-2 accumulator.
 ///
-/// Finite binary64 products have `shift <= PAIR_MAX_PRODUCT_SHIFT`, so the
-/// 2- or 3-limb window ends at index 65, inside [`LIMBS`]. The carry has the
-/// same capacity as the signed accumulator, established by the term-count
-/// proof above.
+/// A scaled product's high half starts up to one limb beyond the largest
+/// binary64 pair-product shift. Its window and carry fit in [`LIMBS`] under
+/// the term-count and scale bounds above.
 fn add_shifted_product(target: &mut [u64; LIMBS], product: u128, shift: usize) {
-    debug_assert!(shift <= PAIR_MAX_PRODUCT_SHIFT);
+    debug_assert!(shift <= PAIR_MAX_PRODUCT_SHIFT.wrapping_add(LIMB_BITS));
     let word = shift / 64;
     let bits = u32::try_from(shift % 64).expect("limb offset is below 64");
     let lo = product as u64;
@@ -1120,6 +1119,14 @@ mod tests {
         let mut sum = ExactSum::zero();
         sum.add_scaled_product(1.0, 1.0, i64::MIN, false);
         sum.add_product(f64::from_bits(0x43E0_0000_0000_0000), 1.0);
+        assert_eq!(sum.ordering(), Ordering::Equal);
+    }
+
+    #[test]
+    fn scaled_pair_product_accepts_maximum_finite_exponents() {
+        let mut sum = ExactSum::zero();
+        sum.add_scaled_product(f64::MAX, f64::MAX, 1, false);
+        sum.subtract_product(f64::MAX, f64::MAX);
         assert_eq!(sum.ordering(), Ordering::Equal);
     }
 
