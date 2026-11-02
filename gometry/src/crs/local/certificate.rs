@@ -56,20 +56,27 @@ struct UpsCertificate {
     p2_max: f64,
 }
 
+/// Outward-rounded radians enclosing an admitted native angle.
+#[derive(Clone, Copy, Debug)]
+struct AngleBounds {
+    lower: f64,
+    upper: f64,
+}
+
 #[derive(Clone, Copy)]
 struct CertificateEdge {
-    longitude_delta_native: f64,
-    longitude_from_central_meridian: f64,
-    longitude_delta: f64,
-    latitude0: f64,
-    latitude1: f64,
-    is_selected_pole_parallel: bool,
+    longitude_from_central_meridian: AngleBounds,
+    longitude_delta: AngleBounds,
+    latitude0: AngleBounds,
+    latitude1: AngleBounds,
+    latitude_difference: AngleBounds,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LocalProjectionCertificate {
     frame: GeographicFrame,
     central_meridian: f64,
+    central_offset: AngleBounds,
     radii: EllipsoidRadii,
     projection: ProjectionCertificate,
 }
@@ -174,8 +181,14 @@ impl LocalProjectionCertificate {
                     ));
                 }
                 ProjectionCertificate::Ups(UpsCertificate {
-                    radius_lower: certificate_math::multiply_down(terms.a, terms.akm1) / 2.0,
-                    radius_upper: certificate_math::multiply_up(terms.a, terms.akm1) / 2.0,
+                    radius_lower: certificate_math::divide_down(
+                        certificate_math::multiply_down(terms.a, terms.akm1),
+                        2.0,
+                    ),
+                    radius_upper: certificate_math::divide_up(
+                        certificate_math::multiply_up(terms.a, terms.akm1),
+                        2.0,
+                    ),
                     pole: terms.pole,
                     p_min: latitude_derivative_minimum,
                     p_max: latitude_derivative_maximum,
@@ -191,19 +204,24 @@ impl LocalProjectionCertificate {
         Ok(Self {
             frame,
             central_meridian,
+            central_offset: certificate_math::central_offset(
+                frame,
+                central_meridian,
+                longitude_of_origin,
+            ),
             radii,
             projection,
         })
     }
 
-    fn chart_edge(&self, start: Point, end: Point) -> Result<CertificateEdge> {
+    fn chart_edge(&self, start: Point, end: Point) -> Result<Option<CertificateEdge>> {
         let axis = self.frame.longitude();
-        let longitude_delta_native = match axis
+        let (longitude_delta_native, rounded_step) = match axis
             .chart_step(start.x, end.x)
             .expect("screen coordinates were admitted before local projection")
         {
-            ChartStep::Shortest(EdgeDirection::Minor(delta)) => delta,
-            step @ ChartStep::Circle(_) => step.delta(axis),
+            ChartStep::Shortest(EdgeDirection::Minor(delta)) => (delta, true),
+            step @ ChartStep::Circle(_) => (step.delta(axis), false),
             ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) => {
                 // Preserve ChartEdge's public-facing exact-half-turn error.
                 ChartEdge::new(start, end, self.frame)?;
@@ -214,59 +232,62 @@ impl LocalProjectionCertificate {
         let latitude1_native = Latitude::from_admitted(self.frame, end.y).get();
         let latitude_unit =
             self.frame.latitude_radians_per_unit() * self.frame.latitude_orientation_sign();
-        let longitude_from_central_meridian = axis
+        let longitude_from_central_meridian_native = axis
             .shortest_alias_step(self.central_meridian, start.x)
             .expect("screen coordinates were admitted before local projection")
-            .delta(axis)
-            * axis.radians_per_unit()
-            * self.frame.longitude_orientation_sign();
-        let selected_pole = match self.projection {
-            ProjectionCertificate::Tmerc(_) => None,
+            .delta(axis);
+        let straight = match self.projection {
+            ProjectionCertificate::Tmerc(_) => {
+                (longitude_delta_native == 0.0
+                    && longitude_from_central_meridian_native == 0.0
+                    && self.central_offset.is_zero())
+                    || (latitude0_native == 0.0 && latitude1_native == 0.0)
+            },
             ProjectionCertificate::Ups(certificate) => {
-                Some(self.frame.native_latitude_pole(certificate.pole))
+                let pole = self.frame.native_latitude_pole(certificate.pole);
+                longitude_delta_native == 0.0
+                    || (start.y.to_bits() == pole.to_bits() && end.y.to_bits() == pole.to_bits())
             },
         };
-        Ok(CertificateEdge {
-            longitude_delta_native,
-            longitude_from_central_meridian,
-            longitude_delta: longitude_delta_native
-                * axis.radians_per_unit()
-                * self.frame.longitude_orientation_sign(),
-            latitude0: latitude0_native * latitude_unit,
-            latitude1: latitude1_native * latitude_unit,
-            is_selected_pole_parallel: selected_pole.is_some_and(|pole| {
-                start.y.to_bits() == pole.to_bits() && end.y.to_bits() == pole.to_bits()
-            }),
-        })
-    }
-
-    fn is_straight_chart_edge(&self, edge: CertificateEdge) -> bool {
-        match self.projection {
-            ProjectionCertificate::Tmerc(_) => {
-                (edge.longitude_delta_native == 0.0 && edge.longitude_from_central_meridian == 0.0)
-                    || (edge.latitude0 == 0.0 && edge.latitude1 == 0.0)
-            },
-            ProjectionCertificate::Ups(_) => {
-                edge.longitude_delta_native == 0.0 || edge.is_selected_pole_parallel
-            },
+        if straight {
+            return Ok(None);
         }
+        let latitude0 = certificate_math::native_angle(latitude0_native, latitude_unit, false);
+        let latitude1 = certificate_math::native_angle(latitude1_native, latitude_unit, false);
+        let longitude_unit = axis.radians_per_unit() * self.frame.longitude_orientation_sign();
+        Ok(Some(CertificateEdge {
+            longitude_from_central_meridian: certificate_math::longitude_offset(
+                certificate_math::native_angle(
+                    longitude_from_central_meridian_native,
+                    longitude_unit,
+                    true,
+                ),
+                self.central_offset,
+            ),
+            longitude_delta: certificate_math::native_angle(
+                longitude_delta_native,
+                longitude_unit,
+                rounded_step,
+            ),
+            latitude0,
+            latitude1,
+            latitude_difference: certificate_math::latitude_difference(
+                latitude0_native,
+                latitude1_native,
+                latitude0,
+                latitude1,
+            ),
+        }))
     }
 
-    fn cheap_bound(&self, edge: CertificateEdge) -> f64 {
+    fn cheap_bound(&self, edge: &CertificateEdge) -> f64 {
         match self.projection {
-            ProjectionCertificate::Tmerc(certificate) => self.cheap_tmerc_bound(
-                &certificate,
-                edge.longitude_from_central_meridian,
-                edge.longitude_delta,
-                edge.latitude0,
-                edge.latitude1,
-            ),
-            ProjectionCertificate::Ups(certificate) => self.cheap_ups_bound(
-                certificate,
-                edge.longitude_delta,
-                edge.latitude0,
-                edge.latitude1,
-            ),
+            ProjectionCertificate::Tmerc(certificate) => {
+                certificate_math::cheap_tmerc_bound(&self.radii, &certificate, edge)
+            },
+            ProjectionCertificate::Ups(certificate) => {
+                certificate_math::cheap_ups_bound(&self.radii, certificate, edge)
+            },
         }
     }
 
@@ -281,12 +302,11 @@ impl LocalProjectionCertificate {
         end: Point,
         budget: f64,
     ) -> Result<bool> {
-        let edge = self.chart_edge(start, end)?;
-        if self.is_straight_chart_edge(edge) {
+        let Some(edge) = self.chart_edge(start, end)? else {
             return Ok(false);
-        }
+        };
         Ok(self
-            .cheap_bound(edge)
+            .cheap_bound(&edge)
             .partial_cmp(&budget)
             .is_none_or(std::cmp::Ordering::is_gt))
     }
@@ -313,98 +333,25 @@ impl LocalProjectionCertificate {
         end: Point,
         budget: f64,
     ) -> Result<NonZeroUsize> {
-        let edge = self.chart_edge(start, end)?;
-        if self.is_straight_chart_edge(edge) || self.cheap_bound(edge) <= budget {
+        let Some(edge) = self.chart_edge(start, end)? else {
+            return Ok(NonZeroUsize::MIN);
+        };
+        if self.cheap_bound(&edge) <= budget {
             return Ok(NonZeroUsize::MIN);
         }
 
         let precise_bound = match self.projection {
-            ProjectionCertificate::Tmerc(certificate) => self.precise_tmerc_bound(
-                &certificate,
-                edge.longitude_from_central_meridian,
-                edge.longitude_delta,
-                edge.latitude0,
-                edge.latitude1,
-            ),
-            ProjectionCertificate::Ups(certificate) => self.precise_ups_bound(
-                certificate,
-                edge.longitude_delta,
-                edge.latitude0,
-                edge.latitude1,
-            ),
+            ProjectionCertificate::Tmerc(certificate) => {
+                certificate_math::precise_tmerc_bound(&self.radii, &certificate, &edge)
+            },
+            ProjectionCertificate::Ups(certificate) => {
+                certificate_math::precise_ups_bound(&self.radii, certificate, &edge)
+            },
         };
         Ok(certificate_math::piece_count_from_bound(
             precise_bound,
             budget,
         ))
-    }
-
-    fn cheap_tmerc_bound(
-        &self,
-        certificate: &TmercCertificate,
-        longitude_from_central_meridian: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
-    ) -> f64 {
-        certificate_math::cheap_tmerc_bound(
-            &self.radii,
-            certificate,
-            longitude_from_central_meridian,
-            longitude_delta,
-            latitude0,
-            latitude1,
-        )
-    }
-
-    fn cheap_ups_bound(
-        &self,
-        certificate: UpsCertificate,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
-    ) -> f64 {
-        certificate_math::cheap_ups_bound(
-            &self.radii,
-            certificate,
-            longitude_delta,
-            latitude0,
-            latitude1,
-        )
-    }
-
-    fn precise_tmerc_bound(
-        &self,
-        certificate: &TmercCertificate,
-        longitude_from_central_meridian: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
-    ) -> f64 {
-        certificate_math::precise_tmerc_bound(
-            &self.radii,
-            certificate,
-            longitude_from_central_meridian,
-            longitude_delta,
-            latitude0,
-            latitude1,
-        )
-    }
-
-    fn precise_ups_bound(
-        &self,
-        certificate: UpsCertificate,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
-    ) -> f64 {
-        certificate_math::precise_ups_bound(
-            &self.radii,
-            certificate,
-            longitude_delta,
-            latitude0,
-            latitude1,
-        )
     }
 }
 
@@ -415,9 +362,9 @@ impl LocalProjectionCertificate {
 )]
 mod certificate_math {
     use super::{
-        CrsError, EllipsoidRadii, FAST_TMER_BETA, GAUSSIAN_LATITUDE_ACCELERATION,
-        GAUSSIAN_TANGENTIAL_CURVATURE, GeodeticPole, NonZeroUsize, Result, TmercCertificate,
-        UpsCertificate,
+        AngleBounds, CertificateEdge, CrsError, EllipsoidRadii, FAST_TMER_BETA,
+        GAUSSIAN_LATITUDE_ACCELERATION, GAUSSIAN_TANGENTIAL_CURVATURE, GeodeticPole,
+        GeographicFrame, NonZeroUsize, Result, TmercCertificate, UpsCertificate,
     };
 
     #[derive(Clone, Copy)]
@@ -445,35 +392,95 @@ mod certificate_math {
     }
 
     fn add_up(left: f64, right: f64) -> f64 {
-        round_up(left + right)
+        let value = left + right;
+        if value == f64::NEG_INFINITY && left.is_finite() && right.is_finite() {
+            f64::MIN
+        } else {
+            round_up(value)
+        }
     }
 
     fn add_down(left: f64, right: f64) -> f64 {
-        round_down(left + right)
+        let value = left + right;
+        if value == f64::INFINITY && left.is_finite() && right.is_finite() {
+            f64::MAX
+        } else {
+            round_down(value)
+        }
     }
 
     fn subtract_up(left: f64, right: f64) -> f64 {
-        round_up(left - right)
+        let value = left - right;
+        if value == f64::NEG_INFINITY && left.is_finite() && right.is_finite() {
+            f64::MIN
+        } else {
+            round_up(value)
+        }
     }
 
     fn subtract_down(left: f64, right: f64) -> f64 {
-        round_down(left - right)
+        let value = left - right;
+        if value == f64::INFINITY && left.is_finite() && right.is_finite() {
+            f64::MAX
+        } else {
+            round_down(value)
+        }
     }
 
     pub(super) fn multiply_up(left: f64, right: f64) -> f64 {
-        round_up(left * right)
+        let value = left * right;
+        if value.is_finite() && value != 0.0 {
+            value.next_up()
+        } else if value == 0.0 && value.is_sign_positive() && left != 0.0 && right != 0.0 {
+            f64::from_bits(1)
+        } else if value == f64::NEG_INFINITY && left.is_finite() && right.is_finite() {
+            f64::MIN
+        } else {
+            value
+        }
     }
 
     pub(super) fn multiply_down(left: f64, right: f64) -> f64 {
-        round_down(left * right)
+        let value = left * right;
+        if value.is_finite() && value != 0.0 {
+            value.next_down()
+        } else if value == 0.0 && value.is_sign_negative() && left != 0.0 && right != 0.0 {
+            -f64::from_bits(1)
+        } else if value == f64::INFINITY && left.is_finite() && right.is_finite() {
+            f64::MAX
+        } else {
+            value
+        }
     }
 
-    fn divide_up(numerator: f64, denominator: f64) -> f64 {
-        round_up(numerator / denominator)
+    pub(super) fn divide_up(numerator: f64, denominator: f64) -> f64 {
+        let value = numerator / denominator;
+        if value == 0.0 && value.is_sign_positive() && numerator != 0.0 && denominator.is_finite() {
+            f64::from_bits(1)
+        } else if value == f64::NEG_INFINITY
+            && numerator.is_finite()
+            && denominator.is_finite()
+            && denominator != 0.0
+        {
+            f64::MIN
+        } else {
+            round_up(value)
+        }
     }
 
-    fn divide_down(numerator: f64, denominator: f64) -> f64 {
-        round_down(numerator / denominator)
+    pub(super) fn divide_down(numerator: f64, denominator: f64) -> f64 {
+        let value = numerator / denominator;
+        if value == 0.0 && value.is_sign_negative() && numerator != 0.0 && denominator.is_finite() {
+            -f64::from_bits(1)
+        } else if value == f64::INFINITY
+            && numerator.is_finite()
+            && denominator.is_finite()
+            && denominator != 0.0
+        {
+            f64::MAX
+        } else {
+            round_down(value)
+        }
     }
 
     fn multiply_interval(
@@ -491,6 +498,160 @@ mod certificate_math {
             .max(multiply_up(left_upper, right_lower))
             .max(multiply_up(left_upper, right_upper));
         (lower, upper)
+    }
+
+    impl AngleBounds {
+        const ZERO: Self = Self {
+            lower: 0.0,
+            upper: 0.0,
+        };
+
+        fn absolute(self) -> Self {
+            let lower = if self.lower <= 0.0 && self.upper >= 0.0 {
+                0.0
+            } else {
+                self.lower.abs().min(self.upper.abs())
+            };
+            Self {
+                lower,
+                upper: self.lower.abs().max(self.upper.abs()),
+            }
+        }
+
+        fn negated(self) -> Self {
+            Self {
+                lower: -self.upper,
+                upper: -self.lower,
+            }
+        }
+
+        pub(super) fn is_zero(self) -> bool {
+            self.lower == 0.0 && self.upper == 0.0
+        }
+    }
+
+    fn full_longitude() -> AngleBounds {
+        let half_turn = std::f64::consts::PI.next_up();
+        AngleBounds {
+            lower: -half_turn,
+            upper: half_turn,
+        }
+    }
+
+    /// Enclose the difference between the rounded native origin and the
+    /// projection's original Greenwich longitude.
+    pub(super) fn central_offset(
+        frame: GeographicFrame,
+        native_origin: f64,
+        origin_degrees: f64,
+    ) -> AngleBounds {
+        const EXACT_TURN_LIMIT: f64 = 4_503_599_627_370_496.0;
+        let axis = frame.longitude();
+        let orientation = frame.longitude_orientation_sign();
+        if axis.period() == 360.0
+            && frame.prime_meridian_radians() == 0.0
+            && native_origin * orientation == origin_degrees
+        {
+            return AngleBounds::ZERO;
+        }
+
+        let native = native_angle(native_origin, axis.radians_per_unit() * orientation, false);
+        let origin = native_angle(origin_degrees, std::f64::consts::PI / 180.0, false);
+        let prime = frame.prime_meridian_radians();
+        let raw = AngleBounds {
+            lower: subtract_down(add_down(native.lower, prime), origin.upper),
+            upper: subtract_up(add_up(native.upper, prime), origin.lower),
+        };
+        if !raw.lower.is_finite() || !raw.upper.is_finite() {
+            return full_longitude();
+        }
+        let turns = ((raw.lower / 2.0 + raw.upper / 2.0) / std::f64::consts::TAU).round();
+        // Beyond this range a binary64 turn count cannot resolve every
+        // half-integer needed to select the nearest periodic alias.
+        if turns.abs() > EXACT_TURN_LIMIT {
+            return full_longitude();
+        }
+        let turn_angle = native_angle(turns, std::f64::consts::TAU, false);
+        longitude_offset(raw, AngleBounds {
+            lower: -turn_angle.upper,
+            upper: -turn_angle.lower,
+        })
+    }
+
+    /// Add angular offsets and conservatively handle the longitude seam.
+    pub(super) fn longitude_offset(left: AngleBounds, right: AngleBounds) -> AngleBounds {
+        let bounds = AngleBounds {
+            lower: add_down(left.lower, right.lower),
+            upper: add_up(left.upper, right.upper),
+        };
+        let half_turn = std::f64::consts::PI.next_down();
+        if bounds.lower < -half_turn || bounds.upper > half_turn {
+            full_longitude()
+        } else {
+            bounds
+        }
+    }
+
+    /// Enclose a native angle after conversion to radians.
+    ///
+    /// Longitude steps have already been rounded once by the chart owner.
+    /// The unit interval also covers the binary64 constant and division used
+    /// to derive conventional angular units.
+    pub(super) fn native_angle(value: f64, unit: f64, rounded_step: bool) -> AngleBounds {
+        // Native chart steps are sums and differences of represented f64
+        // coordinates and periods, so a rounded zero is an exact zero.
+        if value == 0.0 {
+            return AngleBounds::ZERO;
+        }
+        let (lower, upper) = if rounded_step {
+            (value.next_down(), value.next_up())
+        } else {
+            (value, value)
+        };
+        let magnitude = unit.abs();
+        // Conventional periods are positive integers, so their derived unit
+        // is at most TAU. Other finite factors are represented directly.
+        let unit_lower = magnitude.next_down().next_down().max(0.0);
+        let unit_upper = magnitude.next_up().next_up().min(f64::MAX);
+        let result = if lower >= 0.0 {
+            AngleBounds {
+                lower: multiply_down(lower, unit_lower),
+                upper: multiply_up(upper, unit_upper),
+            }
+        } else if upper <= 0.0 {
+            AngleBounds {
+                lower: multiply_down(lower, unit_upper),
+                upper: multiply_up(upper, unit_lower),
+            }
+        } else {
+            AngleBounds {
+                lower: multiply_down(lower, unit_upper),
+                upper: multiply_up(upper, unit_upper),
+            }
+        };
+        if unit.is_sign_negative() {
+            result.negated()
+        } else {
+            result
+        }
+    }
+
+    pub(super) fn latitude_difference(
+        native0: f64,
+        native1: f64,
+        latitude0: AngleBounds,
+        latitude1: AngleBounds,
+    ) -> AngleBounds {
+        // Equal native coordinates describe the same angle even though their
+        // independently rounded enclosures overlap rather than coincide.
+        if native0 == native1 {
+            return AngleBounds::ZERO;
+        }
+        AngleBounds {
+            lower: subtract_down(latitude1.lower, latitude0.upper),
+            upper: subtract_up(latitude1.upper, latitude0.lower),
+        }
+        .absolute()
     }
 
     pub(super) fn ellipsoid_radii(a: f64, f: f64) -> Result<EllipsoidRadii> {
@@ -642,23 +803,22 @@ mod certificate_math {
         (c1_upper, c2_upper)
     }
 
-    fn latitude_absolute_range(latitude0: f64, latitude1: f64) -> (f64, f64) {
-        let lower = round_down(latitude0.min(latitude1));
-        let upper = round_up(latitude0.max(latitude1));
-        let nearest = if lower <= 0.0 && upper >= 0.0 {
-            0.0
-        } else {
-            round_down(if lower > 0.0 { lower } else { upper.abs() }).max(0.0)
-        };
-        let farthest =
-            round_up(lower.abs().max(upper.abs())).min(round_up(std::f64::consts::FRAC_PI_2));
-        (nearest, farthest)
+    fn latitude_absolute_range(latitude0: AngleBounds, latitude1: AngleBounds) -> (f64, f64) {
+        let range = AngleBounds {
+            lower: latitude0.lower.min(latitude1.lower),
+            upper: latitude0.upper.max(latitude1.upper),
+        }
+        .absolute();
+        (
+            range.lower,
+            range.upper.min(round_up(std::f64::consts::FRAC_PI_2)),
+        )
     }
 
     fn ellipsoid_interval_radii(
         radii: &EllipsoidRadii,
-        latitude0: f64,
-        latitude1: f64,
+        latitude0: AngleBounds,
+        latitude1: AngleBounds,
     ) -> IntervalRadii {
         let (near_abs_lower, far_abs_upper) = latitude_absolute_range(latitude0, latitude1);
         let sin_near_lower = sine_lower(near_abs_lower);
@@ -701,21 +861,6 @@ mod certificate_math {
             m_max,
             min_radius: n_min.min(m_min),
         }
-    }
-
-    fn absolute_difference_upper(left: f64, right: f64) -> f64 {
-        if left == right {
-            return 0.0;
-        }
-        let left_lower = round_down(left);
-        let left_upper = round_up(left);
-        let right_lower = round_down(right);
-        let right_upper = round_up(right);
-        round_up(
-            (left_upper - right_lower)
-                .abs()
-                .max((right_upper - left_lower).abs()),
-        )
     }
 
     fn cosine_upper(angle_lower: f64) -> f64 {
@@ -786,12 +931,10 @@ mod certificate_math {
 
     fn source_length_upper_squared(
         radii: &EllipsoidRadii,
-        latitude0: f64,
-        latitude1: f64,
-        longitude_delta: f64,
+        edge: &CertificateEdge,
         coarse: bool,
     ) -> f64 {
-        let interval = ellipsoid_interval_radii(radii, latitude0, latitude1);
+        let interval = ellipsoid_interval_radii(radii, edge.latitude0, edge.latitude1);
         let cosine = if coarse {
             round_up(round_up(std::f64::consts::FRAC_PI_2) - interval.near_abs_lower).min(1.0)
         } else {
@@ -799,14 +942,18 @@ mod certificate_math {
         };
         let n_max = if coarse { radii.n_max } else { interval.n_max };
         let m_max = if coarse { radii.m_max } else { interval.m_max };
-        let east = multiply_up(multiply_up(n_max, cosine), round_up(longitude_delta.abs()));
-        let north = multiply_up(m_max, absolute_difference_upper(latitude0, latitude1));
+        let east = multiply_up(
+            multiply_up(n_max, cosine),
+            edge.longitude_delta.absolute().upper,
+        );
+        let north = multiply_up(m_max, edge.latitude_difference.upper);
         add_up(multiply_up(east, east), multiply_up(north, north))
     }
 
-    fn gaussian_latitude_endpoint(phi: f64, p_min: f64, p_max: f64) -> (f64, f64) {
-        let absolute_lower = round_down(phi.abs()).max(0.0);
-        let absolute_upper = round_up(phi.abs()).min(round_up(std::f64::consts::FRAC_PI_2));
+    fn gaussian_latitude_endpoint(phi: AngleBounds, p_min: f64, p_max: f64) -> AngleBounds {
+        let absolute = phi.absolute();
+        let absolute_lower = absolute.lower;
+        let absolute_upper = absolute.upper.min(round_up(std::f64::consts::FRAC_PI_2));
         let pole_lower = round_down(std::f64::consts::FRAC_PI_2);
         let pole_upper = round_up(std::f64::consts::FRAC_PI_2);
         let delta_lower = subtract_down(pole_lower, absolute_upper).max(0.0);
@@ -817,22 +964,30 @@ mod certificate_math {
         let upper = multiply_up(p_max, absolute_upper)
             .min(subtract_up(pole_upper, multiply_down(p_min, delta_lower)))
             .min(pole_upper);
-        if phi < 0.0 {
-            (round_down(-upper), round_up(-lower))
+        if phi.upper < 0.0 {
+            AngleBounds {
+                lower: round_down(-upper),
+                upper: round_up(-lower),
+            }
+        } else if phi.lower >= 0.0 {
+            AngleBounds { lower, upper }
         } else {
-            (lower, upper)
+            AngleBounds {
+                lower: round_down(-upper),
+                upper: round_up(upper),
+            }
         }
     }
 
     fn gaussian_latitude_interval(
-        latitude0: f64,
-        latitude1: f64,
+        latitude0: AngleBounds,
+        latitude1: AngleBounds,
         p_min: f64,
         p_max: f64,
     ) -> (f64, f64) {
-        let (lower0, upper0) = gaussian_latitude_endpoint(latitude0, p_min, p_max);
-        let (lower1, upper1) = gaussian_latitude_endpoint(latitude1, p_min, p_max);
-        (lower0.min(lower1), upper0.max(upper1))
+        let first = gaussian_latitude_endpoint(latitude0, p_min, p_max);
+        let second = gaussian_latitude_endpoint(latitude1, p_min, p_max);
+        (first.lower.min(second.lower), first.upper.max(second.upper))
     }
 
     fn absolute_interval_extrema(lower: f64, upper: f64) -> (f64, f64) {
@@ -845,23 +1000,15 @@ mod certificate_math {
         (near, far)
     }
 
-    fn lambda_absolute_upper(longitude0: f64, longitude_delta: f64) -> f64 {
-        let lambda0_lower = round_down(longitude0);
-        let lambda0_upper = round_up(longitude0);
-        let delta_lower = round_down(longitude_delta);
-        let delta_upper = round_up(longitude_delta);
-        let lambda1_lower = add_down(lambda0_lower, delta_lower);
-        let lambda1_upper = add_up(lambda0_upper, delta_upper);
-        round_up(
-            lambda0_lower
-                .abs()
-                .max(lambda0_upper.abs())
-                .max(lambda1_lower.abs())
-                .max(lambda1_upper.abs()),
-        )
+    fn lambda_absolute_upper(longitude0: AngleBounds, longitude_delta: AngleBounds) -> f64 {
+        let longitude1 = AngleBounds {
+            lower: add_down(longitude0.lower, longitude_delta.lower),
+            upper: add_up(longitude0.upper, longitude_delta.upper),
+        };
+        longitude0.absolute().upper.max(longitude1.absolute().upper)
     }
 
-    fn maximum_absolute_sine(longitude0: f64, longitude_delta: f64) -> f64 {
+    fn maximum_absolute_sine(longitude0: AngleBounds, longitude_delta: AngleBounds) -> f64 {
         // |sin(x)| <= min(1, |x|), so the interval needs no trigonometric call.
         lambda_absolute_upper(longitude0, longitude_delta).min(1.0)
     }
@@ -898,12 +1045,9 @@ mod certificate_math {
     pub(super) fn cheap_tmerc_bound(
         radii: &EllipsoidRadii,
         certificate: &TmercCertificate,
-        longitude0: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        edge: &CertificateEdge,
     ) -> f64 {
-        let (near_abs, far_abs) = latitude_absolute_range(latitude0, latitude1);
+        let (near_abs, far_abs) = latitude_absolute_range(edge.latitude0, edge.latitude1);
         let pi_half_upper = round_up(std::f64::consts::FRAC_PI_2);
         let delta_near_upper = subtract_up(pi_half_upper, near_abs).max(0.0);
         let delta_far_lower =
@@ -912,7 +1056,9 @@ mod certificate_math {
             return f64::INFINITY;
         }
         let cos_chi_upper = multiply_up(certificate.p_max, delta_near_upper).min(1.0);
-        let sin_lambda_upper = lambda_absolute_upper(longitude0, longitude_delta).min(1.0);
+        let sin_lambda_upper =
+            lambda_absolute_upper(edge.longitude_from_central_meridian, edge.longitude_delta)
+                .min(1.0);
         let beta = multiply_up(cos_chi_upper, sin_lambda_upper);
         let beta2 = multiply_up(beta, beta);
         let spherical_denominator = subtract_down(1.0, beta2);
@@ -961,8 +1107,8 @@ mod certificate_math {
         );
         let cosine_latitude_upper = round_up(delta_near_upper).min(1.0);
         let east_weight = multiply_up(radii.n_max, cosine_latitude_upper);
-        let east = multiply_up(east_weight, round_up(longitude_delta.abs()));
-        let north = multiply_up(radii.m_max, absolute_difference_upper(latitude0, latitude1));
+        let east = multiply_up(east_weight, edge.longitude_delta.absolute().upper);
+        let north = multiply_up(radii.m_max, edge.latitude_difference.upper);
         add_up(
             multiply_up(coefficient, multiply_up(east, east)),
             multiply_up(coefficient, multiply_up(north, north)),
@@ -972,23 +1118,13 @@ mod certificate_math {
     pub(super) fn precise_tmerc_bound(
         radii: &EllipsoidRadii,
         certificate: &TmercCertificate,
-        longitude0: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        edge: &CertificateEdge,
     ) -> f64 {
-        let Some((curvature, image_scale)) = tmerc_curvature_and_scale(
-            radii,
-            certificate,
-            longitude0,
-            longitude_delta,
-            latitude0,
-            latitude1,
-        ) else {
+        let Some((curvature, image_scale)) = tmerc_curvature_and_scale(radii, certificate, edge)
+        else {
             return f64::INFINITY;
         };
-        let length2 =
-            source_length_upper_squared(radii, latitude0, latitude1, longitude_delta, false);
+        let length2 = source_length_upper_squared(radii, edge, false);
         divide_up(
             multiply_up(
                 multiply_up(curvature, multiply_up(image_scale, image_scale)),
@@ -1001,16 +1137,18 @@ mod certificate_math {
     fn tmerc_curvature_and_scale(
         radii: &EllipsoidRadii,
         certificate: &TmercCertificate,
-        longitude0: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        edge: &CertificateEdge,
     ) -> Option<(f64, f64)> {
-        let (chi_lower, chi_upper) =
-            gaussian_latitude_interval(latitude0, latitude1, certificate.p_min, certificate.p_max);
+        let (chi_lower, chi_upper) = gaussian_latitude_interval(
+            edge.latitude0,
+            edge.latitude1,
+            certificate.p_min,
+            certificate.p_max,
+        );
         let (chi_abs_lower, chi_abs_upper) = absolute_interval_extrema(chi_lower, chi_upper);
         let cosine_chi_upper = cosine_upper(chi_abs_lower);
-        let longitude_sine_upper = maximum_absolute_sine(longitude0, longitude_delta);
+        let longitude_sine_upper =
+            maximum_absolute_sine(edge.longitude_from_central_meridian, edge.longitude_delta);
         let beta = multiply_up(cosine_chi_upper, longitude_sine_upper);
         let beta2 = multiply_up(beta, beta);
         let spherical_denominator = subtract_down(1.0, beta2);
@@ -1025,9 +1163,8 @@ mod certificate_math {
         let curvature_sphere = longitude_curvature(
             certificate.p_min,
             certificate.p2_max,
-            longitude_delta,
-            latitude0,
-            latitude1,
+            edge.longitude_delta,
+            edge.latitude_difference,
             chi_abs_upper,
         );
         let logarithmic_gradient = divide_up(beta, spherical_denominator);
@@ -1052,11 +1189,9 @@ mod certificate_math {
     pub(super) fn cheap_ups_bound(
         radii: &EllipsoidRadii,
         certificate: UpsCertificate,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        edge: &CertificateEdge,
     ) -> f64 {
-        let (latitude0, latitude1) = toward_pole(certificate.pole, latitude0, latitude1);
+        let (latitude0, latitude1) = toward_pole(certificate.pole, edge.latitude0, edge.latitude1);
         let (chi_lower, _chi_upper) =
             gaussian_latitude_interval(latitude0, latitude1, certificate.p_min, certificate.p_max);
         let (scale_upper, gradient_upper) = if chi_lower >= 0.0 {
@@ -1121,11 +1256,11 @@ mod certificate_math {
         let east = multiply_up(
             multiply_up(
                 multiply_up(radii.n_max, cosine_latitude_upper),
-                round_up(longitude_delta.abs()),
+                edge.longitude_delta.absolute().upper,
             ),
             1.0,
         );
-        let north = multiply_up(radii.m_max, absolute_difference_upper(latitude0, latitude1));
+        let north = multiply_up(radii.m_max, edge.latitude_difference.upper);
         add_up(
             multiply_up(coefficient, multiply_up(east, east)),
             multiply_up(coefficient, multiply_up(north, north)),
@@ -1135,11 +1270,9 @@ mod certificate_math {
     pub(super) fn precise_ups_bound(
         radii: &EllipsoidRadii,
         certificate: UpsCertificate,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        edge: &CertificateEdge,
     ) -> f64 {
-        let (latitude0, latitude1) = toward_pole(certificate.pole, latitude0, latitude1);
+        let (latitude0, latitude1) = toward_pole(certificate.pole, edge.latitude0, edge.latitude1);
         let (chi_lower, chi_upper) =
             gaussian_latitude_interval(latitude0, latitude1, certificate.p_min, certificate.p_max);
         if chi_lower < 0.0 {
@@ -1163,9 +1296,8 @@ mod certificate_math {
         let curvature_sphere = longitude_curvature(
             certificate.p_min,
             certificate.p2_max,
-            longitude_delta,
-            latitude0,
-            latitude1,
+            edge.longitude_delta,
+            edge.latitude_difference,
             chi_abs_upper,
         );
         let curvature = divide_up(
@@ -1179,8 +1311,7 @@ mod certificate_math {
             ),
             ellipsoid_interval_radii(radii, latitude0, latitude1).min_radius,
         );
-        let length2 =
-            source_length_upper_squared(radii, latitude0, latitude1, longitude_delta, false);
+        let length2 = source_length_upper_squared(radii, edge, false);
         divide_up(
             multiply_up(
                 multiply_up(curvature, multiply_up(image_scale, image_scale)),
@@ -1190,37 +1321,43 @@ mod certificate_math {
         )
     }
 
-    fn toward_pole(pole: GeodeticPole, latitude0: f64, latitude1: f64) -> (f64, f64) {
+    fn toward_pole(
+        pole: GeodeticPole,
+        latitude0: AngleBounds,
+        latitude1: AngleBounds,
+    ) -> (AngleBounds, AngleBounds) {
         match pole {
             GeodeticPole::North => (latitude0, latitude1),
-            GeodeticPole::South => (-latitude0, -latitude1),
+            GeodeticPole::South => (latitude0.negated(), latitude1.negated()),
         }
     }
 
     fn longitude_curvature(
         p_min: f64,
         p2_max: f64,
-        longitude_delta: f64,
-        latitude0: f64,
-        latitude1: f64,
+        longitude_delta: AngleBounds,
+        latitude_difference: AngleBounds,
         chi_abs_upper: f64,
     ) -> f64 {
-        if longitude_delta == 0.0 {
+        if longitude_delta.is_zero() {
             return 0.0;
         }
         let tangent_upper = tangent_upper(chi_abs_upper);
         if !tangent_upper.is_finite() {
             return f64::INFINITY;
         }
-        if latitude0 == latitude1 {
+        if latitude_difference.is_zero() {
             return tangent_upper;
         }
-        let v = absolute_difference_upper(latitude0, latitude1);
         let tangential = multiply_up(GAUSSIAN_TANGENTIAL_CURVATURE, tangent_upper);
-        let orientation = divide_up(
-            multiply_up(2.0, round_up(longitude_delta.abs())),
-            multiply_down(p_min, v),
-        );
+        let orientation = if latitude_difference.lower == 0.0 {
+            f64::INFINITY
+        } else {
+            divide_up(
+                multiply_up(2.0, longitude_delta.absolute().upper),
+                multiply_down(p_min, latitude_difference.lower),
+            )
+        };
         add_up(
             tangential.min(orientation),
             divide_up(
@@ -1234,6 +1371,150 @@ mod certificate_math {
     mod tests {
         use super::super::{LocalCrsDefinition, LocalProjectionCertificate, ProjectionCertificate};
         use super::*;
+
+        #[test]
+        fn directed_products_enclose_underflow_without_widening_exact_zero() {
+            let smallest = f64::from_bits(1);
+            assert_eq!(multiply_up(smallest, 0.5), smallest);
+            assert_eq!(multiply_down(-smallest, 0.5), -smallest);
+            assert_eq!(multiply_up(0.0, 0.5), 0.0);
+            assert_eq!(multiply_down(0.0, 0.5), 0.0);
+            assert_eq!(multiply_up(-0.0, 0.5).to_bits(), (-0.0_f64).to_bits());
+            assert_eq!(divide_up(smallest, 2.0), smallest);
+            assert_eq!(divide_down(-smallest, 2.0), -smallest);
+            assert_eq!(divide_up(1.0, f64::INFINITY), 0.0);
+        }
+
+        #[test]
+        fn directed_operations_distinguish_finite_overflow_from_infinity() {
+            assert_eq!(add_down(f64::MAX, f64::MAX), f64::MAX);
+            assert_eq!(subtract_up(f64::MIN, f64::MAX), f64::MIN);
+            assert_eq!(multiply_down(f64::MAX, 2.0), f64::MAX);
+            assert_eq!(multiply_up(f64::MIN, 2.0), f64::MIN);
+            assert_eq!(divide_down(f64::MAX, 0.5), f64::MAX);
+            assert_eq!(divide_up(f64::MIN, 0.5), f64::MIN);
+            assert_eq!(multiply_down(f64::INFINITY, 2.0), f64::INFINITY);
+            assert_eq!(multiply_up(f64::NEG_INFINITY, 2.0), f64::NEG_INFINITY);
+            assert_eq!(add_up(f64::NEG_INFINITY, 1.0), f64::NEG_INFINITY);
+            assert_eq!(subtract_down(f64::INFINITY, 1.0), f64::INFINITY);
+        }
+
+        #[test]
+        fn native_angle_keeps_nonzero_underflow_and_exact_zero_distinct() {
+            let smallest = f64::from_bits(1);
+            let positive = native_angle(smallest, std::f64::consts::PI / 180.0, false);
+            let negative = native_angle(-smallest, std::f64::consts::PI / 180.0, false);
+            let reversed = native_angle(smallest, -std::f64::consts::PI / 180.0, false);
+            assert_eq!(positive.lower, 0.0);
+            assert_eq!(positive.upper, smallest);
+            assert_eq!(negative.lower, -smallest);
+            assert_eq!(negative.upper, 0.0);
+            assert_eq!(reversed.lower, negative.lower);
+            assert_eq!(reversed.upper, negative.upper);
+            assert!(native_angle(0.0, std::f64::consts::PI / 180.0, false).is_zero());
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+        fn rounded_grad_origin_does_not_prove_a_central_meridian() {
+            let grad = crate::geographic::AngularFactor::try_new(
+                "longitude",
+                std::f64::consts::TAU / 400.0,
+            )
+            .unwrap();
+            let degree = crate::geographic::AngularFactor::try_new(
+                "latitude",
+                std::f64::consts::TAU / 360.0,
+            )
+            .unwrap();
+            let frame = GeographicFrame::try_new(grad, degree, 0.0).unwrap();
+            let origin = frame
+                .point_from_geodesic(crate::geometry::Point::new_raw_xy(3.0, 0.0))
+                .unwrap()
+                .x;
+            let offset = central_offset(frame, origin, 3.0);
+            // The stored origin is 3 + 3/22517998136852480 degrees.
+            let actual = (3.0 / 22_517_998_136_852_480.0) * (std::f64::consts::PI / 180.0);
+            assert!(offset.lower <= actual && actual <= offset.upper);
+            assert!(!offset.is_zero());
+
+            let state = crate::crs::runtime_state_snapshot().unwrap();
+            let geodesic = crate::crs::geodesic_for_crs_at("EPSG:4326", &state).unwrap();
+            let local = LocalCrsDefinition {
+                definition: "EPSG:32631".to_owned(),
+                display_name: None,
+                projected_pole: None,
+            };
+            let certificate =
+                LocalProjectionCertificate::from_selected_frame(&local, &geodesic, frame, &state)
+                    .unwrap();
+            assert!(
+                certificate
+                    .edge_needs_refinement(
+                        crate::geometry::Point::new_raw_xy(origin, 20.0),
+                        crate::geometry::Point::new_raw_xy(origin, 21.0),
+                        0.0,
+                    )
+                    .unwrap()
+            );
+        }
+
+        #[test]
+        fn source_length_upper_bound_survives_squared_underflow() {
+            let radii = ellipsoid_radii(6_378_137.0, 1.0 / 298.257_223_563).unwrap();
+            let latitude = native_angle(0.01, 1.0, false);
+            let edge = CertificateEdge {
+                longitude_from_central_meridian: AngleBounds::ZERO,
+                longitude_delta: native_angle(1.0e-180, 1.0, false),
+                latitude0: latitude,
+                latitude1: latitude,
+                latitude_difference: AngleBounds::ZERO,
+            };
+            let length_squared = source_length_upper_squared(&radii, &edge, false);
+            assert!(length_squared > 0.0);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
+        fn adjacent_native_latitudes_remain_distinct_for_the_certificate() {
+            let state = crate::crs::runtime_state_snapshot().unwrap();
+            let frame = crate::crs::info_with_state("EPSG:4326", &state)
+                .unwrap()
+                .geographic_frame()
+                .unwrap();
+            let geodesic = crate::crs::geodesic_for_crs_at("EPSG:4326", &state).unwrap();
+            let local = LocalCrsDefinition {
+                definition: "EPSG:32631".to_owned(),
+                display_name: None,
+                projected_pole: None,
+            };
+            let certificate =
+                LocalProjectionCertificate::from_selected_frame(&local, &geodesic, frame, &state)
+                    .unwrap();
+            let latitude = 1.8_f64;
+            let start = crate::geometry::Point::new_raw_xy(0.0, latitude);
+            let end = crate::geometry::Point::new_raw_xy(0.0, latitude.next_up());
+            let unit = frame.latitude_radians_per_unit();
+            assert_eq!(latitude * unit, latitude.next_up() * unit);
+            assert!(certificate.edge_needs_refinement(start, end, 0.0).unwrap());
+
+            let tiny_longitude = crate::geometry::Point::new_raw_xy(f64::from_bits(1), latitude);
+            assert!(
+                certificate
+                    .edge_needs_refinement(start, tiny_longitude, 0.0)
+                    .unwrap()
+            );
+            let near_equator = f64::from_bits(1);
+            assert!(
+                certificate
+                    .edge_needs_refinement(
+                        crate::geometry::Point::new_raw_xy(0.0, near_equator),
+                        crate::geometry::Point::new_raw_xy(0.1, near_equator),
+                        0.0,
+                    )
+                    .unwrap()
+            );
+        }
 
         #[test]
         #[cfg_attr(miri, ignore = "Miri cannot execute native PROJ FFI")]
@@ -1265,29 +1546,19 @@ mod certificate_math {
                 crate::geometry::Point::new_raw_xy(west, 39.0),
             ];
             for &[start, end] in corners.array_windows::<2>() {
-                let edge = certificate.chart_edge(start, end).unwrap();
-                let (curvature, image_scale) = tmerc_curvature_and_scale(
-                    &certificate.radii,
-                    &projection,
-                    edge.longitude_from_central_meridian,
-                    edge.longitude_delta,
-                    edge.latitude0,
-                    edge.latitude1,
-                )
-                .unwrap();
+                let edge = certificate
+                    .chart_edge(start, end)
+                    .unwrap()
+                    .expect("the tested edge is not straight");
+                let (curvature, image_scale) =
+                    tmerc_curvature_and_scale(&certificate.radii, &projection, &edge).unwrap();
                 // These analytic envelopes bound the independent public oracle:
                 // K*l bounds tangent rotation, and K*l²/8 bounds chord error.
                 assert!((0.0..=2.0e-7).contains(&curvature));
                 assert!(image_scale <= 1.02);
                 if start.y == end.y {
                     assert!(curvature >= 1.0e-7);
-                    let length2 = source_length_upper_squared(
-                        &certificate.radii,
-                        edge.latitude0,
-                        edge.latitude1,
-                        edge.longitude_delta,
-                        false,
-                    );
+                    let length2 = source_length_upper_squared(&certificate.radii, &edge, false);
                     for budget in [0.1, 1.0] {
                         let count =
                             certificate.piece_count(start, end, budget).unwrap().get() as f64;
