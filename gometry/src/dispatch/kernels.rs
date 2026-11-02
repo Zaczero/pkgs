@@ -331,6 +331,16 @@ pub(crate) fn unary_buffer_budgeted(
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
+    if matches!(side, BufferSide::Both)
+        && distance.is_finite()
+        && distance < 0.0
+        && let crate::crs::MetricModel::Planar { to_metre } = model
+        && (distance / to_metre.get()).is_infinite()
+    {
+        // A finite-coordinate polygon's inradius cannot exceed f64::MAX.
+        // This native erosion magnitude is strictly larger.
+        return Ok(Shape::empty_polygon());
+    }
     let output = metric_constructive_shape_budgeted(
         model,
         ctx.frame.crs_str(),

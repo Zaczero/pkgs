@@ -864,6 +864,24 @@ def test_polylabel_preserves_extreme_unit_tolerance() -> None:
         polygon.polylabel(tolerance=math.inf, unit='meters')
 
 
+def test_oversized_negative_buffer_is_empty() -> None:
+    polygon = gm.Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], crs=FOOT_CRS)
+    line = gm.LineString([(0, 0), (10, 0)], crs=FOOT_CRS)
+    point = gm.Point(0, 0, crs=FOOT_CRS)
+    for shape in (polygon, line, point):
+        assert shape.buffer(-1e308, unit='meters').is_empty
+    rows = gm.GeometryArray([polygon, line, point, None])
+    result = rows.buffer(-1e308, unit='meters')
+    assert [value.is_empty if value is not None else None for value in result] == [
+        True,
+        True,
+        True,
+        None,
+    ]
+    with pytest.raises(gm.GeometryError, match='finite'):
+        polygon.buffer(-math.inf, unit='meters')
+
+
 def test_area_preserves_extreme_unit_scaling() -> None:
     polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
     expected = (1.5e154 * FOOT_UNIT_M) ** 2
