@@ -32,24 +32,21 @@ pub(crate) fn metric_constructive_shape_budgeted(
     }
 }
 
-/// CRS-aware constructive whose precision is optional. An omitted tolerance
-/// stays omitted until the kernel sees the working geometry, allowing its
-/// scale-aware default to be computed in the actual execution frame.
-pub(crate) fn metric_optional_constructive_shape(
+/// Resolve polylabel's optional tolerance in the geometry's working frame.
+pub(crate) fn metric_polylabel(
     model: &crate::crs::MetricModel,
     crs: Option<&str>,
     shape: &Shape,
     tolerance: Option<f64>,
-    kernel: impl Fn(&Shape, Option<f64>) -> Result<Shape>,
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
-            kernel(shape, tolerance.map(|value| value / to_metre.get()))
+            shape.polylabel_scaled(tolerance, to_metre.get())
         },
         crate::crs::MetricModel::Geodesic { state, .. } => {
             let mut budget = crate::geometry::ExpansionBudget::new("polylabel", "input_refinement");
             geodesic_local_shape(shape, crs, true, None, state, &mut budget, |shape, _| {
-                kernel(shape, tolerance)
+                shape.polylabel(tolerance)
             })
         },
     }

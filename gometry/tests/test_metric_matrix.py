@@ -845,6 +845,25 @@ def test_simplify_extreme_tolerance_uses_indexed_long_line() -> None:
     assert list(result.coords) == points
 
 
+def test_polylabel_preserves_extreme_unit_tolerance() -> None:
+    polygon = gm.Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], crs=FOOT_CRS)
+    expected = polygon.polylabel(tolerance=1e300, unit='meters')
+    assert gm.equals(polygon.polylabel(tolerance=1e308, unit='meters'), expected)
+    rows = gm.GeometryArray([polygon]).polylabel(tolerance=1e308, unit='meters')
+    assert gm.equals(rows[0], expected)
+
+    step = float.fromhex('0x0.0000000000001p-1022')
+    huge_unit = '+proj=utm +zone=18 +datum=WGS84 +to_meter=1e308 +type=crs'
+    tiny = gm.Polygon(
+        [(0, 0), (10 * step, 0), (10 * step, 10 * step), (0, 10 * step), (0, 0)],
+        crs=huge_unit,
+    )
+    point = tiny.polylabel(tolerance=1e-16, unit='meters')
+    assert (point.x, point.y) == (5 * step, 5 * step)
+    with pytest.raises(gm.GeometryError, match='positive finite'):
+        polygon.polylabel(tolerance=math.inf, unit='meters')
+
+
 def test_area_preserves_extreme_unit_scaling() -> None:
     polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
     expected = (1.5e154 * FOOT_UNIT_M) ** 2

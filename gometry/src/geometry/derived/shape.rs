@@ -283,9 +283,14 @@ impl Shape {
     }
 
     pub fn polylabel(&self, tolerance: Option<f64>) -> Result<Self> {
+        self.polylabel_scaled(tolerance, 1.0)
+    }
+
+    pub(crate) fn polylabel_scaled(&self, tolerance: Option<f64>, scale: f64) -> Result<Self> {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
-            .transpose()?;
+            .transpose()?
+            .map(|value| value / scale);
         self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
         // The representative point of any empty polygonal input is the empty
         // point.

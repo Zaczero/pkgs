@@ -37,6 +37,9 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
         return Ok(degenerate_polygon_center(bounds));
     }
     let tolerance = tolerance.unwrap_or_else(|| scale_aware_default_tolerance(shape));
+    if tolerance.is_infinite() {
+        return representative_point(shape, bounds);
+    }
     let center = degenerate_polygon_center(bounds);
     let hx = bounds.maxx() / 2.0 - bounds.minx() / 2.0;
     let hy = bounds.maxy() / 2.0 - bounds.miny() / 2.0;

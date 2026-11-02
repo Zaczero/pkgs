@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::local::{
     FramedCircle, LocalInputPurpose, PreparedLocalInput, metric_concave_hull,
-    metric_constructive_shape_budgeted, metric_optional_constructive_shape,
+    metric_constructive_shape_budgeted, metric_polylabel,
 };
 use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
@@ -452,12 +452,11 @@ pub(crate) fn unary_polylabel(
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::Polylabel)?;
-    let output = metric_optional_constructive_shape(
+    let output = metric_polylabel(
         model,
         ctx.frame.crs_str(),
         data.shape(),
         tolerance.map(|value| value.get(ctx.lane.row())),
-        Shape::polylabel,
     )?;
     publish_planar_geographic_constructive(output, model, ctx.domain, "polylabel")
 }
