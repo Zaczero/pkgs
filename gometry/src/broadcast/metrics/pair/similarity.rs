@@ -118,7 +118,7 @@ pub(crate) fn metric_frechet_with_scratch(
     }
     match model {
         crs::MetricModel::Planar { to_metre } => {
-            Ok(a.frechet_distance_with_scratch(b, scratch)? * to_metre.get())
+            a.frechet_distance_with_scratch(b, scratch, to_metre.get())
         },
         crs::MetricModel::Geodesic { crs, state, .. } => {
             crs::geodesic_frechet_at_with_scratch(crs, a, b, state, scratch)

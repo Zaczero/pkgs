@@ -183,6 +183,7 @@ impl Shape {
         &self,
         other: &Self,
         scratch: &mut distance::FrechetDpScratch,
+        output_scale: f64,
     ) -> Result<f64> {
         // Empty Fréchet operands have infinite distance; wrong geometry kinds
         // still raise through single_linework.
@@ -193,6 +194,7 @@ impl Shape {
             self.single_linework()?,
             other.single_linework()?,
             scratch,
+            output_scale,
         ))
     }
 }

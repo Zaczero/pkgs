@@ -457,6 +457,24 @@ def test_local_projection_metric_accepts_foot_inputs(op: str) -> None:
     assert lo <= magnitude <= hi, (op, magnitude, lo, hi)
 
 
+@pytest.mark.parametrize('densify', [None, 0.5])
+def test_frechet_meter_distance_survives_native_unit_overflow(
+    densify: float | None,
+) -> None:
+    left = gm.LineString([(-1e308, 0.0), (-1e308, 1.0)], crs=FOOT_CRS)
+    right = gm.LineString([(1e308, 0.0), (1e308, 1.0)], crs=FOOT_CRS)
+    expected = 1e308 * (2400.0 / 3937.0)
+    scalar = gm.frechet_distance(left, right, unit='meters', densify=densify)
+    packed = gm.frechet_distance(
+        gm.GeometryArray([left]),
+        gm.GeometryArray([right]),
+        unit='meters',
+        densify=densify,
+    )
+    assert scalar == pytest.approx(expected, rel=1e-14)
+    np.testing.assert_allclose(packed, [expected], rtol=1e-14, atol=0)
+
+
 def test_minimum_bounding_radius_scales_exact_squared_radius_before_rounding() -> None:
     """Meter conversion must not round the native radius before scaling."""
     points = gm.MultiPoint([(0.0, 0.0), (1.0, 5.0)], crs=FOOT_CRS)

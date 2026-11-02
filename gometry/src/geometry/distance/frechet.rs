@@ -8,16 +8,18 @@ pub(crate) fn frechet_distance_line_columns(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
+    output_scale: f64,
 ) -> f64 {
     // Empty is total for Fréchet, so one empty row cannot abort a batch.
     if left_xs.is_empty() || right_xs.is_empty() {
         return f64::INFINITY;
     }
-    if left_xs.len() <= right_xs.len() {
+    let distance = if left_xs.len() <= right_xs.len() {
         frechet_dp_columns(left_xs, left_ys, right_xs, right_ys)
     } else {
         frechet_dp_columns(right_xs, right_ys, left_xs, left_ys)
-    }
+    };
+    scale_frechet_distance(distance, left_xs, left_ys, right_xs, right_ys, output_scale)
 }
 
 /// Element-wise planar Fréchet over packed line CSR windows (one column
@@ -30,6 +32,7 @@ pub(crate) fn frechet_distance_line_columns_batch(
     left: PackedLineColumnView<'_>,
     right: PackedLineColumnView<'_>,
     out: &mut [f64],
+    output_scale: f64,
 ) {
     let len = left.logical_len();
     debug_assert_eq!(len, right.logical_len());
@@ -72,20 +75,72 @@ pub(crate) fn frechet_distance_line_columns_batch(
             )
         };
     }
+    if output_scale < 1.0 && out.iter().any(|value| value.is_infinite()) {
+        for (index, value) in out.iter_mut().enumerate() {
+            if value.is_infinite() {
+                let (left_xs, left_ys) = left.row_xy(index);
+                let (right_xs, right_ys) = right.row_xy(index);
+                if !left_xs.is_empty() && !right_xs.is_empty() {
+                    *value = scale_frechet_distance(
+                        *value,
+                        left_xs,
+                        left_ys,
+                        right_xs,
+                        right_ys,
+                        output_scale,
+                    );
+                    continue;
+                }
+            }
+            *value *= output_scale;
+        }
+    } else {
+        packed_line_metrics::scale_metric_values(out, output_scale);
+    }
 }
 
 pub(crate) fn discrete_frechet_distance_with_scratch(
     left: &(impl crate::geometry::Coordinates + ?Sized),
     right: &(impl crate::geometry::Coordinates + ?Sized),
     scratch: &mut FrechetDpScratch,
+    output_scale: f64,
 ) -> f64 {
     let (left_xs, left_ys) = left.xy_columns().expect("Fréchet operands carry columns");
     let (right_xs, right_ys) = right.xy_columns().expect("Fréchet operands carry columns");
-    if left_xs.len() <= right_xs.len() {
+    let distance = if left_xs.len() <= right_xs.len() {
         frechet_dp_columns_with_dp_scratch(left_xs, left_ys, right_xs, right_ys, scratch)
     } else {
         frechet_dp_columns_with_dp_scratch(right_xs, right_ys, left_xs, left_ys, scratch)
+    };
+    scale_frechet_distance(distance, left_xs, left_ys, right_xs, right_ys, output_scale)
+}
+
+fn scale_frechet_distance(
+    distance: f64,
+    left_xs: &[f64],
+    left_ys: &[f64],
+    right_xs: &[f64],
+    right_ys: &[f64],
+    output_scale: f64,
+) -> f64 {
+    if output_scale.to_bits() == 1.0_f64.to_bits() {
+        return distance;
     }
+    if distance.is_infinite() && output_scale < 1.0 {
+        let (short_xs, short_ys, long_xs, long_ys) = if left_xs.len() <= right_xs.len() {
+            (left_xs, left_ys, right_xs, right_ys)
+        } else {
+            (right_xs, right_ys, left_xs, left_ys)
+        };
+        return frechet_dp_columns_distance_framed_scaled(
+            short_xs,
+            short_ys,
+            long_xs,
+            long_ys,
+            output_scale,
+        );
+    }
+    distance * output_scale
 }
 
 /// A valid UPPER BOUND on the discrete Fréchet² — the squared bottleneck of
@@ -391,6 +446,16 @@ fn frechet_dp_columns_distance_framed(
     long_xs: &[f64],
     long_ys: &[f64],
 ) -> f64 {
+    frechet_dp_columns_distance_framed_scaled(short_xs, short_ys, long_xs, long_ys, 1.0)
+}
+
+fn frechet_dp_columns_distance_framed_scaled(
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+    output_scale: f64,
+) -> f64 {
     let origin_x = short_xs
         .first()
         .copied()
@@ -428,7 +493,27 @@ fn frechet_dp_columns_distance_framed(
     };
     let (sxs, sys) = map(short_xs, short_ys);
     let (lxs, lys) = map(long_xs, long_ys);
-    frechet_dp_columns_distance(&sxs, &sys, &lxs, &lys) / scale
+    let distance = frechet_dp_columns_distance(&sxs, &sys, &lxs, &lys);
+    if output_scale.to_bits() == 1.0_f64.to_bits() {
+        return distance / scale;
+    }
+    let numerator = crate::geometry::ExactDyadic::from_f64(distance)
+        .try_product(&crate::geometry::ExactDyadic::from_f64(output_scale))
+        .expect("finite binary64 scale product fits the exact dyadic representation");
+    crate::geometry::round_ratio(&numerator, &crate::geometry::ExactDyadic::from_f64(scale))
+        .or_else(|error| {
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                )
+            ) {
+                Ok(f64::INFINITY)
+            } else {
+                Err(error)
+            }
+        })
+        .expect("finite binary64 distance scaling fits exact arithmetic")
 }
 
 fn frechet_columns_vertexwise_equal(

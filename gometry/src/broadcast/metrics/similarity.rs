@@ -142,8 +142,11 @@ impl SimilarityOp {
                     }
                     if let (Some(left), Some(right)) = (left.line_coords(), right.line_coords()) {
                         return Ok(crate::geometry::discrete_frechet_distance_with_scratch(
-                            &left, &right, scratch,
-                        ) * to_metre.get());
+                            &left,
+                            &right,
+                            scratch,
+                            to_metre.get(),
+                        ));
                     }
                 },
                 Self::Frechet { .. } => {},
@@ -240,8 +243,12 @@ impl SimilarityOp {
                 )?;
             },
             Self::Frechet { .. } => {
-                crate::geometry::frechet_distance_line_columns_batch(left, right, &mut values);
-                crate::geometry::scale_metric_values(&mut values, scale);
+                crate::geometry::frechet_distance_line_columns_batch(
+                    left,
+                    right,
+                    &mut values,
+                    scale,
+                );
             },
         }
         Ok(values)
@@ -260,8 +267,8 @@ impl SimilarityOp {
                 left_xs, left_ys, right_xs, right_ys, *max_error, scale,
             ),
             Self::Frechet { .. } => Ok(crate::geometry::frechet_distance_line_columns(
-                left_xs, left_ys, right_xs, right_ys,
-            ) * scale),
+                left_xs, left_ys, right_xs, right_ys, scale,
+            )),
         }
     }
 }
