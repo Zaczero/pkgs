@@ -264,12 +264,12 @@ impl ReceiveWindow {
     }
 
     fn receive(&mut self, len: u32) -> Result<(), ()> {
-        let len = i32::try_from(len).map_err(|_| ())?;
-        let remaining = self.0.checked_sub(len).ok_or(())?;
-        if remaining < 0 {
+        debug_assert!(self.0 >= 0, "receive credit is non-negative");
+        let available = self.0.cast_unsigned();
+        if len > available {
             return Err(());
         }
-        self.0 = remaining;
+        self.0 = available.wrapping_sub(len).cast_signed();
         Ok(())
     }
 
@@ -1810,6 +1810,7 @@ mod tests {
 
         let mut overdraw = ReceiveWindowState::new(100);
         assert!(overdraw.receive(101).is_err());
+        assert!(overdraw.receive(u32::MAX).is_err());
         assert_eq!(
             overdraw.recv_window.0, 100,
             "an overdraw preserves usable credit"
@@ -1820,6 +1821,8 @@ mod tests {
     fn receive_window_releases_back_to_the_31_bit_maximum() {
         let max = crate::h2_frame::MAX_FLOW_CONTROL_WINDOW;
         let mut window = ReceiveWindowState::new(max);
+        assert!(window.receive(u32::MAX).is_err());
+        assert_eq!(window.recv_window.0, i32::MAX);
         window
             .receive(max)
             .expect("the maximum window fits exactly");
