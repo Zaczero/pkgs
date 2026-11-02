@@ -53,7 +53,7 @@ impl ChartEdge {
         geodesic: &Geodesic,
     ) -> ChartEdgeDerivatives {
         let e2 = geodesic.f * (2.0 - geodesic.f);
-        let dphi = self.latitude_delta * self.latitude_unit;
+        let dphi = self.latitude_rate();
         let dlambda = self.longitude_delta;
         let (sin_latitude, cos_latitude) = self.latitude_sincos(parameter);
         let w2 = 1.0 - e2 * sin_latitude * sin_latitude;
@@ -103,12 +103,20 @@ impl ChartEdge {
             .div(CertifiedInterval::exact(d_min).mul(d_min_root))
             .upper();
         let q_abs = q.max_abs_upper();
-        let latitude_delta = CertifiedInterval::exact(self.end_latitude)
-            .sub(CertifiedInterval::exact(self.start_latitude))
-            .abs_upper();
-        let latitude_rate = CertifiedInterval::exact(latitude_delta)
-            .mul(CertifiedInterval::exact(self.latitude_unit.abs()))
-            .upper();
+        let latitude_rate = if self.latitude_delta.is_finite() {
+            let latitude_delta = CertifiedInterval::exact(self.end_latitude)
+                .sub(CertifiedInterval::exact(self.start_latitude))
+                .abs_upper();
+            CertifiedInterval::exact(latitude_delta)
+                .mul(CertifiedInterval::exact(self.latitude_unit.abs()))
+                .upper()
+        } else {
+            let unit = CertifiedInterval::exact(self.latitude_unit);
+            CertifiedInterval::exact(self.end_latitude)
+                .mul(unit)
+                .sub(CertifiedInterval::exact(self.start_latitude).mul(unit))
+                .max_abs_upper()
+        };
         let longitude_rate = if self.longitude_delta_native.is_finite() {
             CertifiedInterval::from_bounds(
                 self.longitude_delta_native.next_down(),

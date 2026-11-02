@@ -270,7 +270,7 @@ impl ChartEdge {
             });
         }
 
-        let dphi = self.latitude_delta * self.latitude_unit;
+        let dphi = self.latitude_rate();
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let mut lower = 0.0;
         let mut upper = 1.0;
@@ -302,7 +302,11 @@ impl ChartEdge {
                 lower = parameter;
             }
 
-            let speed = self.speed(parameter, geodesic.a, e2, dphi);
+            let speed = if self.latitude_delta.is_finite() {
+                self.speed::<false>(parameter, geodesic.a, e2, dphi)
+            } else {
+                self.speed::<true>(parameter, geodesic.a, e2, dphi)
+            };
             let newton = parameter - residual / speed;
             let midpoint = f64::midpoint(lower, upper);
             parameter = if newton > lower && newton < upper {
@@ -347,11 +351,25 @@ impl ChartEdge {
         self.integrate_interval::<true>(0.0, 1.0, geodesic, work)
     }
 
+    fn integrate_interval<const FULL: bool>(
+        &self,
+        start: f64,
+        end: f64,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
+        if self.latitude_delta.is_finite() {
+            self.integrate_interval_range::<FULL, false>(start, end, geodesic, work)
+        } else {
+            self.integrate_interval_range::<FULL, true>(start, end, geodesic, work)
+        }
+    }
+
     #[expect(
         clippy::float_cmp,
         reason = "only an exactly zero-width partial interval has zero arclength"
     )]
-    fn integrate_interval<const FULL: bool>(
+    fn integrate_interval_range<const FULL: bool, const WIDE: bool>(
         &self,
         start: f64,
         end: f64,
@@ -362,14 +380,14 @@ impl ChartEdge {
             return Ok(0.0);
         }
         let e2 = geodesic.f * (2.0 - geodesic.f);
-        let dphi = self.latitude_delta * self.latitude_unit;
+        let dphi = self.latitude_rate();
         if self.admits_gl4(dphi) {
             work.charge_into_error(GL4_NODES.len() as u64)?;
             let width = if FULL { 1.0 } else { end - start };
             let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
                 .map(|(node, weight)| {
                     let parameter = if FULL { node } else { start + width * node };
-                    weight * self.speed(parameter, geodesic.a, e2, dphi)
+                    weight * self.speed::<WIDE>(parameter, geodesic.a, e2, dphi)
                 })
                 .sum::<f64>()
                 * width;
@@ -378,7 +396,7 @@ impl ChartEdge {
 
         let mut evaluations = 15_usize;
         work.charge_into_error(15)?;
-        let (initial, initial_error) = self.gk15(start, end, geodesic.a, e2, dphi);
+        let (initial, initial_error) = self.gk15::<WIDE>(start, end, geodesic.a, e2, dphi);
         let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
         if initial_error <= tolerance {
             return self.finite_length(initial);
@@ -432,8 +450,8 @@ impl ChartEdge {
             }
             work.charge_into_error(30)?;
             let middle = f64::midpoint(parent.start, parent.end);
-            let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
-            let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
+            let (left, left_error) = self.gk15::<WIDE>(parent.start, middle, geodesic.a, e2, dphi);
+            let (right, right_error) = self.gk15::<WIDE>(middle, parent.end, geodesic.a, e2, dphi);
             #[cfg(test)]
             update_test_progress(|progress| {
                 progress.child_pairs = progress.child_pairs.wrapping_add(1);
@@ -518,8 +536,8 @@ impl ChartEdge {
         extent <= ONE_DEGREE && extent / colatitude <= 0.1
     }
 
-    fn speed(&self, t: f64, semi_major: f64, e2: f64, dphi: f64) -> f64 {
-        let (sin_latitude, cos_latitude) = self.latitude_sincos(t);
+    fn speed<const WIDE: bool>(&self, t: f64, semi_major: f64, e2: f64, dphi: f64) -> f64 {
+        let (sin_latitude, cos_latitude) = self.latitude_sincos_range::<WIDE>(t);
         let w2 = 1.0 - e2 * sin_latitude * sin_latitude;
         let w = w2.sqrt();
         let prime_vertical = semi_major / w;
@@ -528,6 +546,17 @@ impl ChartEdge {
     }
 
     pub(super) fn latitude_sincos(&self, t: f64) -> (f64, f64) {
+        if self.latitude_delta.is_finite() {
+            self.latitude_sincos_range::<false>(t)
+        } else {
+            self.latitude_sincos_range::<true>(t)
+        }
+    }
+
+    fn latitude_sincos_range<const WIDE: bool>(&self, t: f64) -> (f64, f64) {
+        if WIDE {
+            return self.latitude_sincos_wide(t);
+        }
         let orientation = self.frame.latitude_orientation_sign();
         let latitude0 = self.start_latitude * orientation;
         let latitude1 = self.end_latitude * orientation;
@@ -560,16 +589,35 @@ impl ChartEdge {
         (sign * cos_colatitude, sin_colatitude)
     }
 
-    fn gk15(&self, start: f64, end: f64, semi_major: f64, e2: f64, dphi: f64) -> (f64, f64) {
+    fn latitude_sincos_wide(&self, t: f64) -> (f64, f64) {
+        let latitude = crate::geometry::interpolate_subdivision_ordinate(
+            self.start_latitude,
+            self.end_latitude,
+            t,
+        ) * self.frame.latitude_orientation_sign();
+        let sign = 1.0_f64.copysign(latitude);
+        let colatitude = (self.chart_pole - latitude.abs()) * self.latitude_unit.abs();
+        let (sin, cos) = colatitude.sin_cos();
+        (sign * cos, sin)
+    }
+
+    fn gk15<const WIDE: bool>(
+        &self,
+        start: f64,
+        end: f64,
+        semi_major: f64,
+        e2: f64,
+        dphi: f64,
+    ) -> (f64, f64) {
         let center = f64::midpoint(start, end);
         let half = (end - start) / 2.0;
-        let center_value = self.speed(center, semi_major, e2, dphi);
+        let center_value = self.speed::<WIDE>(center, semi_major, e2, dphi);
         let mut kronrod = center_value * GK15_CENTER_KRONROD_WEIGHT;
         let mut gauss = center_value * G7_CENTER_WEIGHT;
         for &(node, kronrod_weight, gauss_weight) in &GK15_NONCENTRAL_RULE {
             let offset = half * node;
-            let pair = self.speed(center - offset, semi_major, e2, dphi)
-                + self.speed(center + offset, semi_major, e2, dphi);
+            let pair = self.speed::<WIDE>(center - offset, semi_major, e2, dphi)
+                + self.speed::<WIDE>(center + offset, semi_major, e2, dphi);
             kronrod += kronrod_weight * pair;
             if let Some(gauss_weight) = gauss_weight {
                 gauss += gauss_weight * pair;

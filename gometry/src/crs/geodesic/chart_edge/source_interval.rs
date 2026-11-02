@@ -248,14 +248,22 @@ impl ChartEdge {
         let lifted_longitude = axis
             .nearest_longitude_alias(midpoint_longitude, point.x)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
+        let scale = if self.latitude_delta.is_finite() {
+            1.0
+        } else {
+            0.25
+        };
         let segment = Segment {
             start: XY::new(0.0, 0.0),
-            end: XY::new(self.longitude_delta_native, self.latitude_delta),
+            end: XY::new(
+                self.longitude_delta_native * scale,
+                self.end_latitude * scale - self.start_latitude * scale,
+            ),
         };
         let start_longitude = self.longitude.endpoints()[0].get();
         let query = XY::new(
-            lifted_longitude - start_longitude,
-            point.y - self.start_latitude,
+            lifted_longitude * scale - start_longitude * scale,
+            point.y * scale - self.start_latitude * scale,
         );
         Ok((segment_projection(query, segment)?, query, segment))
     }

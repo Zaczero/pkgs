@@ -59,6 +59,14 @@ pub(super) struct ChartEdgeDerivatives {
 }
 
 impl ChartEdge {
+    fn latitude_rate(&self) -> f64 {
+        if self.latitude_delta.is_finite() {
+            self.latitude_delta * self.latitude_unit
+        } else {
+            self.end_latitude * self.latitude_unit - self.start_latitude * self.latitude_unit
+        }
+    }
+
     pub(crate) const fn frame(self) -> GeographicFrame {
         self.frame
     }

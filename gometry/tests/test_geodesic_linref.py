@@ -28,6 +28,29 @@ GRAD_CRS = (
     'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
 )
 
+
+def test_chart_edge_with_extreme_latitude_units() -> None:
+    tiny_latitude_crs = (
+        'GEOGCRS["WGS 84 tiny latitude",'
+        'DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+        'CS[ellipsoidal,2],'
+        'AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],'
+        'AXIS["Latitude",north,ORDER[2],ANGLEUNIT["tiny",1e-308]]]'
+    )
+    line = gm.LineString([(0, -1e308), (10, 1e308)], crs=tiny_latitude_crs)
+    ordinary = gm.LineString(
+        [(0, -math.degrees(1.0)), (10, math.degrees(1.0))], crs=4326
+    )
+    assert gm.length(line) == pytest.approx(gm.length(ordinary), rel=1e-13)
+    midpoint = line.line_interpolate(0.5, normalized=True)
+    expected = ordinary.line_interpolate(0.5, normalized=True)
+    assert midpoint.x == pytest.approx(expected.x, abs=1e-10)
+    assert midpoint.y * 1e-308 == pytest.approx(math.radians(expected.y), abs=1e-13)
+    probe = gm.Point(5, 0, crs=tiny_latitude_crs)
+    assert line.line_locate(probe, normalized=True) == pytest.approx(0.5, abs=1e-12)
+
+
 # Fixed per-fixture allowances. Each includes two 4-epsilon arclength
 # inversions, four-ULP physical coordinate quantization, sampled-speed
 # parameter rounding and station-result ULPs. These are fixture budgets, not a
