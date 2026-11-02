@@ -375,6 +375,15 @@ pub(in crate::geometry) fn clearance_aabb_filter(
 }
 
 impl SquaredDistanceKey {
+    /// Round the source-continuum distance using a positive finite unit scale.
+    pub(in crate::geometry) fn scaled_distance(&self, scale: f64) -> Result<f64> {
+        debug_assert!(scale.is_finite() && scale > 0.0);
+        let squared = self.witness.squared()?;
+        let scale = ExactDyadic::from_f64(scale);
+        let numerator = squared.numerator.try_product(&scale)?.try_product(&scale)?;
+        round_sqrt_ratio(&numerator, &squared.denominator)
+    }
+
     /// Closed distance cutoff on source coordinates, without rounded projection.
     pub(in crate::geometry) fn within_distance(&self, tolerance: f64) -> Result<bool> {
         debug_assert!(tolerance >= 0.0);

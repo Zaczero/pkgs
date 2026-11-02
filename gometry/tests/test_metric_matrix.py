@@ -475,6 +475,41 @@ def test_frechet_meter_distance_survives_native_unit_overflow(
     np.testing.assert_allclose(packed, [expected], rtol=1e-14, atol=0)
 
 
+def test_minimum_clearance_meter_distance_survives_native_unit_overflow() -> None:
+    line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], crs=FOOT_CRS)
+    projected = gm.GeometryCollection([
+        gm.Point(-1e308, 0.0, crs=FOOT_CRS),
+        gm.LineString([(1e308, -1.7e308), (1e308, 1.7e308)], crs=FOOT_CRS),
+    ])
+    expected = 1e308 * (2400.0 / 3937.0)
+    for shape in (line, projected):
+        assert shape.minimum_clearance(unit='meters') == pytest.approx(
+            expected, rel=1e-14
+        )
+        np.testing.assert_allclose(
+            gm.GeometryArray([shape]).minimum_clearance(unit='meters'),
+            [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+
+
+def test_minimum_clearance_scales_below_native_subnormal_range() -> None:
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    shape = gm.GeometryCollection([
+        gm.Point(0.5, 0.0, crs=crs),
+        gm.LineString([(0.0, 0.0), (1.0, math.ulp(0.0))], crs=crs),
+    ])
+    expected = math.ulp(0.0) * 1e200 / 2.0
+    assert shape.minimum_clearance(unit='meters') == pytest.approx(expected, rel=1e-14)
+    np.testing.assert_allclose(
+        gm.GeometryArray([shape]).minimum_clearance(unit='meters'),
+        [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+
+
 def test_minimum_bounding_radius_scales_exact_squared_radius_before_rounding() -> None:
     """Meter conversion must not round the native radius before scaling."""
     points = gm.MultiPoint([(0.0, 0.0), (1.0, 5.0)], crs=FOOT_CRS)

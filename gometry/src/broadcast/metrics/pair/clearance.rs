@@ -110,7 +110,7 @@ pub(crate) fn metric_minimum_clearance(
 ) -> crate::error::Result<f64> {
     dispatch_metric_model(
         model,
-        |to_metre| Ok(shape.minimum_clearance()? * to_metre),
+        |to_metre| shape.minimum_clearance_scaled(to_metre),
         |geodesic_crs, _, state| {
             let line = metric_minimum_clearance_line_impl(model, crs, shape, false)?;
             crs::geodesic_witness_distance_at(geodesic_crs, &line, state)

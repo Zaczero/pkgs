@@ -145,9 +145,13 @@ fn shape_has_any_point(shape: &Shape, owners: &mut SharedShapeOwners) -> bool {
 
 impl Shape {
     pub fn minimum_clearance(&self) -> Result<f64> {
+        self.minimum_clearance_scaled(1.0)
+    }
+
+    pub(crate) fn minimum_clearance_scaled(&self, scale: f64) -> Result<f64> {
         Ok(match minimum_clearance_witness(self)? {
             None => f64::INFINITY,
-            Some(witness) => witness.planar_distance()?,
+            Some(witness) => witness.planar_distance_scaled(scale)?,
         })
     }
 

@@ -165,21 +165,34 @@ pub(crate) struct MinimumClearanceWitness {
 }
 
 impl MinimumClearanceWitness {
+    #[cfg(test)]
     pub(crate) fn planar_distance(&self) -> crate::error::Result<f64> {
+        self.planar_distance_scaled(1.0)
+    }
+
+    pub(crate) fn planar_distance_scaled(&self, scale: f64) -> crate::error::Result<f64> {
         match self.plan.as_slice() {
             [
                 VertexProvenance::Input(left),
                 VertexProvenance::Input(right),
-            ] => Ok(point_distance(
-                *self
+            ] => {
+                let left = *self
                     .points
                     .get(*left)
-                    .expect("clearance point provenance belongs to the source points"),
-                *self
+                    .expect("clearance point provenance belongs to the source points");
+                let right = *self
                     .points
                     .get(*right)
-                    .expect("clearance point provenance belongs to the source points"),
-            )),
+                    .expect("clearance point provenance belongs to the source points");
+                let distance = point_distance(left, right);
+                if (distance.is_infinite() && scale < 1.0)
+                    || (distance.is_finite() && !distance.is_normal() && scale > 1.0)
+                {
+                    point_pair_distance_key(left.xy(), right.xy()).scaled_distance(scale)
+                } else {
+                    Ok(distance * scale)
+                }
+            },
             [
                 VertexProvenance::Input(point),
                 VertexProvenance::OnSegment { i, j, .. } | VertexProvenance::OnSource { i, j, .. },
@@ -196,10 +209,18 @@ impl MinimumClearanceWitness {
                     .points
                     .get(*j)
                     .expect("clearance segment provenance belongs to the source points");
-                point_segment_distance(point, Segment {
+                let segment = Segment {
                     start: start.xy(),
                     end: end.xy(),
-                })
+                };
+                let distance = point_segment_distance(point, segment)?;
+                if (distance.is_infinite() && scale < 1.0)
+                    || (distance.is_finite() && !distance.is_normal() && scale > 1.0)
+                {
+                    point_segment_exact_distance_key(point.xy(), segment).scaled_distance(scale)
+                } else {
+                    Ok(distance * scale)
+                }
             },
             _ => unreachable!("clearance witnesses start at an input point"),
         }
