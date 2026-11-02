@@ -903,10 +903,7 @@ impl RootRequestTable {
             .row_offsets
             .get(row.index())
             .ok_or_else(|| GeometryErrorKind::Invalid("source request row is unknown".into()))?;
-        let end_index = row
-            .index()
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
+        let end_index = row.index().wrapping_add(1);
         let end = *self.row_offsets.get(end_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("source request row end is unknown".into())
         })?;
@@ -979,7 +976,7 @@ impl TraceRows {
         let start = *self.offsets.get(edge).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no requested edge row".into())
         })?;
-        let end_index = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let end_index = edge.wrapping_add(1);
         let end = *self.offsets.get(end_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no terminal edge row".into())
         })?;
@@ -994,7 +991,7 @@ impl TraceRows {
         let start = *self.sample_offsets.get(sample).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no requested sample row".into())
         })?;
-        let end_index = sample.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let end_index = sample.wrapping_add(1);
         let end = *self.sample_offsets.get(end_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no terminal sample row".into())
         })?;
