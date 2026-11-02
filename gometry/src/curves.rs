@@ -18,10 +18,14 @@ pub(crate) enum CurveKind {
 }
 
 impl CurveKind {
-    pub(crate) fn key(self, frame: &CurveFrame, shape: &Shape) -> Option<u64> {
+    pub(crate) fn key<const SUBNORMAL: bool>(
+        self,
+        frame: &CurveFrame,
+        shape: &Shape,
+    ) -> Option<u64> {
         match self {
-            Self::Hilbert => frame.hilbert_key(shape),
-            Self::Morton => frame.morton_key(shape),
+            Self::Hilbert => frame.hilbert_key::<SUBNORMAL>(shape),
+            Self::Morton => frame.morton_key::<SUBNORMAL>(shape),
         }
     }
 }
@@ -70,31 +74,43 @@ impl CurveFrame {
     }
 
     /// Hilbert key of a shape's bbox center (`None` for empty shapes).
-    pub(crate) fn hilbert_key(&self, shape: &Shape) -> Option<u64> {
-        let (x, y) = self.center_cell(shape)?;
+    pub(crate) fn hilbert_key<const SUBNORMAL: bool>(&self, shape: &Shape) -> Option<u64> {
+        let (x, y) = self.center_cell::<SUBNORMAL>(shape)?;
         Some(fast_hilbert::xy2h(x, y, self.level.get()))
     }
 
     /// Morton (Z-order) key of a shape's bbox center (`None` for empty).
-    pub(crate) fn morton_key(&self, shape: &Shape) -> Option<u64> {
-        let (x, y) = self.center_cell(shape)?;
+    pub(crate) fn morton_key<const SUBNORMAL: bool>(&self, shape: &Shape) -> Option<u64> {
+        let (x, y) = self.center_cell::<SUBNORMAL>(shape)?;
         Some(morton_interleave(x, y))
     }
 
-    fn center_cell(&self, shape: &Shape) -> Option<(u32, u32)> {
+    pub(crate) fn has_subnormal_span(&self) -> bool {
+        let is_subnormal =
+            |low: f64, high: f64| high > low && !(high / 2.0 - low / 2.0).is_normal();
+        is_subnormal(self.bounds.minx(), self.bounds.maxx())
+            || is_subnormal(self.bounds.miny(), self.bounds.maxy())
+    }
+
+    fn center_cell<const SUBNORMAL: bool>(&self, shape: &Shape) -> Option<(u32, u32)> {
         let bounds = shape.bounds()?;
-        Some(self.cell(
+        Some(self.cell::<SUBNORMAL>(
             f64::midpoint(bounds.minx(), bounds.maxx()),
             f64::midpoint(bounds.miny(), bounds.maxy()),
         ))
     }
 
-    fn cell(&self, x: f64, y: f64) -> (u32, u32) {
+    fn cell<const SUBNORMAL: bool>(&self, x: f64, y: f64) -> (u32, u32) {
         let max = (1_u64 << self.level.get()).wrapping_sub(1) as f64;
         let cell = |value: f64, low: f64, high: f64| -> u32 {
             // Halved terms keep every difference finite even when the raw
             // span (high - low) would overflow at 1e308-scale frames.
             let span = high / 2.0 - low / 2.0;
+            if SUBNORMAL && !span.is_normal() && high > low {
+                // Halving can quantize or erase a subnormal span. Its full
+                // difference is representable, as is the clamped offset.
+                return ((value.clamp(low, high) - low) / (high - low) * max) as u32;
+            }
             if span > 0.0 {
                 // Clamp before the cast: centers outside an explicit frame
                 // pin to its edge instead of wrapping.
@@ -195,14 +211,14 @@ mod tests {
         );
         let key = |x: f64, y: f64| {
             frame
-                .hilbert_key(&Shape::Point(crate::geometry::Point::new_raw_xy(x, y)))
+                .hilbert_key::<false>(&Shape::Point(crate::geometry::Point::new_raw_xy(x, y)))
                 .unwrap()
         };
         // Distinct cells, and near neighbors are closer than far ones.
         let near = key(0.1, 0.1).abs_diff(key(0.1001, 0.1));
         let far = key(0.1, 0.1).abs_diff(key(0.9, 0.9));
         assert!(near < far);
-        assert!(frame.hilbert_key(&Shape::empty_point()).is_none());
+        assert!(frame.hilbert_key::<false>(&Shape::empty_point()).is_none());
     }
 
     #[test]
@@ -213,12 +229,12 @@ mod tests {
         );
         let shape = Shape::Point(crate::geometry::Point::new_raw_xy(0.25, 0.75));
         assert_eq!(
-            CurveKind::Hilbert.key(&frame, &shape),
-            frame.hilbert_key(&shape)
+            CurveKind::Hilbert.key::<false>(&frame, &shape),
+            frame.hilbert_key::<false>(&shape)
         );
         assert_eq!(
-            CurveKind::Morton.key(&frame, &shape),
-            frame.morton_key(&shape)
+            CurveKind::Morton.key::<false>(&frame, &shape),
+            frame.morton_key::<false>(&shape)
         );
     }
 }

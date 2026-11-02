@@ -47,6 +47,23 @@ def test_morton_keys_interleave_and_sort_orders_storage() -> None:
     ]
 
 
+@pytest.mark.parametrize('curve', ['hilbert', 'morton'])
+def test_curve_frames_preserve_subnormal_spans(curve: str) -> None:
+    step = float.fromhex('0x0.0000000000001p-1022')
+    tiny = gm.points([0.0, 3 * step, 5 * step], [0.0, 0.0, 0.0])
+    ordinary = gm.points([0.0, 3.0, 5.0], [0.0, 0.0, 0.0])
+    expected = ordinary.spatial_key(curve=curve, level=2)
+    np.testing.assert_array_equal(tiny.spatial_key(curve=curve, level=2), expected)
+    np.testing.assert_array_equal(
+        tiny.spatial_key(curve=curve, level=2, bounds=(0, 0, 5 * step, 1)), expected
+    )
+    outside = gm.points([-step, 6 * step], [0.0, 0.0])
+    np.testing.assert_array_equal(
+        outside.spatial_key(curve=curve, level=2, bounds=(0, 0, 5 * step, 1)),
+        expected[[0, 2]],
+    )
+
+
 def test_curve_frames_and_errors() -> None:
     outside_and_corner = gm.points([10.0, 1.0], [10.0, 1.0])
     clamped, inside = uints(

@@ -358,14 +358,23 @@ impl PyGeometryArray {
         };
         let frame = curves::CurveFrame::new(bounds, level);
         let mut keys = Vec::with_capacity(self.len());
-        for row in self.row_operation().rows_with_missing(|| u64::MAX) {
-            let key = match row {
-                ArrayRow::Missing { value, .. } => value,
-                ArrayRow::Present(row) => row
-                    .row()
-                    .with_shape(|shape| kind.key(&frame, shape).unwrap_or(u64::MAX))?,
+        macro_rules! collect_keys {
+            ($subnormal:literal) => {
+                for row in self.row_operation().rows_with_missing(|| u64::MAX) {
+                    let key = match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                            kind.key::<$subnormal>(&frame, shape).unwrap_or(u64::MAX)
+                        })?,
+                    };
+                    keys.push(key);
+                }
             };
-            keys.push(key);
+        }
+        if frame.has_subnormal_span() {
+            collect_keys!(true);
+        } else {
+            collect_keys!(false);
         }
         Ok(keys)
     }
