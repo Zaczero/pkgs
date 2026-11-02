@@ -475,6 +475,25 @@ def test_frechet_meter_distance_survives_native_unit_overflow(
     np.testing.assert_allclose(packed, [expected], rtol=1e-14, atol=0)
 
 
+def test_frechet_scales_subnormal_distance_before_rounding() -> None:
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    left = gm.LineString([(0.0, 0.0), (0.0, 0.0)], crs=crs)
+    right = gm.LineString([(step, step), (step, step)], crs=crs)
+    expected = step * 1e200 * math.sqrt(2.0)
+    assert gm.frechet_distance(left, right, unit='meters') == pytest.approx(
+        expected, rel=1e-14
+    )
+    np.testing.assert_allclose(
+        gm.frechet_distance(
+            gm.GeometryArray([left]), gm.GeometryArray([right]), unit='meters'
+        ),
+        [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+
+
 def test_minimum_clearance_meter_distance_survives_native_unit_overflow() -> None:
     line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], crs=FOOT_CRS)
     projected = gm.GeometryCollection([

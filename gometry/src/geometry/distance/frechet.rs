@@ -75,9 +75,13 @@ pub(crate) fn frechet_distance_line_columns_batch(
             )
         };
     }
-    if output_scale < 1.0 && out.iter().any(|value| value.is_infinite()) {
+    if output_scale.to_bits() != 1.0_f64.to_bits()
+        && out
+            .iter()
+            .any(|&value| scale_requires_replay(value, output_scale))
+    {
         for (index, value) in out.iter_mut().enumerate() {
-            if value.is_infinite() {
+            if scale_requires_replay(*value, output_scale) {
                 let (left_xs, left_ys) = left.row_xy(index);
                 let (right_xs, right_ys) = right.row_xy(index);
                 if !left_xs.is_empty() && !right_xs.is_empty() {
@@ -115,6 +119,11 @@ pub(crate) fn discrete_frechet_distance_with_scratch(
     scale_frechet_distance(distance, left_xs, left_ys, right_xs, right_ys, output_scale)
 }
 
+fn scale_requires_replay(distance: f64, scale: f64) -> bool {
+    (distance.is_infinite() && scale < 1.0)
+        || (distance.is_finite() && !distance.is_normal() && scale > 1.0)
+}
+
 fn scale_frechet_distance(
     distance: f64,
     left_xs: &[f64],
@@ -126,7 +135,7 @@ fn scale_frechet_distance(
     if output_scale.to_bits() == 1.0_f64.to_bits() {
         return distance;
     }
-    if distance.is_infinite() && output_scale < 1.0 {
+    if scale_requires_replay(distance, output_scale) {
         let (short_xs, short_ys, long_xs, long_ys) = if left_xs.len() <= right_xs.len() {
             (left_xs, left_ys, right_xs, right_ys)
         } else {
