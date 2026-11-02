@@ -42,15 +42,17 @@ impl RequestBodyState {
     }
 
     pub(crate) fn record_chunk(&mut self, chunk_len: u64) -> RequestBodyProgress {
-        self.received_length = self.received_length.saturating_add(chunk_len);
+        let (received_length, overflow) = self.received_length.overflowing_add(chunk_len);
+        self.received_length = if overflow { u64::MAX } else { received_length };
         if let Some(access_log_bytes) = &self.access_log_bytes {
             access_log_bytes.add(chunk_len);
         }
-        self.classify_received_length(self.received_length)
+        self.classify_received_length(self.received_length, overflow)
     }
 
     pub(crate) fn preview_chunk(&self, chunk_len: u64) -> RequestBodyProgress {
-        self.classify_received_length(self.received_length.saturating_add(chunk_len))
+        let (received_length, overflow) = self.received_length.overflowing_add(chunk_len);
+        self.classify_received_length(received_length, overflow)
     }
 
     pub(crate) fn finish(&self) -> RequestBodyFinish {
@@ -72,16 +74,20 @@ impl RequestBodyState {
         self.deliver_to_app
     }
 
-    fn classify_received_length(&self, received_length: u64) -> RequestBodyProgress {
+    fn classify_received_length(
+        &self,
+        received_length: u64,
+        overflow: bool,
+    ) -> RequestBodyProgress {
         if self
             .max_body_size
-            .is_some_and(|max_body_size| received_length > max_body_size.get())
+            .is_some_and(|max_body_size| overflow || received_length > max_body_size.get())
         {
             return RequestBodyProgress::SizeLimitExceeded;
         }
         if self
             .expected_length
-            .is_some_and(|expected_length| received_length > expected_length)
+            .is_some_and(|expected_length| overflow || received_length > expected_length)
         {
             return RequestBodyProgress::ContentLengthExceeded;
         }
@@ -151,5 +157,45 @@ mod tests {
         );
         assert_eq!(state.record_chunk(2), RequestBodyProgress::Continue);
         assert_eq!(state.finish(), RequestBodyFinish::Complete);
+    }
+
+    #[test]
+    fn body_counter_overflow_preserves_limit_precedence() {
+        let mut limited = RequestBodyState::new(Some(u64::MAX), None, NonZeroU64::new(u64::MAX));
+        assert_eq!(
+            limited.record_chunk(u64::MAX),
+            RequestBodyProgress::Continue
+        );
+        assert_eq!(
+            limited.preview_chunk(1),
+            RequestBodyProgress::SizeLimitExceeded
+        );
+        assert_eq!(
+            limited.record_chunk(1),
+            RequestBodyProgress::SizeLimitExceeded
+        );
+
+        let mut declared = RequestBodyState::new(Some(u64::MAX), None, None);
+        assert_eq!(
+            declared.record_chunk(u64::MAX),
+            RequestBodyProgress::Continue
+        );
+        assert_eq!(
+            declared.preview_chunk(1),
+            RequestBodyProgress::ContentLengthExceeded
+        );
+        assert_eq!(declared.finish(), RequestBodyFinish::Complete);
+        assert_eq!(
+            declared.record_chunk(1),
+            RequestBodyProgress::ContentLengthExceeded
+        );
+
+        let mut unlimited = RequestBodyState::new(None, None, None);
+        assert_eq!(
+            unlimited.record_chunk(u64::MAX),
+            RequestBodyProgress::Continue
+        );
+        assert_eq!(unlimited.preview_chunk(1), RequestBodyProgress::Continue);
+        assert_eq!(unlimited.record_chunk(1), RequestBodyProgress::Continue);
     }
 }
