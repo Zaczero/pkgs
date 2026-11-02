@@ -1,4 +1,5 @@
 use super::*;
+use crate::geographic::retained_exact::sites::retained_delta_scaled;
 use crate::geometry::tessellation::sampling::sample_weighted_filtered;
 use crate::geometry::{ChartMetric as _, SampleDraw};
 
@@ -458,8 +459,22 @@ impl Shape {
                             let SampleSupport::GeographicSegment { segment } = support else {
                                 unreachable!("geographic support contains retained segments")
                             };
-                            let dx = segment.delta_x * scale;
-                            let dy = segment.delta_y * scale;
+                            let dx = if segment.delta_x.is_finite() {
+                                segment.delta_x * scale
+                            } else {
+                                retained_delta_scaled(
+                                    segment.longitude.endpoints()[0].get(),
+                                    segment.longitude.endpoints()[1].get(),
+                                    frame.longitude().period(),
+                                    segment.longitude.periods(),
+                                    scale,
+                                )
+                            };
+                            let dy = if segment.delta_y.is_finite() {
+                                segment.delta_y * scale
+                            } else {
+                                segment.end.y * scale - segment.start.y * scale
+                            };
                             (dx * dx + dy * dy).sqrt()
                         },
                         |support, state| {

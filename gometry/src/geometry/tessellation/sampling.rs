@@ -37,7 +37,7 @@ impl GeographicSampleSegment {
     ) -> Result<Point> {
         let x = if self.raw_compatible {
             (1.0 - along) * self.start.x + along * self.end.x
-        } else {
+        } else if self.delta_x.is_finite() {
             let start = self.longitude.endpoints()[0].get();
             frame
                 .longitude()
@@ -45,6 +45,12 @@ impl GeographicSampleSegment {
                 .map_err(|error| {
                     crate::geometry::GeometryErrorKind::antimeridian_split_failed(error.to_string())
                 })?
+                .get()
+        } else {
+            frame
+                .longitude()
+                .native_site_at(&self.longitude, along)?
+                .native()
                 .get()
         };
         Point::new(x, (1.0 - along) * self.start.y + along * self.end.y)

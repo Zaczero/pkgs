@@ -50,6 +50,37 @@ def test_geographic_line_sampling_weights_physical_source_arclength() -> None:
     )
 
 
+def test_planar_geographic_sampling_preserves_extreme_latitude_span() -> None:
+    crs = (
+        'GEOGCRS["WGS 84 tiny latitude",'
+        'DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+        'CS[ellipsoidal,2],'
+        'AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],'
+        'AXIS["Latitude",north,ORDER[2],ANGLEUNIT["tiny",1e-308]]]'
+    )
+    line = gm.LineString([(170, -1e308), (-170, 1e308)], crs=crs)
+    ordinary = gm.LineString([(170, -1), (-170, 1)], crs=4326)
+    expected = ordinary.sample_points(8, seed=17, unit='planar')
+    actual = line.sample_points(8, seed=17, unit='planar')
+    np.testing.assert_allclose(
+        [(point.x, point.y * 1e-308) for point in actual],
+        [(point.x, point.y) for point in expected],
+        rtol=1e-14,
+        atol=1e-14,
+    )
+    packed = gm.GeometryArray([line]).sample_points(8, seed=17, unit='planar')
+    assert packed[0].to_wkt() == actual.to_wkt()
+    lines = gm.MultiLineString(
+        [[(170, -1e308), (-170, 1e308)], [(150, 0), (-150, 1e308)]], crs=crs
+    )
+    points = lines.sample_points(4096, seed=37, unit='planar')
+    second_exclusive_fraction = sum(abs(point.x) < 170 for point in points) / len(
+        points
+    )
+    assert second_exclusive_fraction == pytest.approx(2 / 9, abs=0.04)
+
+
 def test_geographic_physical_sampling_keeps_seams_poles_and_row_streams() -> None:
     line = gm.LineString([(170, 80), (-170, 85)], crs=4326)
     points = line.sample_points(24, seed=13)
