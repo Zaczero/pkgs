@@ -31,7 +31,6 @@ fn smooth_budget_error(produced: usize) -> crate::error::Error {
 struct SmoothOutputBuilder {
     coordinates: CoordSeqBuilder,
     preserved_vertices: Option<Vec<usize>>,
-    length: usize,
 }
 
 impl SmoothOutputBuilder {
@@ -43,21 +42,18 @@ impl SmoothOutputBuilder {
         Self {
             coordinates: CoordSeqBuilder::with_capacity(axes, capacity),
             preserved_vertices: capture.then(Vec::new),
-            length: 0,
         }
     }
 
     fn push_computed(&mut self, point: Point) {
         self.coordinates.push(point);
-        self.length = self.length.wrapping_add(1);
     }
 
     fn push_preserved(&mut self, point: Point) {
         if let Some(preserved_vertices) = &mut self.preserved_vertices {
-            preserved_vertices.push(self.length);
+            preserved_vertices.push(self.coordinates.len());
         }
         self.coordinates.push(point);
-        self.length = self.length.wrapping_add(1);
     }
 
     fn push_preserved_at(&mut self, points: &CoordSeq, index: usize) {
