@@ -3,7 +3,7 @@ mod table;
 use bytes::BytesMut;
 
 use crate::hpack::DecoderError;
-use crate::hpack::huffman::table::{DECODE_TABLE, ENCODE_TABLE};
+use crate::hpack::huffman::table::{DECODE_TABLE, ENCODE_TABLE, MAX_CODE_BITS};
 
 const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
@@ -101,13 +101,18 @@ fn decode_entry(state: usize, nibble: u8) -> DecodeEntry {
 }
 
 pub(crate) fn encoded_len(src: &[u8]) -> usize {
-    let mut bit_len = 0_usize;
-    for &byte in src {
-        bit_len = bit_len
-            .checked_add((encode_entry(byte) >> ENCODE_LENGTH_SHIFT) as usize)
-            .expect("Huffman encoded bit length fits usize");
+    // Each chunk's bit count fits usize; the complete count fits u128 because
+    // a slice has at most isize::MAX bytes and each code fits MAX_CODE_BITS.
+    let mut bit_len = 0_u128;
+    for chunk in src.chunks(usize::MAX / MAX_CODE_BITS) {
+        let mut chunk_bits = 0_usize;
+        for &byte in chunk {
+            chunk_bits =
+                chunk_bits.wrapping_add((encode_entry(byte) >> ENCODE_LENGTH_SHIFT) as usize);
+        }
+        bit_len = bit_len.wrapping_add(chunk_bits as u128);
     }
-    bit_len.div_ceil(8)
+    usize::try_from(bit_len.div_ceil(8)).expect("Huffman encoded byte length fits usize")
 }
 
 #[cfg(test)]
@@ -178,11 +183,13 @@ mod tests {
 
     #[test]
     fn encoded_length_matches_actual_output() {
-        let data = b"custom-key";
-        let mut dst = BytesMut::new();
-        encode(data, &mut dst);
+        let all_bytes: Vec<u8> = (u8::MIN..=u8::MAX).collect();
+        for data in [&b""[..], &b"custom-key"[..], all_bytes.as_slice()] {
+            let mut dst = BytesMut::new();
+            encode(data, &mut dst);
 
-        assert_eq!(encoded_len(data), dst.len());
+            assert_eq!(encoded_len(data), dst.len());
+        }
     }
 
     #[test]

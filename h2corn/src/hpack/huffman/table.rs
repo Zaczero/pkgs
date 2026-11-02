@@ -3,6 +3,7 @@
 // The low 32 bits contain the code and bits 32..=36 contain its length. HPACK
 // codes are at most 30 bits wide, so one u64 entry halves this hot table's
 // footprint compared with the generated `(usize, u64)` source representation.
+pub(super) const MAX_CODE_BITS: usize = 30;
 pub(super) const ENCODE_TABLE: [u64; 257] = pack_encode_table(&[
     (13, 0x1FF8),
     (23, 0x007F_FFD8),
@@ -5143,7 +5144,7 @@ const fn pack_encode_table(source: &[(usize, u64); 257]) -> [u64; 257] {
     let mut index = 0;
     while index < source.len() {
         let (code_bits, code) = source[index];
-        assert!(code_bits <= 30);
+        assert!(code_bits <= MAX_CODE_BITS);
         assert!(code <= u32::MAX as u64);
         packed[index] = code | ((code_bits as u64) << 32);
         index = index.wrapping_add(1);
