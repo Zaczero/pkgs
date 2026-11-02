@@ -48,6 +48,21 @@ def test_voronoi_output_selects_cells_or_internal_edges_and_groups_rows() -> Non
     ]
 
 
+@pytest.mark.parametrize('frontend', ['scalar', 'packed'])
+def test_collinear_voronoi_edges_ignore_repeated_closing_vertex(frontend: str) -> None:
+    sites = gm.MultiPoint([(-1, -1), (1, 1)])
+    clip = gm.from_wkt('POLYGON ((0 0, 2 0, 2 -1, 0 -1, 0 0, 0 0))')
+    assert clip.is_valid
+
+    edges = (
+        sites.voronoi(output='edges', clip=clip)
+        if frontend == 'scalar'
+        else gm.GeometryArray([sites]).voronoi(output='edges', clip=clip)[0]
+    )
+    assert len(edges) == 1
+    assert gm.equals(edges[0], gm.from_wkt('LINESTRING (0 0, 1 -1)'))
+
+
 @pytest.mark.parametrize('output', ['polygons', 'edges'])
 def test_geographic_voronoi_final_storage_matches_grouped_public_output(
     output: str,

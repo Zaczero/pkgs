@@ -58,6 +58,20 @@ pub(super) fn open_ring(ring: &Ring, chart: Option<&PointSelectionChart>) -> Res
         exact_points.push(exact);
         fixed.push(point);
     }
+    if let (Some(first), Some(last)) = (exact_points.first(), exact_points.last())
+        && exact_points.len() > 1
+        && first.same_position(last)?
+    {
+        let closing_index = exact_points.len().wrapping_sub(1);
+        exact_points.pop();
+        fixed.pop();
+        chart_fixed.pop();
+        for index in &mut vertex_indices {
+            if *index == closing_index {
+                *index = 0;
+            }
+        }
+    }
     if exact_points.len() < 3 {
         return Err(voronoi_error(
             "exact Voronoi clip ring has fewer than three vertices",
