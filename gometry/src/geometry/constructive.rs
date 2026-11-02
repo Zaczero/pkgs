@@ -23,7 +23,7 @@ pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_buffer_loop}
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
     normalized_line, orient_ring, snap_column_simd, stable_snap_ordinate, vw_keep,
-    vw_keep_geographic,
+    vw_keep_geographic, vw_keep_scaled,
 };
 #[cfg(test)]
 pub(crate) use segmentize::densify_points_budgeted;

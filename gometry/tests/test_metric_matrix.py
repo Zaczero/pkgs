@@ -772,6 +772,79 @@ def test_concave_hull_preserves_extreme_unit_threshold(concavity: float) -> None
     )
 
 
+@pytest.mark.parametrize('method', ['dp', 'vw'])
+@pytest.mark.parametrize('preserve_topology', [False, True])
+def test_simplify_preserves_extreme_unit_tolerance(
+    method: str, preserve_topology: bool
+) -> None:
+    line = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=FOOT_CRS)
+    result = line.simplify(
+        1e308, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    assert list(result.coords) == [(0.0, 0.0), (2.0, 0.0)]
+    packed = gm.GeometryArray([line]).simplify(
+        1e308, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    assert list(packed[0].coords) == list(result.coords)
+
+    vertices = [(-1.7, -1.7), (0, 1.7), (1.7, -1.7)]
+    ordinary = gm.LineString(vertices, crs=FOOT_CRS).simplify(
+        1.0, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    extreme = gm.LineString([(x * 1e308, y * 1e308) for x, y in vertices], crs=FOOT_CRS)
+    result = extreme.simplify(
+        1e308, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.coords) / 1e308,
+        np.asarray(ordinary.coords),
+        rtol=1e-14,
+        atol=0,
+    )
+    packed_extreme = gm.GeometryArray([extreme]).simplify(
+        1e308, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    np.testing.assert_array_equal(
+        np.asarray(packed_extreme[0].coords), np.asarray(result.coords)
+    )
+    column = gm.GeometryArray([line, extreme]).simplify(
+        [1e308, 1e308],
+        unit='meters',
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(column[1].coords), np.asarray(result.coords)
+    )
+
+    step = float.fromhex('0x0.0000000000001p-1022')
+    huge_unit = '+proj=utm +zone=18 +datum=WGS84 +to_meter=1e308 +type=crs'
+    tiny = gm.LineString([(0, 0), (step, step), (2 * step, 0)], crs=huge_unit)
+    tiny_result = tiny.simplify(
+        1e-16, unit='meters', method=method, preserve_topology=preserve_topology
+    )
+    assert list(tiny_result.coords) == list(tiny.coords)
+
+    if preserve_topology:
+        polygon = gm.Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], crs=FOOT_CRS)
+        expected = polygon.simplify(
+            1e300, unit='meters', method=method, preserve_topology=True
+        )
+        actual = polygon.simplify(
+            1e308, unit='meters', method=method, preserve_topology=True
+        )
+        assert gm.equals(actual, expected)
+
+
+def test_simplify_extreme_tolerance_uses_indexed_long_line() -> None:
+    step = float.fromhex('0x0.0000000000001p-1022')
+    crs = '+proj=utm +zone=18 +datum=WGS84 +to_meter=1e308 +type=crs'
+    points = [(index * step, (index % 2) * step) for index in range(1101)]
+    line = gm.LineString(points, crs=crs)
+    result = line.simplify(1e-16, unit='meters', method='dp', preserve_topology=False)
+    assert list(result.coords) == points
+
+
 def test_area_preserves_extreme_unit_scaling() -> None:
     polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
     expected = (1.5e154 * FOOT_UNIT_M) ** 2

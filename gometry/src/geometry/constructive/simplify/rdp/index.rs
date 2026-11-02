@@ -516,6 +516,44 @@ impl<'a> Index<'a> {
         if end.wrapping_sub(start) <= SCAN {
             return super::split(self.source.xs, self.source.ys, start, end, tolerance);
         }
+        let threshold = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tolerance, 0.0));
+        self.split_indexed(start, end, |maximum| {
+            maximum
+                .cmp_distance(&threshold)
+                .map(std::cmp::Ordering::is_gt)
+        })
+    }
+
+    pub(in crate::geometry::constructive::simplify) fn split_scaled(
+        &self,
+        start: usize,
+        end: usize,
+        tolerance: f64,
+        scale: f64,
+    ) -> Result<Option<usize>> {
+        if end.wrapping_sub(start) <= SCAN {
+            return super::split_scaled(
+                self.source.xs,
+                self.source.ys,
+                start,
+                end,
+                tolerance,
+                scale,
+            );
+        }
+        self.split_indexed(start, end, |maximum| {
+            maximum
+                .within_scaled_distance(tolerance, scale)
+                .map(|within| !within)
+        })
+    }
+
+    fn split_indexed(
+        &self,
+        start: usize,
+        end: usize,
+        exceeds: impl FnOnce(&SquaredDistanceKey) -> Result<bool>,
+    ) -> Result<Option<usize>> {
         let range = start.wrapping_add(1)..end;
         let chord = Segment {
             start: self.source.at(start),
@@ -529,8 +567,7 @@ impl<'a> Index<'a> {
                 .at(winner.expect("a nonempty RDP range has a maximum")),
             chord,
         );
-        let threshold = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tolerance, 0.0));
-        if !maximum.cmp_distance(&threshold)?.is_gt() {
+        if !exceeds(&maximum)? {
             return Ok(None);
         }
         self.first(root, &range, chord, &maximum)

@@ -4,13 +4,16 @@ mod rdp;
 use crate::NonNegative;
 use crate::error::Result;
 use crate::geographic::{ChartSpanGuard, PeriodicAxis};
-use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
+use crate::geometry::constructive::{
+    WalkJoinRule, WalkPlan, materialize_walk, vw_keep, vw_keep_scaled,
+};
 use crate::geometry::{
     CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiLineString,
     MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, Ring, Segment, Shape,
-    ShapeCountQuery, TopologyGuard, XY, dedup_consecutive_points, line_segments,
-    open_point_cycle_winding, orientation, point_segment_distance, same_point,
-    simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area, vw_area_tolerance,
+    ShapeCountQuery, SimplifyMethod, TopologyGuard, XY, dedup_consecutive_points, line_segments,
+    open_point_cycle_winding, orientation, point_segment_distance,
+    point_segment_exact_distance_key, same_point, simplified_polygon_delta_is_simple,
+    simplify_chain_guarded, triangle_area, vw_area_tolerance,
 };
 
 pub(crate) trait RdpEdgeSpanGuard: Copy {
@@ -97,6 +100,37 @@ pub(crate) fn rdp_keep_with_edge_guard<G: RdpEdgeSpanGuard>(
             rdp::split_inline!(xs, ys, start, end, tolerance, tolerance_squared)
         })
     }
+}
+
+fn rdp_keep_scaled(
+    xs: &[f64],
+    ys: &[f64],
+    tolerance: f64,
+    scale: f64,
+    keep: &mut Vec<bool>,
+    stack: &mut Vec<(usize, usize)>,
+) -> Result<Option<usize>> {
+    let count = xs.len();
+    if count <= 2 {
+        return Ok(None);
+    }
+    let mut index: Option<rdp::Index<'_>> = None;
+    let mut scanned = 0_usize;
+    let budget = rdp_scan_budget(count);
+    rdp_keep_with_query(xs, PlanarRdpGuard, keep, stack, |start, end| {
+        if let Some(index) = &index {
+            return index.split_scaled(start, end, tolerance, scale);
+        }
+        scanned = scanned.saturating_add(end.wrapping_sub(start));
+        if count > 1024 && scanned > budget {
+            let accelerated = rdp::Index::new(xs, ys)?;
+            let split = accelerated.split_scaled(start, end, tolerance, scale)?;
+            index = Some(accelerated);
+            Ok(split)
+        } else {
+            rdp::split_scaled(xs, ys, start, end, tolerance, scale)
+        }
+    })
 }
 
 fn rdp_keep_with_query<G: RdpEdgeSpanGuard>(
@@ -610,7 +644,69 @@ fn keep_multi_polygons(
     ))
 }
 
+fn scaled_vw_score(a: XY, b: XY, c: XY, tolerance: f64, scale: f64) -> Result<Option<f64>> {
+    use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio};
+
+    let difference = |left: f64, right: f64| {
+        ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
+    };
+    let dx1 = difference(b.x, a.x)?;
+    let dy1 = difference(b.y, a.y)?;
+    let dx2 = difference(c.x, a.x)?;
+    let dy2 = difference(c.y, a.y)?;
+    let cross = dx1
+        .try_product(&dy2)?
+        .try_subtract(dy1.try_product(&dx2)?)?
+        .abs();
+    let factor = ExactDyadic::from_f64(scale);
+    let scaled = cross.try_product(&factor)?.try_product(&factor)?;
+    let cutoff = ExactDyadic::from_f64(tolerance);
+    if !scaled.cmp(&cutoff.try_product(&cutoff)?).is_lt() {
+        return Ok(None);
+    }
+    Ok(Some(round_sqrt_ratio(&scaled, &ExactDyadic::one())?))
+}
+
 impl Shape {
+    pub(crate) fn simplify_scaled(
+        &self,
+        tolerance: f64,
+        scale: f64,
+        method: SimplifyMethod,
+        preserve_topology: bool,
+    ) -> Result<Self> {
+        let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
+        let mut scratch = KeepScratch::default();
+        let raw = self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| match method {
+            SimplifyMethod::Dp => rdp_keep_scaled(
+                xs,
+                ys,
+                tolerance,
+                scale,
+                &mut scratch.keep,
+                &mut scratch.stack,
+            ),
+            SimplifyMethod::Vw => Ok(vw_keep_scaled(xs, ys, tolerance, scale, &mut scratch.keep)),
+        })?;
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        self.finish_simplify(raw, preserve_topology, || {
+            self.simplify_guarded_with::<false>(axis, |previous, vertex, next| match method {
+                SimplifyMethod::Dp => {
+                    let key = point_segment_exact_distance_key(vertex, Segment {
+                        start: previous,
+                        end: next,
+                    });
+                    if key.within_scaled_distance(tolerance, scale)? {
+                        Ok(Some(key.scaled_distance(scale)?))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                SimplifyMethod::Vw => scaled_vw_score(previous, vertex, next, tolerance, scale),
+            })
+        })
+    }
+
     /// Douglas-Peucker simplification. With `preserve_topology` (the
     /// default), an output that raw DP made invalid (a collapsed or
     /// self-intersecting ring) or non-simple (a previously simple line now
@@ -645,7 +741,19 @@ impl Shape {
         preserve_topology: bool,
         axis: PeriodicAxis,
     ) -> Result<Self> {
-        match self.simplify_raw_dp_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)? {
+        let raw = self.simplify_raw_dp_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)?;
+        self.finish_simplify(raw, preserve_topology, || {
+            self.simplify_guarded::<CHECK_EDGE_SPAN>(tolerance, axis)
+        })
+    }
+
+    fn finish_simplify(
+        &self,
+        raw: RawSimplify,
+        preserve_topology: bool,
+        guarded: impl FnOnce() -> Result<Self>,
+    ) -> Result<Self> {
+        match raw {
             RawSimplify::Unchanged => {
                 if preserve_topology {
                     Ok(self.clone())
@@ -666,7 +774,7 @@ impl Shape {
                 if self.simplify_kept_topology(&raw)? {
                     Ok(raw)
                 } else {
-                    self.simplify_guarded::<CHECK_EDGE_SPAN>(tolerance, axis)
+                    guarded()
                 }
             },
         }
@@ -919,29 +1027,14 @@ impl Shape {
         preserve_topology: bool,
         axis: PeriodicAxis,
     ) -> Result<Self> {
-        match self.simplify_raw_vw_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)? {
-            RawSimplify::Unchanged => {
-                if preserve_topology {
-                    Ok(self.clone())
-                } else {
-                    self.clone().dropping_collapsed_rings()
-                }
-            },
-            RawSimplify::Changed(raw) => {
-                if !preserve_topology {
-                    return raw.dropping_collapsed_rings();
-                }
-                if self.simplify_kept_topology(&raw)? {
-                    Ok(raw)
-                } else {
-                    let area_tolerance = vw_area_tolerance(tolerance);
-                    self.simplify_guarded_with::<CHECK_EDGE_SPAN>(axis, |prev, vertex, next| {
-                        let area = triangle_area(prev, vertex, next);
-                        Ok((area < area_tolerance).then_some(area))
-                    })
-                }
-            },
-        }
+        let raw = self.simplify_raw_vw_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)?;
+        self.finish_simplify(raw, preserve_topology, || {
+            let area_tolerance = vw_area_tolerance(tolerance);
+            self.simplify_guarded_with::<CHECK_EDGE_SPAN>(axis, |prev, vertex, next| {
+                let area = triangle_area(prev, vertex, next);
+                Ok((area < area_tolerance).then_some(area))
+            })
+        })
     }
 
     #[cfg(test)]

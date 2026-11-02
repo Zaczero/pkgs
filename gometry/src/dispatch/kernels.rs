@@ -245,7 +245,18 @@ pub(crate) fn unary_simplify(
     if let ResolvedMetric::Geodesic(metric) = metric {
         crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
     }
-    let tolerance = simplify_chart_tolerance(metric, tolerance.get(ctx.lane.row()));
+    let input = tolerance.get(ctx.lane.row());
+    let tolerance = simplify_chart_tolerance(metric, input);
+    if let ResolvedMetric::Planar { to_metre } = metric
+        && to_metre.get().to_bits() != 1.0_f64.to_bits()
+        && input != 0.0
+        && input.is_finite()
+        && !tolerance.is_normal()
+    {
+        return data
+            .shape()
+            .simplify_scaled(input, to_metre.get(), method, preserve_topology);
+    }
     match (ctx.domain, method) {
         (crate::geometry::TopologyDomain::Geographic(frame), SimplifyMethod::Vw) => data
             .shape()

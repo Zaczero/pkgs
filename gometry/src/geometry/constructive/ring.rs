@@ -634,8 +634,9 @@ struct VwScoringFrame {
 }
 
 macro_rules! vw_frame_columns_body {
-    ($xs:expr, $ys:expr, $distance_tolerance:expr) => {{
-        let (xs, ys, distance_tolerance) = ($xs, $ys, $distance_tolerance);
+    ($xs:expr, $ys:expr, $distance_tolerance:expr, $unit_scale:expr) => {{
+        let (xs, ys, distance_tolerance, unit_scale) = ($xs, $ys, $distance_tolerance, $unit_scale);
+        let native_tolerance = distance_tolerance / unit_scale;
         let (&ox, &oy) = xs
             .first()
             .zip(ys.first())
@@ -646,7 +647,7 @@ macro_rules! vw_frame_columns_body {
             max_abs_x = max_abs_x.max(x.abs());
             max_abs_y = max_abs_y.max(y.abs());
         }
-        let world_area_tol = crate::geometry::vw_area_tolerance(distance_tolerance);
+        let world_area_tol = crate::geometry::vw_area_tolerance(native_tolerance);
         let max_abs = max_abs_x.max(max_abs_y);
         let use_frame = max_abs > 0.0
             && max_abs.is_finite()
@@ -683,8 +684,18 @@ macro_rules! vw_frame_columns_body {
         // it back down.
         let exponent = power_of_two_exponent(frame.scale_x())
             .wrapping_add(power_of_two_exponent(frame.scale_y()));
-        let framed_area =
-            0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
+        let framed_area = if unit_scale.to_bits() == 1.0_f64.to_bits() {
+            0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent)
+        } else {
+            let (tolerance_mantissa, tolerance_exponent) = libm::frexp(distance_tolerance);
+            let (scale_mantissa, scale_exponent) = libm::frexp(unit_scale);
+            let ratio = tolerance_mantissa / scale_mantissa;
+            let exponent = tolerance_exponent
+                .wrapping_sub(scale_exponent)
+                .wrapping_mul(2)
+                .wrapping_add(exponent);
+            libm::scalbn(0.5 * ratio * ratio, exponent)
+        };
         VwScoringFrame {
             xs: Some(fxs),
             ys: Some(fys),
@@ -694,12 +705,21 @@ macro_rules! vw_frame_columns_body {
 }
 
 fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> VwScoringFrame {
-    vw_frame_columns_body!(xs, ys, distance_tolerance)
+    vw_frame_columns_body!(xs, ys, distance_tolerance, 1.0)
 }
 
 // Keep geographic frame work out of the planar VW kernel's inlined path.
 fn vw_frame_columns_geographic(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> VwScoringFrame {
-    vw_frame_columns_body!(xs, ys, distance_tolerance)
+    vw_frame_columns_body!(xs, ys, distance_tolerance, 1.0)
+}
+
+fn vw_frame_columns_scaled(
+    xs: &[f64],
+    ys: &[f64],
+    distance_tolerance: f64,
+    unit_scale: f64,
+) -> VwScoringFrame {
+    vw_frame_columns_body!(xs, ys, distance_tolerance, unit_scale)
 }
 
 /// Visvalingam-Whyatt keep mask. `distance_tolerance` is the public
@@ -720,14 +740,14 @@ macro_rules! vw_keep_span_exceeds {
 }
 
 macro_rules! vw_keep_body {
-    ($xs:expr, $ys:expr, $distance_tolerance:expr, $keep:expr, $frame_fn:ident, $policy:ident, $axis:expr) => {{
+    ($xs:expr, $ys:expr, $distance_tolerance:expr, $keep:expr, $frame_fn:expr, $policy:ident, $axis:expr) => {{
         let (xs, ys, distance_tolerance, keep) = ($xs, $ys, $distance_tolerance, $keep);
 
         let count = xs.len();
         if count < 3 {
             return None;
         }
-        let framed = $frame_fn(xs, ys, distance_tolerance);
+        let framed = ($frame_fn)(xs, ys, distance_tolerance);
         let xs = framed.xs.as_deref().unwrap_or(xs);
         let ys = framed.ys.as_deref().unwrap_or(ys);
         let area_tolerance = framed.area_tolerance;
@@ -910,6 +930,24 @@ pub(crate) fn vw_keep(
         distance_tolerance,
         keep,
         vw_frame_columns,
+        planar,
+        ()
+    )
+}
+
+pub(crate) fn vw_keep_scaled(
+    xs: &[f64],
+    ys: &[f64],
+    distance_tolerance: f64,
+    unit_scale: f64,
+    keep: &mut Vec<bool>,
+) -> Option<usize> {
+    vw_keep_body!(
+        xs,
+        ys,
+        distance_tolerance,
+        keep,
+        |xs, ys, tolerance| vw_frame_columns_scaled(xs, ys, tolerance, unit_scale),
         planar,
         ()
     )

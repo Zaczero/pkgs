@@ -298,6 +298,31 @@ pub(super) fn split(
     split_inline!(xs, ys, start, end, tolerance, tolerance * tolerance)
 }
 
+pub(super) fn split_scaled(
+    xs: &[f64],
+    ys: &[f64],
+    start: usize,
+    end: usize,
+    tolerance: f64,
+    scale: f64,
+) -> Result<Option<usize>> {
+    let chord = Segment {
+        start: point(xs, ys, start),
+        end: point(xs, ys, end),
+    };
+    let mut best: Option<(usize, crate::geometry::SquaredDistanceKey)> = None;
+    for ordinal in start.wrapping_add(1)..end {
+        let key = point_segment_exact_distance_key(point(xs, ys, ordinal), chord);
+        if best.as_ref().map_or(Ok(true), |(_, previous)| {
+            key.cmp_distance(previous).map(std::cmp::Ordering::is_gt)
+        })? {
+            best = Some((ordinal, key));
+        }
+    }
+    let (ordinal, key) = best.expect("a split range has an interior vertex");
+    Ok((!key.within_scaled_distance(tolerance, scale)?).then_some(ordinal))
+}
+
 pub(super) fn resolve(
     xs: &[f64],
     ys: &[f64],

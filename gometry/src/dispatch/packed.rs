@@ -383,6 +383,15 @@ pub(crate) fn try_unary_packed_array(
             let converted = tolerance.as_scalar().map(|value| {
                 crate::F64Param::Scalar(super::kernels::simplify_chart_tolerance(metric, value))
             });
+            if let (Some(value), crate::crs::ResolvedMetric::Planar { to_metre }) =
+                (tolerance.as_scalar(), metric)
+                && to_metre.get().to_bits() != 1.0_f64.to_bits()
+                && value != 0.0
+                && value.is_finite()
+                && !(value / to_metre.get()).is_normal()
+            {
+                return None;
+            }
             array.simplify_unary_packed(
                 converted.as_ref().unwrap_or(tolerance),
                 *method,
