@@ -117,10 +117,22 @@ fn cf_numeric_value(
     }
     let source_factor = valid_factor(crs, source_factor, what)?;
     let target_factor = cf_numeric_target_factor(crs, kind, axis_to_metre, what)?;
-    if source_factor == target_factor {
+    if source_factor == target_factor || value == 0.0 {
         return Ok(value);
     }
-    let converted = value * (source_factor / target_factor);
+    let ratio = source_factor / target_factor;
+    let mut converted = value * ratio;
+    if !ratio.is_normal() || !converted.is_normal() {
+        let (value_mantissa, value_exponent) = libm::frexp(value);
+        let (source_mantissa, source_exponent) = libm::frexp(source_factor);
+        let (target_mantissa, target_exponent) = libm::frexp(target_factor);
+        converted = libm::scalbn(
+            value_mantissa * source_mantissa / target_mantissa,
+            value_exponent
+                .wrapping_add(source_exponent)
+                .wrapping_sub(target_exponent),
+        );
+    }
     if converted.is_finite() {
         Ok(converted)
     } else {

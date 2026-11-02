@@ -62,6 +62,27 @@ def _axis_keys(crs: object) -> set[str]:
     return set(gm.CRS(crs).axes[0])
 
 
+@pytest.mark.parametrize(
+    ('value', 'factor', 'expected'),
+    [
+        (1e-308, 1e308, (1e-308 * 1e308) / 0.3048),
+        (1e308, 5e-324, (1e308 * 5e-324) / 0.3048),
+        (0.0, 1e308, 0.0),
+    ],
+)
+def test_cf_parameter_conversion_retains_extreme_finite_values(
+    value: float, factor: float, expected: float
+) -> None:
+    wkt = _WKT2_ANISOTROPIC.replace(
+        'AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]]',
+        'AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["foot",0.3048]]',
+    ).replace(
+        'PARAMETER["False easting",500000,LENGTHUNIT["metre",1]',
+        f'PARAMETER["False easting",{value},LENGTHUNIT["custom",{factor}]',
+    )
+    assert _cf(wkt)['false_easting'] == pytest.approx(expected, rel=1e-14, abs=0)
+
+
 def test_named_epsg_metre_foot_usft_admit_tokens() -> None:
     metre = _cf(32633)
     assert metre['units'] == 'm'
