@@ -115,11 +115,8 @@ impl H3UniqueCells {
         entry: H3CoveredCell,
         max_cells: Option<usize>,
     ) -> Result<bool, H3CoverError> {
-        let next_len = self
-            .cells
-            .len()
-            .checked_add(1)
-            .ok_or(H3CoverError::CapacityOverflow)?;
+        // An allocated map of nonzero-sized entries cannot contain usize::MAX keys.
+        let next_len = self.cells.len().wrapping_add(1);
         match self.cells.entry(entry.cell) {
             std::collections::hash_map::Entry::Occupied(mut existing) => {
                 *existing.get_mut() |= entry.interior;
