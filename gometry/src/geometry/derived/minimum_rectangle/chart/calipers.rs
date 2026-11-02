@@ -1,5 +1,6 @@
 //! Retained-chart support selection.
 
+use super::super::calipers::cyclic_successor;
 use super::super::corners::minimum_rectangle_not_representable;
 use super::super::score::{cmp_wide, wide_product};
 use super::super::{
@@ -112,10 +113,6 @@ pub(in crate::geometry::derived::minimum_rectangle) fn exact_chart_argmax(
     clippy::indexing_slicing,
     reason = "the support pointer and its successor are bounded by the chart hull cycle"
 )]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the support pointer advances at most one chart hull length"
-)]
 pub(in crate::geometry::derived::minimum_rectangle) fn advance_chart_max(
     hull: &[crate::geographic::ChartPointSite],
     direction: (f64, f64),
@@ -124,12 +121,11 @@ pub(in crate::geometry::derived::minimum_rectangle) fn advance_chart_max(
 ) -> usize {
     let count = hull.len();
     for _ in 0..count {
-        let current = index % count;
-        let next = (index + 1) % count;
-        if chart_projection_delta_order(direction, hull[current], hull[next], frame).is_lt() {
+        let next = cyclic_successor(index, count);
+        if chart_projection_delta_order(direction, hull[index], hull[next], frame).is_lt() {
             break;
         }
-        index += 1;
+        index = next;
     }
     index
 }
@@ -138,29 +134,19 @@ pub(in crate::geometry::derived::minimum_rectangle) fn advance_chart_max(
     clippy::indexing_slicing,
     reason = "support pointer and its successor are positions in the nonempty chart hull"
 )]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the cyclic successor is bounded by the chart hull length"
-)]
 pub(in crate::geometry::derived::minimum_rectangle) fn chart_support_stops_here(
     hull: &[crate::geographic::ChartPointSite],
     direction: (f64, f64),
     index: usize,
     frame: crate::geographic::GeographicFrame,
 ) -> bool {
-    let count = hull.len();
-    let current = index % count;
-    let next = (current + 1) % count;
-    chart_projection_delta_order(direction, hull[current], hull[next], frame).is_lt()
+    let next = cyclic_successor(index, hull.len());
+    chart_projection_delta_order(direction, hull[index], hull[next], frame).is_lt()
 }
 
 #[expect(
     clippy::indexing_slicing,
     reason = "the caliper cycle and support indices are created from the admitted chart hull"
-)]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the hull contains at least three sites and each cyclic edge is in range"
 )]
 pub(in crate::geometry::derived::minimum_rectangle) fn select_minimum_candidate_chart(
     hull: &[crate::geographic::ChartPointSite],
@@ -169,7 +155,8 @@ pub(in crate::geometry::derived::minimum_rectangle) fn select_minimum_candidate_
     let count = hull.len();
     let mut first_basis = None;
     for edge in 0..count {
-        first_basis = Basis::from_chart_edge(hull[edge], hull[(edge + 1) % count], frame)?;
+        first_basis =
+            Basis::from_chart_edge(hull[edge], hull[cyclic_successor(edge, count)], frame)?;
         if first_basis.is_some() {
             break;
         }
@@ -189,7 +176,7 @@ pub(in crate::geometry::derived::minimum_rectangle) fn select_minimum_candidate_
     let mut candidate_outward_min = initial_outward_min;
     let mut best: Option<Candidate> = None;
     for edge in 0..count {
-        let basis = Basis::from_chart_edge(hull[edge], hull[(edge + 1) % count], frame)?
+        let basis = Basis::from_chart_edge(hull[edge], hull[cyclic_successor(edge, count)], frame)?
             .ok_or_else(minimum_rectangle_not_representable)?;
         if edge != 0 {
             along_max = advance_chart_max(hull, basis.along, along_max, frame);
@@ -230,10 +217,10 @@ pub(in crate::geometry::derived::minimum_rectangle) fn select_minimum_candidate_
         let candidate = Candidate {
             basis,
             supports: Supports {
-                along_min: along_min % count,
-                along_max: along_max % count,
-                outward_min: candidate_outward_min % count,
-                outward_max: outward_max % count,
+                along_min,
+                along_max,
+                outward_min: candidate_outward_min,
+                outward_max,
             },
         };
         if best.is_none_or(|current| {

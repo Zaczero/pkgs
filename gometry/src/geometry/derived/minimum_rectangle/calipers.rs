@@ -129,18 +129,14 @@ pub(super) fn projection_delta_filter(
     clippy::indexing_slicing,
     reason = "caliper edge and support ordinals are bounded by the admitted convex hull"
 )]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the hull has at least three vertices and edge/support ordinals remain in its bounded cycle"
-)]
 pub(super) fn select_minimum_candidate(hull: &[Point]) -> Candidate {
     let count = hull.len();
     let first_basis = (0..count)
-        .find_map(|edge| Basis::from_edge(hull[edge], hull[(edge + 1) % count]))
+        .find_map(|edge| Basis::from_edge(hull[edge], hull[cyclic_successor(edge, count)]))
         .expect("strict convex hull has a finite nonzero edge basis");
     // One exact global support establishes the first caliper.  In CCW support
     // order the remaining directions follow `-v, u, v, -u`; advancing those
-    // unwrapped pointers from their predecessor crosses each first-edge
+    // cyclic pointers from their predecessor crosses each first-edge
     // normal cone once, rather than paying four independent full scans.
     let outward_direction = (-first_basis.outward.0, -first_basis.outward.1);
     let initial_outward_min = exact_argmax(hull, outward_direction);
@@ -159,7 +155,7 @@ pub(super) fn select_minimum_candidate(hull: &[Point]) -> Candidate {
     let mut candidate_outward_min = initial_outward_min;
     let mut best: Option<RankedCandidate> = None;
     for edge in 0..count {
-        let basis = Basis::from_edge(hull[edge], hull[(edge + 1) % count])
+        let basis = Basis::from_edge(hull[edge], hull[cyclic_successor(edge, count)])
             .expect("strict convex hull edge has a basis");
         if edge != 0 {
             along_max = advance_max(hull, basis.along, along_max);
@@ -183,10 +179,10 @@ pub(super) fn select_minimum_candidate(hull: &[Point]) -> Candidate {
         let mut candidate = RankedCandidate::new(hull, Candidate {
             basis,
             supports: Supports {
-                along_min: along_min % count,
-                along_max: along_max % count,
-                outward_min: candidate_outward_min % count,
-                outward_max: outward_max % count,
+                along_min,
+                along_max,
+                outward_min: candidate_outward_min,
+                outward_max,
             },
         });
         if best
@@ -204,14 +200,15 @@ pub(super) fn select_minimum_candidate(hull: &[Point]) -> Candidate {
     clippy::indexing_slicing,
     reason = "the support ordinal and its successor are positions in the nonempty convex hull"
 )]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the cyclic successor is bounded by the admitted hull length"
-)]
 pub(super) fn support_stops_here(hull: &[Point], direction: (f64, f64), index: usize) -> bool {
-    let current = index % hull.len();
-    let next = (current + 1) % hull.len();
-    projection_delta_order(direction, hull[current], hull[next]).is_lt()
+    let next = cyclic_successor(index, hull.len());
+    projection_delta_order(direction, hull[index], hull[next]).is_lt()
+}
+
+pub(super) const fn cyclic_successor(index: usize, count: usize) -> usize {
+    debug_assert!(index < count);
+    let next = index.wrapping_add(1);
+    if next == count { 0 } else { next }
 }
 
 #[expect(
@@ -232,22 +229,17 @@ pub(super) fn exact_argmax(hull: &[Point], direction: (f64, f64)) -> usize {
     clippy::indexing_slicing,
     reason = "support and successor ordinals remain in the admitted convex hull"
 )]
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the unwrapped support pointer advances at most one hull length from an admitted ordinal"
-)]
 pub(super) fn advance_max(hull: &[Point], direction: (f64, f64), mut index: usize) -> usize {
     let count = hull.len();
     for _ in 0..count {
-        let current = index % count;
-        let next = (index + 1) % count;
+        let next = cyclic_successor(index, count);
         // Exact equality can cross a support plateau safely.  Stopping on a
         // rounded equality is the counterexample in `mrr_counterexamples.py`:
         // it can strand the pointer before a later strict increase.
-        if projection_delta_order(direction, hull[current], hull[next]).is_lt() {
+        if projection_delta_order(direction, hull[index], hull[next]).is_lt() {
             break;
         }
-        index += 1;
+        index = next;
     }
     index
 }

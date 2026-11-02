@@ -40,6 +40,17 @@ fn exact_advance_crosses_the_rounded_support_plateau() {
     assert_eq!(advance_max(&points, direction, 1), 4);
 }
 
+#[test]
+fn support_advance_crosses_the_end_of_the_hull() {
+    let hull = [
+        point(1.0, 0.0),
+        point(0.0, 1.0),
+        point(-1.0, 0.0),
+        point(0.0, -1.0),
+    ];
+    assert_eq!(advance_max(&hull, (1.0, 0.0), 3), 0);
+}
+
 #[rstest::rstest]
 #[case::vertices_3(3)]
 #[case::vertices_5(5)]
@@ -48,7 +59,7 @@ fn exact_advance_crosses_the_rounded_support_plateau() {
 #[case::vertices_64(64)]
 fn caliper_support_progression_handles_rotated_hulls(#[case] vertices: usize) {
     // `select_minimum_candidate`'s debug assertions require every
-    // unwrapped pointer to stop at an exact local support maximum. The
+    // cyclic pointer to stop at an exact local support maximum. The
     // affine family below exercises rotations, anisotropy, and offsets
     // across several hull sizes.
 
