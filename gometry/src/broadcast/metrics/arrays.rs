@@ -320,13 +320,10 @@ pub(crate) fn array_crs_distances<'a>(
                     && let Some(values) = array.reduce_packed_points_detached(py, {
                         let right_shape = Arc::clone(&right_shape);
                         move |points| {
-                            let mut values = right_shape.distance_points(
+                            Ok(right_shape.distance_points(
                                 points.present_points().map(|point| (point.x, point.y)),
-                            )?;
-                            for value in &mut values {
-                                *value *= to_metre.get();
-                            }
-                            Ok(values)
+                                to_metre.get(),
+                            )?)
                         }
                     })?
                 {
@@ -340,12 +337,10 @@ pub(crate) fn array_crs_distances<'a>(
                     return float64_array_mask_missing(
                         py,
                         py.detach(move || {
-                            let mut values = right_shape
-                                .distance_points(points.iter().map(|point| (point.x, point.y)))?;
-                            for value in &mut values {
-                                *value *= to_metre.get();
-                            }
-                            Ok::<_, crate::error::Error>(values)
+                            right_shape.distance_points(
+                                points.iter().map(|point| (point.x, point.y)),
+                                to_metre.get(),
+                            )
                         })?,
                         array.missing(),
                     );
@@ -380,11 +375,15 @@ pub(crate) fn array_crs_distances<'a>(
                                     .or_else(|| rows.quick_bounds_at(logical, shape));
                                 if let Some(value) =
                                     scratch.distance(shape, fixed, bounds, fixed_bounds)?
+                                    && !((value.is_infinite() && to_metre.get() < 1.0)
+                                        || (value.is_finite()
+                                            && !value.is_normal()
+                                            && to_metre.get() > 1.0))
                                 {
                                     return Ok(value * to_metre.get());
                                 }
                                 let left = rows.prepared_at_with_bounds(logical, shape, bounds)?;
-                                Ok(left.distance(&right_shape)? * to_metre.get())
+                                left.distance_scaled(&right_shape, to_metre.get())
                             })
                             .collect_rows()
                     })
@@ -494,10 +493,14 @@ pub(crate) fn array_crs_distances<'a>(
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
-                    let packed_planar = Some(move |a, b| Ok(point_distance(a, b) * to_metre.get()));
+                    let packed_planar = Some(move |a: Point, b: Point| {
+                        crate::geometry::point_distance_scaled(a.xy(), b.xy(), to_metre.get())
+                    });
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             let mut values = vec![0.0; lx.len()];
+                            let scale = to_metre.get();
+                            let needs_replay = std::cell::Cell::new(false);
                             pair_map4_guarded_f64(
                                 lx,
                                 ly,
@@ -505,10 +508,16 @@ pub(crate) fn array_crs_distances<'a>(
                                 ry,
                                 &mut values,
                                 |lx, ly, rx, ry| {
-                                    point_distance(
+                                    let distance = point_distance(
                                         Point::new_raw_xy(lx, ly),
                                         Point::new_raw_xy(rx, ry),
-                                    )
+                                    );
+                                    if (scale < 1.0 && distance.is_infinite())
+                                        || (scale > 1.0 && distance.is_subnormal())
+                                    {
+                                        needs_replay.set(true);
+                                    }
+                                    distance
                                 },
                                 |lx, ly, rx, ry| {
                                     let dx = std::ops::Sub::sub(lx, rx);
@@ -530,7 +539,25 @@ pub(crate) fn array_crs_distances<'a>(
                                     (distance, bad)
                                 },
                             );
-                            scale_metric_values(&mut values, to_metre.get());
+                            if needs_replay.get() {
+                                for ((((value, &lx), &ly), &rx), &ry) in
+                                    values.iter_mut().zip(lx).zip(ly).zip(rx).zip(ry)
+                                {
+                                    if (value.is_infinite() && scale < 1.0)
+                                        || (value.is_finite() && !value.is_normal() && scale > 1.0)
+                                    {
+                                        *value = crate::geometry::point_distance_scaled(
+                                            crate::geometry::XY::new(lx, ly),
+                                            crate::geometry::XY::new(rx, ry),
+                                            scale,
+                                        )?;
+                                    } else {
+                                        *value *= scale;
+                                    }
+                                }
+                            } else {
+                                scale_metric_values(&mut values, scale);
+                            }
                             Ok(values)
                         });
                     float64_array(
@@ -549,7 +576,19 @@ pub(crate) fn array_crs_distances<'a>(
                                  right_bounds| {
                                     scratch
                                         .distance(left, right, left_bounds, right_bounds)
-                                        .map(|value| value.map(|value| value * to_metre.get()))
+                                        .map(|value| {
+                                            value.and_then(|value| {
+                                                if (value.is_infinite() && to_metre.get() < 1.0)
+                                                    || (value.is_finite()
+                                                        && !value.is_normal()
+                                                        && to_metre.get() > 1.0)
+                                                {
+                                                    None
+                                                } else {
+                                                    Some(value * to_metre.get())
+                                                }
+                                            })
+                                        })
                                 },
                             ),
                             f64::NAN,
@@ -647,10 +686,22 @@ pub(crate) fn array_crs_dwithin<'a>(
                 crs::ResolvedMetric::Planar { to_metre } => {
                     let limit = distance / to_metre.get();
                     let limit_sq = limit * limit;
+                    let exact_limit = distance.is_finite() && !limit.is_normal();
                     // Underflow-safe dwithin (squared only when both sides honest).
-                    let packed_planar = Some(move |a, b| Ok(points_dwithin(a, b, limit)));
-                    let packed_columns =
-                        Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
+                    let packed_planar = Some(move |a: Point, b: Point| {
+                        if exact_limit {
+                            crate::geometry::points_dwithin_scaled(
+                                a.xy(),
+                                b.xy(),
+                                distance,
+                                to_metre.get(),
+                            )
+                        } else {
+                            Ok(points_dwithin(a, b, limit))
+                        }
+                    });
+                    let packed_columns = (!exact_limit).then_some(
+                        move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             let mut out = vec![false; lx.len()];
                             // A positive-subnormal limit square quantizes the
                             // boundary; keep the packed lane in distance space
@@ -704,7 +755,8 @@ pub(crate) fn array_crs_dwithin<'a>(
                                 }
                             }
                             Ok(out)
-                        });
+                        },
+                    );
                     bool_array(
                         py,
                         array_pair_metric(
@@ -713,7 +765,7 @@ pub(crate) fn array_crs_dwithin<'a>(
                             right,
                             packed_planar,
                             packed_columns,
-                            Some(
+                            (!exact_limit).then_some(
                                 |scratch: &mut crate::geometry::RowMetricPair<'a>,
                                  left,
                                  right,
@@ -874,13 +926,11 @@ fn array_crs_dwithin_per_element_values(
                                 .as_ref()
                                 .and_then(|bounds| bounds.get(row).copied().flatten())
                                 .or_else(|| rows.quick_bounds_at(row, left));
-                            if let Some(value) = scratch.dwithin(
-                                left,
-                                fixed,
-                                bounds,
-                                right_bounds,
-                                distance.get(row) / to_metre.get(),
-                            )? {
+                            let native = distance.get(row) / to_metre.get();
+                            if (native.is_normal() || !distance.get(row).is_finite())
+                                && let Some(value) =
+                                    scratch.dwithin(left, fixed, bounds, right_bounds, native)?
+                            {
                                 return Ok(value);
                             }
                             let left = rows.prepared_at_with_bounds(row, left, bounds)?;
@@ -953,13 +1003,11 @@ fn array_crs_dwithin_per_element_values(
                                     .as_ref()
                                     .and_then(|bounds| bounds.get(row).copied().flatten())
                                     .or_else(|| right_rows.quick_bounds_at(row, right_row));
-                                if let Some(value) = scratch.dwithin(
-                                    left,
-                                    right_row,
-                                    a_bounds,
-                                    b_bounds,
-                                    distance.get(row) / to_metre.get(),
-                                )? {
+                                let native = distance.get(row) / to_metre.get();
+                                if (native.is_normal() || !distance.get(row).is_finite())
+                                    && let Some(value) = scratch
+                                        .dwithin(left, right_row, a_bounds, b_bounds, native)?
+                                {
                                     return Ok(value);
                                 }
                                 let left =
@@ -1049,6 +1097,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 let fixed_bounds = other_shape.bounds();
                 let element_bounds = array.existing_element_bounds();
                 let limit = distance / to_metre.get();
+                let exact_limit = distance.is_finite() && !limit.is_normal();
                 try_collect_dwithin_rows(
                     array.len(),
                     rows.rows_with_missing(|| false).map(|row| {
@@ -1061,8 +1110,9 @@ pub(crate) fn array_crs_dwithin_scalar(
                             .as_ref()
                             .and_then(|bounds| bounds.get(logical).copied().flatten())
                             .or_else(|| rows.quick_bounds_at(logical, shape));
-                        if let Some(value) =
-                            scratch.dwithin(shape, fixed, bounds, fixed_bounds, limit)?
+                        if !exact_limit
+                            && let Some(value) =
+                                scratch.dwithin(shape, fixed, bounds, fixed_bounds, limit)?
                         {
                             return Ok(value);
                         }
@@ -1101,7 +1151,9 @@ pub(crate) fn array_crs_dwithin_scalar(
     }
     if let crs::MetricModel::Planar { to_metre } = &model {
         let limit = distance / to_metre.get();
-        if !array.is_compact_nullable()
+        let exact_limit = distance.is_finite() && !limit.is_normal();
+        if !exact_limit
+            && !array.is_compact_nullable()
             && let Some(values) = array.reduce_packed_points_detached(py, {
                 let other_shape = other.prepared_plan();
                 move |points| {
@@ -1115,7 +1167,8 @@ pub(crate) fn array_crs_dwithin_scalar(
             return bool_array_mask_missing(py, values, array.missing());
         }
         // Gathered mixed points run the same batch kernel from by-value points.
-        if !array.is_compact_nullable()
+        if !exact_limit
+            && !array.is_compact_nullable()
             && let Some(points) = array.storage().point_rows()
         {
             let other_shape = other.prepared_plan();
@@ -1134,6 +1187,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             let missing = array.missing().cloned();
             let row_count = array.len();
             let limit = distance / to_metre.get();
+            let exact_limit = distance.is_finite() && !limit.is_normal();
             let other_shape = other.prepared_plan();
             let other_bounds = other_shape.bounds();
             let element_bounds = array.existing_element_bounds();
@@ -1155,13 +1209,14 @@ pub(crate) fn array_crs_dwithin_scalar(
                                 .as_ref()
                                 .and_then(|bounds| bounds.get(index).copied().flatten())
                                 .or_else(|| rows.quick_bounds_at(index, row));
-                            if let Some(value) =
-                                scratch.dwithin(row, fixed, bounds, other_bounds, limit)?
+                            if !exact_limit
+                                && let Some(value) =
+                                    scratch.dwithin(row, fixed, bounds, other_bounds, limit)?
                             {
                                 return Ok(value);
                             }
                             let left = rows.prepared_at_with_bounds(index, row, bounds)?;
-                            left.dwithin(&other_shape, limit)
+                            pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
                         }),
                     )
                 })

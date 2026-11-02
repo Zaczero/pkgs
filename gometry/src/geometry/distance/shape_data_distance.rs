@@ -7,8 +7,9 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     ChartMetric, DistanceParts, DwithinOutcome, FacetBvh, FrameDependentCaches, GeodesicMetric,
-    GeographicMetricKey, GeographicPrepared, Point, PreparedPlan, Shape, distance,
-    finish_planar_squared_min, point_distance, points_dwithin, same_point,
+    GeographicMetricKey, GeographicPrepared, Point, PreparedPlan, Shape, SquaredDistanceKey,
+    distance, finish_planar_squared_min, point_distance, point_pair_distance_key, points_dwithin,
+    same_point,
 };
 
 /// Select coverage once per batch while keeping each metric loop monomorphic.
@@ -39,6 +40,57 @@ macro_rules! point_batch_coverage {
     }};
 }
 impl PreparedPlan {
+    fn exact_distance_key(&self, other: &Self) -> Result<Option<SquaredDistanceKey>> {
+        if self.shape().is_empty() || other.shape().is_empty() {
+            return Ok(None);
+        }
+        if let (Shape::Point(left), Shape::Point(right)) = (self.shape(), other.shape()) {
+            return Ok(Some(point_pair_distance_key(left.xy(), right.xy())));
+        }
+        let overlapping = self
+            .bounds()
+            .zip(other.bounds())
+            .is_some_and(|(left, right)| left.intersects(right));
+        let contact = overlapping && quick_area_overlap(self.shape(), other.shape()).is_some();
+        let left = self.distance_parts()?;
+        let right = other.distance_parts()?;
+        if contact
+            || (overlapping && parts_boundary_contact(self.shape(), left, other.shape(), right))
+        {
+            let zero = crate::geometry::XY::new(0.0, 0.0);
+            return Ok(Some(point_pair_distance_key(zero, zero)));
+        }
+        let best = distance::nearest_probe_to_parts::<false>(left, right, None, false)?;
+        Ok(
+            distance::nearest_probe_to_parts::<false>(right, left, best, true)?
+                .map(|candidate| candidate.candidate.distance_key),
+        )
+    }
+
+    /// Planar distance in output units, rescuing extreme native magnitudes before scaling.
+    pub(crate) fn distance_scaled(&self, other: &Self, scale: f64) -> Result<f64> {
+        let value = self.distance(other)?;
+        if (value.is_infinite() && scale < 1.0)
+            || (value.is_finite() && !value.is_normal() && scale > 1.0)
+        {
+            return self
+                .exact_distance_key(other)?
+                .map_or(Ok(f64::INFINITY), |key| key.scaled_distance(scale));
+        }
+        Ok(value * scale)
+    }
+
+    /// Compare a planar distance to a cutoff in the requested output units.
+    pub(crate) fn dwithin_scaled(&self, other: &Self, cutoff: f64, scale: f64) -> Result<bool> {
+        let native = cutoff / scale;
+        if cutoff.is_finite() && !native.is_normal() {
+            return self
+                .exact_distance_key(other)?
+                .map_or(Ok(false), |key| key.within_scaled_distance(cutoff, scale));
+        }
+        self.dwithin(other, native)
+    }
+
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
     /// caller holding the handle gets amortized indexes automatically.
@@ -90,6 +142,9 @@ impl PreparedPlan {
     pub(crate) fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
         if distance == f64::INFINITY {
             return Ok(!self.shape().is_empty() && !other.shape().is_empty());
+        }
+        if distance >= 0.0 && distance.is_finite() && !distance.is_normal() {
+            return self.dwithin_scaled(other, distance, 1.0);
         }
         // Point pairs answer directly (mirrors `Shape::dwithin`).
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
@@ -218,6 +273,7 @@ impl PreparedPlan {
     pub(crate) fn distance_points(
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
+        scale: f64,
     ) -> Result<Vec<f64>> {
         let probe_count = probes.size_hint().0;
         let tester = self
@@ -241,6 +297,17 @@ impl PreparedPlan {
                     bvh,
                     &mut stack,
                 )?
+            };
+            let distance = if !covered
+                && ((distance.is_infinite() && scale < 1.0)
+                    || (distance.is_finite() && !distance.is_normal() && scale > 1.0))
+            {
+                let probe = Shape::Point(point);
+                Self::transient(&probe)
+                    .exact_distance_key(self)?
+                    .map_or(Ok(f64::INFINITY), |key| key.scaled_distance(scale))?
+            } else {
+                distance * scale
             };
             distances.push(distance);
         });

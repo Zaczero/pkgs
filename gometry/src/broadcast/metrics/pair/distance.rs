@@ -9,7 +9,7 @@ pub(crate) fn pair_distance_planar(
     a: &PreparedPlan,
     b: &PreparedPlan,
 ) -> crate::error::Result<f64> {
-    Ok(a.distance(b)? * to_metre)
+    a.distance_scaled(b, to_metre)
 }
 
 pub(crate) fn pair_distance_geodesic(
@@ -54,7 +54,7 @@ pub(crate) fn pair_dwithin_planar(
     } else {
         NonNegative::try_new("distance", distance)?.get()
     };
-    a.dwithin(b, distance / to_metre)
+    a.dwithin_scaled(b, distance, to_metre)
 }
 
 pub(crate) fn pair_dwithin_geodesic(

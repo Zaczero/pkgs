@@ -482,7 +482,7 @@ def test_frechet_scales_subnormal_distance_before_rounding() -> None:
     right = gm.LineString([(step, step), (step, step)], crs=crs)
     expected = step * 1e200 * math.sqrt(2.0)
     assert gm.frechet_distance(left, right, unit='meters') == pytest.approx(
-        expected, rel=1e-14
+        expected, rel=1e-14, abs=0
     )
     np.testing.assert_allclose(
         gm.frechet_distance(
@@ -492,6 +492,102 @@ def test_frechet_scales_subnormal_distance_before_rounding() -> None:
         rtol=1e-14,
         atol=0,
     )
+
+
+def test_distance_and_dwithin_scale_extreme_source_separations() -> None:
+    left = gm.Point(-1e308, 0.0, crs=FOOT_CRS)
+    right = gm.Point(1e308, 0.0, crs=FOOT_CRS)
+    line = gm.LineString([(1e308, -1.0), (1e308, 1.0)], crs=FOOT_CRS)
+    expected = 1e308 * (2400.0 / 3937.0)
+    for target in (right, line):
+        assert gm.distance(left, target, unit='meters') == pytest.approx(
+            expected, rel=1e-14
+        )
+        assert not gm.dwithin(left, target, 5.5e307, unit='meters')
+        assert gm.dwithin(left, target, 6.5e307, unit='meters')
+        for a, b in (
+            (gm.GeometryArray([left]), target),
+            (gm.GeometryArray([left]), gm.GeometryArray([target])),
+        ):
+            np.testing.assert_allclose(
+                gm.distance(a, b, unit='meters'), [expected], rtol=1e-14
+            )
+            np.testing.assert_array_equal(
+                gm.dwithin(a, b, 5.5e307, unit='meters'), [False]
+            )
+            np.testing.assert_array_equal(
+                gm.dwithin(a, b, 6.5e307, unit='meters'), [True]
+            )
+
+    left_batch = gm.points([0.0] * 15 + [-1e308], [0.0] * 16, crs=FOOT_CRS)
+    right_batch = gm.points([1.0] * 15 + [1e308], [0.0] * 16, crs=FOOT_CRS)
+    expected_batch = [FOOT_UNIT_M] * 15 + [expected]
+    np.testing.assert_allclose(
+        gm.distance(left_batch, right_batch, unit='meters'),
+        expected_batch,
+        rtol=1e-14,
+        atol=0,
+    )
+
+
+def test_dwithin_uses_source_distance_below_native_subnormal_range() -> None:
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    point = gm.Point(0.5, 0.0, crs=crs)
+    line = gm.LineString([(0.0, 0.0), (1.0, step)], crs=crs)
+    expected = step * 1e200 / 2.0
+    assert gm.distance(point, line, unit='meters') == pytest.approx(
+        expected, rel=1e-14, abs=0
+    )
+    assert not gm.dwithin(point, line, 0.0)
+    assert not gm.dwithin(point, line, 1e-124, unit='meters')
+    assert gm.dwithin(point, line, 3e-124, unit='meters')
+    contact = gm.Point(0.0, 0.0, crs=crs)
+    empty = gm.from_wkt('LINESTRING EMPTY', crs=crs)
+    assert gm.dwithin(contact, line, 0.0)
+    assert not gm.dwithin(point, empty, 0.0)
+    assert math.isinf(gm.distance(point, empty, unit='meters'))
+    for left, right in (
+        (gm.GeometryArray([point]), line),
+        (gm.GeometryArray([point]), gm.GeometryArray([line])),
+    ):
+        np.testing.assert_allclose(
+            gm.distance(left, right, unit='meters'), [expected], rtol=1e-14, atol=0
+        )
+        np.testing.assert_array_equal(gm.dwithin(left, right, 0.0), [False])
+        np.testing.assert_array_equal(
+            gm.dwithin(left, right, 1e-124, unit='meters'), [False]
+        )
+        np.testing.assert_array_equal(
+            gm.dwithin(left, right, 3e-124, unit='meters'), [True]
+        )
+        np.testing.assert_array_equal(
+            gm.dwithin(left, right, np.array([1e-124]), unit='meters'), [False]
+        )
+    nullable = gm.GeometryArray([contact, point, None])
+    np.testing.assert_array_equal(gm.dwithin(nullable, line, 0.0), [True, False, False])
+
+
+def test_scaled_point_distance_preserves_subnormal_norms_in_batches() -> None:
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    left = gm.points([0.0] * 16, [0.0] * 16, crs=crs)
+    right = gm.points([0.0] * 15 + [step], [0.0] * 15 + [step], crs=crs)
+    expected = [0.0] * 15 + [step * 1e200 * math.sqrt(2.0)]
+    np.testing.assert_allclose(
+        gm.distance(left, right, unit='meters'), expected, rtol=1e-14, atol=0
+    )
+    assert not gm.dwithin(left[-1], right[-1], 6e-124, unit='meters')
+    assert gm.dwithin(left[-1], right[-1], 8e-124, unit='meters')
+
+
+def test_scaled_distance_indexes_extreme_multipoints() -> None:
+    left = gm.MultiPoint([(-1e308, float(index)) for index in range(64)], crs=FOOT_CRS)
+    right = gm.MultiPoint([(1e308, float(index)) for index in range(64)], crs=FOOT_CRS)
+    expected = 1e308 * (2400.0 / 3937.0)
+    assert gm.distance(left, right, unit='meters') == pytest.approx(expected, rel=1e-14)
+    assert not gm.dwithin(left, right, 5.5e307, unit='meters')
+    assert gm.dwithin(left, right, 6.5e307, unit='meters')
 
 
 def test_minimum_clearance_meter_distance_survives_native_unit_overflow() -> None:
@@ -520,7 +616,9 @@ def test_minimum_clearance_scales_below_native_subnormal_range() -> None:
         gm.LineString([(0.0, 0.0), (1.0, math.ulp(0.0))], crs=crs),
     ])
     expected = math.ulp(0.0) * 1e200 / 2.0
-    assert shape.minimum_clearance(unit='meters') == pytest.approx(expected, rel=1e-14)
+    assert shape.minimum_clearance(unit='meters') == pytest.approx(
+        expected, rel=1e-14, abs=0
+    )
     np.testing.assert_allclose(
         gm.GeometryArray([shape]).minimum_clearance(unit='meters'),
         [expected],

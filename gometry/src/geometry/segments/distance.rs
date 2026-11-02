@@ -384,6 +384,28 @@ impl SquaredDistanceKey {
         round_sqrt_ratio(&numerator, &squared.denominator)
     }
 
+    /// Compare the source distance in output units against a finite cutoff.
+    pub(in crate::geometry) fn within_scaled_distance(
+        &self,
+        cutoff: f64,
+        scale: f64,
+    ) -> Result<bool> {
+        debug_assert!(cutoff.is_finite() && cutoff >= 0.0);
+        debug_assert!(scale.is_finite() && scale > 0.0);
+        let squared = self.witness.squared()?;
+        let factor = ExactDyadic::from_f64(scale);
+        let threshold = ExactDyadic::from_f64(cutoff);
+        let left = squared
+            .numerator
+            .try_product(&factor)?
+            .try_product(&factor)?;
+        let right = squared
+            .denominator
+            .try_product(&threshold)?
+            .try_product(&threshold)?;
+        Ok(!left.cmp(&right).is_gt())
+    }
+
     /// Closed distance cutoff on source coordinates, without rounded projection.
     pub(in crate::geometry) fn within_distance(&self, tolerance: f64) -> Result<bool> {
         debug_assert!(tolerance >= 0.0);
@@ -1215,6 +1237,27 @@ pub(crate) fn point_distance(left: impl Into<XY>, right: impl Into<XY>) -> f64 {
     } else {
         dx.hypot(dy)
     }
+}
+
+pub(crate) fn point_distance_scaled(left: XY, right: XY, scale: f64) -> Result<f64> {
+    let distance = point_distance(left, right);
+    if (distance.is_infinite() && scale < 1.0)
+        || (distance.is_finite() && !distance.is_normal() && scale > 1.0)
+    {
+        if same_point(left, right) {
+            return Ok(0.0);
+        }
+        return point_pair_distance_key(left, right).scaled_distance(scale);
+    }
+    Ok(distance * scale)
+}
+
+pub(crate) fn points_dwithin_scaled(left: XY, right: XY, cutoff: f64, scale: f64) -> Result<bool> {
+    let native = cutoff / scale;
+    if cutoff.is_finite() && !native.is_normal() {
+        return point_pair_distance_key(left, right).within_scaled_distance(cutoff, scale);
+    }
+    Ok(points_dwithin(left, right, native))
 }
 
 /// Honest squared Euclidean distance when squared space is faithful.

@@ -598,6 +598,31 @@ def test_index_predicate_controls_are_keyword_only() -> None:
         gm.join([point], [point], 'intersects')  # type: ignore[call-arg]
 
 
+def test_spatial_index_refines_extreme_scaled_dwithin() -> None:
+    left = gm.Point(-1e308, 0.0, crs=2263)
+    right = gm.Point(1e308, 0.0, crs=2263)
+    index = gm.SpatialIndex([right])
+    assert (
+        ids(index.query(left, predicate='dwithin', distance=5.5e307, unit='meters'))
+        == []
+    )
+    assert ids(
+        index.query(left, predicate='dwithin', distance=6.5e307, unit='meters')
+    ) == [0]
+
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    point = gm.Point(0.5, 0.0, crs=crs)
+    line = gm.LineString([(0.0, 0.0), (1.0, math.ulp(0.0))], crs=crs)
+    index = gm.SpatialIndex([line])
+    assert (
+        ids(index.query(point, predicate='dwithin', distance=1e-124, unit='meters'))
+        == []
+    )
+    assert ids(
+        index.query(point, predicate='dwithin', distance=3e-124, unit='meters')
+    ) == [0]
+
+
 def test_spatial_index_refines_dwithin_queries() -> None:
     values = [gm.Point(0, 0), gm.Point(2, 0), gm.LineString([(4, 0), (4, 4)])]
     idx = gm.SpatialIndex(values)

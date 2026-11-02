@@ -146,13 +146,13 @@ impl PointDistance for PointEntry {
     }
 }
 
-fn consider_clearance_neighbor(
+fn consider_clearance_neighbor<const EXCLUDE_EQUAL: bool>(
     best: &mut Option<(usize, SquaredDistanceKey)>,
     point: Point,
     entry: &PointEntry,
 ) -> crate::error::Result<()> {
     let target = Point::new_raw_xy(entry.coords[0], entry.coords[1]);
-    if same_point(point, target) {
+    if EXCLUDE_EQUAL && same_point(point, target) {
         return Ok(());
     }
     let key = point_pair_distance_key(point.xy(), target.xy());
@@ -333,6 +333,22 @@ impl ClearancePointQuery<'_> {
         point: Point,
         incumbent: Option<&SquaredDistanceKey>,
     ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
+        self.nearest_neighbor::<true>(point, incumbent)
+    }
+
+    /// Nearest source point, including equal XY positions.
+    pub(crate) fn nearest_neighbor_including_equal(
+        &mut self,
+        point: Point,
+    ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
+        self.nearest_neighbor::<false>(point, None)
+    }
+
+    fn nearest_neighbor<const EXCLUDE_EQUAL: bool>(
+        &mut self,
+        point: Point,
+        incumbent: Option<&SquaredDistanceKey>,
+    ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
         self.stack.clear();
         let tree = self.tree;
         push_clearance_children(
@@ -352,7 +368,7 @@ impl ClearancePointQuery<'_> {
             }
             match node.node {
                 RTreeNode::Leaf(entry) => {
-                    consider_clearance_neighbor(&mut best, point, entry)?;
+                    consider_clearance_neighbor::<EXCLUDE_EQUAL>(&mut best, point, entry)?;
                 },
                 RTreeNode::Parent(parent) => {
                     let local = best.as_ref().map(|(_, key)| key);
@@ -582,6 +598,29 @@ mod query_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn exact_point_query_includes_equal_and_prunes_extreme_coordinates() {
+        let points: Vec<_> = (0..256)
+            .map(|index| Point::new_raw_xy(f64::from(index) * 1e200, 0.0))
+            .collect();
+        let index = PointSetIndex::build_with_ordinals(points.iter().copied());
+        let mut query = index.clearance_query();
+        let equal = query
+            .nearest_neighbor_including_equal(points[100])
+            .unwrap()
+            .unwrap();
+        assert_eq!(equal.0, 100);
+        assert!(equal.1.is_exact_zero().unwrap());
+
+        CLEARANCE_POINT_LEAVES.set(0);
+        let nearest = query
+            .nearest_neighbor_including_equal(Point::new_raw_xy(-1e200, 0.0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(nearest.0, 0);
+        assert!(CLEARANCE_POINT_LEAVES.get() < points.len() / 2);
     }
 }
 

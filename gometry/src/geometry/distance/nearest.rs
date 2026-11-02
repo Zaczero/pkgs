@@ -28,10 +28,18 @@ pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
         )?,
     };
     if !target.point_only.is_empty() {
-        if SQUARED && let Some(index) = target.point_index() {
+        if let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
+            let mut exact_query = (!SQUARED).then(|| index.clearance_query());
             for probe_point in probe.probe_points() {
-                if let Some(ordinal) = index.nearest_ordinal(probe_point)? {
+                let ordinal = if let Some(query) = exact_query.as_mut() {
+                    query
+                        .nearest_neighbor_including_equal(probe_point)?
+                        .map(|(ordinal, _)| ordinal)
+                } else {
+                    index.nearest_ordinal(probe_point)?
+                };
+                if let Some(ordinal) = ordinal {
                     let target_point = *target
                         .point_only
                         .get(ordinal)
