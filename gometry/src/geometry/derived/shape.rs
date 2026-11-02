@@ -2,9 +2,10 @@ use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, areal_centroid_with_bounds, canonicalize_concave_hull_points,
     centroid_is_empty, collection_surface_point, lineal_centroid, lineal_surface_point,
-    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
-    point_centroid, point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
-    scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
+    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point,
+    native_concave_hull_scaled, point_centroid, point_on_surface_line_columns,
+    polygonal_surface_point, polylabel_point, scale_aware_default_tolerance, shape_from_open_hull,
+    shape_from_selected_hull,
 };
 use crate::geometry::{
     Bounds, DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
@@ -228,11 +229,20 @@ impl Shape {
         shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 
+    pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
+        self.concave_hull_scaled(concavity, length_threshold, 1.0)
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "native_concave_hull returns source ordinals into this sorted point vector"
     )]
-    pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
+    pub(crate) fn concave_hull_scaled(
+        &self,
+        concavity: f64,
+        length_threshold: f64,
+        scale: f64,
+    ) -> Result<Self> {
         let concavity = NonNegative::try_new("concavity", concavity)?.get();
         let length_threshold = NonNegative::try_new("length_threshold", length_threshold)?.get();
         let mut points = self.first_seen_xy_vertices()?;
@@ -240,7 +250,7 @@ impl Shape {
             return Ok(Self::empty_polygon());
         }
         canonicalize_concave_hull_points(&mut points);
-        let hull_indices = native_concave_hull(&points, concavity, length_threshold)?;
+        let hull_indices = native_concave_hull_scaled(&points, concavity, length_threshold, scale)?;
         let hull: Vec<Point> = hull_indices
             .into_iter()
             .map(|index| points[index])

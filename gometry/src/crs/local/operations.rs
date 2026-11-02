@@ -69,7 +69,7 @@ pub(crate) fn metric_concave_hull(
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
-            shape.concave_hull(concavity, length_threshold / to_metre.get())
+            shape.concave_hull_scaled(concavity, length_threshold, to_metre.get())
         },
         crate::crs::MetricModel::Geodesic { state, .. } => {
             let mut budget =

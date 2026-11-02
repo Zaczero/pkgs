@@ -5,18 +5,30 @@ use crate::geometry::derived::{geometric_xy_cmp, monotone_chain_hull};
 use crate::geometry::tessellation::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 use crate::geometry::{
     GeometryErrorKind, Point, Ring, Segment, delaunay_triangulation, open_xy_cycle_winding,
-    point_distance, point_segment_distance,
+    point_distance, point_pair_distance_key, point_segment_distance, point_segment_selection,
+    points_dwithin_scaled,
 };
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "triangle IDs and live flags are created together from this Delaunay mesh"
-)]
 pub(crate) fn native_concave_hull(
     points: &[Point],
     concavity: f64,
     length_threshold: f64,
 ) -> crate::error::Result<Vec<usize>> {
+    native_concave_hull_scaled(points, concavity, length_threshold, 1.0)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "triangle IDs and live flags are created together from this Delaunay mesh"
+)]
+pub(crate) fn native_concave_hull_scaled(
+    points: &[Point],
+    concavity: f64,
+    length_threshold: f64,
+    scale: f64,
+) -> crate::error::Result<Vec<usize>> {
+    let native_threshold = length_threshold / scale;
+    let exact_threshold = length_threshold != 0.0 && !native_threshold.is_normal();
     // A point, line, or wholly collinear set has no Delaunay faces. These are
     // the intentional convex-hull reductions; once faces exist, boundary
     // extraction must produce the requested concave ring or return an error.
@@ -53,7 +65,17 @@ pub(crate) fn native_concave_hull(
             continue;
         }
         let length = edge_length(points, &triangulation, halfedge);
-        if length <= length_threshold {
+        if exact_threshold {
+            let (start, end) = edge_indices(&triangulation, halfedge);
+            if points_dwithin_scaled(
+                points[start].xy(),
+                points[end].xy(),
+                length_threshold,
+                scale,
+            )? {
+                continue;
+            }
+        } else if length <= native_threshold {
             break;
         }
         if !can_peel_boundary_triangle(
@@ -83,6 +105,7 @@ pub(crate) fn native_concave_hull(
 #[derive(Debug, Copy, Clone)]
 struct ConcaveBoundaryEdge {
     length: f64,
+    overflow_length: f64,
     edge_key: (usize, usize),
     halfedge: usize,
 }
@@ -99,8 +122,17 @@ impl ConcaveBoundaryEdge {
         } else {
             (start, end)
         };
+        let length = edge_point_distance(points[start], points[end]);
+        let overflow_length = if length.is_infinite() {
+            let a = points[start];
+            let b = points[end];
+            (a.x * 0.25 - b.x * 0.25).hypot(a.y * 0.25 - b.y * 0.25)
+        } else {
+            0.0
+        };
         Self {
-            length: edge_point_distance(points[start], points[end]),
+            length,
+            overflow_length,
             edge_key,
             halfedge,
         }
@@ -111,7 +143,7 @@ impl Eq for ConcaveBoundaryEdge {}
 
 impl PartialEq for ConcaveBoundaryEdge {
     fn eq(&self, other: &Self) -> bool {
-        self.length.total_cmp(&other.length) == Ordering::Equal && self.halfedge == other.halfedge
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -119,6 +151,7 @@ impl Ord for ConcaveBoundaryEdge {
     fn cmp(&self, other: &Self) -> Ordering {
         self.length
             .total_cmp(&other.length)
+            .then_with(|| self.overflow_length.total_cmp(&other.overflow_length))
             .then_with(|| other.edge_key.cmp(&self.edge_key))
             .then_with(|| other.halfedge.cmp(&self.halfedge))
     }
@@ -154,6 +187,25 @@ fn can_peel_boundary_triangle(
     let a = points[triangulation.triangles[halfedge]];
     let b = points[triangulation.triangles[next_halfedge(halfedge)]];
     let c = points[opposite];
+    if length.is_infinite() {
+        if concavity == 0.0 {
+            return Ok(true);
+        }
+        let factor = 0.25;
+        let scaled_length = point_pair_distance_key(a.xy(), b.xy()).scaled_distance(factor)?;
+        let maximum = scaled_length / concavity;
+        let segment = Segment {
+            start: a.xy(),
+            end: b.xy(),
+        };
+        let distance = point_segment_selection(c.xy(), segment)?
+            .distance_key(c.xy(), segment)
+            .scaled_distance(factor)?;
+        let adjacent = point_pair_distance_key(a.xy(), c.xy())
+            .scaled_distance(factor)?
+            .min(point_pair_distance_key(c.xy(), b.xy()).scaled_distance(factor)?);
+        return Ok(distance <= maximum && adjacent < maximum);
+    }
     Ok(point_segment_distance(c, Segment {
         start: a.into(),
         end: b.into(),

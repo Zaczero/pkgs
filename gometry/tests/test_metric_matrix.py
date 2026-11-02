@@ -744,6 +744,34 @@ def test_linear_reference_preserves_extreme_route_stations() -> None:
         )
 
 
+@pytest.mark.parametrize('concavity', [0.0, 1.0, 2.0])
+def test_concave_hull_preserves_extreme_unit_threshold(concavity: float) -> None:
+    points = gm.MultiPoint([(0, 0), (10, 0), (10, 10), (0, 10), (5, 5)], crs=FOOT_CRS)
+    expected = points.convex_hull()
+    assert gm.equals(
+        points.concave_hull(length_threshold=1e308, unit='meters'), expected
+    )
+    packed = gm.GeometryArray([points]).concave_hull(
+        length_threshold=1e308, unit='meters'
+    )
+    assert gm.equals(packed[0], expected)
+
+    vertices = [(-1.7, -1.7), (1.7, -1.7), (1.7, 1.7), (-1.7, 1.7), (0, -0.8), (0, 0.8)]
+    ordinary = gm.MultiPoint(vertices, crs=FOOT_CRS).concave_hull(
+        concavity=concavity, length_threshold=1.0, unit='meters'
+    )
+    extreme = gm.MultiPoint([(x * 1e308, y * 1e308) for x, y in vertices], crs=FOOT_CRS)
+    actual = extreme.concave_hull(
+        concavity=concavity, length_threshold=1e308, unit='meters'
+    )
+    np.testing.assert_allclose(
+        np.asarray(actual.exterior.coords) / 1e308,
+        np.asarray(ordinary.exterior.coords),
+        rtol=1e-14,
+        atol=0,
+    )
+
+
 def test_area_preserves_extreme_unit_scaling() -> None:
     polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
     expected = (1.5e154 * FOOT_UNIT_M) ** 2
