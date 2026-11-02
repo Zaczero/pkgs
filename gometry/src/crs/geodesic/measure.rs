@@ -30,13 +30,6 @@ impl DistanceMode {
     pub(crate) fn is_normalized(self) -> bool {
         self == Self::Normalized
     }
-
-    pub(crate) fn planar_along(self, distance: f64, to_metre: f64) -> f64 {
-        match self {
-            Self::Normalized => distance,
-            Self::Absolute => distance / to_metre,
-        }
-    }
 }
 
 impl From<bool> for DistanceMode {

@@ -54,7 +54,7 @@ fn planar_locate_retains_a_finite_station_when_query_distance_overflows() {
         0.5_f64.to_bits(),
     );
     assert_eq!(
-        locate_planar_route(std::iter::once(&coordinates), probe, false)
+        locate_planar_route(std::iter::once(&coordinates), probe, false, 1.0)
             .unwrap()
             .to_bits(),
         0.5_f64.to_bits(),
@@ -115,6 +115,7 @@ fn planar_one_shot_locate_streams_without_route_allocations() {
             std::iter::once(&coordinates),
             Point::new_raw_xy(2.0, 1.0),
             true,
+            1.0,
         )
         .unwrap()
     });
@@ -249,6 +250,7 @@ fn prepared_planar_locate_matches_streaming_across_seeded_ties_zero_edges_and_em
                 shape.linework().unwrap().iter().map(LineSeq::as_coords),
                 probe,
                 normalized,
+                1.0,
             )
             .expect("one-shot streaming reference");
             assert_eq!(

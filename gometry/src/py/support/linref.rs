@@ -90,21 +90,14 @@ impl PreparedLineLocate<'_> {
                 parts,
                 normalized,
                 to_metre,
-            } => {
-                let station = index.locate_point_prepared(query, *normalized, || {
-                    if let Some(parts) = parts.get() {
-                        return Ok(parts);
-                    }
-                    let resolved = line.distance_parts()?;
-                    parts.set(Some(resolved));
-                    Ok(resolved)
-                })?;
-                Ok(if *normalized {
-                    station
-                } else {
-                    station * to_metre
-                })
-            },
+            } => index.locate_point_prepared(query, *normalized, *to_metre, || {
+                if let Some(parts) = parts.get() {
+                    return Ok(parts);
+                }
+                let resolved = line.distance_parts()?;
+                parts.set(Some(resolved));
+                Ok(resolved)
+            }),
             Self::PlanarMeasure(index) => index.locate(query, &PlanarMetric),
             Self::GeographicDistance {
                 index,
@@ -282,19 +275,19 @@ pub(crate) fn line_interpolate_points_coordseq(
     match plan {
         InterpolatePlan::Count(count) => {
             for sample in 0..*count {
-                points.push(Shape::Point(index.interpolate_route_position(
+                points.push(Shape::Point(index.interpolate_planar(
                     InterpolatePlan::count_fraction(sample, *count),
                     true,
-                    &PlanarMetric,
+                    to_metre.get(),
                 )?));
             }
         },
         InterpolatePlan::Distances(distances, mode) => {
             for &distance in distances {
-                points.push(Shape::Point(index.interpolate_route_position(
-                    mode.planar_along(distance, to_metre.get()),
+                points.push(Shape::Point(index.interpolate_planar(
+                    distance,
                     mode.is_normalized(),
-                    &PlanarMetric,
+                    to_metre.get(),
                 )?));
             }
         },
@@ -329,10 +322,10 @@ pub(crate) fn line_interpolate_points_shape(
                     for sample in 0..*count {
                         shapes.push(crate::broadcast::degrade_linref_point(
                             index
-                                .interpolate_route_position(
+                                .interpolate_planar(
                                     InterpolatePlan::count_fraction(sample, *count),
                                     true,
-                                    &PlanarMetric,
+                                    to_metre.get(),
                                 )
                                 .map(Shape::Point),
                         )?);
@@ -342,11 +335,7 @@ pub(crate) fn line_interpolate_points_shape(
                     for &distance in distances {
                         shapes.push(crate::broadcast::degrade_linref_point(
                             index
-                                .interpolate_route_position(
-                                    mode.planar_along(distance, to_metre.get()),
-                                    mode.is_normalized(),
-                                    &PlanarMetric,
-                                )
+                                .interpolate_planar(distance, mode.is_normalized(), to_metre.get())
                                 .map(Shape::Point),
                         )?);
                     }
@@ -403,10 +392,9 @@ pub(crate) fn line_interpolate_shape(
     normalized: bool,
 ) -> Result<Shape> {
     Ok(match metric {
-        ResolvedMetric::Planar { to_metre } => line.line_interpolate_point(
-            crate::crs::DistanceMode::of(normalized).planar_along(distance, to_metre.get()),
-            normalized,
-        )?,
+        ResolvedMetric::Planar { to_metre } => {
+            line.line_interpolate_point_scaled(distance, normalized, to_metre.get())?
+        },
         ResolvedMetric::Geodesic(metric) => {
             let admission = GeographicPrepared::try_new(line, frame_cache, metric.frame)?;
             let distance = crate::Finite::try_new("distance", distance)?.get();
@@ -427,14 +415,9 @@ pub(crate) fn line_substring_shape(
     normalized: bool,
 ) -> Result<Shape> {
     Ok(match metric {
-        ResolvedMetric::Planar { to_metre } => line.line_substring(
-            crate::geometry::MeasureRange::substring_distance(
-                crate::crs::DistanceMode::of(normalized)
-                    .planar_along(range.start(), to_metre.get()),
-                crate::crs::DistanceMode::of(normalized).planar_along(range.end(), to_metre.get()),
-            )?,
-            normalized,
-        )?,
+        ResolvedMetric::Planar { to_metre } => {
+            line.line_substring_scaled(range, normalized, to_metre.get())?
+        },
         ResolvedMetric::Geodesic(metric) => {
             let admission = GeographicPrepared::try_new(line, frame_cache, metric.frame)?;
             chart_line_index(line, frame_cache, metric, admission)?
@@ -455,11 +438,13 @@ pub(crate) fn line_interpolate_coordseq(
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
             let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-            Ok(index.interpolate_route_position(
-                distance_mode.planar_along(distance, to_metre.get()),
-                distance_mode.is_normalized(),
-                &PlanarMetric,
-            )?)
+            Ok(
+                index.interpolate_planar(
+                    distance,
+                    distance_mode.is_normalized(),
+                    to_metre.get(),
+                )?,
+            )
         },
         crate::crs::MetricModel::Geodesic {
             crs, frame, state, ..
@@ -489,14 +474,7 @@ pub(crate) fn line_substring_coordseq(
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
             let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-            index.substring(
-                crate::geometry::MeasureRange::substring_distance(
-                    distance_mode.planar_along(range.start(), to_metre.get()),
-                    distance_mode.planar_along(range.end(), to_metre.get()),
-                )?,
-                distance_mode.is_normalized(),
-                &PlanarMetric,
-            )
+            index.substring_planar(range, distance_mode.is_normalized(), to_metre.get())
         },
         crate::crs::MetricModel::Geodesic {
             crs, frame, state, ..
@@ -528,12 +506,9 @@ pub(crate) fn line_locate_coordseq(
                 std::iter::once(line),
                 query,
                 distance_mode.is_normalized(),
+                to_metre.get(),
             )?;
-            Ok(if distance_mode.is_normalized() {
-                located
-            } else {
-                located * to_metre.get()
-            })
+            Ok(located)
         },
         crate::crs::MetricModel::Geodesic {
             crs, frame, state, ..

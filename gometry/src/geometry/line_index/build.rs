@@ -148,7 +148,7 @@ impl LineIndex {
     /// Build over `shape`'s linework. `LineStringRequired` for non-lineal
     /// shapes and `EmptyLinework` when there is no first vertex. Zero-total
     /// linework retains both endpoint identities.
-    pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
+    pub(crate) fn build(shape: &Shape, metric: &PlanarMetric) -> Result<Self> {
         let lines = shape.linework()?;
         let first = linework_first_point(lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = ShapeCountQuery::default().segments(shape).ok();
@@ -161,13 +161,6 @@ impl LineIndex {
             for [start, end] in line.segment_pairs() {
                 last = end;
                 let length = metric.admitted_length(start, end)?;
-                // Non-finite lengths (overflowed extreme segments) would poison
-                // every subsequent prefix entry — reject construction.
-                if !length.is_finite() {
-                    return Err(GeometryErrorKind::message(
-                        "line index cannot include a non-finite segment length",
-                    ));
-                }
                 if length == 0.0 {
                     has_zero_segments = true;
                     segments.push(OrdinateSegment { start, end });
@@ -178,11 +171,6 @@ impl LineIndex {
                 // planar) — N11 closed under free-or-nearly-free. Standalone
                 // shape-length folds compensate separately in measure.rs.
                 total += length;
-                if !total.is_finite() {
-                    return Err(GeometryErrorKind::message(
-                        "line index total length must be finite",
-                    ));
-                }
                 segments.push(OrdinateSegment { start, end });
                 prefix.push(total);
             }
@@ -195,10 +183,20 @@ impl LineIndex {
             .find_map(|line| line.last())
             .unwrap_or(last);
         let segments = segments.into_boxed_slice();
-        let prefix = prefix.into_boxed_slice();
+        let wide = if total.is_infinite() || (total != 0.0 && !total.is_normal()) {
+            Some(Box::new(super::wide::WidePrefix::build(&segments)?))
+        } else {
+            None
+        };
+        let prefix = if wide.is_some() {
+            Box::default()
+        } else {
+            prefix.into_boxed_slice()
+        };
         Ok(Self {
             segments,
             prefix,
+            wide,
             total,
             first,
             last,
@@ -209,7 +207,7 @@ impl LineIndex {
     /// Build over one line's zero-copy [`CoordSeq`] window — the packed-`Lines`
     /// batch lane reads CSR rows through this with no per-row `Shape` / `Arc`
     /// traffic (the measured gap vs the `iter_rows` + transient fallback).
-    pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
+    pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &PlanarMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
         let (mut segments, mut prefix) = Self::storage(Some(upper));
@@ -220,11 +218,6 @@ impl LineIndex {
         for [start, end] in coords.segment_pairs() {
             last = end;
             let length = metric.admitted_length(start, end)?;
-            if !length.is_finite() {
-                return Err(GeometryErrorKind::message(
-                    "line index cannot include a non-finite segment length",
-                ));
-            }
             if length == 0.0 {
                 has_zero_segments = true;
                 segments.push(OrdinateSegment { start, end });
@@ -232,20 +225,25 @@ impl LineIndex {
                 continue;
             }
             total += length;
-            if !total.is_finite() {
-                return Err(GeometryErrorKind::message(
-                    "line index total length must be finite",
-                ));
-            }
             segments.push(OrdinateSegment { start, end });
             prefix.push(total);
         }
         let last = coords.last().unwrap_or(last);
         let segments = segments.into_boxed_slice();
-        let prefix = prefix.into_boxed_slice();
+        let wide = if total.is_infinite() || (total != 0.0 && !total.is_normal()) {
+            Some(Box::new(super::wide::WidePrefix::build(&segments)?))
+        } else {
+            None
+        };
+        let prefix = if wide.is_some() {
+            Box::default()
+        } else {
+            prefix.into_boxed_slice()
+        };
         Ok(Self {
             segments,
             prefix,
+            wide,
             total,
             first,
             last,
@@ -305,6 +303,7 @@ impl ChartLineIndex {
         Ok(Self {
             segments: parts,
             prefix: prefix.into_boxed_slice(),
+            wide: None,
             total,
             first,
             last,

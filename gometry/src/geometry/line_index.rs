@@ -34,6 +34,7 @@ mod build;
 mod locate;
 mod metric;
 mod route;
+mod wide;
 
 use build::{LineSegments, OrdinateSegment};
 pub(crate) use locate::locate_planar_route;
@@ -48,12 +49,12 @@ pub(crate) enum LineIndexSlot {
     Index(LineIndex),
     NotLineal,
     Empty,
-    /// Fallible construction (non-finite segment/total length, etc.).
+    /// A geometry error encountered during construction.
     Invalid(String),
 }
 
 impl LineIndexSlot {
-    pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
+    pub(crate) fn build(shape: &Shape, metric: &PlanarMetric) -> Result<Self> {
         use crate::error::ErrorKind;
         match LineIndex::build(shape, metric) {
             Ok(index) => Ok(Self::Index(index)),
@@ -90,17 +91,12 @@ pub(crate) struct LineIndex<S = Box<[OrdinateSegment]>> {
     /// `mul_add(length, fraction, offset)` and every interpolation walk read
     /// them back instead of re-measuring.
     prefix: Box<[f64]>,
+    wide: Option<Box<wide::WidePrefix>>,
     /// Stored separately: deriving it added 0.17–2.08% instructions in measured paths.
     total: f64,
     first: Point,
     last: Point,
     has_zero_segments: bool,
-}
-
-impl LineIndex {
-    pub(crate) const fn has_zero_length_segments(&self) -> bool {
-        self.has_zero_segments
-    }
 }
 
 impl HeapSize for LineIndexSlot {
@@ -118,6 +114,9 @@ impl<S: LineSegments> HeapSize for LineIndex<S> {
         self.segments
             .heap_bytes()
             .saturating_add(self.prefix.heap_bytes())
+            .saturating_add(self.wide.as_ref().map_or(0, |wide| {
+                size_of::<wide::WidePrefix>().saturating_add(wide.heap_bytes())
+            }))
     }
 }
 

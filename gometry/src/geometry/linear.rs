@@ -80,6 +80,7 @@ impl Shape {
             self.linework()?.iter().map(LineSeq::as_coords),
             point,
             normalized,
+            1.0,
         )
     }
 
@@ -172,18 +173,31 @@ impl Shape {
 
 impl PreparedPlan {
     /// Cached-engine sibling of the `Shape` linear-referencing method.
+    #[cfg(test)]
     pub(crate) fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Shape> {
-        let index = self.line_index()?;
-        Ok(Shape::Point(if index.has_zero_length_segments() {
-            index.interpolate_with_zero_length_segments(distance, normalized, &PlanarMetric)?
-        } else {
-            index.interpolate(distance, normalized, &PlanarMetric)?
-        }))
+        self.line_interpolate_point_scaled(distance, normalized, 1.0)
     }
 
-    pub(crate) fn line_substring(&self, range: MeasureRange, normalized: bool) -> Result<Shape> {
+    pub(crate) fn line_interpolate_point_scaled(
+        &self,
+        distance: f64,
+        normalized: bool,
+        scale: f64,
+    ) -> Result<Shape> {
+        Ok(Shape::Point(
+            self.line_index()?
+                .interpolate_planar(distance, normalized, scale)?,
+        ))
+    }
+
+    pub(crate) fn line_substring_scaled(
+        &self,
+        range: MeasureRange,
+        normalized: bool,
+        scale: f64,
+    ) -> Result<Shape> {
         self.line_index()?
-            .substring(range, normalized, &PlanarMetric)
+            .substring_planar(range, normalized, scale)
     }
 }
 

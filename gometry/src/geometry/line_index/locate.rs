@@ -3,13 +3,16 @@ use super::{
     Point, Result, Segment, XY, coordinate_squared_safe, point_distance, point_segment_selection,
     segment_projection, squared_space_safe, update_nearest_candidate,
 };
+use crate::Coordinates as _;
 
 /// Locate one query while measuring its route, without a reusable prefix index.
 pub(crate) fn locate_planar_route<'a>(
-    lines: impl Iterator<Item = &'a CoordSeq>,
+    lines: impl Iterator<Item = &'a CoordSeq> + Clone,
     probe: Point,
     normalized: bool,
+    scale: f64,
 ) -> Result<f64> {
+    let source_lines = lines.clone();
     let mut has_vertex = false;
     let mut total = 0.0;
     let mut best_distance = f64::INFINITY;
@@ -32,19 +35,15 @@ pub(crate) fn locate_planar_route<'a>(
                 end: XY::new(bx, by),
             };
             let measured = point_distance(segment.start, segment.end);
-            if !measured.is_finite() {
-                return Err(GeometryErrorKind::message(
-                    "line index cannot include a non-finite segment length",
-                ));
+            if !measured.is_finite() || (measured != 0.0 && !measured.is_normal() && scale > 1.0) {
+                return locate_wide_route(source_lines, probe, normalized, scale);
             }
             let offset = total;
             if measured != 0.0 {
                 total += measured;
             }
             if !total.is_finite() {
-                return Err(GeometryErrorKind::message(
-                    "line index total length must be finite",
-                ));
+                return locate_wide_route(source_lines, probe, normalized, scale);
             }
             if measured == 0.0 || probe.x.is_nan() {
                 continue;
@@ -93,7 +92,54 @@ pub(crate) fn locate_planar_route<'a>(
     };
     let projection = segment_projection(probe, segment)?;
     let station = offset + projection.scale(length)?;
-    Ok(if normalized { station / total } else { station })
+    Ok(if normalized {
+        station / total
+    } else {
+        station * scale
+    })
+}
+
+fn locate_wide_route<'a>(
+    lines: impl Iterator<Item = &'a CoordSeq>,
+    probe: Point,
+    normalized: bool,
+    scale: f64,
+) -> Result<f64> {
+    use super::OrdinateSegment;
+
+    let mut segments = Vec::new();
+    for line in lines {
+        segments.extend(
+            line.segment_pairs()
+                .map(|[start, end]| OrdinateSegment { start, end }),
+        );
+    }
+    if probe.x.is_nan() {
+        return Ok(f64::NAN);
+    }
+    let prefix = super::wide::WidePrefix::build(&segments)?;
+    let mut best: Option<NearestCandidate> = None;
+    for (ordinal, source) in segments.iter().enumerate() {
+        let segment = Segment {
+            start: source.start.xy(),
+            end: source.end.xy(),
+        };
+        if segment.start == segment.end {
+            continue;
+        }
+        let selection = point_segment_selection(probe.xy(), segment)?;
+        update_nearest_candidate!(&selection, probe, segment, || ordinal, &mut best)?;
+    }
+    let Some(candidate) = best else {
+        return Ok(0.0);
+    };
+    let ordinal = candidate
+        .segment_ordinal()
+        .expect("locate selects a linework segment");
+    let segment = *segments
+        .get(ordinal)
+        .expect("nearest ordinal belongs to the source route");
+    prefix.locate(ordinal, segment, probe, normalized, scale)
 }
 
 impl LineIndex {
@@ -104,9 +150,10 @@ impl LineIndex {
         &self,
         probe: Point,
         normalized: bool,
+        scale: f64,
         distance_parts: impl FnOnce() -> Result<&'a DistanceParts>,
     ) -> Result<f64> {
-        self.locate_point_with_search(probe, normalized, || {
+        self.locate_point_with_search(probe, normalized, scale, || {
             self.nearest_planar_prepared(probe, distance_parts()?)
         })
     }
@@ -115,13 +162,14 @@ impl LineIndex {
         &self,
         probe: Point,
         normalized: bool,
+        scale: f64,
         search: impl FnOnce() -> Result<Option<NearestCandidate>>,
     ) -> Result<f64> {
         // POINT EMPTY reaches a locate as the NaN point of a point column.
         if probe.x.is_nan() {
             return Ok(f64::NAN);
         }
-        if self.total == 0.0 {
+        if self.wide.is_none() && self.total == 0.0 {
             return Ok(0.0);
         }
         let Some(candidate) = search()? else {
@@ -131,6 +179,9 @@ impl LineIndex {
             .segment_ordinal()
             .expect("locate selects a linework segment");
         let segment = self.segments.segment(ordinal);
+        if let Some(wide) = &self.wide {
+            return wide.locate(ordinal, segment, probe, normalized, scale);
+        }
         let offset = *self
             .prefix
             .get(ordinal)
@@ -151,7 +202,7 @@ impl LineIndex {
         } else {
             station
         };
-        Ok(result)
+        Ok(if normalized { result } else { result * scale })
     }
 
     fn nearest_planar_prepared(

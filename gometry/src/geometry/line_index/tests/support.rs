@@ -7,7 +7,7 @@ pub(super) fn cached_planar_locate(
 ) -> crate::error::Result<f64> {
     prepared
         .line_index()?
-        .locate_point_prepared(point, normalized, || prepared.distance_parts())
+        .locate_point_prepared(point, normalized, 1.0, || prepared.distance_parts())
 }
 
 pub(super) fn assert_locate_interpolate_matches_proximity(

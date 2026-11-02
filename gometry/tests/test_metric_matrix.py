@@ -691,6 +691,59 @@ def test_segmentize_respects_extreme_output_unit_limits() -> None:
         assert list(result.coords) == [(0.0, 0.0), (4 * step, 0.0), (8 * step, 0.0)]
 
 
+def test_linear_reference_preserves_extreme_route_stations() -> None:
+    line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], crs=FOOT_CRS)
+    midpoint = gm.Point(0.0, 0.0, crs=FOOT_CRS)
+    half_metres = 1e308 * FOOT_UNIT_M
+    for source in (line, gm.GeometryArray([line])):
+
+        def scalar(value: Any) -> Any:
+            return value[0] if isinstance(value, gm.GeometryArray) else value
+
+        assert scalar(source.line_interpolate(0.5, normalized=True)).x == pytest.approx(
+            0.0, abs=5e292
+        )
+        assert scalar(
+            source.line_interpolate(half_metres, unit='meters')
+        ).x == pytest.approx(0.0, abs=5e292)
+        located = source.line_locate(midpoint, normalized=True)
+        assert (
+            located[0] if isinstance(located, np.ndarray) else located
+        ) == pytest.approx(0.5)
+        substring = scalar(source.line_substring(0.25, 0.75, normalized=True))
+        np.testing.assert_allclose(
+            [point[0] for point in substring.coords],
+            [-5e307, 5e307],
+            rtol=1e-14,
+            atol=0,
+        )
+
+    route = gm.LineString([(0, 0), (1, 0), (1e308, 0), (-1e308, 0)], crs=FOOT_CRS)
+    assert route.line_interpolate(0.5).x == 0.5
+    assert route.line_interpolate(-half_metres, unit='meters').x == pytest.approx(
+        0.0, abs=5e292
+    )
+    assert route.line_interpolate(1.0, normalized=True).x == -1e308
+    short = gm.LineString([(0, 0), (1, 0)], crs=FOOT_CRS)
+    assert short.line_interpolate(1e308, unit='meters').x == 1.0
+    assert gm.length(short.line_substring(0, 1e308, unit='meters')) == 1.0
+    zero = gm.LineString([(3, 4), (3, 4)], crs=FOOT_CRS)
+    assert zero.line_interpolate(1e308, unit='meters').x == 3.0
+    repeated = gm.LineString(
+        [(-1e308, 0), (-1e308, 0), (1e308, 0), (1e308, 0)], crs=FOOT_CRS
+    )
+    samples = repeated.line_interpolate(count=3)
+    np.testing.assert_allclose(
+        [sample.x for sample in samples], [-1e308, 0.0, 1e308], rtol=1e-14, atol=0
+    )
+    for x, expected in [(-1e308, 0.0), (0.0, 0.5), (1e308, 1.0)]:
+        probe = gm.Point(x, 1.0, crs=FOOT_CRS)
+        assert repeated.line_locate(probe, normalized=True) == pytest.approx(expected)
+        np.testing.assert_allclose(
+            gm.GeometryArray([repeated]).line_locate(probe, normalized=True), [expected]
+        )
+
+
 def test_area_preserves_extreme_unit_scaling() -> None:
     polygon = gm.box(0.0, 0.0, 1.5e154, 1.5e154, crs=FOOT_CRS)
     expected = (1.5e154 * FOOT_UNIT_M) ** 2
