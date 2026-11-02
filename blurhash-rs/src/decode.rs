@@ -209,12 +209,12 @@ fn decode_component_vectors(
 
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "decoded BlurHash component counts are in 1..=9"
+            reason = "the decoded X component count is in 1..=9"
         )]
         let i = idx % layout.num_x;
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "decoded BlurHash component counts are in 1..=9"
+            reason = "the decoded X component count is in 1..=9"
         )]
         let slot = (idx / layout.num_x)
             .wrapping_mul(blocks)
