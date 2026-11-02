@@ -14,6 +14,8 @@ use super::{
 pub(crate) enum SegmentPlacement<'a> {
     /// Straight line in coordinate space (projected or CRS-free input).
     Planar,
+    /// Straight line measured in output units when native limits cannot be represented.
+    PlanarScaled(f64),
     /// Along the straight coordinate-chart edge, at equal ellipsoidal
     /// arclength, for geographic coordinates in the typed native frame.
     Chart(&'a geographiclib_rs::Geodesic, GeographicFrame),
@@ -44,6 +46,15 @@ pub(crate) enum SegmentPlacementOwned {
 }
 
 impl SegmentPlacementOwned {
+    pub(crate) fn for_segmentize(&self, length: f64, scale: f64) -> (SegmentPlacement<'_>, f64) {
+        let native = length / scale;
+        if matches!(self, Self::Planar) && !native.is_normal() {
+            (SegmentPlacement::PlanarScaled(scale), length)
+        } else {
+            (self.as_borrowed(), native)
+        }
+    }
+
     pub(crate) fn as_borrowed(&self) -> SegmentPlacement<'_> {
         match self {
             Self::Planar => SegmentPlacement::Planar,

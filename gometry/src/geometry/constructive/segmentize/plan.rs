@@ -30,8 +30,14 @@ pub(super) trait Route {
         length > 0.0
     }
 
-    fn pieces(&self, _segment: Segment, length: f64, max_length: f64) -> usize {
-        segmentize_steps(length, max_length)
+    fn pieces(&self, _segment: Segment, length: f64, max_length: f64) -> Result<usize> {
+        Ok(segmentize_steps(length, max_length))
+    }
+
+    fn within_limit(&self, _segment: Segment, length: f64, max_length: f64) -> Result<bool> {
+        Ok(length
+            .partial_cmp(&max_length)
+            .is_some_and(std::cmp::Ordering::is_le))
     }
 
     fn interior(
@@ -109,7 +115,7 @@ pub(super) fn plan<R: Route>(
         let needs_splittable = matches!(target, Target::Fraction(_)) || retry > 0;
         let splittable = needs_splittable && route.splittable(segment, length);
         let mut pieces = match target {
-            Target::MaxLength(max_length) => route.pieces(segment, length, max_length),
+            Target::MaxLength(max_length) => route.pieces(segment, length, max_length)?,
             Target::Fraction(fraction_pieces) if splittable => fraction_pieces,
             Target::Fraction(_) => 1,
             Target::Pieces(_) => unreachable!("piece-count targets were planned above"),
@@ -124,9 +130,7 @@ pub(super) fn plan<R: Route>(
             && max_length.is_finite()
             && max_length > 0.0
         {
-            source_exceeds_max_length |= length
-                .partial_cmp(&max_length)
-                .is_none_or(std::cmp::Ordering::is_gt);
+            source_exceeds_max_length |= !route.within_limit(segment, length, max_length)?;
         }
         if pieces > 1 {
             solutions.push(solution);
@@ -224,11 +228,7 @@ pub(super) fn verify_segmentize_output<R: Route>(
             let segment = output_segments
                 .next()
                 .expect("each planned piece has one output chord");
-            if route
-                .measure(segment)?
-                .partial_cmp(&max_segment_length)
-                .is_none_or(std::cmp::Ordering::is_gt)
-            {
+            if !route.within_limit(segment, route.measure(segment)?, max_segment_length)? {
                 return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
             }
         }
@@ -243,11 +243,7 @@ fn verify_all_segmentize_output<R: Route>(
     max_segment_length: f64,
 ) -> Result<()> {
     for segment in line_segments(points) {
-        if route
-            .measure(segment)?
-            .partial_cmp(&max_segment_length)
-            .is_none_or(std::cmp::Ordering::is_gt)
-        {
+        if !route.within_limit(segment, route.measure(segment)?, max_segment_length)? {
             return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
         }
     }

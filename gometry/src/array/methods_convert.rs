@@ -75,18 +75,15 @@ impl PyGeometryArray {
                         points.ys(),
                     )?;
                 }
-                crate::geometry::segmentize_points_budgeted(
-                    points,
-                    length / to_metre,
-                    &for_columns.as_borrowed(),
-                    budget,
-                )
+                let (placement, limit) = for_columns.for_segmentize(length, to_metre);
+                crate::geometry::segmentize_points_budgeted(points, limit, &placement, budget)
             },
             move |shape, length, budget| {
                 if let Some(frame) = for_shapes.frame() {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.segmentize_budgeted(length / to_metre, &for_shapes.as_borrowed(), budget)
+                let (placement, limit) = for_shapes.for_segmentize(length, to_metre);
+                shape.segmentize_budgeted(limit, &placement, budget)
             },
         )?;
         Ok(result)

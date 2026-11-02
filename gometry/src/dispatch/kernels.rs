@@ -955,8 +955,9 @@ pub(crate) fn unary_segmentize(
     if let Some(frame) = placement.frame() {
         crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }
+    let (placement, limit) = placement.for_segmentize(length, to_metre);
     data.shape()
-        .segmentize_budgeted(length / to_metre, &placement.as_borrowed(), &mut budget)
+        .segmentize_budgeted(limit, &placement, &mut budget)
 }
 
 /// Densify kernel shared by the spine-routed free function.

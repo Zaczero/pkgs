@@ -6,6 +6,7 @@ use super::{
     Result, Segment, SegmentPlacement, Target, XY, axis_pow2_scale,
     interpolate_subdivision_ordinate, point_distance, same_point, scaled_residual, subdivide,
 };
+use crate::geometry::{point_distance_scaled, point_interpolation_ratio, points_dwithin_scaled};
 
 /// Plan the ideal planar piece count without allowing an overflowing endpoint
 /// difference to masquerade as an already-complete segment. The common path
@@ -101,8 +102,10 @@ impl Route for Planar {
         !same_point(segment.start, segment.end)
     }
 
-    fn pieces(&self, segment: Segment, length: f64, max_length: f64) -> usize {
-        planar_segmentize_steps_from_length(segment, length, max_length)
+    fn pieces(&self, segment: Segment, length: f64, max_length: f64) -> Result<usize> {
+        Ok(planar_segmentize_steps_from_length(
+            segment, length, max_length,
+        ))
     }
 
     fn interior(
@@ -125,6 +128,66 @@ impl Route for Planar {
 
     fn measure(&self, segment: Segment) -> Result<f64> {
         Ok(point_distance(segment.start, segment.end))
+    }
+}
+
+pub(super) struct PlanarScaled(pub(super) f64);
+
+impl Route for PlanarScaled {
+    type Solution = ();
+
+    fn solve(&self, segment: Segment, _target: Target<'_>) -> Result<(f64, Self::Solution)> {
+        Ok((self.measure(segment)?, ()))
+    }
+
+    fn splittable(&self, segment: Segment, _length: f64) -> bool {
+        !same_point(segment.start, segment.end)
+    }
+
+    fn pieces(&self, segment: Segment, _length: f64, max_length: f64) -> Result<usize> {
+        if self.within_limit(segment, 0.0, max_length)? {
+            return Ok(1);
+        }
+        let ratio = point_interpolation_ratio(segment.start, segment.end, max_length, self.0)?;
+        let pieces = (1.0 / ratio).ceil();
+        if !pieces.is_finite() || pieces > (GENERATED_ITEM_LIMIT + 1) as f64 {
+            Ok(GENERATED_ITEM_LIMIT + 2)
+        } else {
+            Ok((pieces as usize).max(2))
+        }
+    }
+
+    fn within_limit(&self, segment: Segment, _length: f64, max_length: f64) -> Result<bool> {
+        points_dwithin_scaled(segment.start, segment.end, max_length, self.0)
+    }
+
+    fn interior(
+        &mut self,
+        segment: Segment,
+        (): Self::Solution,
+        pieces: usize,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        budget: &ExpansionBudget,
+        planned_generated: usize,
+        refined_generated: &mut usize,
+    ) -> Result<()> {
+        Planar.interior(
+            segment,
+            (),
+            pieces,
+            source,
+            source_segment,
+            output,
+            budget,
+            planned_generated,
+            refined_generated,
+        )
+    }
+
+    fn measure(&self, segment: Segment) -> Result<f64> {
+        point_distance_scaled(segment.start, segment.end, self.0)
     }
 }
 
@@ -306,6 +369,10 @@ pub(super) fn subdivide_placed(
     match placement {
         SegmentPlacement::Planar => {
             let mut route = Planar;
+            subdivide(&mut route, points, target, budget)
+        },
+        SegmentPlacement::PlanarScaled(scale) => {
+            let mut route = PlanarScaled(*scale);
             subdivide(&mut route, points, target, budget)
         },
         SegmentPlacement::Chart(geodesic, frame) => {

@@ -127,8 +127,8 @@ fn unsplit_source_length_keeps_the_full_verification_error_path() {
             Ok((2.0, ()))
         }
 
-        fn pieces(&self, _segment: Segment, _length: f64, _max_length: f64) -> usize {
-            1
+        fn pieces(&self, _segment: Segment, _length: f64, _max_length: f64) -> Result<usize> {
+            Ok(1)
         }
 
         fn interior(

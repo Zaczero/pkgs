@@ -13,6 +13,7 @@ a private runtime registry solely to inspect our own API.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 from typing import Any
@@ -657,6 +658,37 @@ def test_lengths_preserve_extreme_segment_scaling() -> None:
             rtol=1e-14,
             atol=0,
         )
+
+
+def test_segmentize_respects_extreme_output_unit_limits() -> None:
+    line = gm.LineString([(-1e308, -1e308), (1e308, 1e308)], crs=FOOT_CRS)
+    limit = 8e307
+    for result in (
+        line.segmentize(limit, unit='meters'),
+        gm.GeometryArray([line]).segmentize(limit, unit='meters')[0],
+    ):
+        coordinates = list(result.coords)
+        assert len(coordinates) == 3
+        assert coordinates[1] == (0.0, 0.0)
+        for left, right in itertools.pairwise(coordinates):
+            assert (
+                gm.distance(
+                    gm.Point(*left, crs=FOOT_CRS),
+                    gm.Point(*right, crs=FOOT_CRS),
+                    unit='meters',
+                )
+                <= limit
+            )
+
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    tiny = gm.LineString([(0.0, 0.0), (8 * step, 0.0)], crs=crs)
+    limit = 4 * step * 1e200
+    for result in (
+        tiny.segmentize(limit, unit='meters'),
+        gm.GeometryArray([tiny]).segmentize(limit, unit='meters')[0],
+    ):
+        assert list(result.coords) == [(0.0, 0.0), (4 * step, 0.0), (8 * step, 0.0)]
 
 
 def test_area_preserves_extreme_unit_scaling() -> None:
