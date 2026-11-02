@@ -328,9 +328,9 @@ impl CellId {
 
     /// The subdivision level (`0..=30`).
     pub(crate) const fn level(self) -> u8 {
-        MAX_LEVEL
-            .checked_sub((self.0.trailing_zeros() >> 1) as u8)
-            .expect("valid S2 cell ID has a sentinel within the supported levels")
+        let sentinel_level = (self.0.trailing_zeros() >> 1) as u8;
+        debug_assert!(sentinel_level <= MAX_LEVEL, "valid S2 cell sentinel");
+        MAX_LEVEL.wrapping_sub(sentinel_level)
     }
 
     /// Whether this is a deepest-level cell.
