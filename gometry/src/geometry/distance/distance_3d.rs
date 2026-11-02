@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use crate::HeapSize;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
+use crate::geometry::linear_3d::segment_segment_distance_3d_scaled;
 use crate::geometry::{BvhCode, BvhNode, CoordSeq, MetricSupportRun, RunIdentity, Shape, linear};
 
 type Aabb3d = [f64; 6];
@@ -355,15 +356,22 @@ impl SegmentBvh3d {
         self.fill_node(first_child.wrapping_add(1), next, segments, upper);
     }
 
-    fn distance_to_parts(
+    fn distance_to_parts<const SCALED: bool>(
         &self,
         probe_parts: &Distance3dParts,
         target_segments: &[Segment3d],
         mut best: f64,
+        scale: f64,
     ) -> crate::error::Result<f64> {
         let mut stack = Vec::new();
         for &probe in &probe_parts.segments {
-            self.visit_with_targets(&probe, target_segments, &mut stack, &mut best)?;
+            self.visit_with_targets::<SCALED>(
+                &probe,
+                target_segments,
+                &mut stack,
+                &mut best,
+                scale,
+            )?;
             if best == 0.0 {
                 return Ok(0.0);
             }
@@ -375,17 +383,24 @@ impl SegmentBvh3d {
         clippy::indexing_slicing,
         reason = "stack node IDs and decoded leaf IDs originate in this immutable BVH built from the same target segment slice"
     )]
-    fn visit_with_targets(
+    fn visit_with_targets<const SCALED: bool>(
         &self,
         probe: &Segment3d,
         targets: &[Segment3d],
         stack: &mut Vec<usize>,
         best: &mut f64,
+        scale: f64,
     ) -> crate::error::Result<()> {
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
-            if aabb3_distance_lower_bound(self.aabbs[node], probe.aabb) >= *best {
+            let bound = aabb3_distance_lower_bound(self.aabbs[node], probe.aabb);
+            let bound = if SCALED {
+                downward_scale(bound, scale)
+            } else {
+                bound
+            };
+            if bound >= *best {
                 #[cfg(test)]
                 traversal_counters::pruned_node();
                 continue;
@@ -395,12 +410,22 @@ impl SegmentBvh3d {
                     #[cfg(test)]
                     traversal_counters::visited_leaf();
                     let target = targets[index];
-                    let distance = segment_segment_distance_3d(
-                        probe.start,
-                        probe.end,
-                        target.start,
-                        target.end,
-                    )?;
+                    let distance = if SCALED {
+                        segment_segment_distance_3d_scaled(
+                            probe.start,
+                            probe.end,
+                            target.start,
+                            target.end,
+                            scale,
+                        )?
+                    } else {
+                        segment_segment_distance_3d(
+                            probe.start,
+                            probe.end,
+                            target.start,
+                            target.end,
+                        )?
+                    };
                     if distance < *best {
                         *best = distance;
                     }
@@ -481,6 +506,29 @@ pub(crate) fn distance_3d_with_parts(
     left: &Distance3dParts,
     right: &Distance3dParts,
 ) -> crate::error::Result<f64> {
+    distance_3d_with_parts_impl::<false>(left, right, 1.0)
+}
+
+/// Measure 3D linework in output units, preserving extreme source distances.
+pub(crate) fn distance_3d_with_parts_scaled(
+    left: &Distance3dParts,
+    right: &Distance3dParts,
+    scale: f64,
+) -> crate::error::Result<f64> {
+    let native = distance_3d_with_parts(left, right)?;
+    if (native.is_infinite() && scale < 1.0)
+        || (native.is_finite() && !native.is_normal() && scale > 1.0)
+    {
+        return distance_3d_with_parts_impl::<true>(left, right, scale);
+    }
+    Ok(native * scale)
+}
+
+fn distance_3d_with_parts_impl<const SCALED: bool>(
+    left: &Distance3dParts,
+    right: &Distance3dParts,
+    scale: f64,
+) -> crate::error::Result<f64> {
     if left.segments.is_empty() || right.segments.is_empty() {
         return Ok(f64::INFINITY);
     }
@@ -491,20 +539,35 @@ pub(crate) fn distance_3d_with_parts(
     };
     let mut best = f64::INFINITY;
     if let Some(bvh) = target.bvh() {
-        return bvh.distance_to_parts(probe, &target.segments, best);
+        return bvh.distance_to_parts::<SCALED>(probe, &target.segments, best, scale);
     }
     for &left_segment in &probe.segments {
         for &right_segment in &target.segments {
             let bound = aabb3_distance_lower_bound(left_segment.aabb, right_segment.aabb);
+            let bound = if SCALED {
+                downward_scale(bound, scale)
+            } else {
+                bound
+            };
             if bound >= best {
                 continue;
             }
-            let distance = segment_segment_distance_3d(
-                left_segment.start,
-                left_segment.end,
-                right_segment.start,
-                right_segment.end,
-            )?;
+            let distance = if SCALED {
+                segment_segment_distance_3d_scaled(
+                    left_segment.start,
+                    left_segment.end,
+                    right_segment.start,
+                    right_segment.end,
+                    scale,
+                )?
+            } else {
+                segment_segment_distance_3d(
+                    left_segment.start,
+                    left_segment.end,
+                    right_segment.start,
+                    right_segment.end,
+                )?
+            };
             if distance < best {
                 best = distance;
                 if best == 0.0 {

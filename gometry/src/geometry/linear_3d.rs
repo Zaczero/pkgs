@@ -189,6 +189,31 @@ fn exact_segment_distance_3d(
     round_sqrt_ratio(&squared.numerator, &squared.denominator)
 }
 
+/// Compute a segment distance in output units before rounding its exact square root.
+pub(crate) fn segment_segment_distance_3d_scaled(
+    p1: [f64; 3],
+    q1: [f64; 3],
+    p2: [f64; 3],
+    q2: [f64; 3],
+    scale: f64,
+) -> Result<f64> {
+    if !p1
+        .into_iter()
+        .chain(q1)
+        .chain(p2)
+        .chain(q2)
+        .all(f64::is_finite)
+    {
+        return Err(GeometryErrorKind::message(
+            "3D segment distance requires finite coordinates",
+        ));
+    }
+    let squared = exact_segment_squared(p1, q1, p2, q2)?;
+    let scale = ExactDyadic::from_f64(scale);
+    let numerator = squared.numerator.try_product(&scale)?.try_product(&scale)?;
+    round_sqrt_ratio(&numerator, &squared.denominator)
+}
+
 fn dd_dot(left: &[DdInterval; 3], right: &[DdInterval; 3]) -> Option<DdInterval> {
     left[0]
         .mul(right[0])?

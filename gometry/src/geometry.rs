@@ -259,9 +259,9 @@ use distance::line_length_3d;
 pub(crate) use distance::{
     ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
-    ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
-    frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,
-    hausdorff_distance_line_columns_batch,
+    distance_3d_with_parts_scaled, ensure_geographic_hausdorff_linework,
+    frechet_distance_line_columns, frechet_distance_line_columns_batch, hausdorff_distance,
+    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
 pub(crate) use facet_bvh::{
     BVH_MIN_INDEXED_SEGMENTS, ClearanceFacetBvh, FacetBvh, NearestCandidate, NearestTarget,

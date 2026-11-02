@@ -66,6 +66,49 @@ def test_segment_distance_handles_overflow_and_subnormal_rounding() -> None:
     )
 
 
+def test_distance_3d_scales_extreme_source_separations() -> None:
+    left = gm.Point(-1e308, 0.0, z=0.0, crs=2263)
+    right = gm.Point(1e308, 0.0, z=0.0, crs=2263)
+    expected = 1e308 * (2400.0 / 3937.0)
+    assert gm.distance_3d(left, right, unit='meters') == pytest.approx(
+        expected, rel=1e-14
+    )
+    np.testing.assert_allclose(
+        gm.distance_3d(gm.GeometryArray([left]), right, unit='meters'),
+        [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    point = gm.Point(0.5, 0.0, z=0.0, crs=crs)
+    line = gm.LineString([(0.0, 0.0), (1.0, step)], z=[0.0, 0.0], crs=crs)
+    expected = step * 1e200 / 2.0
+    assert gm.distance_3d(point, line, unit='meters') == pytest.approx(
+        expected, rel=1e-14, abs=0
+    )
+    np.testing.assert_allclose(
+        gm.distance_3d(gm.GeometryArray([point]), line, unit='meters'),
+        [expected],
+        rtol=1e-14,
+        atol=0,
+    )
+    indexed = gm.MultiLineString(
+        [
+            line,
+            *[
+                gm.LineString([(2.0, 0.0), (3.0, 0.0)], z=[0.0, 0.0], crs=crs)
+                for _ in range(64)
+            ],
+        ],
+        crs=crs,
+    )
+    assert gm.distance_3d(point, indexed, unit='meters') == pytest.approx(
+        expected, rel=1e-14, abs=0
+    )
+
+
 def test_indexed_distance_preserves_subnormal_box_gap() -> None:
     gap = float.fromhex('0x1.8p-538')
     middle = float.fromhex('0x1.cp-538')

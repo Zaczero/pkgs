@@ -1295,13 +1295,11 @@ pub(crate) fn binary_distance_3d(
         .require_model(MetricOp::Distance3d)?
         .coordinate_scale();
     if left.axes_all_z() && right.axes_all_z() {
-        return Ok(scale_length(
-            crate::geometry::distance_3d_with_parts(
-                left.distance_3d_parts(),
-                right.distance_3d_parts(),
-            )?,
+        return crate::geometry::distance_3d_with_parts_scaled(
+            left.distance_3d_parts(),
+            right.distance_3d_parts(),
             to_metre,
-        ));
+        );
     }
     Ok(scale_length(left.distance_3d(right)?, to_metre))
 }
