@@ -27,6 +27,23 @@ use crate::geometry::{
 };
 
 impl Shape {
+    pub(crate) fn scaled_length<const HAS_Z: bool>(&self, scale: f64) -> f64 {
+        let mut total = 0.0;
+        self.for_each_segment_chain(|chain| {
+            total += super::scaled_line_length_columns::<HAS_Z>(
+                chain.xs(),
+                chain.ys(),
+                if HAS_Z {
+                    chain.zs().expect("3D length already admitted Z")
+                } else {
+                    &[]
+                },
+                scale,
+            );
+        });
+        total
+    }
+
     pub fn area(&self) -> f64 {
         canonicalize_zero(match self {
             Self::Polygon(polygon) => polygon.area(),

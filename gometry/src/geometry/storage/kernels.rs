@@ -12,6 +12,7 @@ use super::packed_columns::{
 };
 use crate::crs;
 use crate::error::{BatchError, BatchResult, Result};
+use crate::geometry::access::scaled_line_length_columns;
 use crate::geometry::storage::columns::{packed_line_row_pivot, packed_polygon_row_pivot};
 use crate::geometry::storage::{
     PackedRow, RowSelectionRef, ValidityMask, column_window, packed_line_row,
@@ -19,7 +20,7 @@ use crate::geometry::storage::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, LineSeq, MOrdinate,
-    OriginSpec, Point, RingLevel, Shape, ZOrdinate, storage,
+    OriginSpec, Point, REDUCE_LANES, ReduceSimd, RingLevel, Shape, ZOrdinate, storage,
 };
 
 /// Expand coordinate validation into the packed row loop. Its `?` returns the
@@ -170,7 +171,7 @@ pub(crate) fn segmented_planar_lengths(
     ys: &[f64],
     scale: f64,
 ) -> Vec<f64> {
-    segmented_planar_lengths_dims::<false>(runs, xs, ys, &[], scale)
+    scaled_segmented_lengths::<false>(runs, xs, ys, &[], scale)
 }
 
 /// Dual-strategy 3-D length over the same topology.
@@ -181,7 +182,77 @@ pub(crate) fn segmented_planar_lengths_3d(
     zs: &[f64],
     scale: f64,
 ) -> Vec<f64> {
-    segmented_planar_lengths_dims::<true>(runs, xs, ys, zs, scale)
+    scaled_segmented_lengths::<true>(runs, xs, ys, zs, scale)
+}
+
+fn scaled_segmented_lengths<const HAS_Z: bool>(
+    runs: SegmentedRuns<'_>,
+    xs: &[f64],
+    ys: &[f64],
+    zs: &[f64],
+    scale: f64,
+) -> Vec<f64> {
+    use std::simd::cmp::SimdPartialOrd as _;
+
+    let mut output = segmented_planar_lengths_dims::<HAS_Z>(runs, xs, ys, zs, scale);
+    if scale.to_bits() == 1.0_f64.to_bits() {
+        return output;
+    }
+    let threshold = if scale < 1.0 {
+        f64::INFINITY
+    } else {
+        f64::MIN_POSITIVE * scale
+    };
+    let exceptional = |value: f64| {
+        if scale < 1.0 {
+            value.is_infinite()
+        } else {
+            value <= threshold
+        }
+    };
+    let (chunks, remainder) = output.as_chunks::<REDUCE_LANES>();
+    let threshold_vector = ReduceSimd::splat(threshold);
+    let needs_replay = chunks.iter().any(|chunk| {
+        let values = ReduceSimd::from_slice(chunk);
+        if scale < 1.0 {
+            values.simd_ge(threshold_vector).any()
+        } else {
+            values.simd_le(threshold_vector).any()
+        }
+    }) || remainder.iter().copied().any(exceptional);
+    if needs_replay {
+        for (group, value) in output.iter_mut().enumerate() {
+            if exceptional(*value) {
+                *value = rescue_group_length::<HAS_Z>(&runs, group, xs, ys, zs, scale);
+            }
+        }
+    }
+    output
+}
+
+fn rescue_group_length<const HAS_Z: bool>(
+    runs: &SegmentedRuns<'_>,
+    group: usize,
+    xs: &[f64],
+    ys: &[f64],
+    zs: &[f64],
+    scale: f64,
+) -> f64 {
+    let mut total = 0.0;
+    for leaf in runs.group_leaves(group) {
+        let window = runs.leaf_vertices(leaf);
+        total += scaled_line_length_columns::<HAS_Z>(
+            column_window(xs, &window),
+            column_window(ys, &window),
+            if HAS_Z {
+                column_window(zs, &window)
+            } else {
+                &[]
+            },
+            scale,
+        );
+    }
+    total
 }
 
 fn leaf_segment_count(runs: &SegmentedRuns<'_>, leaf: usize) -> usize {

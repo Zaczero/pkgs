@@ -590,6 +590,75 @@ def test_scaled_distance_indexes_extreme_multipoints() -> None:
     assert gm.dwithin(left, right, 6.5e307, unit='meters')
 
 
+def test_lengths_preserve_extreme_segment_scaling() -> None:
+    line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], z=[0.0, 0.0], crs=FOOT_CRS)
+    expected = 1e308 * (2400.0 / 3937.0)
+    for operation in (gm.length, gm.length_3d):
+        assert operation(line, unit='meters') == pytest.approx(expected, rel=1e-14)
+        np.testing.assert_allclose(
+            operation(gm.GeometryArray([line]), unit='meters'),
+            [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+        gathered = gm.GeometryArray([line, None, line])[[2, 1, 0]]
+        np.testing.assert_allclose(
+            operation(gathered, unit='meters'),
+            [expected, np.nan, expected],
+            rtol=1e-14,
+            atol=0,
+            equal_nan=True,
+        )
+        ordinary = gm.LineString([(0.0, 0.0), (1.0, 0.0)], z=[0.0, 0.0], crs=FOOT_CRS)
+        batch = gm.GeometryArray([ordinary] * 15 + [line])
+        np.testing.assert_allclose(
+            operation(batch, unit='meters'),
+            [FOOT_UNIT_M] * 15 + [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+
+    shorter = gm.LineString([(-5e307, 0.0), (5e307, 0.0)], crs=FOOT_CRS)
+    for combined in (
+        gm.MultiLineString([shorter, shorter], crs=FOOT_CRS),
+        gm.GeometryCollection([shorter, shorter], crs=FOOT_CRS),
+    ):
+        assert gm.length(combined, unit='meters') == pytest.approx(expected, rel=1e-14)
+    polygon = gm.Polygon(
+        [(-1e308, -1.0), (1e308, -1.0), (1e308, 1.0), (-1e308, 1.0)],
+        crs=FOOT_CRS,
+    )
+    np.testing.assert_allclose(
+        gm.length(gm.GeometryArray([polygon]), unit='meters'),
+        [2.0 * expected],
+        rtol=1e-14,
+        atol=0,
+    )
+
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    tiny = gm.LineString([(0.0, 0.0), (step, step)], z=[0.0, 0.0], crs=crs)
+    expected = step * 1e200 * math.sqrt(2.0)
+    for operation in (gm.length, gm.length_3d):
+        assert operation(tiny, unit='meters') == pytest.approx(
+            expected, rel=1e-14, abs=0
+        )
+        np.testing.assert_allclose(
+            operation(gm.GeometryArray([tiny]), unit='meters'),
+            [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+        ordinary = gm.LineString([(0.0, 0.0), (1.0, 0.0)], z=[0.0, 0.0], crs=crs)
+        batch = gm.GeometryArray([ordinary] * 15 + [tiny])
+        np.testing.assert_allclose(
+            operation(batch, unit='meters'),
+            [1e200] * 15 + [expected],
+            rtol=1e-14,
+            atol=0,
+        )
+
+
 def test_minimum_clearance_meter_distance_survives_native_unit_overflow() -> None:
     line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)], crs=FOOT_CRS)
     projected = gm.GeometryCollection([

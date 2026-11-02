@@ -1020,7 +1020,17 @@ pub(crate) fn unary_length(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -> R
     let metric = ctx.metric.require_resolved(MetricOp::Length)?;
     match metric {
         ResolvedMetric::Planar { to_metre } => {
-            Ok(scale_length(data.shape().length(), to_metre.get()))
+            let native = data.shape().length();
+            let scale = to_metre.get();
+            Ok(
+                if (native.is_infinite() && scale < 1.0)
+                    || (native.is_finite() && !native.is_normal() && scale > 1.0)
+                {
+                    data.shape().scaled_length::<false>(scale)
+                } else {
+                    scale_length(native, scale)
+                },
+            )
         },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
@@ -1043,7 +1053,15 @@ pub(crate) fn unary_length_3d(data: &PreparedPlan, ctx: &MetricRowContext<'_>) -
         return Ok(0.0);
     }
     match data.shape().length_3d() {
-        Ok(value) => Ok(scale_length(value, to_metre)),
+        Ok(value) => Ok(
+            if (value.is_infinite() && to_metre < 1.0)
+                || (value.is_finite() && !value.is_normal() && to_metre > 1.0)
+            {
+                data.shape().scaled_length::<true>(to_metre)
+            } else {
+                scale_length(value, to_metre)
+            },
+        ),
         Err(_) if ctx.lane.is_array() => Ok(f64::NAN),
         Err(error) => Err(error),
     }

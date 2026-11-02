@@ -836,6 +836,40 @@ pub(crate) fn line_length_3d_columns(xs: &[f64], ys: &[f64], zs: &[f64]) -> f64 
     line_length_columns_dims::<true>(xs, ys, zs)
 }
 
+/// Measure each segment in output units before its native norm can overflow
+/// or lose a subnormal component.
+pub(crate) fn scaled_line_length_columns<const HAS_Z: bool>(
+    xs: &[f64],
+    ys: &[f64],
+    zs: &[f64],
+    scale: f64,
+) -> f64 {
+    fn difference(start: f64, end: f64, scale: f64) -> f64 {
+        let delta = end - start;
+        if delta.is_infinite() {
+            ((end * 0.5 - start * 0.5) * scale) * 2.0
+        } else {
+            delta * scale
+        }
+    }
+
+    let segments = xs.array_windows::<2>().zip(ys.array_windows::<2>());
+    if HAS_Z {
+        segments
+            .zip(zs.array_windows::<2>())
+            .map(|((x, y), z)| {
+                difference(x[0], x[1], scale)
+                    .hypot(difference(y[0], y[1], scale))
+                    .hypot(difference(z[0], z[1], scale))
+            })
+            .sum()
+    } else {
+        segments
+            .map(|(x, y)| difference(x[0], x[1], scale).hypot(difference(y[0], y[1], scale)))
+            .sum()
+    }
+}
+
 /// Shared planar line-length kernel: `HAS_Z = false` is 2-D (`dx/dy` only,
 /// scalar rescue via [`point_distance`]); `HAS_Z = true` folds the `dz` lane
 /// and the chained-`hypot` scalar form.
