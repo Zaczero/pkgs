@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from benchroom.stats import OrderInterval, median_order_interval
+from benchroom.stats import OrderInterval, _median, median_order_interval  # pyright: ignore[reportPrivateUsage] - shared internal median
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -108,7 +107,7 @@ def assess_ratios(
         reason = 'continue'
         next_look = policy.looks[look + 1]
     return SamplingDecision(
-        statistics.median(ratios),
+        _median(ratios),
         uncertainty,
         policy.confidence,
         error_probability,

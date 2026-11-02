@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import math
-import statistics
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -14,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
-from benchroom.stats import median_interval
+from benchroom.stats import _median, median_interval  # pyright: ignore[reportPrivateUsage] - shared internal median
 
 
 @dataclass(frozen=True)
@@ -43,7 +42,7 @@ class Series:
     @property
     def median(self) -> float:
         """Median run measurement."""
-        return statistics.median(self.values)
+        return _median(self.values)
 
     @property
     def interval(self) -> tuple[float, float] | None:

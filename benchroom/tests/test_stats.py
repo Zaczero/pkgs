@@ -9,8 +9,33 @@ def test_percentile_interpolates():
     assert percentile([8, 2, 4], 0.25) == 3
 
 
+def test_percentile_interpolates_across_extreme_finite_values():
+    assert percentile([-1e308, 1e308], 0.25) == -5e307
+    assert percentile([-1e308, 1e308], 0.5) == 0
+    assert percentile([-1e308, 1e308], 0.75) == 5e307
+
+
 def test_constant_runs_have_constant_interval():
     assert median_interval([7, 7, 7]) == (7, 7)
+
+
+@pytest.mark.parametrize('size', [2, 9, 10])
+def test_median_interval_keeps_extreme_finite_observations(size):
+    assert median_interval([1e308] * size) == (1e308, 1e308)
+
+
+def test_sampled_median_interval_spans_extreme_signed_observations():
+    assert median_interval([-1e308] * 10 + [1e308] * 10) == (-1e308, 1e308)
+
+
+def test_exact_median_interval_retains_subnormal_midpoints():
+    smallest = float.fromhex('0x0.0000000000001p-1022')
+    assert median_interval([smallest, smallest]) == (smallest, smallest)
+
+
+def test_sampled_extreme_interval_retains_subnormal_majority():
+    smallest = float.fromhex('0x0.0000000000001p-1022')
+    assert median_interval([smallest] * 9 + [1e308]) == (smallest, smallest)
 
 
 def test_sampled_median_preserves_constant_observations():
@@ -31,6 +56,10 @@ def test_sampled_bootstrap_preserves_constant_statistic():
 def test_exact_two_run_bootstrap():
     # The four equally likely resampled medians are 2, 5, 5, and 8.
     assert median_interval([2, 8]) == pytest.approx((2.225, 7.775))
+
+
+def test_exact_bootstrap_interpolates_extreme_signed_medians():
+    assert median_interval([-1e308, 1e308]) == pytest.approx((-9.25e307, 9.25e307))
 
 
 def test_paired_resampling_keeps_shared_variation():

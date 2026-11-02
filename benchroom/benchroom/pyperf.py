@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import statistics
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pyperf  # pyright: ignore[reportMissingTypeStubs]
 
 from benchroom.report import Series
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+def _run_mean(values: Sequence[float]) -> float:
+    try:
+        return statistics.fmean(values)
+    except OverflowError:
+        # The exact-ratio mean avoids a floating sum that overflows even
+        # though the average of finite measurements remains representable.
+        return float(statistics.mean(values))
 
 
 def load(path: str | Path, *, name: str | None = None) -> tuple[Series, ...]:
@@ -26,7 +38,7 @@ def load(path: str | Path, *, name: str | None = None) -> tuple[Series, ...]:
         if unit != 'second':
             raise ValueError(f"benchmark unit must be 'second', got {unit!r} in {path}")
         values = tuple(
-            statistics.fmean(run.values) for run in benchmark.get_runs() if run.values
+            _run_mean(run.values) for run in benchmark.get_runs() if run.values
         )
         label = name or benchmark.get_metadata().get('implementation', Path(path).stem)
         result.append(Series(benchmark.get_name(), label, values))

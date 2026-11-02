@@ -18,6 +18,17 @@ def test_readings_remain_grouped_by_worker(tmp_path):
     assert series.name == 'Encoder'
 
 
+def test_readings_with_a_finite_extreme_mean(tmp_path):
+    benchmark = pyperf.Benchmark([
+        pyperf.Run([1e308, 1e308], metadata={'name': 'encode', 'unit': 'second'}),
+    ])
+    path = tmp_path / 'results.json'
+    pyperf.BenchmarkSuite([benchmark]).dump(str(path))
+
+    (series,) = load(path)
+    assert series.values == (1e308,)
+
+
 def test_non_time_benchmark_error_names_unit_and_file(tmp_path):
     benchmark = pyperf.Benchmark([
         pyperf.Run([1.0], metadata={'name': 'encode', 'unit': 'integer'}),

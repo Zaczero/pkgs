@@ -64,6 +64,10 @@ def test_consistent_direction_stops_at_the_first_look():
     assert result.estimate == 1.45
 
 
+def test_extreme_finite_ratios_have_a_finite_median():
+    assert decision([1e308] * 6).estimate == 1e308
+
+
 def test_precision_stop_does_not_claim_equivalence_or_a_direction():
     result = decision([0.98, 1.01, 0.99, 1.02, 1.03, 1.0])
 

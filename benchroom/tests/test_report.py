@@ -25,6 +25,12 @@ def test_single_run_has_no_uncertainty_interval():
     assert Series('encode', 'A', (3,)).interval is None
 
 
+def test_extreme_finite_measurements_produce_a_finite_summary():
+    series = Series('encode', 'A', (1e308, 1e308))
+    assert series.median == 1e308
+    assert series.interval == (1e308, 1e308)
+
+
 def test_report_exposes_run_summary():
     report = Report('Encode', (Series('short', 'A', (2, 4, 6)),), 'milliseconds')
     (result,) = report.results
