@@ -1460,25 +1460,13 @@ impl SymbolicAffineEdge {
             start_point.latitude(),
             end_point.latitude(),
         )?;
-        let longitude_offset = 180_i64
-            .checked_mul(latitude_zone)
-            .ok_or(ExactFailure::Arithmetic)?
-            .checked_sub(
-                360_i64
-                    .checked_mul(longitude_wrap)
-                    .ok_or(ExactFailure::Arithmetic)?,
-            )
-            .ok_or(ExactFailure::Arithmetic)?;
-        let unwrapped_longitude = longitude.add(&ExactRatio::from_i64(
-            longitude_offset
-                .checked_add(
-                    360_i64
-                        .checked_mul(longitude_wrap)
-                        .ok_or(ExactFailure::Arithmetic)?,
-                )
+        let latitude_offset = ExactRatio::from_i64(
+            180_i64
+                .checked_mul(latitude_zone)
                 .ok_or(ExactFailure::Arithmetic)?,
             1,
-        )?)?;
+        )?;
+        let unwrapped_longitude = longitude.add(&latitude_offset)?;
         let mut longitude = unwrapped_longitude.sub(&ExactRatio::from_i64(
             360_i64
                 .checked_mul(longitude_wrap)
@@ -1494,12 +1482,6 @@ impl SymbolicAffineEdge {
         {
             longitude = ExactRatio::from_i64(180, 1)?;
         }
-        let latitude_offset = ExactRatio::from_i64(
-            180_i64
-                .checked_mul(latitude_zone)
-                .ok_or(ExactFailure::Arithmetic)?,
-            1,
-        )?;
         let latitude = if latitude_zone.rem_euclid(2) == 0 {
             latitude.sub(&latitude_offset)?
         } else {
