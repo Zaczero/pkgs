@@ -1260,6 +1260,27 @@ pub(crate) fn points_dwithin_scaled(left: XY, right: XY, cutoff: f64, scale: f64
     Ok(points_dwithin(left, right, native))
 }
 
+/// Fraction of a scaled point separation, clamped to one before rounding.
+pub(crate) fn point_interpolation_ratio(
+    left: XY,
+    right: XY,
+    distance: f64,
+    scale: f64,
+) -> Result<f64> {
+    let squared = point_pair_distance_key(left, right).witness.squared()?;
+    let distance = ExactDyadic::from_f64(distance);
+    let scale = ExactDyadic::from_f64(scale);
+    let numerator = distance
+        .try_product(&distance)?
+        .try_product(&squared.denominator)?;
+    let denominator = squared.numerator.try_product(&scale)?.try_product(&scale)?;
+    if numerator.cmp(&denominator).is_ge() {
+        Ok(1.0)
+    } else {
+        round_sqrt_ratio(&numerator, &denominator)
+    }
+}
+
 /// Honest squared Euclidean distance when squared space is faithful.
 /// Returns `None` on overflow, positive-subnormal squares, or false-zero
 /// underflow (distinct points whose `dx²+dy²` collapses to 0 or a subnormal)

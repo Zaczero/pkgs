@@ -255,13 +255,7 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
         left: Point,
         right: Point,
     ) -> PyResult<Shape> {
-        Ok(interpolate_point_planar(
-            to_metre,
-            left,
-            right,
-            row.distance,
-            self.normalized,
-        ))
+        interpolate_point_planar(to_metre, left, right, row.distance, self.normalized)
     }
 
     fn eval_geodesic(

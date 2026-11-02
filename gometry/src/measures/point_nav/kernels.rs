@@ -222,10 +222,19 @@ pub(super) fn interpolate_point_planar(
     to: Point,
     distance: f64,
     normalized: bool,
-) -> Shape {
-    let total = (to.x - from.x).hypot(to.y - from.y) * to_metre;
+) -> PyResult<Shape> {
+    let native = (to.x - from.x).hypot(to.y - from.y);
+    let total = native * to_metre;
     let ratio = if normalized {
         distance
+    } else if (native.is_infinite()
+        || (!native.is_normal() && to_metre > 1.0)
+        || !total.is_normal())
+        && distance.is_finite()
+        && distance > 0.0
+        && native != 0.0
+    {
+        crate::geometry::point_interpolation_ratio(from.xy(), to.xy(), distance, to_metre)?
     } else if total == 0.0 {
         0.0
     } else {
@@ -233,14 +242,14 @@ pub(super) fn interpolate_point_planar(
     }
     .clamp(0.0, 1.0);
     if same_topological_coordinate(ratio, 0.0) {
-        return Shape::Point(from);
+        return Ok(Shape::Point(from));
     }
     if same_topological_coordinate(ratio, 1.0) {
-        return Shape::Point(to);
+        return Ok(Shape::Point(to));
     }
     // Stable lerp: `start*(1-t)+end*t` avoids the `(end-start)*t`
     // overflow class on extreme-but-finite endpoints.
-    Shape::Point(crate::geometry::lerp_point(from, to, ratio))
+    Ok(Shape::Point(crate::geometry::lerp_point(from, to, ratio)))
 }
 
 pub(super) fn interpolate_point(
@@ -257,13 +266,9 @@ pub(super) fn interpolate_point(
                 &geodesic, *frame, from, to, distance, normalized,
             )?))
         },
-        crs::MetricModel::Planar { to_metre } => Ok(interpolate_point_planar(
-            to_metre.get(),
-            from,
-            to,
-            distance,
-            normalized,
-        )),
+        crs::MetricModel::Planar { to_metre } => {
+            interpolate_point_planar(to_metre.get(), from, to, distance, normalized)
+        },
     }
 }
 

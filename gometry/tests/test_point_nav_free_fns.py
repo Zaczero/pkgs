@@ -89,6 +89,25 @@ def test_point_between_scalar() -> None:
     assert mid.x == pytest.approx(0.5, abs=0.01)
 
 
+def test_planar_point_between_preserves_extreme_distance_ratios() -> None:
+    start = gm.Point(-1e308, 0.0, crs=2263)
+    end = gm.Point(1e308, 0.0, crs=2263)
+    half_metres = 1e308 * (1200.0 / 3937.0)
+    midpoint = gm.point_between(start, end, half_metres, unit='meters')
+    assert midpoint.x == pytest.approx(0.0, abs=5e292)
+    batch = gm.point_between(gm.GeometryArray([start]), end, half_metres, unit='meters')
+    assert batch[0].x == pytest.approx(0.0, abs=5e292)
+    native = gm.point_between(gm.Point(-1e308, 0.0), gm.Point(1e308, 0.0), 1e308)
+    assert native.x == pytest.approx(0.0, abs=5e292)
+
+    crs = '+proj=utm +zone=32 +datum=WGS84 +to_meter=1e200 +type=crs'
+    step = math.ulp(0.0)
+    start = gm.Point(0.0, 0.0, m=0.0, crs=crs)
+    end = gm.Point(step, step, m=1.0, crs=crs)
+    result = gm.point_between(start, end, step * 1e200, unit='meters')
+    assert result.m == pytest.approx(1.0 / math.sqrt(2.0), rel=1e-14)
+
+
 def test_point_nav_array_parity_is_bit_identical_to_scalar_loops() -> None:
     left = [
         gm.Point(-73.8, 40.6, z=1.0, m=10.0, crs=4326),

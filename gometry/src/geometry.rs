@@ -400,8 +400,9 @@ use segments::distance::{
 /// lanes call directly (packed point columns).
 pub(crate) use segments::distance::{
     clearance_strip_exceeds, finish_planar_squared_min, point_distance, point_distance_scaled,
-    point_distance_squared, point_segment_distance, point_segment_selection, points_dwithin,
-    points_dwithin_scaled, source_dot_cmp, squared_norm_is_trustworthy,
+    point_distance_squared, point_interpolation_ratio, point_segment_distance,
+    point_segment_selection, points_dwithin, points_dwithin_scaled, source_dot_cmp,
+    squared_norm_is_trustworthy,
 };
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
