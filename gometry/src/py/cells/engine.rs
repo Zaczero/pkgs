@@ -317,10 +317,8 @@ pub(super) fn rect_dissolve<C: RectCell>(
     if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let capacity = cells.as_slice().len().checked_mul(4).ok_or(
-        crate::error::ResourceError::SizeOverflowContext("coverage outline size overflows usize"),
-    )?;
-    let mut outline = Vec::with_capacity(capacity);
+    // Four corners per in-memory cell cannot overflow `usize`.
+    let mut outline = Vec::with_capacity(cells.as_slice().len().wrapping_mul(4));
     for cell in cells.as_slice() {
         let bounds = cell.bounds();
         // CCW corners: (minx,miny) -> (maxx,miny) -> (maxx,maxy) -> (minx,maxy).
