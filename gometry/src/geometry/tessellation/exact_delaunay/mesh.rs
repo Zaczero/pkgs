@@ -1125,9 +1125,8 @@ impl Mesh {
             ));
         }
         let new_slots = chain_len.saturating_sub(self.free.len());
-        let new_edges = new_slots
-            .checked_mul(3)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        // Three half-edges per new slot of an in-memory chain.
+        let new_edges = new_slots.wrapping_mul(3);
         self.triangles.reserve(new_edges);
         self.halfedges.reserve(new_edges);
         self.stamp.reserve(new_slots);
@@ -1254,7 +1253,7 @@ impl Mesh {
                 halfedges.push(if twin == EMPTY {
                     EMPTY
                 } else {
-                    Self::remap_twin(&remap, HalfedgeId::from_index(twin))?
+                    Self::remap_twin(&remap, HalfedgeId::from_index(twin))
                 });
             }
         }
@@ -1303,11 +1302,12 @@ impl Mesh {
         remap[face.index()]
     }
 
-    fn remap_twin(remap: &[usize], twin: HalfedgeId) -> Result<usize> {
-        Self::remapped_face(remap, twin.face())
-            .checked_mul(3)
-            .and_then(|base| base.checked_add(twin.side().offset()))
-            .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
+    /// A live twin's face survives compaction, so its remapped face index is
+    /// below the output face count and its half-edge index fits `usize`.
+    fn remap_twin(remap: &[usize], twin: HalfedgeId) -> usize {
+        let face = Self::remapped_face(remap, twin.face());
+        debug_assert_ne!(face, EMPTY, "a live twin's face survives compaction");
+        face.wrapping_mul(3).wrapping_add(twin.side().offset())
     }
 
     #[expect(
