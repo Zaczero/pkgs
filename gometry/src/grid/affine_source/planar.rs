@@ -235,9 +235,9 @@ pub(super) fn bucket_lifted_chain_edge(
     buckets: &mut PeriodicParityBuckets,
 ) -> BucketEdge {
     let edge = edge.as_usize();
-    let Some(next) = edge.checked_add(1) else {
-        return BucketEdge::Uncertain;
-    };
+    // An edge ID indexes the in-memory vertex list; a missing successor is
+    // handled by the lookup below.
+    let next = edge.wrapping_add(1);
     let start = match chain.vertices.get(edge).copied() {
         Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
             Ok(point) => point,
@@ -414,13 +414,10 @@ pub(super) fn bucket_selection_edge(
             Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         };
     if on_latitude {
-        for turns in -1_i64..=1_i64 {
-            let offset = match turns.checked_mul(360) {
-                Some(value) => match ExactRatio::from_i64(value, 1) {
-                    Ok(offset) => offset,
-                    Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
-                },
-                None => return BucketEdge::Uncertain,
+        for offset_degrees in [-360_i64, 0, 360] {
+            let offset = match ExactRatio::from_i64(offset_degrees, 1) {
+                Ok(offset) => offset,
+                Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
             };
             let shifted_longitude = match query_longitude.add(&offset) {
                 Ok(value) => value,
