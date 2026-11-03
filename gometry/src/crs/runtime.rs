@@ -182,11 +182,8 @@ pub(crate) fn configure_runtime(
 }
 
 fn proj_search_path_count(path_len: usize, has_writable_directory: bool) -> Result<i32> {
-    let Some(count) = path_len.checked_add(usize::from(has_writable_directory)) else {
-        return Err(CrsError::invalid(
-            "PROJ search path count exceeds i32::MAX".to_owned(),
-        ));
-    };
+    // Saturation keeps an oversized count oversized for the C `int` check.
+    let count = path_len.saturating_add(usize::from(has_writable_directory));
     i32::try_from(count).map_err(|_| {
         CrsError::invalid(format!("PROJ search path count exceeds i32::MAX ({count})"))
     })
