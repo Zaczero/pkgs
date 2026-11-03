@@ -102,8 +102,7 @@ pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
     Python::attach(|py| {
         const PREFIX: &[u8] = b"while processing array element ";
         // Three decimal digits per byte bound every supported usize width.
-        const MAX_DIGITS: usize = 3 * std::mem::size_of::<usize>();
-        const CAPACITY: usize = PREFIX.len() + MAX_DIGITS;
+        const CAPACITY: usize = PREFIX.len() + 3 * std::mem::size_of::<usize>();
 
         let method = match PyString::from_bytes(py, b"add_note") {
             Ok(method) => method,
@@ -118,25 +117,8 @@ pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
             .get_mut(..PREFIX.len())
             .expect("prefix fits the note buffer")
             .copy_from_slice(PREFIX);
-        let mut digits = [0_u8; MAX_DIGITS];
-        let mut end = digits.len();
-        if row == 0 {
-            end = end.wrapping_sub(1);
-            *digits.get_mut(end).expect("zero fits the digit buffer") = b'0';
-        } else {
-            let mut value = row;
-            while value != 0 {
-                end = end.wrapping_sub(1);
-                *digits
-                    .get_mut(end)
-                    .expect("usize decimal digits fit the digit buffer") =
-                    b'0'.wrapping_add((value % 10) as u8);
-                value /= 10;
-            }
-        }
-        let digits = digits
-            .get(end..)
-            .expect("decimal digits start within the digit buffer");
+        let mut number = std::fmt::NumBuffer::new();
+        let digits = row.format_into(&mut number).as_bytes();
         let start = PREFIX.len();
         let note_end = start.wrapping_add(digits.len());
         bytes
