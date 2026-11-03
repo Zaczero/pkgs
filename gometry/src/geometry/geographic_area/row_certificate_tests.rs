@@ -34,8 +34,7 @@ fn aggregate_moment_row_enclosure_covers_source_and_endpoint_error(
         &mut variation,
         &mut radius,
         &mut certificate,
-    )
-    .unwrap();
+    );
     certificate.charge(&mut moments);
 
     for (left, right, determinant) in [

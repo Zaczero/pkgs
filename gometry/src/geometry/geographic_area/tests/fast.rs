@@ -14,8 +14,7 @@ fn bounded_edge_moments_match_literal_low_degree_divided_differences() {
         &mut variation,
         &mut maximum_latitude,
         &mut row_certificate,
-    )
-    .unwrap();
+    );
 
     for (moment, expected) in moments.iter().zip([3.0 / 32.0, 9.0 / 256.0, 21.0 / 2048.0]) {
         assert_eq!(moment.value(), expected);

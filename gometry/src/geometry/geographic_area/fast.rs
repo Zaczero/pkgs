@@ -71,9 +71,9 @@ pub(super) fn accumulate_fast(
                         "edge spans exactly half the longitude period; add a vertex",
                     ));
                 }
-                chart_turn = chart_turn
-                    .checked_add(i64::from(connection.source_lift))
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                // Each lift is an `i8`, so overflowing `i64` would take about
+                // 2^56 edges.
+                chart_turn = chart_turn.wrapping_add(i64::from(connection.source_lift));
                 let next_canonical = connection.end;
                 let next_x = scaled_x(
                     frame,
@@ -99,7 +99,7 @@ pub(super) fn accumulate_fast(
                     &mut variation,
                     &mut maximum_latitude,
                     &mut row_certificate,
-                )?;
+                );
                 previous = next;
                 previous_x = next_x;
                 previous_z = next_z;
@@ -128,7 +128,7 @@ pub(super) fn accumulate_fast(
                     &mut variation,
                     &mut maximum_latitude,
                     &mut row_certificate,
-                )?;
+                );
                 add_fast_edge(
                     previous_x,
                     pole_z,
@@ -138,7 +138,7 @@ pub(super) fn accumulate_fast(
                     &mut variation,
                     &mut maximum_latitude,
                     &mut row_certificate,
-                )?;
+                );
                 add_fast_edge(
                     start_x,
                     pole_z,
@@ -148,7 +148,7 @@ pub(super) fn accumulate_fast(
                     &mut variation,
                     &mut maximum_latitude,
                     &mut row_certificate,
-                )?;
+                );
             }
         }
         row_certificate.charge(ring_moments);
@@ -355,7 +355,7 @@ pub(super) fn add_fast_edge(
     variation: &mut f64,
     maximum_latitude: &mut f64,
     row_certificate: &mut RowCertificate,
-) -> Result<()> {
+) {
     let determinant = cross(x0, z0, x1, z1);
     add_fast_determinant(
         determinant,
@@ -365,7 +365,7 @@ pub(super) fn add_fast_edge(
         variation,
         maximum_latitude,
         row_certificate,
-    )
+    );
 }
 
 #[derive(Default)]
@@ -428,7 +428,7 @@ pub(super) fn add_fast_determinant(
     variation: &mut f64,
     maximum_latitude: &mut f64,
     row_certificate: &mut RowCertificate,
-) -> Result<()> {
+) {
     *variation = upper_add(
         *variation,
         upper_mul(upper_add(determinant.value.abs(), determinant.error), 0.5),
@@ -442,7 +442,7 @@ pub(super) fn add_fast_determinant(
                 error: f64::INFINITY,
             });
         }
-        return Ok(());
+        return;
     }
     let input_error = upper_add(z0.error, z1.error);
     row_certificate.determinant_magnitude = upper_add(
@@ -456,10 +456,8 @@ pub(super) fn add_fast_determinant(
         upper_mul(determinant.value.abs(), input_error),
     );
     row_certificate.radius = row_certificate.radius.max(radius);
-    row_certificate.rows = row_certificate
-        .rows
-        .checked_add(1)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    // One row per processed edge, so the count is bounded by memory.
+    row_certificate.rows = row_certificate.rows.wrapping_add(1);
     let moment_count = moments.len();
     let mut h = 1.0;
     let mut z1_power = z1.value;
@@ -470,7 +468,6 @@ pub(super) fn add_fast_determinant(
             z1_power *= z1.value;
         }
     }
-    Ok(())
 }
 
 pub(super) fn cross(x0: Bounded, z0: Bounded, x1: Bounded, z1: Bounded) -> Bounded {
