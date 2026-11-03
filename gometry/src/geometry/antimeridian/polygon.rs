@@ -709,15 +709,23 @@ fn split_geographic_view_with_capture<M: ChartMetric>(
                 frame.longitude().half_period() * frame.longitude_orientation_sign()
             } else if x == -180.0 {
                 -frame.longitude().half_period() * frame.longitude_orientation_sign()
-            } else {
+            } else if longitude_scale.is_finite() {
                 x / longitude_scale
+            } else {
+                frame
+                    .longitude()
+                    .degrees_to_native(x * frame.longitude_orientation_sign())
             };
             let latitude = if y == 90.0 {
                 frame.native_latitude_pole(GeodeticPole::North)
             } else if y == -90.0 {
                 frame.native_latitude_pole(GeodeticPole::South)
-            } else {
+            } else if latitude_scale.is_finite() {
                 y / latitude_scale
+            } else {
+                frame
+                    .latitude_unit()
+                    .degrees_to_native(y * frame.latitude_orientation_sign())
             };
             Ok((longitude, latitude))
         },

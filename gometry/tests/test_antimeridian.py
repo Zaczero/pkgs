@@ -17,6 +17,48 @@ pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle depe
 Geod = pyproj.Geod
 
 
+def test_split_antimeridian_with_extreme_angular_units() -> None:
+    crs = (
+        'GEOGCRS["WGS 84 huge angular units",'
+        'DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+        'CS[ellipsoidal,2],'
+        'AXIS["Longitude",east,ORDER[1],ANGLEUNIT["huge",1e308]],'
+        'AXIS["Latitude",north,ORDER[2],ANGLEUNIT["huge",1e308]]]'
+    )
+    ordinary = [
+        (-1e-308, -1e-308),
+        (1e-308, -1e-308),
+        (1e-308, 1e-308),
+        (-1e-308, 1e-308),
+        (-1e-308, -1e-308),
+    ]
+    shape = gm.Polygon(ordinary, crs=crs)
+    assert shape.split_antimeridian().to_wkt() == shape.to_wkt()
+
+    source = [
+        (3e-308, -1e-308),
+        (-3e-308, -1e-308),
+        (-3e-308, 1e-308),
+        (3e-308, 1e-308),
+        (3e-308, -1e-308),
+    ]
+    actual = gm.Polygon(source, crs=crs).split_antimeridian()
+    degrees = [(math.degrees(x * 1e308), math.degrees(y * 1e308)) for x, y in source]
+    expected = gm.Polygon(degrees, crs=4326).split_antimeridian()
+    assert len(actual.parts) == len(expected.parts)
+    for actual_part, expected_part in zip(actual.parts, expected.parts, strict=True):
+        converted = [
+            (math.degrees(x * 1e308), math.degrees(y * 1e308))
+            for x, y in actual_part.exterior.coords
+        ]
+        np.testing.assert_allclose(
+            converted, list(expected_part.exterior.coords), atol=1e-12
+        )
+    rows = gm.GeometryArray([gm.Polygon(source, crs=crs)])
+    assert rows.split_antimeridian()[0].to_wkt() == actual.to_wkt()
+
+
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     line = gm.LineString([(170, -10), (-170, 10)], crs=4326)
     split = line.split_antimeridian()

@@ -21,8 +21,16 @@ pub(super) fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) ->
         return Ok(180.0);
     }
     axis.canonicalize(value)
-        .map(|longitude| longitude.get() * scale)
+        .map(|longitude| scale_longitude(longitude.get(), frame, scale))
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
+}
+
+pub(super) fn scale_longitude(value: f64, frame: GeographicFrame, scale: f64) -> f64 {
+    if scale.is_finite() {
+        value * scale
+    } else {
+        frame.longitude().to_degrees(value) * frame.longitude_orientation_sign()
+    }
 }
 
 pub(in crate::geometry::antimeridian) fn chart_latitude(
@@ -31,7 +39,14 @@ pub(in crate::geometry::antimeridian) fn chart_latitude(
     scale: f64,
 ) -> Result<f64> {
     Latitude::try_new(frame, value)
-        .map(|latitude| latitude.get() * scale)
+        .map(|latitude| {
+            if scale.is_finite() {
+                latitude.get() * scale
+            } else {
+                frame.latitude_unit().native_to_degrees(latitude.get())
+                    * frame.latitude_orientation_sign()
+            }
+        })
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
@@ -342,7 +357,11 @@ pub(super) fn append_source_edge_events<M: ChartMetric>(
         let parameter = event.parameter.round()?;
         let x = if let Some((start, end, west)) = band {
             let lifted = interpolate_subdivision_ordinate(start, end, parameter);
-            (lifted - west - frame.longitude().half_period()) * longitude_scale
+            scale_longitude(
+                lifted - west - frame.longitude().half_period(),
+                frame,
+                longitude_scale,
+            )
         } else if let Some(seam_longitude) = event.seam_longitude {
             seam_longitude
         } else {

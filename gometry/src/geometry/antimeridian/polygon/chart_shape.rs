@@ -216,7 +216,11 @@ fn chart_ring_captured<M: ChartMetric>(
             } else if point.x.to_bits() == east.to_bits() {
                 180.0
             } else {
-                (point.x - west - axis.half_period()) * longitude_scale
+                super::chart_events::scale_longitude(
+                    point.x - west - axis.half_period(),
+                    frame,
+                    longitude_scale,
+                )
             };
             point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)
         };
