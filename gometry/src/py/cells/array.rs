@@ -27,9 +27,9 @@ use crate::py::cells::grid_kind::{
     membership_id, uncompact_floor_message,
 };
 use crate::py::cells::{
-    CellArrayError, FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION,
-    IntoPyObject as _, PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth,
-    py_i64_required, pyfunction, rect_cells_to_polygon, sort_value_counts,
+    CellArrayError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
+    PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth, py_i64_required,
+    pyfunction, rect_cells_to_polygon, sort_value_counts,
 };
 use crate::py::numpy::{
     astype_readonly, bool_array, false_bool_array, float64_array, int64_array, numpy_module,

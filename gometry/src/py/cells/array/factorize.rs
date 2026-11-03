@@ -2,7 +2,7 @@ use super::*;
 
 impl PyCellArray {
     /// Unique ids + per-unique counts (value_counts pass).
-    fn value_count_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+    fn value_count_entries(&self) -> (Vec<u64>, Vec<i64>) {
         let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
         let mut uniques = Vec::with_capacity(self.len());
         let mut counts = Vec::<i64>::with_capacity(self.len());
@@ -13,22 +13,17 @@ impl PyCellArray {
             let id = self.id_at(row);
             crate::py::cells::record_first_seen_count!(slot_of, uniques, counts, id);
         }
-        Ok(sort_value_counts(&uniques, &counts))
+        sort_value_counts(&uniques, &counts)
     }
 
-    fn factorize_identity_entries(
-        &self,
-    ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+    fn factorize_identity_entries(&self) -> (Vec<u64>, Vec<i64>) {
         let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
         let mut uniques = Vec::with_capacity(self.len());
         let mut codes = Vec::with_capacity(self.len());
         macro_rules! append_code {
             ($id:ident) => {{
                 let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, $id);
-                let Ok(code) = i64::try_from(slot) else {
-                    return Err(FactorizationError::CodeOverflow);
-                };
-                codes.push(code);
+                codes.push(i64::try_from(slot).expect("an in-memory slot index fits i64"));
             }};
         }
         let ids = self.storage.ids.as_slice();
@@ -48,11 +43,11 @@ impl PyCellArray {
                 }
             },
         }
-        Ok((uniques, codes))
+        (uniques, codes)
     }
 
     /// Unique ids + dense codes (factorize pass).
-    fn factorize_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+    fn factorize_entries(&self) -> (Vec<u64>, Vec<i64>) {
         if matches!(self.selection_ref(), RowSelectionRef::Identity) {
             return self.factorize_identity_entries();
         }
@@ -66,12 +61,9 @@ impl PyCellArray {
             }
             let id = self.id_at(row);
             let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, id);
-            let Ok(code) = i64::try_from(slot) else {
-                return Err(FactorizationError::CodeOverflow);
-            };
-            codes.push(code);
+            codes.push(i64::try_from(slot).expect("an in-memory slot index fits i64"));
         }
-        Ok((uniques, codes))
+        (uniques, codes)
     }
 }
 
@@ -150,18 +142,10 @@ impl PyCellArray {
     /// >>> codes.tolist()
     /// [0, 1]
     fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (uniques, codes) = match py.detach(|| {
-            self.factorize_entries()
-                .map(|(uniques, codes)| (Self::from_ids(self.kind(), uniques), codes))
-        }) {
-            Ok(values) => values,
-            Err(error) => {
-                return Err(error.into_py_err(
-                    "cell value count overflows int64",
-                    "cell factor code overflows int64",
-                ));
-            },
-        };
+        let (uniques, codes) = py.detach(|| {
+            let (uniques, codes) = self.factorize_entries();
+            (Self::from_ids(self.kind(), uniques), codes)
+        });
         let codes = match int64_array(py, codes) {
             Ok(codes) => codes,
             Err(error) => {
@@ -270,18 +254,10 @@ impl PyCellArray {
     /// >>> counts.tolist()
     /// [2]
     fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (sorted_uniques, sorted_counts) = match py.detach(|| {
-            self.value_count_entries()
-                .map(|(uniques, counts)| (Self::from_ids(self.kind(), uniques), counts))
-        }) {
-            Ok(values) => values,
-            Err(error) => {
-                return Err(error.into_py_err(
-                    "cell value count overflows int64",
-                    "cell factor code overflows int64",
-                ));
-            },
-        };
+        let (sorted_uniques, sorted_counts) = py.detach(|| {
+            let (uniques, counts) = self.value_count_entries();
+            (Self::from_ids(self.kind(), uniques), counts)
+        });
         let cells = match sorted_uniques.into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {

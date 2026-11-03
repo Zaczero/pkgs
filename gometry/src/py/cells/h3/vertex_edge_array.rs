@@ -21,9 +21,7 @@ use crate::py::cells::h3::{
     DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
 };
-use crate::py::cells::{
-    FactorizationError, GridKind, Point, PyCellArray, Shape, sort_value_counts,
-};
+use crate::py::cells::{GridKind, Point, PyCellArray, Shape, sort_value_counts};
 use crate::py::numpy::float64_array;
 use crate::py::row::{RowContainer, RowGetItemContainer, RowIterState, array_getitem};
 
@@ -217,9 +215,7 @@ macro_rules! h3_index_array_common {
                 (0..self.len()).map(|logical| self.id_at(logical)).collect()
             }
 
-            fn value_count_entries(
-                &self,
-            ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+            fn value_count_entries(&self) -> (Vec<u64>, Vec<i64>) {
                 let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
                 let mut uniques = Vec::with_capacity(self.len());
                 let mut counts = Vec::<i64>::with_capacity(self.len());
@@ -227,22 +223,19 @@ macro_rules! h3_index_array_common {
                     let id = self.id_at(row);
                     crate::py::cells::record_first_seen_count!(slot_of, uniques, counts, id);
                 }
-                Ok(sort_value_counts(&uniques, &counts))
+                sort_value_counts(&uniques, &counts)
             }
 
-            fn factorize_entries(
-                &self,
-            ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+            fn factorize_entries(&self) -> (Vec<u64>, Vec<i64>) {
                 let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
                 let mut uniques = Vec::with_capacity(self.len());
                 let mut codes = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let id = self.id_at(row);
                     let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, id);
-                    let code = i64::try_from(slot).map_err(|_| FactorizationError::CodeOverflow)?;
-                    codes.push(code);
+                    codes.push(i64::try_from(slot).expect("an in-memory slot index fits i64"));
                 }
-                Ok((uniques, codes))
+                (uniques, codes)
             }
         }
 
@@ -562,18 +555,10 @@ macro_rules! h3_index_array_common {
     /// >>> counts.tolist()
     /// [1, 1, 1, 1, 1, 1]
             fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let (values, sorted_counts) = match py.detach(|| {
-                    self.value_count_entries()
-                        .map(|(values, counts)| (Self::from_ids(values), counts))
-                }) {
-                    Ok(values) => values,
-                    Err(error) => {
-                        return Err(error.into_py_err(
-                            "H3 count overflows int64",
-                            "H3 factor code overflows int64",
-                        ));
-                    },
-                };
+                let (values, sorted_counts) = py.detach(|| {
+                    let (values, counts) = self.value_count_entries();
+                    (Self::from_ids(values), counts)
+                });
                 let values = match values.into_pyobject(py) {
                     Ok(values) => values.into_any().unbind(),
                     Err(error) => {
@@ -608,18 +593,10 @@ macro_rules! h3_index_array_common {
     /// >>> len(codes) == len(edges)
     /// True
             fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let (uniques, codes) = match py.detach(|| {
-                    self.factorize_entries()
-                        .map(|(uniques, codes)| (Self::from_ids(uniques), codes))
-                }) {
-                    Ok(values) => values,
-                    Err(error) => {
-                        return Err(error.into_py_err(
-                            "H3 count overflows int64",
-                            "H3 factor code overflows int64",
-                        ));
-                    },
-                };
+                let (uniques, codes) = py.detach(|| {
+                    let (uniques, codes) = self.factorize_entries();
+                    (Self::from_ids(uniques), codes)
+                });
                 let codes = match crate::py::numpy::int64_array(py, codes) {
                     Ok(codes) => codes,
                     Err(error) => {

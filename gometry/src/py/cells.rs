@@ -3,7 +3,6 @@
 //! source geometry; exact membership uses free `covers`/`contains`/`intersects`
 //! predicates.
 
-use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -35,8 +34,7 @@ macro_rules! first_seen_slot {
 pub(crate) use first_seen_slot;
 
 /// Expands the entry match and count update at each monomorphic call site,
-/// keeping one hash lookup per hot-loop row. Its `?` propagates
-/// `FactorizationError` from the caller.
+/// keeping one hash lookup per hot-loop row.
 macro_rules! record_first_seen_count {
     ($slot_of:ident, $unique_ids:ident, $counts:ident, $id:ident) => {{
         let slot = $crate::py::cells::first_seen_slot!($slot_of, $unique_ids, $id, {
@@ -45,9 +43,8 @@ macro_rules! record_first_seen_count {
         let count = $counts
             .get_mut(slot)
             .expect("first-seen id slot has a count");
-        *count = (*count)
-            .checked_add(1)
-            .ok_or(FactorizationError::CountOverflow)?;
+        // A count of in-memory rows fits `i64`.
+        *count = count.wrapping_add(1);
     }};
 }
 pub(crate) use record_first_seen_count;
@@ -86,12 +83,6 @@ use engine::{
 pub(crate) use grid_kind::GridKind;
 pub(crate) use h3::{PyH3EdgeArray, PyH3VertexArray};
 
-#[derive(Debug)]
-enum FactorizationError {
-    CountOverflow,
-    CodeOverflow,
-}
-
 /// Callers first normalize dtype and alignment with `require_aligned_numpy`.
 /// They must also keep the source quiescent; this readonly borrow does not
 /// synchronize native writers.
@@ -127,15 +118,6 @@ where
         }
     }
     Ok(output)
-}
-
-impl FactorizationError {
-    fn into_py_err(self, count_overflow: &'static str, code_overflow: &'static str) -> PyErr {
-        match self {
-            Self::CountOverflow => PyOverflowError::new_err(count_overflow),
-            Self::CodeOverflow => PyOverflowError::new_err(code_overflow),
-        }
-    }
 }
 
 fn sort_value_counts(uniques: &[u64], counts: &[i64]) -> (Vec<u64>, Vec<i64>) {
