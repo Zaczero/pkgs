@@ -592,13 +592,16 @@ def test_extreme_area_centroid_and_ordinary_bit_identity() -> None:
     assert gm.box(0, 0, 2, 3).area == 6.0
 
 
-def test_line_index_rejects_nonfinite_total_length() -> None:
-    """C4: LRS on linework whose total length overflows must not poison quietly."""
+def test_line_index_preserves_stations_when_total_length_overflows() -> None:
+    """Finite stations survive even when the route's total length overflows."""
     # Two huge segments: each length is finite (~1e308) but the sum is +inf.
     ls = gm.LineString([(0.0, 0.0), (1e308, 0.0), (0.0, 1e308)])
     assert not math.isfinite(ls.length)
-    with pytest.raises(gm.GeometryError, match=r'finite|length|line index'):
-        ls.line_interpolate(0.5)
+    assert ls.line_interpolate(0.5).x == pytest.approx(0.5)
+    midpoint = ls.line_interpolate(0.5, normalized=True)
+    assert math.isfinite(midpoint.x) and math.isfinite(midpoint.y)
+    assert midpoint.x == pytest.approx(8.535533905932738e307)
+    assert midpoint.y == pytest.approx(1.4644660940672624e307)
 
 
 def test_subnormal_features_survive_zero_tolerance() -> None:
