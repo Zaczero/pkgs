@@ -109,13 +109,10 @@ pub(super) fn row_missing<const HAS_MISSING: bool>(
     missing: Option<&ValidityMask>,
     row: usize,
 ) -> bool {
-    if HAS_MISSING {
-        missing
+    HAS_MISSING
+        && missing
             .expect("HAS_MISSING rows carry a mask")
             .is_missing(row)
-    } else {
-        false
-    }
 }
 
 pub(super) fn uniform_axes<const HAS_MISSING: bool>(

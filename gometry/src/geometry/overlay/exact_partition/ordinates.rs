@@ -32,10 +32,11 @@ impl ResolvedNodePoints<'_, '_> {
     }
 
     pub(in crate::geometry) fn ordinates(&self, node: NodeId) -> Option<(ZOrdinate, MOrdinate)> {
-        self.by_node.as_ref().map_or_else(
-            || Some((ZOrdinate(None), MOrdinate(None))),
-            |by_node| by_node.get(node.0 as usize).copied().flatten(),
-        )
+        self.by_node
+            .as_ref()
+            .map_or(Some((ZOrdinate(None), MOrdinate(None))), |by_node| {
+                by_node.get(node.0 as usize).copied().flatten()
+            })
     }
 
     pub(in crate::geometry) fn point(&self, node: NodeId, xy: XY) -> Point {

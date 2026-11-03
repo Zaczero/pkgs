@@ -263,8 +263,8 @@ impl<'authority, 'access, 'metric, 'states, C: RootCatalog, M: ChartMetric>
                             metric,
                             longitude: cached_longitude,
                         } = state;
-                        let longitude = longitude.map_or_else(
-                            || SourceRootLongitude::Derived(cached_longitude),
+                        let longitude = longitude.map_or(
+                            SourceRootLongitude::Derived(cached_longitude),
                             SourceRootLongitude::Retained,
                         );
                         resolve_source_root(

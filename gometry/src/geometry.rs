@@ -608,8 +608,8 @@ impl Shape {
     /// variant, so admitting the sequence here is what stops every caller from
     /// re-deriving that rule — and from constructing the unrepresentable one.
     pub(crate) fn multi_point(empty_axes: CoordinateAxes, coords: CoordSeq) -> Self {
-        MultiPoint::from_coordseq(coords).map_or_else(
-            |_| Self::Empty(GeometryKind::MultiPoint, empty_axes),
+        MultiPoint::from_coordseq(coords).map_or(
+            Self::Empty(GeometryKind::MultiPoint, empty_axes),
             Self::MultiPoint,
         )
     }
@@ -617,8 +617,8 @@ impl Shape {
     /// A dense `MULTILINESTRING`, or `MULTILINESTRING EMPTY` carrying
     /// `empty_axes` when there are no members.
     pub(crate) fn multi_line_string(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Self {
-        MultiLineString::from_dense(values).map_or_else(
-            || Self::Empty(GeometryKind::MultiLineString, empty_axes),
+        MultiLineString::from_dense(values).map_or(
+            Self::Empty(GeometryKind::MultiLineString, empty_axes),
             Self::MultiLineString,
         )
     }
@@ -626,8 +626,8 @@ impl Shape {
     /// A dense `MULTIPOLYGON`, or `MULTIPOLYGON EMPTY` carrying `empty_axes`
     /// when there are no members.
     pub(crate) fn multi_polygon(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Self {
-        MultiPolygon::from_dense(values).map_or_else(
-            || Self::Empty(GeometryKind::MultiPolygon, empty_axes),
+        MultiPolygon::from_dense(values).map_or(
+            Self::Empty(GeometryKind::MultiPolygon, empty_axes),
             Self::MultiPolygon,
         )
     }

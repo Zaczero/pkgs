@@ -220,10 +220,6 @@ macro_rules! grid_cell_common_pymethods {
             }
 
             $(
-                #[expect(
-                    clippy::allow_attributes,
-                    reason = "the scoped allow below is required by mixed const/non-const grid id APIs"
-                )]
                 #[allow(
                     clippy::missing_const_for_fn,
                     reason = "some grid id extractors call non-const dependency APIs"
@@ -233,10 +229,6 @@ macro_rules! grid_cell_common_pymethods {
                     $int_expr
                 }
 
-                #[expect(
-                    clippy::allow_attributes,
-                    reason = "the scoped allow below is required by mixed const/non-const grid id APIs"
-                )]
                 #[allow(
                     clippy::missing_const_for_fn,
                     reason = "some grid id extractors call non-const dependency APIs"

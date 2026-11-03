@@ -463,8 +463,8 @@ fn emit_bbox_leaf(
     // Skipping the positive-only witness pass here is exact: its only possible
     // outcome for these sources is `Boundary`, after which we run the certified
     // classifier below anyway.
-    let witness_is_interior = if source.has_polygon() {
-        match h3_bbox_positive_witnesses(cell) {
+    let witness_is_interior = source.has_polygon()
+        && match h3_bbox_positive_witnesses(cell) {
             Some(witnesses) => {
                 let mut interior = false;
                 for window in witnesses.iter() {
@@ -480,10 +480,7 @@ fn emit_bbox_leaf(
                 interior
             },
             None => false,
-        }
-    } else {
-        false
-    };
+        };
     if witness_is_interior {
         return emit_leaf(cell, false, max_cells, covered);
     }

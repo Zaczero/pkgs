@@ -132,13 +132,10 @@ fn ensure_pyarrow_list(pa: &Bound<'_, PyModule>, value_type: &Bound<'_, PyAny>) 
         return Ok(());
     }
     let types = pa.getattr("types")?;
-    let is_list = if types.hasattr("is_list")? {
-        types
+    let is_list = types.hasattr("is_list")?
+        && types
             .call_method1("is_list", (value_type,))?
-            .extract::<bool>()?
-    } else {
-        false
-    };
+            .extract::<bool>()?;
     if !is_list {
         return Err(PyTypeError::new_err(
             "geoarrow list geometry storage must be list (+l) or large_list (+L)",
@@ -157,13 +154,10 @@ fn ensure_pyarrow_point_struct(
     if arrow_type_is_fixed_size_list(pa, value_type)? {
         return ensure_pyarrow_interleaved_coords(pa, value_type);
     }
-    let is_struct = if types.hasattr("is_struct")? {
-        types
+    let is_struct = types.hasattr("is_struct")?
+        && types
             .call_method1("is_struct", (value_type,))?
-            .extract::<bool>()?
-    } else {
-        false
-    };
+            .extract::<bool>()?;
     if !is_struct {
         return Err(PyTypeError::new_err(
             "geoarrow point storage must be a struct of float64 ordinates or fixed_size_list interleaved coordinates",
@@ -342,13 +336,10 @@ pub(super) fn geoarrow_native_layout(
             .extract::<bool>()?
             || arrow_type_is_large_list(pa, &current)?
             || {
-                if types.hasattr("is_list_view")? {
-                    types
+                types.hasattr("is_list_view")?
+                    && types
                         .call_method1("is_list_view", (&current,))?
                         .extract::<bool>()?
-                } else {
-                    false
-                }
             };
         if !is_list {
             break;
@@ -377,13 +368,10 @@ pub(super) fn geoarrow_native_layout(
         };
         return Ok(Some((depth, has_z, has_m)));
     }
-    let is_struct = if types.hasattr("is_struct")? {
-        types
+    let is_struct = types.hasattr("is_struct")?
+        && types
             .call_method1("is_struct", (&current,))?
-            .extract::<bool>()?
-    } else {
-        false
-    };
+            .extract::<bool>()?;
     if !is_struct {
         return Ok(None);
     }

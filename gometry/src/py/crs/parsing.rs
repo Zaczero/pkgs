@@ -414,8 +414,11 @@ fn cf_polar_stereographic_proj(
         ));
     }
     let lat_ts = cf_optional_standard_parallel(dict)?.unwrap_or(90.0);
-    let lat_0 = dict_f64(dict, "latitude_of_projection_origin")?
-        .unwrap_or_else(|| if lat_ts < 0.0 { -90.0 } else { 90.0 });
+    let lat_0 = dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(if lat_ts < 0.0 {
+        -90.0
+    } else {
+        90.0
+    });
     Ok(format!(
         "+proj=stere +lat_0={lat_0} +lat_ts={lat_ts} +lon_0={lon_0} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs"
     ))

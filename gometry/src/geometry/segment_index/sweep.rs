@@ -754,8 +754,9 @@ pub(in crate::geometry) fn monotone_runs_with_work<W: Work>(
         let degenerate = sx == 0 && sy == 0;
         let previous = previous_segment;
         previous_segment = Some((index, segment));
-        let chained = (if index_u32 > start && !degenerate {
-            if let Some((previous_index, previous_segment)) = previous {
+        let chained = index_u32 > start
+            && !degenerate
+            && if let Some((previous_index, previous_segment)) = previous {
                 work.charge_into_error(1)?;
                 let previous_chain = chain_of(previous_index);
                 work.charge_into_error(1)?;
@@ -764,9 +765,7 @@ pub(in crate::geometry) fn monotone_runs_with_work<W: Work>(
             } else {
                 false
             }
-        } else {
-            false
-        }) && (sx == 0 || sign_x == 0 || sx == sign_x)
+            && (sx == 0 || sign_x == 0 || sx == sign_x)
             && (sy == 0 || sign_y == 0 || sy == sign_y);
         if chained {
             if sign_x == 0 {
@@ -978,10 +977,8 @@ fn bisect_runs<B, W: Work>(
     let (a_len, b_len) = (a_hi.wrapping_sub(a_lo), b_hi.wrapping_sub(b_lo));
     let children_miss = if a_len == 2 {
         a.two_segment_gap(a_lo, (bs_lo, bs_hi, bc_lo, bc_hi))
-    } else if b_len == 2 {
-        b.two_segment_gap(b_lo, (as_lo, as_hi, ac_lo, ac_hi))
     } else {
-        false
+        b_len == 2 && b.two_segment_gap(b_lo, (as_lo, as_hi, ac_lo, ac_hi))
     };
     if children_miss {
         return Ok(ControlFlow::Continue(()));

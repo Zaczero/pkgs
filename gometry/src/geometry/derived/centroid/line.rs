@@ -315,7 +315,7 @@ pub(super) fn finish_lineal_centroid(
     total_length: f64,
     line_sum: (f64, f64),
 ) -> Option<(f64, f64)> {
-    (total_length > 0.0).then(|| (line_sum.0 / total_length, line_sum.1 / total_length))
+    (total_length > 0.0).then_some((line_sum.0 / total_length, line_sum.1 / total_length))
 }
 
 /// Exact fallback over these physical coordinate runs. Zero-length segments

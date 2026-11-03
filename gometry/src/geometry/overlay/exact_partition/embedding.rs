@@ -340,7 +340,7 @@ impl<'p, 'source, 'e, 'emission> Collect<'p, 'source, 'e, 'emission> {
             error,
             ..
         } = self;
-        error.map_or_else(|| Ok((seeds, movable_cache, has_unmovable_witness)), Err)
+        error.map_or(Ok((seeds, movable_cache, has_unmovable_witness)), Err)
     }
 }
 
