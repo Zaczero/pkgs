@@ -87,27 +87,14 @@ pub(crate) fn polygon_area(
         .start
         .get();
     let y_origin = first.y;
-    let edges = polygon.rings().try_fold(0_usize, |count, ring| {
-        count
-            .checked_add(
-                ring.coord_count()
-                    .checked_sub(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            )
-            .ok_or(crate::error::ResourceError::SizeOverflow)
-    })?;
-    let exponent_bits = ceil_log2(
-        edges
-            .checked_add(2)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?,
-    );
-    let x_exponent = i32::try_from(
-        exponent_bits
-            .checked_add(3)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?,
-    )
-    .map_err(|_| crate::error::ResourceError::SizeOverflow)?
-    .wrapping_neg();
+    // Admitted rings are closed with at least four coordinates, and their
+    // edge total is bounded by the coordinates held in memory.
+    let edges = polygon
+        .rings()
+        .map(|ring| ring.coord_count().wrapping_sub(1))
+        .fold(0_usize, usize::wrapping_add);
+    let exponent_bits = ceil_log2(edges.wrapping_add(2));
+    let x_exponent = 0_i32.wrapping_sub_unsigned(exponent_bits.wrapping_add(3));
     let longitude_scale = exact_power_of_two(x_exponent);
     let longitude_coordinate_scale =
         Bounded::exact(axis.radians_per_unit() * frame.longitude_orientation_sign())
