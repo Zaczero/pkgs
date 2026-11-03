@@ -349,11 +349,11 @@ pub(super) fn utm_crs(crs: &str) -> Option<(LocalUtmZone, GeodeticPole)> {
     let code = parse_epsg(crs)?;
     match code {
         32601..=32660 => Some((
-            LocalUtmZone::try_new(code.wrapping_sub(32600)).ok()?,
+            LocalUtmZone::try_new(code.wrapping_sub(32600)).expect("matched UTM zone is 1..=60"),
             GeodeticPole::North,
         )),
         32701..=32760 => Some((
-            LocalUtmZone::try_new(code.wrapping_sub(32700)).ok()?,
+            LocalUtmZone::try_new(code.wrapping_sub(32700)).expect("matched UTM zone is 1..=60"),
             GeodeticPole::South,
         )),
         _ => None,

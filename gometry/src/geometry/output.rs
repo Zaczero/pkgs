@@ -83,11 +83,11 @@ pub(crate) fn build_certified_shape_with_axes_and_order<W: Work>(
                 .then_with(|| left.0.cmp(&right.0)),
         )
     })?;
+    // Three in-memory part lists cannot overflow `usize` together.
     let ordered_count = ordered_points
         .len()
-        .checked_add(ordered_lines.len())
-        .and_then(|count| count.checked_add(ordered_polygons.len()))
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        .wrapping_add(ordered_lines.len())
+        .wrapping_add(ordered_polygons.len());
     work.charge_into_error(
         u64::try_from(ordered_count).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
