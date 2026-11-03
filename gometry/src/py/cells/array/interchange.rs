@@ -99,11 +99,8 @@ impl PyCellArray {
             }
             let cell = Geohash::from_validated_id(self.id_at(row));
             let (_, length) = cell.token_bytes();
-            total_bytes = total_bytes.checked_add(length).ok_or(
-                crate::error::ResourceError::SizeOverflowContext(
-                    "geohash tokens exceed Arrow UTF-8 size",
-                ),
-            )?;
+            // Saturation keeps an oversized total oversized for the offset check.
+            total_bytes = total_bytes.saturating_add(length);
         }
         if i32::try_from(total_bytes).is_err() {
             return Err(crate::error::ResourceError::SizeOverflowContext(
@@ -111,13 +108,8 @@ impl PyCellArray {
             )
             .into());
         }
-        let offset_count =
-            self.len()
-                .checked_add(1)
-                .ok_or(crate::error::ResourceError::SizeOverflowContext(
-                    "geohash row count exceeds Arrow offset capacity",
-                ))?;
-        let mut offsets = Vec::with_capacity(offset_count);
+        // One offset per in-memory row plus the initial zero.
+        let mut offsets = Vec::with_capacity(self.len().wrapping_add(1));
         let mut values = Vec::with_capacity(total_bytes);
         offsets.push(0_i32);
         for row in 0..self.len() {
