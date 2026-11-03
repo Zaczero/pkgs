@@ -565,11 +565,11 @@ pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a, const ORDINA
     )
 }
 
-pub(super) fn partition_endpoint_capacity(unique: usize, isolated: usize) -> Result<usize> {
-    unique
-        .checked_mul(2)
-        .and_then(|count| count.checked_add(isolated))
-        .ok_or_else(|| ResourceError::SizeOverflow.into())
+/// Two endpoints per unique segment plus each isolated point. Both counts are
+/// lengths of in-memory slices of at least 16-byte elements, so the sum cannot
+/// overflow `usize`.
+pub(super) const fn partition_endpoint_capacity(unique: usize, isolated: usize) -> usize {
+    unique.wrapping_mul(2).wrapping_add(isolated)
 }
 
 pub(super) fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
@@ -584,7 +584,7 @@ pub(super) fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     if let Some((intervals, _)) = windowed {
         debug_assert_eq!(intervals.len(), unique.len());
     }
-    let endpoint_capacity = partition_endpoint_capacity(unique.len(), isolated.len())?;
+    let endpoint_capacity = partition_endpoint_capacity(unique.len(), isolated.len());
     let mut endpoint_of: HashMap<PointKey, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     endpoint_of.reserve(endpoint_capacity);

@@ -1148,8 +1148,8 @@ fn star_crossings_keep_one_recipe_per_constructed_node() {
 
 #[test]
 fn partition_admission_does_not_cap_input_counts_as_pairs() {
-    construction::partition_endpoint_capacity(32_000, 0).unwrap();
-    construction::partition_endpoint_capacity(32_000, 32_000).unwrap();
+    assert_eq!(construction::partition_endpoint_capacity(32_000, 0), 64_000);
+    assert_eq!(construction::partition_endpoint_capacity(32_000, 32_000), 96_000);
 }
 
 #[test]
