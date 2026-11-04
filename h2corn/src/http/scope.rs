@@ -15,7 +15,8 @@ pub(crate) use crate::http::scope::forwarded::{
     ScopeHost, default_scope_view, resolve_scope_view, scope_view_with_defaults,
 };
 use crate::http::types::{
-    BytesStr, HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaders,
+    BytesStr, HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaderRef,
+    RequestHeaders,
 };
 use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
@@ -275,24 +276,29 @@ pub(crate) fn headers_to_python<'py>(
     consumed_fields: ForwardedFields,
     proxy_headers: Option<&ProxyHeaderSlots>,
 ) -> PyResult<Bound<'py, PyList>> {
-    // `PyList::new` over an exact-size iterator compiles to the same
-    // `PyList_New` + `PyList_SET_ITEM` / `PyTuple_New` + `PyTuple_SET_ITEM`
-    // sequence a hand-rolled fill would use.
+    let to_python = |header: RequestHeaderRef<'_>| {
+        (
+            header_name_to_python(py, header.name()),
+            PyBytes::new(py, header.value()),
+        )
+    };
+    // The unfiltered iterator has an exact length, so PyO3 can allocate
+    // the Python list at its final size.
+    if !strip_proxy_headers {
+        return PyList::new(py, headers.iter().map(to_python));
+    }
+
     PyList::new(
         py,
         headers.iter().enumerate().filter_map(|(index, header)| {
-            if strip_proxy_headers
-                && let Some((kind, canonical)) = proxy_header_kind(header.name())
+            if let Some((kind, canonical)) = proxy_header_kind(header.name())
                 && (!canonical
                     || !consumed_fields.contains(kind.field())
                     || proxy_headers.is_none_or(|slots| kind.index(slots) != Some(index)))
             {
                 return None;
             }
-            Some((
-                header_name_to_python(py, header.name()),
-                PyBytes::new(py, header.value()),
-            ))
+            Some(to_python(header))
         }),
     )
 }
