@@ -1523,6 +1523,24 @@ frozen_pymethods! {
 
 
 @pytest.mark.usefixtures('rust_parser')
+def test_rust_scan_attribute_arguments_preserve_nested_tokens_and_unicode(tmp_path):
+    src = """
+// A multibyte prefix: ö
+#[pyo3(name = "é,()", signature = (x = "a,b", y = call(1, 2)), frozen)]
+struct Example;
+"""
+    source = iter_sources(make_config(tmp_path, src_text=src), scope='all')[0]
+    item = next(item for item in source.walk() if item.name == 'Example')
+    attr = item.attr('pyo3')
+    assert attr is not None
+    assert attr.params == (
+        ('name', '"é,()"'),
+        ('signature', '(x = "a,b", y = call(1, 2))'),
+        ('frozen', ''),
+    )
+
+
+@pytest.mark.usefixtures('rust_parser')
 def test_rust_scan_ignores_pyclasses_that_are_not_code(tmp_path):
     """A `#[pyclass]` in a comment, a string, or a macro *definition* is not one.
 

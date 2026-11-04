@@ -191,8 +191,7 @@ def token_params(source: str) -> tuple[tuple[str, str], ...]:
     node = _outermost(_parser().parse(prefix + body).root_node, 'token_tree')
     if node is None:
         return ()
-    offset = len(prefix)
-    return tuple(_assignment(group, body, offset) for group in _groups(node) if group)
+    return _token_tree_params(node)
 
 
 def iter_sources(
@@ -480,6 +479,16 @@ def _assignment(group: list[Node], src: bytes, offset: int) -> tuple[str, str]:
     return _span(group, src, offset), ''
 
 
+def _token_tree_params(tree: Node) -> tuple[tuple[str, str], ...]:
+    """Split the direct children of an already parsed token tree."""
+    source = tree.text
+    if source is None:
+        return ()
+    return tuple(
+        _assignment(group, source, tree.start_byte) for group in _groups(tree) if group
+    )
+
+
 def _excluded_from_export(attrs: tuple[Attr, ...]) -> bool:
     return any(attr.name == 'cfg' and attr.cfg_test is False for attr in attrs)
 
@@ -504,7 +513,7 @@ def _attribute(node: Node) -> Attr | None:
         name=name,
         text=_text(node),
         line=node.start_point[0] + 1,
-        params=token_params(_text(tree)) if tree is not None else (),
+        params=_token_tree_params(tree) if tree is not None else (),
         cfg_test=(
             _cfg_value(tree.children[1:-1])
             if name == 'cfg' and tree is not None
