@@ -22,8 +22,8 @@ consumers that need expression-level syntax.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
 import tree_sitter_rust
@@ -653,28 +653,36 @@ def _parsed(
     scope: Literal['export', 'all'],
 ) -> tuple[RustSource, ...]:
     with _PARSE_LOCK:
-        return _parsed_once(src_root, stamp, scope)
+        snapshot = _SOURCE_CACHE.get(src_root)
+        if snapshot is None or snapshot.stamp != stamp:
+            snapshot = _SourceSnapshot(
+                stamp, tuple(_parse_file(path, src_root) for path, _, _ in stamp)
+            )
+            _SOURCE_CACHE[src_root] = snapshot
+            if len(_SOURCE_CACHE) > 8:
+                _SOURCE_CACHE.popitem(last=False)
+        _SOURCE_CACHE.move_to_end(src_root)
+        if scope == 'all':
+            return snapshot.raw
+        if snapshot.exported is None:
+            snapshot.exported = tuple(
+                source
+                if (items := _export_items(source.items)) == source.items
+                else replace(source, items=items)
+                for source in snapshot.raw
+            )
+        return snapshot.exported
 
 
-@lru_cache(maxsize=8)
-def _parsed_once(
-    src_root: Path,
-    stamp: tuple[tuple[Path, int, int], ...],
-    scope: Literal['export', 'all'],
-) -> tuple[RustSource, ...]:
-    raw = _parsed_raw(src_root, stamp)
-    if scope == 'all':
-        return raw
-    return tuple(
-        source
-        if (items := _export_items(source.items)) == source.items
-        else replace(source, items=items)
-        for source in raw
-    )
+@dataclass(slots=True)
+class _SourceSnapshot:
+    """One source revision shared by concurrent raw and export consumers."""
+
+    stamp: tuple[tuple[Path, int, int], ...]
+    raw: tuple[RustSource, ...]
+    exported: tuple[RustSource, ...] | None = None
 
 
-@lru_cache(maxsize=8)
-def _parsed_raw(
-    src_root: Path, stamp: tuple[tuple[Path, int, int], ...]
-) -> tuple[RustSource, ...]:
-    return tuple(_parse_file(path, src_root) for path, _, _ in stamp)
+# Retain recent projects, not obsolete revisions of the same project. Callers
+# holding an older snapshot keep it alive independently of this cache.
+_SOURCE_CACHE: OrderedDict[Path, _SourceSnapshot] = OrderedDict()
