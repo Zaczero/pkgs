@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyWeakrefReference};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 
@@ -597,21 +597,20 @@ fn disconnect_when_finished<'py>(
         );
     };
     let fut = new_rust_future(py, &shard)?;
-    let waiter_fut = fut.clone_ref(py);
-    let waiter_shard = Arc::clone(&shard);
-    // Registered rather than awaited in a spawned task: the response driver
-    // already knows when the request finished, so watching for it cost a tokio
-    // task, a boxed future and a state clone per request -- on every request,
-    // because frameworks that expose disconnection call `receive()` a second
-    // time as a matter of course. A cancelled awaitable needs no abort handle
-    // here; `RustFuture::resolve` requeues and returns for a cancelled state.
-    finished.on_request_finished(move || {
-        waiter_shard.push(PumpEvent::Resolve {
-            fut: waiter_fut,
-            payload: ResolvePayload::Simple(Box::new(|py| {
-                build_http_inbound_event(py, HttpInboundEvent::HttpDisconnect)
-            })),
-        });
+    let waiter_fut = PyWeakrefReference::new(fut.bind(py).as_any())?.unbind();
+    let waiter_shard = Arc::downgrade(&shard);
+    let registration = finished.on_request_finished(move || {
+        if let Some(shard) = waiter_shard.upgrade() {
+            shard.push(PumpEvent::Resolve {
+                fut: waiter_fut,
+                payload: ResolvePayload::Simple(Box::new(|py| {
+                    build_http_inbound_event(py, HttpInboundEvent::HttpDisconnect)
+                })),
+            });
+        }
     });
+    if let Some(registration) = registration {
+        fut.get().set_registration(registration);
+    }
     Ok(fut.into_bound(py).into_any())
 }

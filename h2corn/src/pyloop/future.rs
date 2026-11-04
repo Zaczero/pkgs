@@ -4,6 +4,7 @@
 //! their `call_soon_threadsafe` wakeups: resolution happens in the pump,
 //! which invokes the stored done-callbacks directly.
 
+use std::any::Any;
 use std::fmt::{self, Formatter};
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +52,7 @@ impl ResolvePayload {
         }
     }
 
-    fn requeue(self) {
+    pub(super) fn requeue(self) {
         if let Self::Op(op) = self {
             op.requeue();
         }
@@ -60,11 +61,25 @@ impl ResolvePayload {
 
 type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 
+enum Cancellation {
+    Task(AbortHandle),
+    Registration(Box<dyn Any + Send + pyo3::marker::Ungil>),
+}
+
+impl Cancellation {
+    fn cancel(self) {
+        match self {
+            Self::Task(handle) => handle.abort(),
+            Self::Registration(registration) => drop(registration),
+        }
+    }
+}
+
 enum FutureState {
     Pending {
         callbacks: Callbacks,
         callback_removal_revision: u64,
-        abort: Option<AbortHandle>,
+        cancellation: Option<Cancellation>,
         resolution_claimed: bool,
     },
     Ready(Py<PyAny>),
@@ -94,11 +109,10 @@ impl Drop for RustFuture {
     fn drop(&mut self) {
         // GC may clear another object in the cycle and deallocate this future
         // without calling its tp_clear.
-        if let FutureState::Pending {
-            abort: Some(abort), ..
-        } = self.state.get_mut()
+        if let FutureState::Pending { cancellation, .. } = self.state.get_mut()
+            && let Some(cancellation) = cancellation.take()
         {
-            abort.abort();
+            cancellation.cancel();
         }
     }
 }
@@ -109,9 +123,9 @@ impl RustFuture {
     pub(crate) fn set_abort(&self, handle: AbortHandle) {
         let mut state = self.state.lock();
         match &mut *state {
-            FutureState::Pending { abort, .. } => {
-                debug_assert!(abort.is_none(), "future waiter is installed once");
-                *abort = Some(handle);
+            FutureState::Pending { cancellation, .. } => {
+                debug_assert!(cancellation.is_none(), "future waiter is installed once");
+                *cancellation = Some(Cancellation::Task(handle));
             },
             FutureState::Cancelled { .. } => {
                 drop(state);
@@ -119,6 +133,20 @@ impl RustFuture {
             },
             FutureState::Ready(_) | FutureState::Failed(_) => {},
         }
+    }
+
+    /// Keep a removable waiter registered for the lifetime of this future.
+    /// Its ownership must not contain strong Python references: traversal
+    /// cannot report edges hidden behind this native guard.
+    pub(crate) fn set_registration(&self, registration: impl Any + Send + pyo3::marker::Ungil) {
+        let mut state = self.state.lock();
+        if let FutureState::Pending { cancellation, .. } = &mut *state {
+            debug_assert!(cancellation.is_none(), "future waiter is installed once");
+            *cancellation = Some(Cancellation::Registration(Box::new(registration)));
+            return;
+        }
+        drop(state);
+        drop(registration);
     }
 
     /// Pump-only: resolve and invoke stored callbacks directly. The caller
@@ -152,12 +180,18 @@ impl RustFuture {
             Ok(value) => FutureState::Ready(value),
             Err(err) => FutureState::Failed(err.value(py).clone().unbind().into_any()),
         };
-        let callbacks = {
+        let (callbacks, cancellation) = {
             let mut state = self_.get().state.lock();
-            if let FutureState::Pending { callbacks, .. } = &mut *state {
+            if let FutureState::Pending {
+                callbacks,
+                cancellation,
+                ..
+            } = &mut *state
+            {
                 let callbacks = mem::take(callbacks);
+                let cancellation = cancellation.take();
                 *state = resolved;
-                callbacks
+                (callbacks, cancellation)
             } else {
                 drop(state);
                 if let Some(operation) = operation {
@@ -166,6 +200,7 @@ impl RustFuture {
                 return;
             }
         };
+        drop(cancellation);
         // Release the receive guard and flow-control credit before callbacks
         // can immediately issue another receive().
         drop(operation);
@@ -264,15 +299,14 @@ impl RustFuture {
     }
 
     fn __clear__(&self) {
-        let state = mem::replace(&mut *self.state.lock(), FutureState::Cancelled {
+        let mut state = mem::replace(&mut *self.state.lock(), FutureState::Cancelled {
             msg: None,
         });
         let event_loop = self.event_loop.lock().take();
-        if let FutureState::Pending {
-            abort: Some(abort), ..
-        } = &state
+        if let FutureState::Pending { cancellation, .. } = &mut state
+            && let Some(cancellation) = cancellation.take()
         {
-            abort.abort();
+            cancellation.cancel();
         }
         // Decrefs may reenter the cleared future.
         drop(state);
@@ -396,25 +430,27 @@ impl RustFuture {
     #[pyo3(signature = (msg = None))]
     fn cancel(self_: &Bound<'_, Self>, msg: Option<Py<PyAny>>) -> PyResult<bool> {
         let py = self_.py();
-        let (callbacks, abort) = {
+        let (callbacks, cancellation) = {
             let mut state = self_.get().state.lock();
             match &mut *state {
                 FutureState::Pending {
-                    callbacks, abort, ..
+                    callbacks,
+                    cancellation,
+                    ..
                 } => {
                     let callbacks = mem::take(callbacks);
-                    let abort = abort.take();
+                    let cancellation = cancellation.take();
                     *state = FutureState::Cancelled { msg };
                     drop(state);
-                    (callbacks, abort)
+                    (callbacks, cancellation)
                 },
                 FutureState::Ready(_) | FutureState::Failed(_) | FutureState::Cancelled { .. } => {
                     return Ok(false);
                 },
             }
         };
-        if let Some(handle) = abort {
-            handle.abort();
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
         }
         // cancel() is typically invoked from inside Task.__step — callbacks
         // MUST be deferred to a plain loop callback (`_enter_task` guard).
@@ -574,7 +610,7 @@ pub(crate) fn new_rust_future(py: Python<'_>, shard: &Shard) -> PyResult<Py<Rust
         state: Mutex::new(FutureState::Pending {
             callbacks: SmallVec::new(),
             callback_removal_revision: 0,
-            abort: None,
+            cancellation: None,
             resolution_claimed: false,
         }),
         blocking: AtomicBool::new(false),

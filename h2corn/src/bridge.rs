@@ -9,7 +9,9 @@ use bytes::Bytes;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
-use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
+use pyo3::types::{
+    PyBool, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString, PyWeakrefReference,
+};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 /// Everything only `http.response.zerocopysend` needs, which exists only on
@@ -883,7 +885,7 @@ pub(crate) fn ready_none<'py>(py: Python<'py>, shard: &Shard) -> Bound<'py, PyAn
 
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the returned awaitable and pump resolver require independent Py references"
+    reason = "the receive guard travels with the event until it is committed or requeued"
 )]
 pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
@@ -915,13 +917,9 @@ where
     // owns the event between consumption and resolution; cancellation either
     // aborts the waiter before it consumes (mpsc recv is cancel-safe) or the
     // pump requeues the in-flight event.
-    // Two references are intentional: Python owns the returned awaitable
-    // while the pump owns its resolver until completion. Neither can be
-    // dropped after the clone, so Clippy's merge suggestion is invalid here.
     let fut = new_rust_future(py, &shard)?;
-    let waiter_fut = fut.clone_ref(py);
-    let panic_fut = fut.clone_ref(py);
-    let panic_shard = Arc::clone(&shard);
+    let waiter_fut = PyWeakrefReference::new(fut.bind(py).as_any())?.unbind();
+    let panic_fut = waiter_fut.clone_ref(py);
     let waiter_shard = Arc::clone(&shard);
     let state = Arc::clone(state);
     let join = runtime().spawn(async move {
@@ -944,7 +942,7 @@ where
         drop(wait_guard);
     });
     fut.get().set_abort(join.abort_handle());
-    observe_waiter(join, panic_shard, panic_fut, "receive waiter");
+    observe_waiter(join, shard, panic_fut, "receive waiter");
     Ok(fut.into_bound(py).into_any())
 }
 
@@ -1339,23 +1337,15 @@ pub(crate) fn try_send_or_await<'py, T: Send + 'static>(
 /// the event was enqueued.
 ///
 /// Cancellation aborts the waiter; an aborted send never enqueues, so the
-/// message is consistently "not sent". The two `Py` references are
-/// intentional: Python owns the returned awaitable while the pump owns its
-/// resolver until completion, and neither can be dropped after the clone --
-/// which is why Clippy's merge suggestion does not apply.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the returned awaitable and pump resolver require independent Py references"
-)]
+/// message is consistently "not sent".
 fn await_send_result<F>(py: Python<'_>, shard: Shard, deliver: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: Future<Output = bool> + Send + 'static,
 {
     let fut = new_rust_future(py, &shard)?;
-    let waiter_fut = fut.clone_ref(py);
-    let panic_fut = fut.clone_ref(py);
-    let panic_shard = Arc::clone(&shard);
-    let waiter_shard = shard;
+    let waiter_fut = PyWeakrefReference::new(fut.bind(py).as_any())?.unbind();
+    let panic_fut = waiter_fut.clone_ref(py);
+    let waiter_shard = Arc::clone(&shard);
     let join = runtime().spawn(async move {
         let sent = deliver.await;
         let payload = ResolvePayload::Simple(Box::new(move |py| {
@@ -1371,7 +1361,7 @@ where
         });
     });
     fut.get().set_abort(join.abort_handle());
-    observe_waiter(join, panic_shard, panic_fut, "send waiter");
+    observe_waiter(join, shard, panic_fut, "send waiter");
     Ok(fut.into_bound(py).into_any())
 }
 

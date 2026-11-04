@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::sync::{Arc, Weak};
 
-use smallvec::SmallVec;
 use tokio::sync::{mpsc, watch};
 
 use crate::async_util::{TryPush, try_push};
@@ -114,12 +115,33 @@ struct HttpSendControl {
     mode: HttpSendMode,
     phase: HttpSendPhase,
     close_signal: Option<watch::Sender<()>>,
-    finished_waiters: SmallVec<[FinishedWaiter; 1]>,
+    finished_waiters: BTreeMap<usize, FinishedWaiter>,
+    next_finished_waiter: usize,
 }
 
 struct HttpSendShared {
     events: BufferedState<HttpSendControl, AdmittedHttpOutboundEvent, 2>,
     failure: Option<Arc<dyn ApplicationFailure>>,
+}
+
+/// A request-finish observer, removed when its awaiting future is discarded.
+pub(crate) struct FinishedRegistration {
+    shared: Weak<HttpSendShared>,
+    slot: usize,
+}
+
+impl Drop for FinishedRegistration {
+    fn drop(&mut self) {
+        let Some(shared) = self.shared.upgrade() else {
+            return;
+        };
+        let mut inner = shared.events.lock();
+        // Closing drains all registrations and forbids new ones, so a
+        // drained slot cannot be reused before its old guard is dropped.
+        let waiter = inner.state.finished_waiters.remove(&self.slot);
+        drop(inner);
+        drop(waiter);
+    }
 }
 
 /// An ASGI event that has already paid its connection-wide body credit. The
@@ -240,7 +262,8 @@ impl HttpSendState {
                 mode: HttpSendMode::Inline { accepted: 0 },
                 phase: HttpSendPhase::AwaitingStart,
                 close_signal: None,
-                finished_waiters: SmallVec::new(),
+                finished_waiters: BTreeMap::new(),
+                next_finished_waiter: 0,
             }),
             failure,
         });
@@ -279,17 +302,34 @@ impl HttpSendState {
     /// body* is a different event and does not belong here: a bodyless GET
     /// whose application calls `receive()` a second time is watching for the
     /// peer to leave, and answering immediately told it the peer had.
+    ///
+    /// Keep the returned registration alive while the observer is needed;
+    /// dropping it unregisters the callback. If the request has already
+    /// finished, the callback runs immediately and there is no registration.
     pub(crate) fn on_request_finished(
         &self,
         waiter: impl FnOnce() + Send + pyo3::marker::Ungil + 'static,
-    ) {
+    ) -> Option<FinishedRegistration> {
         let mut inner = self.shared.events.lock();
         if matches!(inner.state.mode, HttpSendMode::Closed) {
             drop(inner);
             waiter();
-            return;
+            return None;
         }
-        inner.state.finished_waiters.push(Box::new(waiter));
+        let mut slot = inner.state.next_finished_waiter;
+        loop {
+            if let Entry::Vacant(entry) = inner.state.finished_waiters.entry(slot) {
+                entry.insert(Box::new(waiter));
+                break;
+            }
+            slot = slot.wrapping_add(1);
+        }
+        inner.state.next_finished_waiter = slot.wrapping_add(1);
+        drop(inner);
+        Some(FinishedRegistration {
+            shared: Arc::downgrade(&self.shared),
+            slot,
+        })
     }
 
     fn try_admit(
@@ -534,7 +574,7 @@ impl HttpSendBuffer {
         if let Some(close_signal) = close_signal {
             close_signal.send_replace(());
         }
-        for waiter in finished_waiters {
+        for (_, waiter) in finished_waiters {
             waiter();
         }
         self.shared.events.notify_ready();
@@ -1420,7 +1460,8 @@ mod tests {
         // whether `Terminal` counts as "finished". It must not.
         let fired = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&fired);
-        send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
+        let _registration =
+            send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
         assert!(
             !fired.load(Ordering::SeqCst),
             "a closed send gate is not a finished request"
@@ -1431,6 +1472,69 @@ mod tests {
             fired.load(Ordering::SeqCst),
             "physical closure finishes the request"
         );
+    }
+
+    #[test]
+    fn finished_waiter_removal_preserves_other_observers() {
+        let (send_state, mut send_buffer) = HttpSendState::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let first = send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
+        drop(first);
+        let flag = Arc::clone(&active);
+        let second = send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
+
+        send_buffer.close_outbound();
+        drop(second);
+        assert!(!cancelled.load(Ordering::SeqCst));
+        assert!(active.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finished_waiter_cancellation_races_with_completion() {
+        for _ in 0..100 {
+            let (send_state, mut send_buffer) = HttpSendState::new();
+            let active = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&active);
+            let retained =
+                send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst));
+            let discarded = send_state.on_request_finished(|| {});
+            let barrier = Arc::new(Barrier::new(2));
+            std::thread::scope(|scope| {
+                let other_barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    other_barrier.wait();
+                    drop(discarded);
+                });
+                barrier.wait();
+                send_buffer.close_outbound();
+            });
+            assert!(active.load(Ordering::SeqCst));
+            drop(retained);
+        }
+    }
+
+    #[test]
+    fn finished_waiter_registration_races_with_completion() {
+        for _ in 0..100 {
+            let (send_state, mut send_buffer) = HttpSendState::new();
+            let fired = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&fired);
+            let barrier = Arc::new(Barrier::new(2));
+            std::thread::scope(|scope| {
+                let other_barrier = Arc::clone(&barrier);
+                let registration = scope.spawn(move || {
+                    other_barrier.wait();
+                    send_state.on_request_finished(move || flag.store(true, Ordering::SeqCst))
+                });
+                barrier.wait();
+                send_buffer.close_outbound();
+                let registration = registration.join().unwrap();
+                assert!(fired.load(Ordering::SeqCst));
+                drop(registration);
+            });
+        }
     }
 
     #[tokio::test]

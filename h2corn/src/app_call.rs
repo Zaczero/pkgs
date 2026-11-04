@@ -97,11 +97,7 @@ impl AppCallArgs {
         })))
     }
 
-    pub(crate) fn build<'py>(
-        self,
-        py: Python<'py>,
-        shard: &Shard,
-    ) -> PyResult<BuiltAppCall<'py>> {
+    pub(crate) fn build<'py>(self, py: Python<'py>, shard: &Shard) -> PyResult<BuiltAppCall<'py>> {
         match self {
             Self::Http(call) => call.build(py, shard),
             Self::WebSocket(call) => call.build(py, shard),

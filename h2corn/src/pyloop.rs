@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyCFunction, PyDict};
+use pyo3::types::{PyBool, PyCFunction, PyDict, PyWeakrefReference};
 #[cfg(unix)]
 use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
 use tokio::runtime::Runtime;
@@ -204,9 +204,9 @@ pub(crate) enum PumpEvent {
         args: Box<AppCallArgs>,
         slot: Arc<TaskSlot<Result<(), H2CornError>, RequestTaskGuard>>,
     },
-    /// Resolve a pending duck future with a payload produced by Rust I/O.
+    /// Resolve a future if its Python owner still retains it.
     Resolve {
-        fut: Py<RustFuture>,
+        fut: Py<PyWeakrefReference>,
         payload: ResolvePayload,
     },
     /// Run an arbitrary Python awaitable as a task and deliver its result
@@ -813,7 +813,7 @@ where
 pub(crate) fn observe_waiter(
     task: TokioJoinHandle<()>,
     shard: Shard,
-    future: Py<RustFuture>,
+    future: Py<PyWeakrefReference>,
     subject: &'static str,
 ) {
     runtime().spawn(async move {

@@ -105,7 +105,17 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
                 fill_app_slot(py, &slot, Err(H2CornError::from(err)), None);
             }
         },
-        PumpEvent::Resolve { fut, payload } => RustFuture::resolve(&fut, py, payload),
+        PumpEvent::Resolve { fut, payload } => {
+            if let Some(fut) = fut
+                .bind(py)
+                .upgrade_as::<RustFuture>()
+                .expect("the weak reference points to a RustFuture")
+            {
+                RustFuture::resolve(&fut.unbind(), py, payload);
+            } else {
+                payload.requeue();
+            }
+        },
         PumpEvent::SpawnAwaitable { awaitable, slot } => {
             if let Err(err) = spawn_awaitable(py, shard, awaitable, &slot) {
                 fill_value_slot(py, &slot, Err(into_pyerr(err)), None);
@@ -277,14 +287,49 @@ mod tests {
 
     use parking_lot::Mutex;
     use pyo3::prelude::*;
-    use pyo3::types::{PyDict, PyList};
+    use pyo3::types::{PyDict, PyList, PyWeakrefReference};
 
     use super::{DoneSlot, TaskDone, fill_app_slot, fill_value_slot, process_event};
     use crate::error::H2CornError;
-    use crate::pyloop::{PumpEvent, ShardHandle, TaskSlot};
+    use crate::pyloop::{
+        PumpEvent, ResolveOp, ResolvePayload, ShardHandle, TaskSlot, new_rust_future,
+    };
     use crate::runtime::{
         ApplicationFailure, RequestTaskGuard, test_fixtures, try_acquire_request_admission,
     };
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+    fn abandoned_receive_requeues_an_in_flight_event() {
+        struct Event(Arc<AtomicBool>);
+        impl ResolveOp for Event {
+            fn convert(&self, _py: Python<'_>) -> PyResult<Py<PyAny>> {
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "an abandoned future cannot consume the event",
+                ))
+            }
+            fn requeue(self: Box<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        Python::initialize();
+        Python::attach(|py| {
+            let shard = ShardHandle::test_stub(py);
+            let future = new_rust_future(py, &shard).unwrap();
+            let weak = PyWeakrefReference::new(future.bind(py).as_any())
+                .unwrap()
+                .unbind();
+            drop(future);
+            let requeued = Arc::new(AtomicBool::new(false));
+            process_event(py, &shard, PumpEvent::Resolve {
+                fut: weak,
+                payload: ResolvePayload::Op(Box::new(Event(Arc::clone(&requeued)))),
+            });
+            drop(shard);
+            assert!(requeued.load(Ordering::SeqCst));
+        });
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]

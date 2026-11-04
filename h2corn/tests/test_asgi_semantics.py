@@ -17,6 +17,7 @@ import pytest
 from h2corn import Config
 
 from tests._support import (
+    gil_is_disabled,
     h2_request,
     http1_request,
     open_h2_connection,
@@ -144,6 +145,106 @@ async def test_wait_for_receive_timeout_does_not_lose_body() -> None:
         )
     assert status == 200
     assert seen['body'] == b'late-body'
+
+
+@pytest.mark.parametrize('protocol', ['h1', 'h2'])
+@pytest.mark.parametrize('mode', ['cancel', 'abandon', 'timeout'])
+async def test_finished_body_waiters_release_before_response_ends(
+    protocol, mode
+) -> None:
+    alive = []
+
+    async def app(scope, receive, send):
+        assert (await receive())['type'] == 'http.request'
+        references = []
+        for _ in range(32):
+            future = receive()
+            references.append(weakref.ref(future))
+            if mode == 'cancel':
+                assert future.cancel()
+            elif mode == 'timeout':
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(future, 0.001)
+            del future
+        # asyncio's last task-wakeup handle can retain its argument until the
+        # next loop turn even after wait_for has returned.
+        await asyncio.sleep(0)
+        gc.collect()
+        alive.append(sum(ref() is not None for ref in references))
+        await _respond(send, b'ok')
+
+    async with running_server(app, _config()) as server:
+        port = server_port(server)
+        if protocol == 'h1':
+            status, _, _, _ = await http1_request(
+                port=port,
+                request=b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+            )
+        else:
+            status, _ = await h2_request(port=port)
+    assert status == 200
+    assert alive == [0]
+
+
+async def test_abandoned_stream_receive_releases_waiter_and_preserves_body() -> None:
+    observed = asyncio.Event()
+    alive = []
+    bodies = []
+
+    async def app(scope, receive, send):
+        future = receive()
+        reference = weakref.ref(future)
+        del future
+        gc.collect()
+        alive.append(reference() is not None)
+        observed.set()
+        message = await asyncio.wait_for(receive(), 5)
+        bodies.append(message.get('body', b''))
+        await _respond(send, b'ok')
+
+    async with running_server(app, _config()) as server:
+        reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
+        try:
+            writer.write(
+                b'POST / HTTP/1.1\r\nHost: localhost\r\n'
+                b'Content-Length: 4\r\nConnection: close\r\n\r\n'
+            )
+            await writer.drain()
+            await asyncio.wait_for(observed.wait(), 5)
+            writer.write(b'data')
+            await writer.drain()
+            assert b'ok' in await asyncio.wait_for(reader.read(), 5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    assert alive == [False]
+    assert bodies == [b'data']
+
+
+@pytest.mark.skipif(not gil_is_disabled(), reason='requires free-threaded Python')
+async def test_abandoned_waiters_release_across_loop_shards() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        references = []
+        for _ in range(16):
+            future = receive()
+            references.append(weakref.ref(future))
+            del future
+        gc.collect()
+        assert all(ref() is None for ref in references)
+        await _respond(send, b'ok')
+
+    config = Config(
+        bind=('127.0.0.1:0',),
+        access_log=False,
+        lifespan='off',
+        loop_threads=4,
+    )
+    async with running_server(app, config) as server:
+        responses = await asyncio.gather(
+            *(h2_request(port=server_port(server)) for _ in range(32))
+        )
+    assert all(status == 200 and body == b'ok' for status, body in responses)
 
 
 async def test_cancel_message_cycle_is_collected_after_shutdown() -> None:
