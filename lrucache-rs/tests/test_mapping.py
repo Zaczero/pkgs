@@ -1,5 +1,7 @@
 """MutableMapping protocols, live views, and recency-neutral observation."""
 
+import gc
+import weakref
 from collections.abc import ItemsView, KeysView, MutableMapping, ValuesView
 
 import pytest
@@ -47,6 +49,28 @@ def test_views_are_live_with_snapshot_iterators():
     assert len(items) == 2
     assert keys & {'c', 'missing'} == {'c'}
     assert ('c', 37) in items
+
+
+@pytest.mark.parametrize('kind', ['keys', 'values'])
+def test_snapshot_iterator_retains_only_selected_elements(kind):
+    class Token:
+        pass
+
+    key, value = Token(), Token()
+    key_ref, value_ref = weakref.ref(key), weakref.ref(value)
+    cache = LRUCache(1)
+    cache[key] = value
+    iterator = iter(cache if kind == 'keys' else cache.values())
+    cache.clear()
+    del key, value
+    gc.collect()
+
+    assert (key_ref() is not None) == (kind == 'keys')
+    assert (value_ref() is not None) == (kind == 'values')
+    del iterator
+    gc.collect()
+    assert key_ref() is None
+    assert value_ref() is None
 
 
 def test_observation_and_equality_do_not_touch_recency():

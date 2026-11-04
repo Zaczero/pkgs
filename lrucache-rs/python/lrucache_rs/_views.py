@@ -36,7 +36,7 @@ class CacheValuesView(ValuesView[_V]):
     _mapping: LRUCache[Hashable, _V]
 
     def __iter__(self) -> Iterator[_V]:
-        return iter([entry[1] for entry in self._mapping._snapshot_entries()])
+        return iter(self._mapping._snapshot_elements(values=True))
 
     def __contains__(self, expected: object) -> bool:
         return any(value is expected or value == expected for value in self)

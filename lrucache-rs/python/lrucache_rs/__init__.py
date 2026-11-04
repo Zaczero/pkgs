@@ -119,7 +119,7 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
 
     def __iter__(self) -> Iterator[_K]:
         """Snapshot keys from least to most recently used."""
-        return iter([entry[0] for entry in self._snapshot_entries()])
+        return iter(self._snapshot_elements(values=False))
 
     def keys(self) -> KeysView[_K]:
         """Return a live keys view with non-touching snapshot iteration."""

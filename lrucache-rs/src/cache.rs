@@ -61,6 +61,20 @@ impl LRUCache {
             .expect("fixed reference slot");
     }
 
+    /// Project entries while the metadata lock keeps their reference slots stable.
+    /// The projection must not call Python or release a last reference.
+    fn snapshot<'py, T>(
+        &self,
+        py: Python<'py>,
+        project: impl Fn(Bound<'py, PyTuple>) -> T,
+    ) -> Vec<T> {
+        let guard = self.inner.lock_py_attached(py);
+        guard
+            .indices()
+            .map(|slot| project(self.entry(py, slot).pair))
+            .collect()
+    }
+
     fn access<'py>(
         &self,
         key: &Bound<'py, PyAny>,
@@ -274,11 +288,19 @@ impl LRUCache {
 
     #[pyo3(name = "_snapshot_entries")]
     fn snapshot_entries(&self, py: Python<'_>) -> Vec<Py<PyTuple>> {
-        let guard = self.inner.lock_py_attached(py);
-        guard
-            .indices()
-            .map(|slot| self.entry(py, slot).pair.unbind())
-            .collect()
+        self.snapshot(py, Bound::unbind)
+    }
+
+    #[pyo3(name = "_snapshot_elements")]
+    #[pyo3(signature = (*, values))]
+    fn snapshot_elements(&self, py: Python<'_>, values: bool) -> Vec<Py<PyAny>> {
+        let index = usize::from(values);
+        self.snapshot(py, |pair| {
+            pair.get_borrowed_item(index)
+                .expect("entry pairs contain a key and value")
+                .to_owned()
+                .unbind()
+        })
     }
 
     #[getter]
