@@ -1,3 +1,5 @@
+#![feature(temporary_niche_types)]
+
 mod cache;
 mod errors;
 mod store;

@@ -1,6 +1,6 @@
 //! Atomic metadata publication with one immutable, GC-visible reference edge.
 
-use std::num::NonZeroUsize;
+use std::num::NonZeroU32;
 
 use parking_lot::Mutex;
 use pyo3::exceptions::PyValueError;
@@ -10,7 +10,7 @@ use pyo3::sync::MutexExt as _;
 use pyo3::types::{PyInt, PyList, PyTuple};
 
 use crate::errors::CacheError;
-use crate::store::Store;
+use crate::store::{Slot, Store};
 
 impl From<CacheError> for PyErr {
     fn from(error: CacheError) -> Self {
@@ -23,11 +23,11 @@ impl From<CacheError> for PyErr {
 pub(crate) struct LRUCache {
     inner: Mutex<Store>,
     references: Py<PyList>,
-    maxsize: NonZeroUsize,
+    maxsize: NonZeroU32,
 }
 
 struct Entry<'py> {
-    slot: u32,
+    slot: Slot,
     pair: Bound<'py, PyTuple>,
 }
 
@@ -40,24 +40,24 @@ enum Action<'a, 'py> {
 }
 
 impl LRUCache {
-    fn entry<'py>(&self, py: Python<'py>, slot: u32) -> Entry<'py> {
+    fn entry<'py>(&self, py: Python<'py>, slot: Slot) -> Entry<'py> {
         Entry {
             slot,
             pair: self
                 .references
                 .bind(py)
-                .get_item(slot as usize)
+                .get_item(slot.as_inner() as usize)
                 .expect("fixed reference slot")
                 .cast_into()
                 .expect("occupied reference slot"),
         }
     }
 
-    fn write(&self, py: Python<'_>, slot: u32, pair: &Bound<'_, PyAny>) {
+    fn write(&self, py: Python<'_>, slot: Slot, pair: &Bound<'_, PyAny>) {
         // The outgoing pair is pinned by the caller until after unlocking.
         self.references
             .bind(py)
-            .set_item(slot as usize, pair)
+            .set_item(slot.as_inner() as usize, pair)
             .expect("fixed reference slot");
     }
 
@@ -185,11 +185,14 @@ impl LRUCache {
         if maxsize.gt(crate::store::MAX_CAPACITY)? {
             return Err(CacheError::MaxsizeTooLarge.into());
         }
-        let maxsize = NonZeroUsize::new(maxsize.extract()?).expect("positive capacity");
+        let maxsize = NonZeroU32::new(maxsize.extract()?).expect("positive capacity");
         Ok(Self {
             inner: Mutex::new(py.detach(|| Store::new(maxsize))),
-            references: PyList::new(py, std::iter::repeat_n(py.None().bind(py), maxsize.get()))?
-                .unbind(),
+            references: PyList::new(
+                py,
+                std::iter::repeat_n(py.None().bind(py), maxsize.get() as usize),
+            )?
+            .unbind(),
             maxsize,
         })
     }
@@ -287,7 +290,7 @@ impl LRUCache {
     /// int
     ///     The positive entry capacity.
     const fn maxsize(&self) -> usize {
-        self.maxsize.get()
+        self.maxsize.get() as usize
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {

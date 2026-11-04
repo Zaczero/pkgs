@@ -1,13 +1,13 @@
-use super::{INVALID, NonZeroUsize, Store};
+use super::{NonZeroU32, Slot, Store};
 
 #[kani::proof]
 #[kani::unwind(5)]
 fn recency_changes_preserve_slab_links_and_revision_semantics() {
-    let mut store = Store::new(NonZeroUsize::new(3).unwrap());
+    let mut store = Store::new(NonZeroU32::new(3).unwrap());
     for hash in [17, 29, 41] {
         store.insert(hash);
     }
-    let mut order = [2_u32, 1, 0];
+    let mut order = [2, 1, 0].map(|index| Slot::new(index).unwrap());
     let revision: u64 = kani::any();
     store.revision = revision;
     let mut changes = 0_u128;
@@ -26,7 +26,7 @@ fn recency_changes_preserve_slab_links_and_revision_semantics() {
             1 => [second, first, third],
             _ => [third, first, second],
         };
-        assert_eq!(store.head, order[0]);
+        assert_eq!(store.head, Some(order[0]));
         assert_eq!(store.lru(), Some(order[2]));
         assert_eq!(store.insertion_slot(), order[2]);
         assert_eq!(store.len(), 3);
@@ -37,14 +37,14 @@ fn recency_changes_preserve_slab_links_and_revision_semantics() {
         for (position, &index) in order.iter().enumerate() {
             let node = store.node(index);
             let previous = if position == 0 {
-                INVALID
+                None
             } else {
-                order[position - 1]
+                Some(order[position - 1])
             };
             let next = if position == 2 {
-                INVALID
+                None
             } else {
-                order[position + 1]
+                Some(order[position + 1])
             };
             assert_eq!(node.prev, previous);
             assert_eq!(node.next, next);

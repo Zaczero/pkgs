@@ -277,6 +277,30 @@ def test_clear():
     assert cache['x'] == 1
 
 
+@pytest.mark.parametrize('capacity', [1, 4, 17])
+def test_clear_reuses_occupied_and_vacant_slots(capacity):
+    cache = LRUCache[int, int](capacity)
+    for key in range(capacity):
+        cache[key] = key + 100
+    for key in range(0, capacity, 2):
+        del cache[key]
+    cache.clear()
+    cache.clear()
+    for key in range(capacity):
+        cache[key] = key + 200
+    assert list(cache.items()) == [(key, key + 200) for key in range(capacity)]
+    cache[capacity] = 300
+    assert list(cache.items()) == [
+        *[(key, key + 200) for key in range(1, capacity)],
+        (capacity, 300),
+    ]
+    for _ in range(capacity):
+        cache.popitem()
+    for key in range(capacity):
+        cache[key] = key + 400
+    assert list(cache.items()) == [(key, key + 400) for key in range(capacity)]
+
+
 def test_popitem_returns_lru():
     cache = LRUCache[str, int](3)
     cache['a'] = 1

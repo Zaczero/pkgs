@@ -4,12 +4,14 @@
 //! changes advance the revision; recency-only reads must not invalidate an
 //! equality callback's enclosing lookup.
 
-use std::num::NonZeroUsize;
+use core::num::niche_types::U32NotAllOnes;
+use std::num::NonZeroU32;
 
 use hashbrown::HashTable;
 use pyo3::ffi::Py_hash_t;
 
-const INVALID: u32 = u32::MAX;
+pub(crate) type Slot = U32NotAllOnes;
+
 pub(crate) const MAX_CAPACITY: usize = (u32::MAX - 1) as usize;
 
 #[cfg(kani)]
@@ -18,37 +20,38 @@ mod proofs;
 #[derive(Clone, Copy)]
 struct Node {
     hash: Py_hash_t,
-    prev: u32,
-    next: u32,
+    prev: Option<Slot>,
+    // Occupied nodes link recency order; vacant nodes link the free list.
+    next: Option<Slot>,
 }
 
 pub(crate) struct Store {
-    table: HashTable<u32>,
+    table: HashTable<Slot>,
     nodes: Box<[Node]>,
-    free: Vec<u32>,
-    head: u32,
-    tail: u32,
+    free: Option<Slot>,
+    head: Option<Slot>,
+    tail: Option<Slot>,
     len: u32,
     revision: u64,
 }
 
 impl Store {
-    pub(crate) fn new(maxsize: NonZeroUsize) -> Self {
+    pub(crate) fn new(maxsize: NonZeroU32) -> Self {
         let cap = maxsize.get();
+        let mut nodes: Box<[_]> = (0..cap)
+            .map(|index| Node {
+                hash: 0,
+                prev: None,
+                next: Slot::new(index.wrapping_add(1)),
+            })
+            .collect();
+        nodes.last_mut().expect("positive capacity").next = None;
         Self {
-            table: HashTable::with_capacity(cap),
-            nodes: vec![
-                Node {
-                    hash: 0,
-                    prev: INVALID,
-                    next: INVALID,
-                };
-                cap
-            ]
-            .into_boxed_slice(),
-            free: (0..cap as u32).rev().collect(),
-            head: INVALID,
-            tail: INVALID,
+            table: HashTable::with_capacity(cap as usize),
+            nodes,
+            free: Slot::new(0),
+            head: None,
+            tail: None,
             len: 0,
             revision: 0,
         }
@@ -62,83 +65,77 @@ impl Store {
         self.revision
     }
 
-    pub(crate) fn candidates(&self, hash: Py_hash_t) -> impl Iterator<Item = u32> + '_ {
+    pub(crate) fn candidates(&self, hash: Py_hash_t) -> impl Iterator<Item = Slot> + '_ {
         self.table
             .iter_hash(hash as u64)
             .copied()
             .filter(move |&idx| self.node(idx).hash == hash)
     }
 
-    pub(crate) fn indices(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+    pub(crate) fn indices(&self) -> impl ExactSizeIterator<Item = Slot> + '_ {
         let mut idx = self.tail;
         std::iter::repeat_with(move || {
-            let current = idx;
-            idx = self.node(idx).prev;
+            let current = idx.expect("one recency slot per live entry");
+            idx = self.node(current).prev;
             current
         })
         .take(self.len())
     }
 
-    pub(crate) fn touch(&mut self, idx: u32) {
-        if self.head == idx {
+    pub(crate) fn touch(&mut self, idx: Slot) {
+        if self.head == Some(idx) {
             return;
         }
         let Node { prev, next, .. } = *self.node(idx);
         self.unlink(prev, next);
-        let head = self.head;
-        self.node_mut(idx).prev = INVALID;
-        self.node_mut(idx).next = head;
-        self.node_mut(head).prev = idx;
-        self.head = idx;
+        let head = self.head.expect("a non-head entry has a predecessor");
+        self.node_mut(idx).prev = None;
+        self.node_mut(idx).next = Some(head);
+        self.node_mut(head).prev = Some(idx);
+        self.head = Some(idx);
     }
 
-    pub(crate) fn changed_value(&mut self, idx: u32) {
+    pub(crate) fn changed_value(&mut self, idx: Slot) {
         self.touch(idx);
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(crate) const fn lru(&self) -> Option<u32> {
-        if self.tail == INVALID {
-            None
-        } else {
-            Some(self.tail)
-        }
+    pub(crate) const fn lru(&self) -> Option<Slot> {
+        self.tail
     }
 
     pub(crate) fn is_full(&self) -> bool {
         self.len() == self.nodes.len()
     }
 
-    pub(crate) fn insertion_slot(&self) -> u32 {
+    pub(crate) fn insertion_slot(&self) -> Slot {
         if self.is_full() {
-            self.tail
+            self.tail.expect("full store has a tail")
         } else {
-            *self.free.last().expect("free slot below capacity")
+            self.free.expect("free slot below capacity")
         }
     }
 
-    pub(crate) fn insert(&mut self, hash: Py_hash_t) -> u32 {
-        let idx = self
-            .free
-            .pop()
-            .expect("free slot after admission or eviction");
+    pub(crate) fn insert(&mut self, hash: Py_hash_t) -> Slot {
+        let idx = self.free.expect("free slot after admission or eviction");
+        self.free = self.node(idx).next;
         let head = self.head;
         *self.node_mut(idx) = Node {
             hash,
-            prev: INVALID,
+            prev: None,
             next: head,
         };
-        if head == INVALID {
-            self.tail = idx;
+        if let Some(head) = head {
+            self.node_mut(head).prev = Some(idx);
         } else {
-            self.node_mut(head).prev = idx;
+            self.tail = Some(idx);
         }
-        self.head = idx;
+        self.head = Some(idx);
         self.len = self.len.wrapping_add(1);
         let nodes = &self.nodes;
         self.table.insert_unique(hash as u64, idx, |&stored| {
             nodes
-                .get(stored as usize)
+                .get(stored.as_inner() as usize)
                 .expect("occupied table index")
                 .hash as u64
         });
@@ -146,51 +143,53 @@ impl Store {
         idx
     }
 
-    pub(crate) fn remove(&mut self, idx: u32) {
+    pub(crate) fn remove(&mut self, idx: Slot) {
         let Node { hash, prev, next } = *self.node(idx);
         self.table
             .find_entry(hash as u64, |&stored| stored == idx)
             .expect("occupied slot in hash index")
             .remove();
         self.unlink(prev, next);
-        self.free.push(idx);
+        self.node_mut(idx).next = self.free;
+        self.free = Some(idx);
         self.len = self.len.wrapping_sub(1);
         self.revision = self.revision.wrapping_add(1);
     }
 
     pub(crate) fn clear(&mut self) {
-        let mut idx = self.tail;
-        while idx != INVALID {
-            self.free.push(idx);
-            idx = self.node(idx).prev;
+        if let Some(tail) = self.tail {
+            // The live chain is already linked head-to-tail. Splice it onto
+            // the vacant chain without visiting or rewriting every live node.
+            self.node_mut(tail).next = self.free;
+            self.free = self.head;
         }
         self.table.clear();
-        self.head = INVALID;
-        self.tail = INVALID;
+        self.head = None;
+        self.tail = None;
         self.len = 0;
         self.revision = self.revision.wrapping_add(1);
     }
 
-    fn node(&self, idx: u32) -> &Node {
-        self.nodes.get(idx as usize).expect("occupied slab index")
+    fn node(&self, idx: Slot) -> &Node {
+        self.nodes.get(idx.as_inner() as usize).expect("slab index")
     }
 
-    fn node_mut(&mut self, idx: u32) -> &mut Node {
+    fn node_mut(&mut self, idx: Slot) -> &mut Node {
         self.nodes
-            .get_mut(idx as usize)
-            .expect("occupied slab index")
+            .get_mut(idx.as_inner() as usize)
+            .expect("slab index")
     }
 
-    fn unlink(&mut self, prev: u32, next: u32) {
-        if prev == INVALID {
-            self.head = next;
-        } else {
+    fn unlink(&mut self, prev: Option<Slot>, next: Option<Slot>) {
+        if let Some(prev) = prev {
             self.node_mut(prev).next = next;
-        }
-        if next == INVALID {
-            self.tail = prev;
         } else {
+            self.head = next;
+        }
+        if let Some(next) = next {
             self.node_mut(next).prev = prev;
+        } else {
+            self.tail = prev;
         }
     }
 }
