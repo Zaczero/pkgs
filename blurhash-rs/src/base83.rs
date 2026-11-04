@@ -26,7 +26,9 @@ const POW83: [NonZeroU32; 5] = [
 ];
 
 pub(crate) fn decode_byte(b: u8) -> Option<u8> {
-    let v = DECODE.get(b as usize).copied().unwrap_or(INVALID);
+    let v = *DECODE
+        .get(usize::from(b))
+        .expect("every byte has a lookup entry");
     if unlikely(v == INVALID) {
         None
     } else {
