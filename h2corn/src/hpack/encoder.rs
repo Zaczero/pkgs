@@ -7,7 +7,7 @@ use crate::hpack::{HpackField, huffman};
 
 #[derive(Debug)]
 pub(crate) struct Encoder {
-    table: DynamicBuffer<HpackField>,
+    table: DynamicBuffer,
     committed_max_size: usize,
     current_max_size: usize,
     pending_floor: Option<usize>,
@@ -61,7 +61,7 @@ impl Encoder {
 
     #[cfg(test)]
     pub(crate) fn table_size(&self) -> usize {
-        self.table.live().map(|(_, size)| *size).sum()
+        self.table.live().map(HpackField::table_size).sum()
     }
 
     #[cfg(test)]
@@ -153,12 +153,12 @@ impl Default for Encoder {
 }
 
 fn find_dynamic(
-    table: &DynamicBuffer<HpackField>,
+    table: &DynamicBuffer,
     name: &[u8],
     value: &[u8],
 ) -> (Option<usize>, Option<usize>) {
     let mut name_index = None;
-    for (offset, (entry, _)) in table.live().rev().enumerate() {
+    for (offset, entry) in table.live().rev().enumerate() {
         if entry.name() != name {
             continue;
         }

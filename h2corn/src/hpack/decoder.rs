@@ -10,7 +10,7 @@ const HUFFMAN_ARENA_CAPACITY: usize = 4096;
 #[derive(Debug)]
 pub(crate) struct Decoder {
     max_dynamic_size: usize,
-    table: DynamicBuffer<HpackField>,
+    table: DynamicBuffer,
     buffer: BytesMut,
 }
 
@@ -235,20 +235,14 @@ impl Representation {
     }
 }
 
-fn dynamic_entry(
-    table: &DynamicBuffer<HpackField>,
-    index: usize,
-) -> Result<&HpackField, DecoderError> {
+fn dynamic_entry(table: &DynamicBuffer, index: usize) -> Result<&HpackField, DecoderError> {
     let offset = index.wrapping_sub(static_table::DYNAMIC_INDEX_OFFSET);
     table
         .entry_from_end(offset)
         .ok_or(DecoderError::InvalidTableIndex)
 }
 
-fn get_indexed_entry(
-    table: &DynamicBuffer<HpackField>,
-    index: usize,
-) -> Result<HpackField, DecoderError> {
+fn get_indexed_entry(table: &DynamicBuffer, index: usize) -> Result<HpackField, DecoderError> {
     match index {
         0 => Err(DecoderError::InvalidTableIndex),
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::get(index)),
@@ -256,10 +250,7 @@ fn get_indexed_entry(
     }
 }
 
-fn get_indexed_name(
-    table: &DynamicBuffer<HpackField>,
-    index: usize,
-) -> Result<Bytes, DecoderError> {
+fn get_indexed_name(table: &DynamicBuffer, index: usize) -> Result<Bytes, DecoderError> {
     match index {
         0 => Err(DecoderError::InvalidTableIndex),
         1..=static_table::STATIC_TABLE_LEN => Ok(static_table::name(index)),
