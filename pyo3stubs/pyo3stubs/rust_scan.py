@@ -234,10 +234,10 @@ def pyclass_exports(cfg: StubConfig) -> tuple[PyClassExport, ...]:
                 for spec in cfg.macro_exports:
                     if item.name != spec.macro:
                         continue
-                    args = [
-                        unquote(key)
-                        for key, _ in token_params(item.text.split('!', 1)[1])
-                    ]
+                    tree = _first(item.node, 'token_tree')
+                    if tree is None:
+                        continue
+                    args = [unquote(key) for key, _ in _token_tree_params(tree)]
                     if spec.python >= len(args):
                         continue
                     python = args[spec.python]
