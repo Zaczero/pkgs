@@ -35,6 +35,25 @@ fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, 
     Ok((first.extract()?, second.extract()?))
 }
 
+struct Coordinate(f64, f64);
+
+impl<'py> IntoPyObject<'py> for Coordinate {
+    type Target = PyTuple;
+    type Output = Bound<'py, PyTuple>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let tuple = (self.0, self.1).into_pyobject(py)?;
+        // SAFETY: this newly created, unpublished tuple contains only exact
+        // Python floats. Neither the immutable tuple nor its contents can form
+        // a reference cycle, so cyclic GC need not track it.
+        unsafe {
+            pyo3::ffi::PyObject_GC_UnTrack(tuple.as_ptr().cast());
+        }
+        Ok(tuple)
+    }
+}
+
 fn encode<const LATLON: bool>(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<String> {
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
@@ -66,7 +85,7 @@ fn decode_lonlat<'py>(
     precision: i32,
 ) -> PyResult<Bound<'py, PyList>> {
     let coordinates = py.detach(|| decode::<false>(polyline, precision))?;
-    PyList::new(py, coordinates)
+    PyList::new(py, coordinates.into_iter().map(|(a, b)| Coordinate(a, b)))
 }
 
 #[pyfunction]
@@ -77,7 +96,7 @@ fn decode_latlon<'py>(
     precision: i32,
 ) -> PyResult<Bound<'py, PyList>> {
     let coordinates = py.detach(|| decode::<true>(polyline, precision))?;
-    PyList::new(py, coordinates)
+    PyList::new(py, coordinates.into_iter().map(|(a, b)| Coordinate(a, b)))
 }
 
 #[pymodule]

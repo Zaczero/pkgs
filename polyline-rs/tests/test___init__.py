@@ -1,3 +1,5 @@
+import gc
+import weakref
 from math import ulp
 
 import pytest
@@ -79,6 +81,28 @@ def test_encode_accepts_extra_tuple_values_and_subclass_iterators():
     assert encode_latlon([CustomTuple((42.0, 42.0))]) == 'A?'
     with pytest.raises(ValueError, match='coordinate'):
         encode_latlon([(0.0,)])
+
+
+@pytest.mark.parametrize('decode', [decode_latlon, decode_lonlat])
+def test_decoded_points_do_not_prevent_collection_of_containing_cycles(decode):
+    class Owner:
+        pass
+
+    owner = Owner()
+    points = decode('?A' * 100)
+    assert all(
+        type(point) is tuple
+        and len(point) == 2
+        and all(type(value) is float for value in point)
+        for point in points
+    )
+    owner.points: list[object] = points
+    owner.points.append(owner)
+    reference = weakref.ref(owner)
+    del owner, points
+
+    gc.collect()
+    assert reference() is None
 
 
 @pytest.mark.parametrize(
