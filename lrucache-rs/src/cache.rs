@@ -68,7 +68,6 @@ impl LRUCache {
     ) -> PyResult<Option<Py<PyTuple>>> {
         let py = key.py();
         let hash = key.hash()?;
-        let none = py.None();
         loop {
             let (revision, entries) = {
                 let guard = self.inner.lock_py_attached(py);
@@ -135,7 +134,7 @@ impl LRUCache {
                     },
                     Action::Remove => {
                         guard.remove(slot);
-                        self.write(py, slot, none.bind(py));
+                        self.write(py, slot, py.None().bind(py));
                         Some(entry.pair.clone().unbind())
                     },
                 }
