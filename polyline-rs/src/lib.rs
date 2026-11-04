@@ -10,7 +10,7 @@ use encode::Encoder;
 use errors::PolylineError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyList, PyTuple};
 
 impl From<errors::PolylineError> for PyErr {
     fn from(error: errors::PolylineError) -> Self {
@@ -19,6 +19,12 @@ impl From<errors::PolylineError> for PyErr {
 }
 
 fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, f64)> {
+    if let Ok(tuple) = coord.cast_exact::<PyTuple>() {
+        let [first, second, ..] = tuple.as_slice() else {
+            return Err(PolylineError::CoordinateMustContain2Values { index }.into());
+        };
+        return Ok((first.extract()?, second.extract()?));
+    }
     let mut it = coord.try_iter()?;
     let first = it
         .next()

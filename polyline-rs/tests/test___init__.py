@@ -68,6 +68,19 @@ def test_encode_decode(coords, precision, expected):
     )
 
 
+def test_encode_accepts_extra_tuple_values_and_subclass_iterators():
+    class CustomTuple(tuple):
+        __slots__ = ()
+
+        def __iter__(self):
+            return iter((0.000006, 0.000002))
+
+    assert encode_latlon([(0.000006, 0.000002, 'ignored')]) == 'A?'
+    assert encode_latlon([CustomTuple((42.0, 42.0))]) == 'A?'
+    with pytest.raises(ValueError, match='coordinate'):
+        encode_latlon([(0.0,)])
+
+
 @pytest.mark.parametrize(
     'polyline',
     [
