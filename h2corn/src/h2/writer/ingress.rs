@@ -79,7 +79,7 @@ pub(super) struct QueuedCommandBatch {
     _permit: OwnedSemaphorePermit,
 }
 
-pub(super) type QueuedStreamCommands = InlineFifo<QueuedCommandBatch, 2>;
+pub(super) type QueuedStreamCommands = InlineFifo<QueuedCommandBatch, 1>;
 pub(super) type DrainedIngressWrites = Vec<(StreamId, QueuedStreamCommands)>;
 
 #[derive(Debug)]
