@@ -2,7 +2,12 @@ from math import frexp, isfinite
 
 __version__ = '2.0.0'
 
-_SUFFIXES = (' KiB', ' MiB', ' GiB', ' TiB', ' PiB', ' EiB', ' ZiB')
+_UNITS = tuple(
+    (1024**exponent, suffix)
+    for exponent, suffix in enumerate(
+        (' KiB', ' MiB', ' GiB', ' TiB', ' PiB', ' EiB', ' ZiB'), 1
+    )
+)
 
 
 def sizestr(size: float) -> str:
@@ -47,9 +52,10 @@ def sizestr(size: float) -> str:
 
     binary_exponent = size.bit_length() if isinstance(size, int) else frexp(size)[1]
     exp = (binary_exponent - 1) // 10
-    if exp > 7:
+    if exp > len(_UNITS):
         return '(too large to display)'
 
-    size /= 1024**exp
-    precision = 2 if size < 10 else 1
-    return f'{prefix}{size:.{precision}f}{_SUFFIXES[exp - 1]}'
+    divisor, suffix = _UNITS[exp - 1]
+    size /= divisor
+    format_spec = '.2f' if size < 10 else '.1f'
+    return f'{prefix}{size:{format_spec}}{suffix}'
