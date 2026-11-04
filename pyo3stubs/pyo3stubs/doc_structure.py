@@ -1128,7 +1128,7 @@ def _facade_function_source(
     if not inspect.isfunction(obj) or '.' in obj.__qualname__:
         return None
     package = ctx.cfg.module.rpartition('.')[0] or ctx.cfg.module
-    module_name = obj.__module__
+    module_name = getattr(obj, '__module__', None)
     if not isinstance(module_name, str):
         return None
     if module_name == package:

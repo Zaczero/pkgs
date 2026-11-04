@@ -1069,9 +1069,14 @@ class Public(Base):
     (converted,) = tuple(
         subject for subject in subjects if subject.qualname == 'Public.convert'
     )
+    assert all(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        for node in converted.declarations
+    )
     assert [
         ast.unparse(node.returns) if node.returns is not None else None
         for node in converted.declarations
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     ] == ['int', 'str', None]
     assert constructor.source == DocLocation(
         'src/models.py',
@@ -1149,8 +1154,10 @@ def from_arrow(data, *, geometry=None):
     facade = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(facade)
     runtime = types.ModuleType(package)
-    runtime.__all__ = ['from_arrow']
-    runtime.from_arrow = facade.from_arrow
+    runtime.__dict__.update({
+        '__all__': ['from_arrow'],
+        'from_arrow': facade.from_arrow,
+    })
     ctx = CheckContext(cfg, _runtime_module=runtime)
     subject = next(
         subject
@@ -1162,7 +1169,8 @@ def from_arrow(data, *, geometry=None):
     assert subject.source.path == str(facade_path)
     assert len(subject.declarations) == 3
     assert all(
-        'geometry' in {argument.arg for argument in declaration.args.kwonlyargs}
+        isinstance(declaration, ast.FunctionDef | ast.AsyncFunctionDef)
+        and 'geometry' in {argument.arg for argument in declaration.args.kwonlyargs}
         for declaration in subject.declarations
     )
     assert check_doc_subject(subject) == []
