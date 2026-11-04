@@ -144,7 +144,8 @@ class RustSource:
         def descend(items: tuple[Item, ...]) -> Iterator[Item]:
             for item in items:
                 yield item
-                yield from descend(item.children)
+                if item.children:
+                    yield from descend(item.children)
 
         return descend(self.items)
 
