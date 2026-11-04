@@ -82,6 +82,13 @@ def _exact_normalized_shortlink(lon: float, lat: float, zoom: int) -> str:
     ) + '-' * ((zoom + 8) % 3)
 
 
+@pytest.mark.parametrize('zoom', range(23))
+def test_encode_all_zoom_lengths(zoom):
+    assert shortlink_encode(12.25, -45.5, zoom) == _exact_normalized_shortlink(
+        12.25, -45.5, zoom
+    )
+
+
 @pytest.mark.parametrize('zoom', [0, 5, 22])
 @pytest.mark.parametrize(
     ('lon', 'lat'),

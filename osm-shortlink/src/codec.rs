@@ -1,6 +1,8 @@
 use std::hint::unlikely;
 use std::simd::u64x2;
 
+use arrayvec::ArrayString;
+
 use crate::constants::{
     CHARSET, DECODE_INVALID, DECODE_LUT, DECODE_OFFSET, X_SCALE, X_SCALE_INV, Y_SCALE, Y_SCALE_INV,
 };
@@ -11,6 +13,8 @@ const MIN_ZOOM_BIT_COUNT: u8 = 8;
 const BITS_PER_DIGIT: u8 = 3;
 pub(crate) const MAX_ZOOM: u8 = 22;
 const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
+const MAX_LINK_LENGTH: usize =
+    MAX_ZOOM_BIT_COUNT.div_ceil(BITS_PER_DIGIT) as usize + (BITS_PER_DIGIT as usize - 1);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT.is_multiple_of(BITS_PER_DIGIT));
 
@@ -29,7 +33,11 @@ fn interleave_bits(x: u32, y: u32) -> u64 {
     (sx << 1) | sy
 }
 
-pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError> {
+pub(crate) fn encode(
+    lon: f64,
+    lat: f64,
+    zoom: u8,
+) -> Result<ArrayString<MAX_LINK_LENGTH>, EncodeError> {
     if unlikely(zoom > MAX_ZOOM) {
         return Err(EncodeError::ZoomOutOfRange { zoom });
     }
@@ -95,7 +103,7 @@ pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError
     let padding = (bit_count % BITS_PER_DIGIT) as usize;
     let digit_count = bit_count.div_ceil(BITS_PER_DIGIT) as usize;
 
-    let mut out = String::with_capacity(digit_count.wrapping_add(padding));
+    let mut out = ArrayString::new();
 
     for i in 0..digit_count {
         let shift = 58_u32.wrapping_sub((i as u32).wrapping_mul(6));
