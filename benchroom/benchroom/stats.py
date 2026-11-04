@@ -103,7 +103,11 @@ def percentile(values: Sequence[float], fraction: float) -> float:
         raise ValueError('values must not be empty')
     if not 0 <= fraction <= 1:
         raise ValueError(f'fraction must be between 0 and 1, got {fraction}')
-    ordered = sorted(values)
+    return _percentile_ordered(sorted(values), fraction)
+
+
+def _percentile_ordered(ordered: Sequence[float], fraction: float) -> float:
+    """Interpolate a quantile of nonempty, sorted values at a fraction in [0, 1]."""
     position = fraction * (len(ordered) - 1)
     lower = math.floor(position)
     remainder = position - lower
@@ -133,24 +137,26 @@ def bootstrap_interval(
         raise ValueError(f'size must be at least 1, got {size}')
     if samples < 1:
         raise ValueError(f'samples must be at least 1, got {samples}')
-    if _exact_distribution_fits(size, samples):
-        orderings = math.factorial(size)
-        weighted = [
-            (
-                statistic(indexes),
-                orderings
-                // math.prod(
-                    math.factorial(count) for count in Counter(indexes).values()
-                ),
-            )
-            for indexes in itertools.combinations_with_replacement(range(size), size)
-        ]
-    else:
+    if not _exact_distribution_fits(size, samples):
         rng = random.Random(seed)
-        weighted = [
-            (statistic([rng.randrange(size) for _ in range(size)]), 1)
+        estimates = sorted(
+            statistic([rng.randrange(size) for _ in range(size)])
             for _ in range(samples)
-        ]
+        )
+        return (
+            _percentile_ordered(estimates, 0.025),
+            _percentile_ordered(estimates, 0.975),
+        )
+
+    orderings = math.factorial(size)
+    weighted = [
+        (
+            statistic(indexes),
+            orderings
+            // math.prod(math.factorial(count) for count in Counter(indexes).values()),
+        )
+        for indexes in itertools.combinations_with_replacement(range(size), size)
+    ]
     weighted.sort()
     total = sum(weight for _, weight in weighted)
     return (
@@ -199,8 +205,11 @@ def median_interval(values: Sequence[float], *, seed: int = 0) -> tuple[float, f
         else:
             medians[start:end] = np.median(draws, axis=1, overwrite_input=True)
     if extreme:
-        values = medians.tolist()
-        return percentile(values, 0.025), percentile(values, 0.975)
+        ordered = sorted(medians.tolist())
+        return (
+            _percentile_ordered(ordered, 0.025),
+            _percentile_ordered(ordered, 0.975),
+        )
     low, high = np.quantile(medians, (0.025, 0.975))  # pyright: ignore[reportUnknownMemberType]
     return float(low), float(high)
 
