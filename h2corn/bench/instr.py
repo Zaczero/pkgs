@@ -18,9 +18,11 @@ from __future__ import annotations
 import argparse
 import math
 import signal
+import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -66,23 +68,16 @@ except ModuleNotFoundError:  # Direct ``python bench/instr.py`` execution.
     )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Generator, Sequence
 
 APP = 'bench.raw_app:app'
 CONCURRENCY = 100
 REQUESTS = 200_000
-# Measured, not guessed: at 5,000 warmup requests this harness reports a
-# SIGNIFICANT -0.24% difference between a binary and *itself* — the first
-# measurement of a session is a cold outlier that four rounds cannot dilute.
-# At 20,000 the same null lands at -0.096% (95% CI -0.274%..+0.085%), spanning
-# zero. Do not lower this without re-running the self-comparison; a harness
-# that resolves a quarter of a percent out of thin air is worse than no harness,
-# because most changes worth measuring here are that size.
+# Warm the interpreter, connection pool and HPACK tables before counting.
 WARMUP_REQUESTS = 20_000
 MIN_ROUNDS = 4
 MAX_ROUNDS = 20
 TIME_BUDGET_SECONDS = 900.0
-PERF_ATTACH_SETTLE_SECONDS = 0.05
 SEED = 20_260_730
 COUNTERS = ('instructions', 'cycles', 'branch-misses', 'cache-misses')
 SCENARIOS = (
@@ -121,29 +116,60 @@ def run_fixed_requests(scenario: Scenario, requests: int) -> int:
     return metrics['completed']
 
 
-def start_perf(worker_pids: Sequence[int]) -> subprocess.Popen[str]:
-    """Attach user-space hardware counters to every worker process."""
-    command = [
-        'perf',
-        'stat',
-        '--no-big-num',
-        '--field-separator',
-        ',',
-        '--event',
-        ','.join(f'{counter}:u' for counter in COUNTERS),
-        '--pid',
-        ','.join(map(str, worker_pids)),
-    ]
+@contextmanager
+def start_perf(
+    worker_pids: Sequence[int],
+) -> Generator[subprocess.Popen[str], None, None]:
+    """Yield only after every worker's user-space counters have been enabled."""
     try:
-        return subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
+        controller, child = socket.socketpair()
     except OSError as error:
-        raise BenchmarkError(f'failed to start perf: {error}') from error
+        raise BenchmarkError(
+            f'failed to create perf control socket: {error}'
+        ) from error
+    with controller, child:
+        controller.settimeout(10)
+        command = [
+            'perf',
+            'stat',
+            '--delay=-1',
+            f'--control=fd:{child.fileno()},{child.fileno()}',
+            '--no-big-num',
+            '--field-separator',
+            ',',
+            '--event',
+            ','.join(f'{counter}:u' for counter in COUNTERS),
+            '--pid',
+            ','.join(map(str, worker_pids)),
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                pass_fds=(child.fileno(),),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise BenchmarkError(f'failed to start perf: {error}') from error
+        with process:
+            child.close()
+            try:
+                try:
+                    controller.sendall(b'enable\n')
+                    with controller.makefile('rb') as replies:
+                        acknowledged = replies.readline() == b'ack\n'
+                except OSError as error:
+                    raise BenchmarkError(
+                        f'perf counter activation failed: {error}'
+                    ) from error
+                if not acknowledged:
+                    raise BenchmarkError('perf did not acknowledge counter activation')
+                yield process
+            finally:
+                if process.poll() is None:
+                    terminate_process_group(process)
 
 
 def perf_totals(process: subprocess.Popen[str]) -> dict[str, float]:
@@ -208,16 +234,9 @@ def measure(
     ) as server:
         check_response(scenario)
         run_fixed_requests(scenario, warmup_requests)
-        perf = start_perf(server.worker_pids)
-        try:
-            # perf has no readiness protocol after attaching to an existing PID.
-            # Its event setup completes before this small, fixed settle interval.
-            time.sleep(PERF_ATTACH_SETTLE_SECONDS)
+        with start_perf(server.worker_pids) as perf:
             completed = run_fixed_requests(scenario, requests)
-        except BaseException:
-            terminate_process_group(perf)
-            raise
-        totals = perf_totals(perf)
+            totals = perf_totals(perf)
         check_response(scenario)
 
     per_request = {counter: totals[counter] / completed for counter in COUNTERS}
