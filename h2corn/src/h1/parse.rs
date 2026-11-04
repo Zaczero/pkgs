@@ -30,7 +30,7 @@ use crate::http::header_value::header_value_is_valid;
 use crate::http::planner::reject_before_launch;
 use crate::http::policy::RequestPolicies;
 use crate::http::types::{
-    BytesStr, ConnectAuthority, H1RequestHeaders, HttpStatusCode, HttpVersion,
+    BytesStr, ConnectAuthority, H1RequestHeaders, HeaderIndex, HttpStatusCode, HttpVersion,
     KnownRequestHeaderName, RequestHead, RequestHeaders, RequestTarget as DomainRequestTarget,
     parse_request_method, status_code,
 };
@@ -85,7 +85,7 @@ struct UpgradeHeaderFlags {
 
 struct HeaderParseState {
     headers: H1RequestHeaders,
-    host_header_index: Option<usize>,
+    host_header_index: Option<HeaderIndex>,
     connection: ConnectionHeaderTokens,
     upgrade: UpgradeHeaderFlags,
     chunked: bool,
@@ -272,7 +272,8 @@ impl HeaderParseState {
                 if self.host_header_index.is_some() {
                     return Http1Error::ConflictingAbsoluteFormAuthority.err();
                 }
-                self.host_header_index = Some(index);
+                self.host_header_index =
+                    Some(HeaderIndex::new(index).expect("materialized header index fits isize"));
             },
             KnownRequestHeaderName::Connection => {
                 self.connection |= parse_connection_header_tokens(value);
@@ -1099,7 +1100,7 @@ fn parse_request_target<'a>(
     method: &Method,
     target: &'a [u8],
     headers: &H1RequestHeaders,
-    host_header_index: usize,
+    host_header_index: HeaderIndex,
 ) -> Result<ParsedRequestTarget<'a>, H2CornError> {
     // `CONNECT` names a tunnel endpoint, never a resource: the other three
     // forms carry no authority to tunnel to, and admitting one would hand the
@@ -1150,7 +1151,7 @@ fn parse_request_target<'a>(
     }
     if let Some(authority) = uri.authority()
         && !headers
-            .get(host_header_index)
+            .get(host_header_index.as_inner())
             .expect("recorded host index must exist")
             .value()
             .eq_ignore_ascii_case(authority.as_str().as_bytes())

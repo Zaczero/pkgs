@@ -53,6 +53,7 @@ macro_rules! common_status_codes {
         }
     };
 }
+use core::num::niche_types::UsizeNoHighBit;
 use std::num::NonZeroU16;
 use std::ops::{self, Range};
 use std::str::Utf8Error;
@@ -717,6 +718,9 @@ impl<'a> RequestHeaderRef<'a> {
         self.value
     }
 }
+
+/// An index into materialized headers, whose allocation fits within `isize::MAX`.
+pub(crate) type HeaderIndex = UsizeNoHighBit;
 
 #[derive(Clone, Debug)]
 pub(crate) enum RequestHeaders {

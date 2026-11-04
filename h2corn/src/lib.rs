@@ -4,6 +4,7 @@
 // Retained for the WebSocket masking SIMD fast path in
 // `websocket::codec::mask`.
 #![feature(portable_simd)]
+#![feature(temporary_niche_types)]
 // zerocopy's `FromBytes` derive emits an uninhabited enum for its own
 // machinery; the lint fires on the generated item, which no attribute on the
 // deriving struct can reach.

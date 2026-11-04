@@ -14,8 +14,8 @@ use crate::http::header::{
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
 use crate::http::types::{
-    BytesStr, ConnectAuthority, HttpStatusCode, HttpVersion, KnownRequestHeaderName, Protocol,
-    RequestAuthority, RequestHead, RequestHeaderName, RequestHeaderValue, RequestHeaders,
+    BytesStr, ConnectAuthority, HeaderIndex, HttpStatusCode, HttpVersion, KnownRequestHeaderName,
+    Protocol, RequestAuthority, RequestHead, RequestHeaderName, RequestHeaderValue, RequestHeaders,
     RequestTarget, parse_request_method, status_code,
 };
 
@@ -162,7 +162,7 @@ struct RequestHeadBuilder {
     protocol: Option<Protocol>,
     regular_headers: Vec<(RequestHeaderName, RequestHeaderValue)>,
     section: HeaderSection,
-    host_header_index: Option<usize>,
+    host_header_index: Option<HeaderIndex>,
     cookie: Option<CookieMerge>,
     budget: HeaderBudget,
     header_meta: RequestHeaderMeta,
@@ -179,7 +179,7 @@ struct RequestHeadBuilder {
 /// recorded header index valid, which removing the extra lines would not.
 struct CookieMerge {
     /// The slot holding the first `cookie` line, and the joined value's home.
-    index: usize,
+    index: HeaderIndex,
     /// Stays `None` until a second line arrives, so the overwhelmingly common
     /// single-`cookie` request allocates nothing and copies nothing.
     joined: Option<BytesMut>,
@@ -348,12 +348,13 @@ impl RequestHeadBuilder {
                     let index = merge.index;
                     let mut joined = match merge.joined {
                         Some(joined) => joined,
-                        None => self
-                            .regular_headers
-                            .get(index)
-                            .map_or_else(BytesMut::new, |(_, value)| {
-                                BytesMut::from(value.as_bytes())
-                            }),
+                        None => BytesMut::from(
+                            self.regular_headers
+                                .get(index.as_inner())
+                                .expect("recorded cookie index must exist")
+                                .1
+                                .as_bytes(),
+                        ),
                     };
                     joined.extend_from_slice(COOKIE_LINE_SEPARATOR);
                     joined.extend_from_slice(value_bytes);
@@ -364,7 +365,8 @@ impl RequestHeadBuilder {
                     return Ok(());
                 }
                 self.cookie = Some(CookieMerge {
-                    index: self.regular_headers.len(),
+                    index: HeaderIndex::new(self.regular_headers.len())
+                        .expect("materialized header index fits isize"),
                     joined: None,
                 });
             },
@@ -382,7 +384,10 @@ impl RequestHeadBuilder {
             if self.host_header_index.is_some() {
                 return Err(H2Error::DuplicateRequestHost);
             }
-            self.host_header_index = Some(self.regular_headers.len());
+            self.host_header_index = Some(
+                HeaderIndex::new(self.regular_headers.len())
+                    .expect("materialized header index fits isize"),
+            );
         }
         let name = known_name.map_or(RequestHeaderName::Other(name), RequestHeaderName::Known);
         let value = RequestHeaderValue::from_h2_validated(value);
@@ -396,8 +401,11 @@ impl RequestHeadBuilder {
             index,
             joined: Some(joined),
         }) = self.cookie.take()
-            && let Some((_, value)) = self.regular_headers.get_mut(index)
         {
+            let (_, value) = self
+                .regular_headers
+                .get_mut(index.as_inner())
+                .expect("recorded cookie index must exist");
             *value = RequestHeaderValue::from_h2_validated(joined.freeze());
         }
     }
@@ -414,7 +422,7 @@ impl RequestHeadBuilder {
             (&self.authority, self.host_header_index)
             && !self
                 .regular_headers
-                .get(host_header_index)
+                .get(host_header_index.as_inner())
                 .expect("recorded host index must exist")
                 .1
                 .as_bytes()
@@ -477,7 +485,6 @@ impl RequestHeadBuilder {
         };
 
         if self.host_header_index.is_none() {
-            let index = self.regular_headers.len();
             let host = self
                 .authority
                 .take()
@@ -495,7 +502,6 @@ impl RequestHeadBuilder {
                 }
                 self.regular_headers
                     .push((KnownRequestHeaderName::Host.into(), host));
-                self.host_header_index = Some(index);
             }
         }
 

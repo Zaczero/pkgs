@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use core::num::niche_types::U32NotAllOnes;
 
 use bitflags::bitflags;
 use bytes::Bytes;
@@ -12,15 +12,17 @@ use crate::websocket::{
     WebSocketKey, offers_compatible_permessage_deflate,
 };
 
+pub(crate) type ProxyHeaderIndex = U32NotAllOnes;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProxyHeaderSlots {
-    pub(crate) forwarded: Option<NonZeroU32>,
+    pub(crate) forwarded: Option<ProxyHeaderIndex>,
     pub(crate) forwarded_duplicate: bool,
-    pub(crate) x_forwarded_for: Option<NonZeroU32>,
-    pub(crate) x_forwarded_proto: Option<NonZeroU32>,
-    pub(crate) x_forwarded_host: Option<NonZeroU32>,
-    pub(crate) x_forwarded_port: Option<NonZeroU32>,
-    pub(crate) x_forwarded_prefix: Option<NonZeroU32>,
+    pub(crate) x_forwarded_for: Option<ProxyHeaderIndex>,
+    pub(crate) x_forwarded_proto: Option<ProxyHeaderIndex>,
+    pub(crate) x_forwarded_host: Option<ProxyHeaderIndex>,
+    pub(crate) x_forwarded_port: Option<ProxyHeaderIndex>,
+    pub(crate) x_forwarded_prefix: Option<ProxyHeaderIndex>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,9 +60,9 @@ impl ProxyHeaderKind {
 }
 
 impl ProxyHeaderSlots {
-    pub(crate) const fn index(slot: Option<NonZeroU32>) -> Option<usize> {
+    pub(crate) const fn index(slot: Option<ProxyHeaderIndex>) -> Option<usize> {
         match slot {
-            Some(index) => Some((index.get() as usize).wrapping_sub(1)),
+            Some(index) => Some(index.as_inner() as usize),
             None => None,
         }
     }
@@ -233,11 +235,10 @@ impl RequestHeaderMeta {
         collect_proxy_headers: bool,
     ) {
         let slot = || {
-            let one_based = index
-                .checked_add(1)
-                .and_then(|value| u32::try_from(value).ok())
-                .expect("a request cannot contain 2^32 materialized headers");
-            NonZeroU32::new(one_based).expect("one-based header index is non-zero")
+            u32::try_from(index)
+                .ok()
+                .and_then(ProxyHeaderIndex::new)
+                .expect("a request cannot contain 2^32 materialized headers")
         };
         match known_name {
             KnownRequestHeaderName::Forwarded => {

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt::{self, Write};
 use std::net::IpAddr;
-use std::num::{NonZeroU16, NonZeroU32};
+use std::num::NonZeroU16;
 
 use atoi_simd::parse_pos;
 
@@ -10,7 +10,7 @@ use crate::http::header::{
     header_value_text, last_csv_token, normalize_scheme, parse_forwarded_value, parse_host_port,
     parse_x_forwarded_for_value,
 };
-use crate::http::header_meta::ProxyHeaderSlots;
+use crate::http::header_meta::{ProxyHeaderIndex, ProxyHeaderSlots};
 use crate::http::types::{RequestHead, RequestHeaders};
 use crate::proxy_protocol::{ConnectionInfo, ServerEndpoint};
 
@@ -254,7 +254,7 @@ fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
     }
 }
 
-fn proxy_header_value(headers: &RequestHeaders, index: Option<NonZeroU32>) -> Option<&str> {
+fn proxy_header_value(headers: &RequestHeaders, index: Option<ProxyHeaderIndex>) -> Option<&str> {
     ProxyHeaderSlots::index(index)
         .and_then(|index| headers.get(index))
         .and_then(|header| header_value_text(header.value()))
