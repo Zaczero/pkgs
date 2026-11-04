@@ -91,7 +91,11 @@ impl PyList {
     where
         T: IntoPyObject<'py>,
     {
-        let mut elements = elements.into_iter().map(|e| e.into_bound_py_any(py));
+        let mut elements = elements.into_iter().map(|e| {
+            e.into_pyobject(py)
+                .map(BoundObject::into_any)
+                .map_err(Into::<PyErr>::into)
+        });
         let (min_len, _) = elements.size_hint();
 
         // PyList_New checks for overflow but has a bad error message, so we check ourselves
@@ -116,7 +120,7 @@ impl PyList {
             "Attempted to create PyList but `elements` was smaller than reported by its `size_hint` implementation."
         );
 
-        elements.try_for_each(|item| list.append(item?))?;
+        elements.try_for_each(|item| list.append(item?.as_borrowed()))?;
 
         Ok(list)
     }
@@ -304,7 +308,8 @@ impl<'py> PyListMethods<'py> for Bound<'py, PyList> {
             not(Py_LIMITED_API) => unsafe {
                 ffi::PyList_GET_ITEM(self.as_ptr(), index as Py_ssize_t)
                     .assume_borrowed_unchecked(self.py())
-            }.to_owned(),
+            }
+            .to_owned(),
             // SAFETY:
             // - thread is attached to the interpreter
             // - self is a valid list object
@@ -313,7 +318,7 @@ impl<'py> PyListMethods<'py> for Bound<'py, PyList> {
             Py_LIMITED_API => unsafe {
                 ffi::compat::PyList_GetItemRef(self.as_ptr(), index as Py_ssize_t)
                     .assume_owned_unchecked(self.py())
-            }
+            },
         }
     }
 
@@ -886,6 +891,7 @@ mod tests {
     use crate::types::any::PyAnyMethods;
     use crate::types::list::PyListMethods;
     use crate::types::sequence::PySequenceMethods;
+    use crate::types::tuple::PyTupleMethods;
     use crate::types::{PyList, PyTuple};
     use crate::{IntoPyObject, PyResult, Python};
     #[cfg(feature = "nightly")]
@@ -1758,6 +1764,23 @@ mod tests {
             let list = PyList::new(py, vec![1, 2, 3]).unwrap();
             assert_eq!(list.iter().count(), 3);
         })
+    }
+
+    #[test]
+    fn test_new_from_borrowed_non_exact_iter_keeps_items_alive() {
+        Python::attach(|py| {
+            let source = PyTuple::new(py, (0..8).map(|_| PyList::empty(py))).unwrap();
+            let list = PyList::new(py, source.iter_borrowed().filter(|_| true)).unwrap();
+            for (original, retained) in source.iter_borrowed().zip(list.iter()) {
+                assert!(original.is(&retained));
+            }
+            drop(source);
+            for retained in list.iter() {
+                let retained = retained.cast::<PyList>().unwrap();
+                retained.append(42).unwrap();
+                assert_eq!(retained.len(), 1);
+            }
+        });
     }
 
     #[test]
