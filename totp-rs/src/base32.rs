@@ -46,7 +46,8 @@ pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, TotpError> 
         acc = (acc << 5) | u32::from(v);
         bits = bits.wrapping_add(5);
 
-        while bits >= 8 {
+        // Each digit adds five bits to a remainder below eight.
+        if bits >= 8 {
             bits = bits.wrapping_sub(8);
             out.push((acc >> bits) as u8);
             acc &= (1_u32 << bits).wrapping_sub(1);

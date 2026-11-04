@@ -1,3 +1,4 @@
+import base64
 import math
 from collections.abc import Callable
 from functools import partial
@@ -283,6 +284,14 @@ def test_secret_accepts_base32_str(
         )
         == expected
     )
+
+
+@pytest.mark.parametrize('length', range(10))
+def test_base32_partial_groups_and_ignored_characters(length: int) -> None:
+    secret = bytes(range(length))
+    encoded = base64.b32encode(secret).decode().rstrip('=')
+    spaced = ' \t=\n'.join(encoded)
+    assert totp_generate(spaced, time_window=7) == totp_generate(secret, time_window=7)
 
 
 def test_invalid_inputs() -> None:
