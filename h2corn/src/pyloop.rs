@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
 use parking_lot::Mutex;
@@ -71,6 +71,10 @@ pub(crate) enum UnraisableError {
 /// when they cross an ownership boundary; the pump keeps a `Weak` reference so
 /// a completed embedded `serve()` can release the doorbell and Python caches.
 pub(crate) type Shard = Arc<ShardHandle>;
+
+/// Request callables may be retained by Python's loop, which the shard owns.
+/// A weak edge avoids an invisible cycle; the active runtime owns the shard.
+pub(crate) type WeakShard = Weak<ShardHandle>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SecondaryLoopFactory {

@@ -6,8 +6,6 @@
 //! enum is boxed once at the queue boundary, keeping the record pointer-sized
 //! without a fat pointer or duplicated monomorphized builder code.
 
-use std::sync::Arc;
-
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::sync::mpsc;
@@ -99,7 +97,11 @@ impl AppCallArgs {
         })))
     }
 
-    pub(crate) fn build(self, py: Python<'_>, shard: Shard) -> PyResult<BuiltAppCall<'_>> {
+    pub(crate) fn build<'py>(
+        self,
+        py: Python<'py>,
+        shard: &Shard,
+    ) -> PyResult<BuiltAppCall<'py>> {
         match self {
             Self::Http(call) => call.build(py, shard),
             Self::WebSocket(call) => call.build(py, shard),
@@ -108,7 +110,7 @@ impl AppCallArgs {
 }
 
 impl HttpAppCall {
-    fn build(self, py: Python<'_>, shard: Shard) -> PyResult<BuiltAppCall<'_>> {
+    fn build<'py>(self, py: Python<'py>, shard: &Shard) -> PyResult<BuiltAppCall<'py>> {
         if let HttpRequestBody::Stream { disconnect, .. } = &self.body {
             // Connection/body ownership may need to cancel this app before it
             // reaches receive(). Publish pump ownership before constructing
@@ -118,14 +120,12 @@ impl HttpAppCall {
         }
         let scope = build_http_scope(py, &self.ctx)?;
         let receive = match self.body {
-            HttpRequestBody::NoBody => {
-                PyHttpReceive::new_no_body(Arc::clone(&shard), self.send_state.clone())
-            },
+            HttpRequestBody::NoBody => PyHttpReceive::new_no_body(shard, self.send_state.clone()),
             HttpRequestBody::Single(body) => {
-                PyHttpReceive::new_single(Arc::clone(&shard), body, self.send_state.clone())
+                PyHttpReceive::new_single(shard, body, self.send_state.clone())
             },
             HttpRequestBody::Stream { rx, disconnect } => {
-                PyHttpReceive::new_stream(Arc::clone(&shard), rx, disconnect)
+                PyHttpReceive::new_stream(shard, rx, disconnect)
             },
         };
         let receive = Py::new(py, receive)?.into_bound(py).into_any();
@@ -141,14 +141,11 @@ impl HttpAppCall {
 }
 
 impl WebSocketAppCall {
-    fn build(self, py: Python<'_>, shard: Shard) -> PyResult<BuiltAppCall<'_>> {
+    fn build<'py>(self, py: Python<'py>, shard: &Shard) -> PyResult<BuiltAppCall<'py>> {
         let scope = build_websocket_scope(py, &self.ctx, self.subprotocols.as_ref())?;
-        let receive = Py::new(
-            py,
-            PyWebSocketReceive::new_stream(Arc::clone(&shard), self.receive),
-        )?
-        .into_bound(py)
-        .into_any();
+        let receive = Py::new(py, PyWebSocketReceive::new_stream(shard, self.receive))?
+            .into_bound(py)
+            .into_any();
         let send = Py::new(
             py,
             PyWebSocketSend::new(shard, self.send_state, self.send, self.subprotocols),

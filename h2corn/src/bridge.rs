@@ -887,9 +887,10 @@ pub(crate) fn ready_none<'py>(py: Python<'py>, shard: &Shard) -> Bound<'py, PyAn
 )]
 pub(crate) fn receive_or_await<'py, S>(
     py: Python<'py>,
-    shard: &Shard,
+    shard: &crate::pyloop::WeakShard,
     state: &Arc<Mutex<Requeueable<S>>>,
     build_event: fn(Python<'_>, &S::Event) -> PyResult<Py<PyAny>>,
+    disconnected: impl FnOnce() -> S::Event,
 ) -> PyResult<Bound<'py, PyAny>>
 where
     S: EventSource,
@@ -905,6 +906,9 @@ where
     // Register the common uncontended waiter before returning the awaitable
     // to Python. A peer can close immediately after receive() is called; the
     // producer must not mistake that scheduling window for an abandoned app.
+    let Some(shard) = shard.upgrade() else {
+        return ready_awaitable(py, build_event(py, &disconnected())?);
+    };
     let wait_guard = wait_signal.map(|signal| signal.begin_wait());
 
     // Slow path: a duck future resolved through the pump. The waiter task
@@ -914,11 +918,11 @@ where
     // Two references are intentional: Python owns the returned awaitable
     // while the pump owns its resolver until completion. Neither can be
     // dropped after the clone, so Clippy's merge suggestion is invalid here.
-    let fut = new_rust_future(py, shard)?;
+    let fut = new_rust_future(py, &shard)?;
     let waiter_fut = fut.clone_ref(py);
     let panic_fut = fut.clone_ref(py);
-    let panic_shard = Arc::clone(shard);
-    let waiter_shard = Arc::clone(shard);
+    let panic_shard = Arc::clone(&shard);
+    let waiter_shard = Arc::clone(&shard);
     let state = Arc::clone(state);
     let join = runtime().spawn(async move {
         let mut guard = state.lock_owned().await;

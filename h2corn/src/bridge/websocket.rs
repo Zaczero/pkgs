@@ -17,7 +17,7 @@ use crate::buffered_events::BufferedState;
 use crate::error::{AsgiError, WebSocketFrameKind};
 use crate::http::types::BytesStr;
 use crate::pyapi::errors::{IntoPyResult as _, into_pyerr};
-use crate::pyloop::Shard;
+use crate::pyloop::{Shard, WeakShard};
 use crate::websocket::{
     RequestedSubprotocols, WebSocketCloseCode, close_code, validate_accepted_subprotocol,
 };
@@ -404,14 +404,14 @@ impl EventSource for WebSocketReceiveState {
 
 #[pyclass(frozen, name = "_WebSocketReceive")]
 pub(crate) struct PyWebSocketReceive {
-    shard: Shard,
+    shard: WeakShard,
     state: Arc<AsyncMutex<Requeueable<WebSocketReceiveState>>>,
 }
 
 impl PyWebSocketReceive {
-    pub(crate) fn new_stream(shard: Shard, rx: WebSocketInboundReceiver) -> Self {
+    pub(crate) fn new_stream(shard: &Shard, rx: WebSocketInboundReceiver) -> Self {
         Self {
-            shard,
+            shard: Arc::downgrade(shard),
             state: Arc::new(AsyncMutex::new(Requeueable::new(WebSocketReceiveState {
                 rx,
                 phase: WebSocketReceivePhase::PendingConnect,
@@ -428,13 +428,17 @@ impl PyWebSocketReceive {
             &self.shard,
             &self.state,
             build_websocket_inbound_event_ref,
+            || WebSocketInboundEvent::Disconnect {
+                code: close_code::NO_STATUS_RECEIVED,
+                reason: None,
+            },
         )
     }
 }
 
 #[pyclass(frozen, name = "_WebSocketSend")]
 pub(crate) struct PyWebSocketSend {
-    shard: Shard,
+    shard: WeakShard,
     state: WebSocketSendState,
     tx: mpsc::Sender<WebSocketOutboundEvent>,
     /// Held here so `websocket.accept` can be checked against what the client
@@ -443,14 +447,14 @@ pub(crate) struct PyWebSocketSend {
 }
 
 impl PyWebSocketSend {
-    pub(crate) const fn new(
-        shard: Shard,
+    pub(crate) fn new(
+        shard: &Shard,
         state: WebSocketSendState,
         tx: mpsc::Sender<WebSocketOutboundEvent>,
         requested_subprotocols: RequestedSubprotocols,
     ) -> Self {
         Self {
-            shard,
+            shard: Arc::downgrade(shard),
             state,
             tx,
             requested_subprotocols,
@@ -496,10 +500,14 @@ impl PyWebSocketSend {
             )
             .into_pyresult()?;
         }
+        let shard = self
+            .shard
+            .upgrade()
+            .ok_or_else(|| into_pyerr(AsgiError::SendAfterClose))?;
         match self.state.push_or_forward(event) {
-            WebSocketSendDisposition::Buffered => Ok(ready_none(py, &self.shard)),
+            WebSocketSendDisposition::Buffered => Ok(ready_none(py, &shard)),
             WebSocketSendDisposition::Forward(event) => {
-                super::try_send_or_await(py, &self.shard, &self.tx, event)
+                super::try_send_or_await(py, &shard, &self.tx, event)
             },
             WebSocketSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }

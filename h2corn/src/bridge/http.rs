@@ -15,7 +15,7 @@ use crate::bridge::{
 use crate::error::AsgiError;
 use crate::http::app::{HttpSendDisposition, HttpSendState};
 use crate::pyapi::errors::into_pyerr;
-use crate::pyloop::{PumpEvent, ResolvePayload, Shard, new_rust_future};
+use crate::pyloop::{PumpEvent, ResolvePayload, Shard, WeakShard, new_rust_future};
 use crate::runtime::StreamInput;
 
 #[derive(Debug)]
@@ -278,14 +278,14 @@ impl EventSource for HttpReceiveState {
 
 #[pyclass(frozen, name = "_HttpReceive")]
 pub(crate) struct PyHttpReceive {
-    shard: Shard,
+    shard: WeakShard,
     kind: HttpReceiveKind,
 }
 
 impl PyHttpReceive {
-    pub(crate) const fn new_no_body(shard: Shard, finished: HttpSendState) -> Self {
+    pub(crate) fn new_no_body(shard: &Shard, finished: HttpSendState) -> Self {
         Self {
-            shard,
+            shard: Arc::downgrade(shard),
             kind: HttpReceiveKind::NoBody {
                 delivered: AtomicBool::new(false),
                 finished,
@@ -294,13 +294,13 @@ impl PyHttpReceive {
     }
 
     pub(crate) fn new_stream(
-        shard: Shard,
+        shard: &Shard,
         rx: mpsc::Receiver<StreamInput>,
         disconnect: Arc<RequestInputShared>,
     ) -> Self {
         disconnect.bind_input(rx);
         Self {
-            shard,
+            shard: Arc::downgrade(shard),
             kind: HttpReceiveKind::Stream(Arc::new(AsyncMutex::new(Requeueable::new(
                 HttpReceiveState {
                     input: HttpReceiveInput::Open,
@@ -310,9 +310,9 @@ impl PyHttpReceive {
         }
     }
 
-    pub(crate) const fn new_single(shard: Shard, body: Bytes, finished: HttpSendState) -> Self {
+    pub(crate) fn new_single(shard: &Shard, body: Bytes, finished: HttpSendState) -> Self {
         Self {
-            shard,
+            shard: Arc::downgrade(shard),
             kind: HttpReceiveKind::Single {
                 body: Mutex::new(Some(body)),
                 finished,
@@ -515,7 +515,13 @@ impl PyHttpReceive {
                 }
             },
             HttpReceiveKind::Stream(state) => {
-                return receive_or_await(py, &self.shard, state, build_http_inbound_event_ref);
+                return receive_or_await(
+                    py,
+                    &self.shard,
+                    state,
+                    build_http_inbound_event_ref,
+                    || HttpInboundEvent::HttpDisconnect,
+                );
             },
         };
         ready_awaitable(py, build_http_inbound_event(py, event)?)
@@ -524,13 +530,16 @@ impl PyHttpReceive {
 
 #[pyclass(frozen, name = "_HttpSend")]
 pub(crate) struct PyHttpSend {
-    shard: Shard,
+    shard: WeakShard,
     state: HttpSendState,
 }
 
 impl PyHttpSend {
-    pub(crate) const fn new(shard: Shard, state: HttpSendState) -> Self {
-        Self { shard, state }
+    pub(crate) fn new(shard: &Shard, state: HttpSendState) -> Self {
+        Self {
+            shard: Arc::downgrade(shard),
+            state,
+        }
     }
 }
 
@@ -557,13 +566,15 @@ impl PyHttpSend {
                 });
             },
         };
+        let shard = self
+            .shard
+            .upgrade()
+            .ok_or_else(|| into_pyerr(AsgiError::SendAfterClose))?;
         match self.state.push_or_forward(event) {
             HttpSendDisposition::Buffered | HttpSendDisposition::Sent => {
-                Ok(super::ready_none(py, &self.shard))
+                Ok(super::ready_none(py, &shard))
             },
-            HttpSendDisposition::Backpressured(waiter) => {
-                super::await_http_send(py, Arc::clone(&self.shard), waiter)
-            },
+            HttpSendDisposition::Backpressured(waiter) => super::await_http_send(py, shard, waiter),
             HttpSendDisposition::Closed => Err(into_pyerr(AsgiError::SendAfterClose)),
         }
     }
@@ -576,12 +587,18 @@ impl PyHttpSend {
 /// EOF told an application watching for a departed peer that it had one.
 fn disconnect_when_finished<'py>(
     py: Python<'py>,
-    shard: &Shard,
+    shard: &WeakShard,
     finished: &HttpSendState,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let fut = new_rust_future(py, shard)?;
+    let Some(shard) = shard.upgrade() else {
+        return ready_awaitable(
+            py,
+            build_http_inbound_event(py, HttpInboundEvent::HttpDisconnect)?,
+        );
+    };
+    let fut = new_rust_future(py, &shard)?;
     let waiter_fut = fut.clone_ref(py);
-    let waiter_shard = Arc::clone(shard);
+    let waiter_shard = Arc::clone(&shard);
     // Registered rather than awaited in a spawned task: the response driver
     // already knows when the request finished, so watching for it cost a tokio
     // task, a boxed future and a state clone per request -- on every request,

@@ -157,7 +157,7 @@ fn start_task(
     args: AppCallArgs,
     slot: &Arc<TaskSlot<Result<(), H2CornError>, RequestTaskGuard>>,
 ) -> PyResult<()> {
-    let args = args.build(py, Arc::clone(shard))?;
+    let args = args.build(py, shard)?;
     let (app, state) = shard.application_for_request(py)?;
     if let Some(state) = state {
         args.scope.set_item(pyo3::intern!(py, "state"), state)?;
