@@ -654,7 +654,9 @@ fn percent_escapes_are_valid(value: &[u8]) -> bool {
         {
             return false;
         }
-        rest = rest.get(index.wrapping_add(3)..).unwrap_or_default();
+        rest = rest
+            .get(index.wrapping_add(3)..)
+            .expect("the validated escape occupies three bytes");
     }
     true
 }

@@ -259,7 +259,9 @@ impl FileStreamer {
     pub(crate) fn remaining(&self) -> &[u8] {
         match &self.read {
             PathReadState::Ready { buffer, .. } => buffer.as_deref().map_or(&[], |buffer| {
-                buffer.get(self.cursor.buffered.clone()).unwrap_or_default()
+                buffer
+                    .get(self.cursor.buffered.clone())
+                    .expect("the buffered range belongs to the read buffer")
             }),
             PathReadState::Reading(_) | PathReadState::Failed => &[],
         }

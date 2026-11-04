@@ -1023,7 +1023,7 @@ fn trim_ows(value: &[u8]) -> &[u8] {
         .iter()
         .rposition(|byte| !matches!(byte, b' ' | b'\t'))
         .map_or(start, |index| index.wrapping_add(1));
-    value.get(start..end).unwrap_or_default()
+    value.get(start..end).expect("trim bounds come from value")
 }
 
 async fn drain_chunked_trailers<R>(

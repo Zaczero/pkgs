@@ -39,7 +39,11 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
             let low = ascii::HEX_VALUE[usize::from(low_digit)];
             if high != ascii::INVALID_VALUE && low != ascii::INVALID_VALUE {
                 let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
-                out.extend_from_slice(bytes.get(copied..index).unwrap_or_default());
+                out.extend_from_slice(
+                    bytes
+                        .get(copied..index)
+                        .expect("copied and index advance within the path"),
+                );
                 out.push((high << 4) | low);
                 index = index.wrapping_add(3);
                 copied = index;
@@ -51,7 +55,7 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let Some(mut out) = out else {
         return Cow::Borrowed(raw_path);
     };
-    out.extend_from_slice(bytes.get(copied..).unwrap_or_default());
+    out.extend_from_slice(bytes.get(copied..).expect("copied remains within the path"));
 
     String::from_utf8(out).map_or(Cow::Borrowed(raw_path), Cow::Owned)
 }

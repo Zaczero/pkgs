@@ -109,10 +109,11 @@ impl WebSocketCodec {
 
         let prefix_len = self.segmented.len().min(wire::CLIENT_FRAME_PREFIX_MAX_LEN);
         let mut prefix = [0_u8; wire::CLIENT_FRAME_PREFIX_MAX_LEN];
-        self.segmented
-            .peek_prefix(prefix_len, prefix.get_mut(..prefix_len).unwrap_or_default());
-        let Some(header) = parse_frame_header::<M>(prefix.get(..prefix_len).unwrap_or_default())?
-        else {
+        let prefix = prefix
+            .get_mut(..prefix_len)
+            .expect("prefix length is bounded by its buffer");
+        self.segmented.peek_prefix(prefix_len, prefix);
+        let Some(header) = parse_frame_header::<M>(prefix)? else {
             return Ok(());
         };
         self.validate_frame_header_state(&header, max_message_size)?;

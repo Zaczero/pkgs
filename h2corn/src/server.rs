@@ -124,7 +124,7 @@ impl AsyncRead for PrefixedIo {
     ) -> Poll<io::Result<()>> {
         if let Some(prefix) = self.prefix.as_mut() {
             let len = buf.remaining().min(prefix.len());
-            buf.put_slice(prefix.get(..len).unwrap_or_default());
+            buf.put_slice(prefix.get(..len).expect("length is bounded by the prefix"));
             prefix.advance(len);
             if prefix.is_empty() {
                 self.prefix = None;

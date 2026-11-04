@@ -498,7 +498,9 @@ fn inflate_window(
         return spare;
     };
     let window = spare.len().min(overrun_budget(written, limit));
-    spare.get_mut(..window).unwrap_or_default()
+    spare
+        .get_mut(..window)
+        .expect("window is bounded by spare capacity")
 }
 
 fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
