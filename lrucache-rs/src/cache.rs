@@ -80,7 +80,7 @@ impl LRUCache {
             };
             let mut found = None;
             for entry in entries {
-                let stored = entry.pair.get_item(0)?;
+                let stored = entry.pair.get_borrowed_item(0)?;
                 if stored.is(key) || stored.eq(key)? {
                     found = Some(entry);
                     break;
@@ -91,7 +91,7 @@ impl LRUCache {
                     if matches!(action, Action::Set(_)) || found.is_none() =>
                 {
                     if let Some(entry) = &found {
-                        if entry.pair.get_item(1)?.is(value) {
+                        if entry.pair.get_borrowed_item(1)?.is(value) {
                             Some(entry.pair.clone())
                         } else {
                             Some(PyTuple::new(py, [entry.pair.get_item(0)?, value.clone()])?)
