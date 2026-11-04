@@ -1,5 +1,5 @@
 # Vendored from HydroniumLabs/h3o revision fa1557fd1edd56f64e4da95b2fd294609ce2353e.
-# See GOMETRY_DIVERGENCE.md for local changes; LICENSE retains BSD-3-Clause terms.
+# LICENSE retains BSD-3-Clause terms.
 [package]
 name = "h3o"
 version = "0.11.0"
