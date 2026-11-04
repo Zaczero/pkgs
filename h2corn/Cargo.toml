@@ -25,6 +25,7 @@ mimalloc.workspace = true
 owo-colors = "4.2"
 parking_lot.workspace = true
 pyo3.workspace = true
+pyo3-extra.workspace = true
 rustix = { version = "1.1", features = ["event", "fs", "net", "pipe", "time"] }
 rustls = { version = "0.23", default-features = false, features = [
   "aws_lc_rs",

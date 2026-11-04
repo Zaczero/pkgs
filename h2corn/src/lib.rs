@@ -32,7 +32,6 @@ mod pgo;
 mod proxy_protocol;
 mod pyapi;
 mod pyloop;
-mod python;
 mod runtime;
 mod sendfile;
 mod server;

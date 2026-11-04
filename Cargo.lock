@@ -771,6 +771,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "pyo3",
  "pyo3-build-config",
+ "pyo3-extra",
  "rstest",
  "rustix",
  "rustls",
@@ -1417,6 +1418,14 @@ name = "pyo3-build-config"
 version = "0.30.1"
 dependencies = [
  "target-lexicon",
+]
+
+[[package]]
+name = "pyo3-extra"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]

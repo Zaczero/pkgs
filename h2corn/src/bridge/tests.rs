@@ -10,6 +10,7 @@ use pyo3::types::{
     PyAnyMethods as _, PyBytes, PyDict, PyDictMethods as _, PyList, PyString, PyTuple,
 };
 use pyo3::{PyResult, Python};
+use pyo3_extra::dict;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::{
@@ -25,7 +26,6 @@ use crate::http::header::{
     prepare_fixed_length_response_headers_with_scan,
 };
 use crate::http::types::status_code;
-use crate::python::py_dict;
 use crate::runtime::H2InputCreditQueue;
 
 #[derive(Debug)]
@@ -74,7 +74,7 @@ fn init_python() {
 fn http_response_start_requires_status() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
         });
 
@@ -96,13 +96,13 @@ fn http_response_start_requires_status() {
 fn asgi_message_boundaries_name_the_event_and_bad_field() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let message = py_dict!(py, { "type" => 1 });
+        let message = dict!(py, { "type" => 1 });
         assert_eq!(
             parse_http_outbound_event(&message).unwrap_err().to_string(),
             "ASGI message type must be a str, got int"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => "200",
         });
@@ -111,7 +111,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
             "http.response.start status must be an int, got str"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.pathsend",
             "path" => 1,
         });
@@ -120,7 +120,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
             "http.response.pathsend path must be a str, got int"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.body",
             "more_body" => "yes",
         });
@@ -129,7 +129,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
             "http.response.body more_body must be a bool, got str"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => [1],
@@ -139,7 +139,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
             "http.response.start headers must be two-item (bytes, bytes) pairs, got int"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "websocket.close",
             "code" => "1000",
         });
@@ -150,7 +150,7 @@ fn asgi_message_boundaries_name_the_event_and_bad_field() {
             "websocket.close code must be an int, got str"
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "websocket.close",
             "code" => 0,
         });
@@ -232,11 +232,11 @@ fn asgi_outbound_type_dispatches_interned_values_and_falls_back_to_strings() {
 fn websocket_send_accepts_exactly_one_payload_variant() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let text_message = py_dict!(py, {
+        let text_message = dict!(py, {
             "type" => "websocket.send",
             "text" => "hello",
         });
-        let bytes_message = py_dict!(py, {
+        let bytes_message = dict!(py, {
             "type" => "websocket.send",
             "bytes" => PyBytes::new(py, b"hello"),
         });
@@ -262,7 +262,7 @@ fn websocket_send_accepts_exactly_one_payload_variant() {
 fn unexpected_websocket_event_reports_its_asgi_type_not_application_payload() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "websocket.send",
                 "text" => "sk-live-SECRET-TOKEN-12345",
             });
@@ -284,10 +284,10 @@ fn unexpected_websocket_event_reports_its_asgi_type_not_application_payload() {
 fn websocket_send_rejects_missing_or_ambiguous_payload() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let missing_payload = py_dict!(py, {
+        let missing_payload = dict!(py, {
             "type" => "websocket.send",
         });
-        let ambiguous_payload = py_dict!(py, {
+        let ambiguous_payload = dict!(py, {
             "type" => "websocket.send",
             "text" => "hello",
             "bytes" => PyBytes::new(py, b"hello"),
@@ -310,7 +310,7 @@ fn websocket_send_rejects_missing_or_ambiguous_payload() {
 fn websocket_accept_owns_handshake_headers_at_ingress() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "websocket.accept",
             "headers" => [
                 (PyBytes::new(py, b"x-before"), PyBytes::new(py, b"one")),
@@ -339,7 +339,7 @@ fn websocket_accept_owns_handshake_headers_at_ingress() {
             b"sec-websocket-protocol".as_slice(),
             b"sec-websocket-extensions",
         ] {
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "websocket.accept",
                 "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"value"))],
             });
@@ -358,7 +358,7 @@ fn websocket_accept_owns_handshake_headers_at_ingress() {
 fn http_response_start_defaults_trailers_to_false() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => [
@@ -385,7 +385,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
             for status in [-1_i64, 0, 99] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => status,
                 });
@@ -401,7 +401,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
             }
 
             let too_large = py.eval(c_str!("2**63"), None, None)?;
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => too_large,
             });
@@ -411,7 +411,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
             );
 
             for status in [100_u16, 199] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => status,
                 });
@@ -426,7 +426,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
 
             {
                 let status = 600_u16;
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => status,
                 });
@@ -437,7 +437,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
                 ));
             }
 
-            let bool_message = py_dict!(py, {
+            let bool_message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => true,
             });
@@ -447,7 +447,7 @@ fn response_status_validation_handles_python_integer_boundaries() {
             );
 
             let subclass = py.eval(c_str!("type('Status', (int,), {})(201)"), None, None)?;
-            let subclass_message = py_dict!(py, {
+            let subclass_message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => subclass,
             });
@@ -466,7 +466,7 @@ fn http_response_start_accepts_tuple_headers_via_generic_fallback() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
         let headers = PyTuple::new(py, [(PyBytes::new(py, b"x-demo"), PyBytes::new(py, b"1"))])?;
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => headers,
@@ -607,7 +607,7 @@ class Headers:
             let pair = py.eval(pair_code.as_c_str(), Some(&locals), None)?;
             locals.set_item("pair", &pair)?;
             let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => 200,
                 "headers" => headers,
@@ -627,7 +627,7 @@ class Headers:
         )?;
         locals.set_item("pair", &pair)?;
         let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => headers,
@@ -642,7 +642,7 @@ class Headers:
         let pair = py.eval(c_str!("Pair([b'x', b'y'], 'inner')"), Some(&locals), None)?;
         locals.set_item("pair", &pair)?;
         let headers = py.eval(c_str!("Headers(pair)"), Some(&locals), None)?;
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => headers,
@@ -654,7 +654,7 @@ class Headers:
                 .contains("two-item (bytes, bytes) pairs")
         );
 
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => 1,
@@ -669,7 +669,7 @@ class Headers:
         let pair = py.eval(c_str!("Pair([b'x', b'y'], None)"), Some(&locals), None)?;
         locals.set_item("pair", &pair)?;
         let headers = py.eval(c_str!("Headers(pair, 'outer')"), Some(&locals), None)?;
-        let message = py_dict!(py, {
+        let message = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => headers,
@@ -781,7 +781,7 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
     init_python();
     Python::attach(|py| -> PyResult<()> {
             for name in [b"upgrade".as_slice(), b"connection"] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => 200,
                     "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
@@ -789,7 +789,7 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
                 assert!(parse_http_outbound_event(&message).is_err(), "{name:?}");
             }
 
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => 200,
                 "headers" => [
@@ -806,7 +806,7 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
                         && headers[0].0.as_ref() == b"content-type"
             ));
 
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => 200,
                 "headers" => [
@@ -816,14 +816,14 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
             });
             let _error = parse_http_outbound_event(&message).unwrap_err();
 
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => 103,
             });
             let _error = parse_http_outbound_event(&message).unwrap_err();
 
             for value in [b"".as_slice(), b"internal\t whitespace"] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => 200,
                     "headers" => [(PyBytes::new(py, b"x-test"), PyBytes::new(py, value))],
@@ -836,7 +836,7 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
                 b"\tleading",
                 b"trailing\t",
             ] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.start",
                     "status" => 200,
                     "headers" => [(PyBytes::new(py, b"x-test"), PyBytes::new(py, value))],
@@ -849,14 +849,14 @@ fn response_headers_and_trailers_enforce_their_own_field_policies() {
                 b"authorization",
                 b"content-type",
             ] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.trailers",
                     "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
                 });
                 assert!(parse_http_outbound_event(&message).is_err(), "{name:?}");
             }
             for name in [b"x-checksum".as_slice(), b"content-digest"] {
-                let message = py_dict!(py, {
+                let message = dict!(py, {
                     "type" => "http.response.trailers",
                     "headers" => [(PyBytes::new(py, name), PyBytes::new(py, b"x"))],
                 });
@@ -894,7 +894,7 @@ fn response_connection_directive_has_exactly_one_meaning() {
             if upgrade {
                 headers.push((PyBytes::new(py, b"upgrade"), PyBytes::new(py, b"h2c")));
             }
-            let message = py_dict!(py, {
+            let message = dict!(py, {
                 "type" => "http.response.start",
                 "status" => 200,
                 "headers" => headers,
@@ -908,7 +908,7 @@ fn response_connection_directive_has_exactly_one_meaning() {
             ));
         }
 
-        let contradictory = py_dict!(py, {
+        let contradictory = dict!(py, {
             "type" => "http.response.start",
             "status" => 200,
             "headers" => [

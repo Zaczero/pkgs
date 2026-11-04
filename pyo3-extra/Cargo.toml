@@ -1,0 +1,21 @@
+[package]
+name = "pyo3-extra"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Shared CPython construction and protocol primitives"
+license = "MIT"
+repository = "https://github.com/Zaczero/pkgs/tree/main/pyo3-extra"
+include = ["/Cargo.toml", "/build.rs", "/src/**"]
+
+[package.metadata.cargo-machete]
+ignored = ["pyo3-build-config"]
+
+[dependencies]
+pyo3 = { workspace = true, default-features = false }
+
+[build-dependencies]
+pyo3-build-config.workspace = true
+
+[lints]
+workspace = true

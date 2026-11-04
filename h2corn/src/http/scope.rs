@@ -7,6 +7,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use pyo3_extra::{cached_bytes, cached_string, dict};
 
 use crate::ascii;
 use crate::config::{ForwardedFields, ServerConfig};
@@ -18,7 +19,6 @@ use crate::http::types::{
     BytesStr, HttpVersion, KnownRequestHeaderName, RequestHeaderNameRef, RequestHeaderRef,
     RequestHeaders,
 };
-use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
 
 #[expect(
@@ -102,7 +102,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     } else {
         "ws"
     };
-    Ok(py_dict!(py, {
+    Ok(dict!(py, {
         "type" => scope_type_to_python::<IS_HTTP>(py),
         "asgi" => asgi_scope_dict(py)?,
         "http_version" => match request.http_version {
@@ -215,11 +215,11 @@ fn http_scope_extensions<'py>(
     // exists. Advertising it elsewhere would promise a capability the parser is
     // not even compiled with.
     //
-    // Conditional entries rather than one arm per combination: `py_dict!`
+    // Conditional entries rather than one arm per combination: `dict!`
     // reserves for the maximum declared field count and evaluates each
     // condition once, so spelling the four combinations out would duplicate a
     // list that could drift apart.
-    let extensions = py_dict!(py, {
+    let extensions = dict!(py, {
         "http.response.pathsend" => empty_extension_params(py)?,
         if cfg!(unix) => {
             "http.response.zerocopysend" => empty_extension_params(py)?,
@@ -239,7 +239,7 @@ fn websocket_scope_extensions<'py>(
     py: Python<'py>,
     ctx: &RequestContext,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let extensions = py_dict!(py, {
+    let extensions = dict!(py, {
         "websocket.http.response" => empty_extension_params(py)?,
     });
     add_tls_extension(py, ctx, &extensions)?;
@@ -262,7 +262,7 @@ fn add_tls_extension(
 fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     static ASGI: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
     cached_dict(py, &ASGI, || {
-        Ok(py_dict!(py, {
+        Ok(dict!(py, {
             "version" => "3.0",
             "spec_version" => "2.5",
         }))
@@ -357,7 +357,7 @@ fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> 
 }
 
 fn scheme_to_python<'py>(py: Python<'py>, scheme: &str) -> Bound<'py, PyString> {
-    py_match_cached_string!(py, scheme, ["http", "https", "ws", "wss"])
+    cached_string!(py, scheme, ["http", "https", "ws", "wss"])
 }
 
 fn server_scope_value<'py>(
@@ -390,19 +390,19 @@ fn client_scope_value<'py>(
 }
 
 fn raw_path_to_python<'py>(py: Python<'py>, raw_path: &str) -> Bound<'py, PyBytes> {
-    py_match_cached_bytes!(py, raw_path, ["", "/"])
+    cached_bytes!(py, raw_path, ["", "/"])
 }
 
 fn query_string_to_python<'py>(py: Python<'py>, query: &str) -> Bound<'py, PyBytes> {
-    py_match_cached_bytes!(py, query, [""])
+    cached_bytes!(py, query, [""])
 }
 
 fn path_to_python<'py>(py: Python<'py>, path: &str) -> Bound<'py, PyString> {
-    py_match_cached_string!(py, path, ["", "/"])
+    cached_string!(py, path, ["", "/"])
 }
 
 fn method_to_python<'py>(py: Python<'py>, method: &Method) -> Bound<'py, PyString> {
-    py_match_cached_string!(py, method.as_str(), [
+    cached_string!(py, method.as_str(), [
         "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
     ])
 }

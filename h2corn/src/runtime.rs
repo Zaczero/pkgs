@@ -479,7 +479,7 @@ impl ConnectionShared {
                 None => (PyTuple::empty(py), None),
             };
             Ok::<_, PyErr>(
-                crate::py_dict!(py, {
+                pyo3_extra::dict!(py, {
                     "server_cert" => tls.server_certificate.as_ref(),
                     "client_cert_chain" => chain,
                     "client_cert_name" => name,
@@ -956,7 +956,7 @@ pub(crate) mod test_fixtures {
             access_log: false,
             log_format: LogFormat::Text,
             root_path: Box::from(""),
-            root_path_scope: crate::python::PyOnceLock::new(),
+            root_path_scope: pyo3::sync::PyOnceLock::new(),
             limit_request_fields: None,
             http1: Http1Config {
                 enabled: true,

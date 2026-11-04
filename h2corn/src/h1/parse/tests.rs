@@ -35,7 +35,7 @@ fn test_server_config() -> &'static ServerConfig {
         access_log: false,
         log_format: LogFormat::Text,
         root_path: Box::from(""),
-        root_path_scope: crate::python::PyOnceLock::new(),
+        root_path_scope: pyo3::sync::PyOnceLock::new(),
         limit_request_fields: None,
         http1: Http1Config {
             enabled: true,

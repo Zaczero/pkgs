@@ -332,7 +332,7 @@ impl<'py> PyConfig<'py> {
             access_log: self.get("access_log")?,
             log_format: self.get("log_format")?,
             root_path: self.boxed_str("root_path")?,
-            root_path_scope: crate::python::PyOnceLock::new(),
+            root_path_scope: pyo3::sync::PyOnceLock::new(),
             limit_request_fields: self.nonzero_usize("limit_request_fields")?,
             http1,
             http2: self.http2()?,

@@ -13,6 +13,7 @@ use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString, PyWeakrefReference,
 };
 use pyo3::{PyTypeCheck, PyTypeInfo};
+use pyo3_extra::dict;
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 /// Everything only `http.response.zerocopysend` needs, which exists only on
 /// Unix. Grouped so the extension leaves no trace in a build that cannot serve
@@ -56,7 +57,6 @@ use crate::pyapi::errors::into_pyerr;
 use crate::pyloop::{
     PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, observe_waiter, runtime,
 };
-use crate::python::{StaticPyKey, py_dict};
 use crate::runtime::H2InputCredit;
 use crate::websocket::{
     SEC_WEBSOCKET_EXTENSIONS_HEADER_BYTES, SEC_WEBSOCKET_PROTOCOL_HEADER_BYTES, WebSocketCloseCode,
@@ -100,8 +100,8 @@ macro_rules! asgi_outbound_types {
                 $(
                     $(#[$attr])*
                     {
-                        static CELL: crate::python::PyOnceLock<Py<PyString>> =
-                            crate::python::PyOnceLock::new();
+                        static CELL: pyo3::sync::PyOnceLock<Py<PyString>> =
+                            pyo3::sync::PyOnceLock::new();
                         if ptr::eq(
                             message_type,
                             CELL.get_or_init(py, || PyString::intern(py, $wire).unbind())
@@ -133,8 +133,8 @@ macro_rules! asgi_outbound_types {
 macro_rules! asgi_item {
     ($fn:ident, $name:literal) => {
         fn $fn(&self) -> Result<Option<Bound<'py, PyAny>>, H2CornError> {
-            static KEY: StaticPyKey = StaticPyKey::new($name);
-            KEY.get_item(self.dict.py(), self.dict)
+            self.dict
+                .get_item(pyo3::intern!(self.dict.py(), $name))
                 .map_err(H2CornError::from)
         }
     };
@@ -370,11 +370,10 @@ impl<'py> AsgiMessage<'py> {
     asgi_item!(status_item, "status");
 
     fn parse(dict: &'py Bound<'py, PyDict>) -> Result<Self, H2CornError> {
-        let value = {
-            static KEY: StaticPyKey = StaticPyKey::new("type");
-            KEY.get_item(dict.py(), dict).map_err(H2CornError::from)?
-        }
-        .ok_or_else(|| AsgiError::missing_field(AsgiContainer::Message, "type").into_error())?;
+        let value = dict
+            .get_item(pyo3::intern!(dict.py(), "type"))
+            .map_err(H2CornError::from)?
+            .ok_or_else(|| AsgiError::missing_field(AsgiContainer::Message, "type").into_error())?;
         let message_type = match value.cast_into_exact::<PyString>() {
             Ok(value) => value,
             Err(error) => {
@@ -969,7 +968,7 @@ fn build_http_inbound_event_ref(py: Python<'_>, event: &HttpInboundEvent) -> PyR
     let dict = match event {
         HttpInboundEvent::Request {
             body, more_body, ..
-        } => py_dict!(py, {
+        } => dict!(py, {
             "type" => "http.request",
             if !body.is_empty() => {
                 "body" => PyBytes::new(py, body.as_ref()),
@@ -993,13 +992,13 @@ fn build_http_inbound_event_ref(py: Python<'_>, event: &HttpInboundEvent) -> PyR
                 }
                 Ok(())
             })?;
-            py_dict!(py, {
+            dict!(py, {
                 "type" => "http.request",
                 "body" => body,
                 "more_body" => true,
             })
         },
-        HttpInboundEvent::HttpDisconnect => py_dict!(py, {
+        HttpInboundEvent::HttpDisconnect => dict!(py, {
             "type" => "http.disconnect",
         }),
     };
@@ -1011,18 +1010,18 @@ fn build_websocket_inbound_event_ref(
     event: &WebSocketInboundEvent,
 ) -> PyResult<Py<PyAny>> {
     let dict = match event {
-        WebSocketInboundEvent::Connect => py_dict!(py, {
+        WebSocketInboundEvent::Connect => dict!(py, {
             "type" => "websocket.connect",
         }),
-        WebSocketInboundEvent::ReceiveBytes(body) => py_dict!(py, {
+        WebSocketInboundEvent::ReceiveBytes(body) => dict!(py, {
             "type" => "websocket.receive",
             "bytes" => PyBytes::new(py, body.as_ref()),
         }),
-        WebSocketInboundEvent::ReceiveText(text) => py_dict!(py, {
+        WebSocketInboundEvent::ReceiveText(text) => dict!(py, {
             "type" => "websocket.receive",
             "text" => text.as_str(),
         }),
-        WebSocketInboundEvent::Disconnect { code, reason } => py_dict!(py, {
+        WebSocketInboundEvent::Disconnect { code, reason } => dict!(py, {
             "type" => "websocket.disconnect",
             "code" => code.get(),
             if let Some(reason) = reason.as_ref().filter(|reason| !reason.is_empty()) => {
