@@ -64,12 +64,8 @@ impl HeaderBudget {
         if !field.name().starts_with(b":") {
             self.account_field()?;
         }
-        self.account_bytes(field.table_size())
-    }
-
-    const fn account_bytes(&mut self, len: usize) -> Result<(), RequestHeadError> {
         if let Some(max_header_list_size) = self.limits.max_list_size {
-            self.list_size = self.list_size.saturating_add(len);
+            self.list_size = self.list_size.saturating_add(field.table_size());
             if self.list_size > max_header_list_size.get() {
                 return Err(RequestHeadError::reject(
                     status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
