@@ -49,7 +49,7 @@ fn counter_ratio(observations: &[&Observation], numerator: &str, denominator: &s
         }
     }
     let [numerator, denominator] = totals;
-    (denominator > 0).then(|| numerator as f64 / denominator as f64)
+    (denominator > 0).then_some(numerator as f64 / denominator as f64)
 }
 
 fn counter_variation(observations: &[&Observation], name: &str) -> Option<f64> {

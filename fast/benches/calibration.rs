@@ -418,7 +418,7 @@ fn main() {
             "false_direction_wilson_one_sided_95": wilson(total.false_direction, options.trials),
             "mean_runs": total.runs as f64 / trials,
             "mean_log_bias": log_bias / trials,
-            "mean_log_width": (bounded > 0).then(|| log_width / bounded as f64),
+            "mean_log_width": (bounded > 0).then_some(log_width / bounded as f64),
             "totals": total,
             "seconds": started.elapsed().as_secs_f64(),
         })

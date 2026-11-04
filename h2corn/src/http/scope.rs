@@ -53,7 +53,7 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     };
     out.extend_from_slice(bytes.get(copied..).unwrap_or_default());
 
-    String::from_utf8(out).map_or_else(|_| Cow::Borrowed(raw_path), Cow::Owned)
+    String::from_utf8(out).map_or(Cow::Borrowed(raw_path), Cow::Owned)
 }
 
 pub(crate) fn build_http_scope<'py>(
