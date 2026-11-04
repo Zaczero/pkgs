@@ -9,6 +9,7 @@ from tests._support import make_config
 
 def test_source_revision_replaces_cache_without_changing_retained_snapshot(tmp_path):
     cfg = make_config(tmp_path, src_text='pub struct Original;')
+    (cfg.src_root / 'other.rs').write_text('pub struct Unchanged;')
     original = iter_sources(cfg, scope='all')
     assert iter_sources(cfg, scope='all') is original
 
@@ -17,6 +18,7 @@ def test_source_revision_replaces_cache_without_changing_retained_snapshot(tmp_p
     assert current is not original
     assert original[0].tree.root_node.text == b'pub struct Original;'
     assert current[0].tree.root_node.text == b'pub struct Replacement;'
+    assert current[1] is original[1]
     assert iter_sources(cfg, scope='all') is current
 
 

@@ -655,8 +655,19 @@ def _parsed(
     with _PARSE_LOCK:
         snapshot = _SOURCE_CACHE.get(src_root)
         if snapshot is None or snapshot.stamp != stamp:
+            previous = (
+                dict(zip(snapshot.stamp, snapshot.raw, strict=True))
+                if snapshot is not None
+                else {}
+            )
             snapshot = _SourceSnapshot(
-                stamp, tuple(_parse_file(path, src_root) for path, _, _ in stamp)
+                stamp,
+                tuple(
+                    previous[entry]
+                    if entry in previous
+                    else _parse_file(entry[0], src_root)
+                    for entry in stamp
+                ),
             )
             _SOURCE_CACHE[src_root] = snapshot
             if len(_SOURCE_CACHE) > 8:
