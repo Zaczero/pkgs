@@ -107,10 +107,10 @@ impl LRUCache {
                         if entry.pair.get_borrowed_item(1)?.is(value) {
                             Some(entry.pair.clone())
                         } else {
-                            Some(PyTuple::new(py, [entry.pair.get_item(0)?, value.clone()])?)
+                            Some((entry.pair.get_item(0)?, value).into_pyobject(py)?)
                         }
                     } else {
-                        Some(PyTuple::new(py, [key, value])?)
+                        Some((key, value).into_pyobject(py)?)
                     }
                 },
                 Action::Read { .. } | Action::Set(_) | Action::SetDefault(_) | Action::Remove => {

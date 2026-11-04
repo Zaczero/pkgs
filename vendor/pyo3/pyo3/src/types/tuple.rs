@@ -1,5 +1,9 @@
 //! Python tuples and related types.
 
+#[cfg(test)]
+#[path = "tuple_gc_tests.rs"]
+mod gc_construction_tests;
+
 #[cfg(all(not(any(PyPy, GraalPy)), any(not(Py_LIMITED_API), Py_3_12)))]
 use crate::BoundObject;
 use crate::ffi::{self, Py_ssize_t};
@@ -35,11 +39,12 @@ use libc::size_t;
 #[cfg_attr(RustPython, allow(unused_mut))]
 fn try_new_from_iter<'py>(
     py: Python<'py>,
-    mut elements: impl ExactSizeIterator<Item = PyResult<Bound<'py, PyAny>>>,
+    mut elements: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
+    len: usize,
+    known_atomic: bool,
 ) -> PyResult<Bound<'py, PyTuple>> {
     // PyTuple_New checks for overflow but has a bad error message, so we check ourselves
-    let len: Py_ssize_t = elements
-        .len()
+    let len: Py_ssize_t = len
         .try_into()
         .expect("out of range integral type conversion attempted on `elements.len()`");
 
@@ -79,15 +84,80 @@ fn try_new_from_iter<'py>(
 
     assert!(
         elements.next().is_none(),
-        "Attempted to create PyTuple but `elements` was larger than reported by its `ExactSizeIterator` implementation."
+        "Attempted to create PyTuple but `elements` was larger than its exact size hint."
     );
     assert_eq!(
         len, counter,
-        "Attempted to create PyTuple but `elements` was smaller than reported by its `ExactSizeIterator` implementation."
+        "Attempted to create PyTuple but `elements` was smaller than its exact size hint."
     );
 
+    untrack_atomic_tuple(&tup, len as usize, known_atomic);
     Ok(tup)
 }
+
+// A tuple can join a reference cycle only through an element whose type supports
+// GC. Current tracking state is insufficient: an untracked mutable container can
+// become cyclic later. This is the condition CPython's collector uses to untrack
+// published tuples.
+fn untrack_atomic_tuple(tuple: &Bound<'_, PyTuple>, len: usize, known_atomic: bool) {
+    #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+    {
+        debug_assert_eq!(tuple.len(), len);
+        if len != 0
+            && (known_atomic
+                || (0..len).all(|index| unsafe {
+                    // SAFETY: both constructors pass the fully initialized tuple's
+                    // allocation length. Its immutable items remain live while
+                    // this owner is borrowed, and index is below that length.
+                    let item = tuple.get_borrowed_item_unchecked(index);
+                    ffi::PyType_HasFeature(ffi::Py_TYPE(item.as_ptr()), ffi::Py_TPFLAGS_HAVE_GC)
+                        == 0
+                }))
+        {
+            // SAFETY: the exact tuple is fully initialized and immutable, and none of
+            // its element types supports GC, so it cannot be part of a reference cycle.
+            unsafe { ffi::PyObject_GC_UnTrack(tuple.as_ptr().cast()) }
+        }
+    }
+    #[cfg(any(Py_LIMITED_API, PyPy, GraalPy, RustPython))]
+    let _ = (tuple, len, known_atomic);
+}
+
+// Private specialization: safe downstream IntoPyObject implementations cannot
+// claim their results are cycle-free. Only conversions owned by PyO3 qualify.
+trait AtomicConversion {
+    fn is_atomic() -> bool;
+}
+
+#[cfg(feature = "nightly")]
+impl<T> AtomicConversion for T {
+    default fn is_atomic() -> bool {
+        false
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<T> AtomicConversion for T {
+    fn is_atomic() -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "nightly")]
+macro_rules! atomic_conversions {
+    ($($ty:ty),* $(,)?) => {
+        $(impl AtomicConversion for $ty {
+            fn is_atomic() -> bool {
+                true
+            }
+        })*
+    };
+}
+
+#[cfg(feature = "nightly")]
+atomic_conversions!(
+    bool, f32, f64, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+);
 
 /// Represents a Python `tuple` object.
 ///
@@ -121,8 +191,8 @@ impl PyTuple {
     /// tuple with the given elements and convert it at once using [`into_pyobject()`][crate::IntoPyObject].
     /// (`IntoPyObject` is implemented for tuples of up to 12 elements.)
     ///
-    /// To create a [`PyTuple`] from an iterable that doesn't implement [`ExactSizeIterator`],
-    /// collect the elements into a `Vec` first.
+    /// The iterator is consumed once. An exact size hint permits direct construction;
+    /// otherwise converted elements are buffered until the iterator ends.
     ///
     /// # Examples
     ///
@@ -146,9 +216,9 @@ impl PyTuple {
     ///
     /// # Panics
     ///
-    /// This function will panic if `element`'s [`ExactSizeIterator`] implementation is incorrect.
-    /// All standard library structures implement this trait correctly, if they do, so calling this
-    /// function using [`Vec`]`<T>` or `&[T]` will always succeed.
+    /// Panics if an iterator reports an incorrect exact size hint or a tuple length
+    /// cannot be represented by Python. Safe iterators cannot cause unchecked writes
+    /// or expose uninitialized tuple elements by misreporting their length.
     #[track_caller]
     pub fn new<'py, T, U>(
         py: Python<'py>,
@@ -156,10 +226,17 @@ impl PyTuple {
     ) -> PyResult<Bound<'py, PyTuple>>
     where
         T: IntoPyObject<'py>,
-        U: ExactSizeIterator<Item = T>,
+        U: Iterator<Item = T>,
     {
         let elements = elements.into_iter().map(|e| e.into_bound_py_any(py));
-        try_new_from_iter(py, elements)
+        let (lower, upper) = elements.size_hint();
+        if upper == Some(lower) {
+            try_new_from_iter(py, elements, lower, T::is_atomic())
+        } else {
+            let elements = elements.collect::<PyResult<Vec<_>>>()?;
+            let len = elements.len();
+            try_new_from_iter(py, elements.into_iter().map(Ok), len, T::is_atomic())
+        }
     }
 
     /// Constructs an empty tuple (on the Python side, a singleton object).
@@ -369,7 +446,7 @@ impl<'a, 'py> Borrowed<'a, 'py, PyTuple> {
             any(Py_LIMITED_API, PyPy, GraalPy) => unsafe {
                 ffi::PyTuple_GetItem(self.as_ptr(), index as Py_ssize_t)
                     .assume_borrowed_unchecked(self.py())
-            }
+            },
         }
     }
 
@@ -398,6 +475,13 @@ impl<'py> BoundTupleIterator<'py> {
 
 impl<'py> Iterator for BoundTupleIterator<'py> {
     type Item = Bound<'py, PyAny>;
+
+    #[cfg(feature = "nightly")]
+    unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item {
+        // SAFETY: the caller guarantees idx < remaining length. The retained
+        // immutable tuple keeps this slot live; reading does not move either end.
+        unsafe { self.tuple.get_item_unchecked(self.index + idx) }
+    }
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -526,6 +610,27 @@ impl ExactSizeIterator for BoundTupleIterator<'_> {
 
 impl FusedIterator for BoundTupleIterator<'_> {}
 
+// SAFETY: tuple storage and length are immutable while retained. All traversal
+// operations maintain index <= length, and size_hint reports their difference.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedLen for BoundTupleIterator<'_> {}
+
+// SAFETY: exhaustion is permanent and the implementation is lifetime-independent.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedFused for BoundTupleIterator<'_> {}
+
+// SAFETY: indexed access reads a live immutable slot without changing the
+// remaining range; it remains safe alongside allowed backward reads and drop.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedRandomAccessNoCoerce for BoundTupleIterator<'_> {
+    const MAY_HAVE_SIDE_EFFECT: bool = true; // Acquires an owned Python reference.
+}
+
+// SAFETY: every lifetime subtype/supertype has the same implementation, and
+// lifetime coercions preserve the immutable tuple and its remaining range.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedRandomAccess for BoundTupleIterator<'_> {}
+
 impl<'py> IntoIterator for Bound<'py, PyTuple> {
     type Item = Bound<'py, PyAny>;
     type IntoIter = BoundTupleIterator<'py>;
@@ -564,6 +669,13 @@ impl<'a, 'py> BorrowedTupleIterator<'a, 'py> {
 
 impl<'a, 'py> Iterator for BorrowedTupleIterator<'a, 'py> {
     type Item = Borrowed<'a, 'py, PyAny>;
+
+    #[cfg(feature = "nightly")]
+    unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item {
+        // SAFETY: idx is within the remaining range and the tuple borrow keeps
+        // every immutable slot live. Neither iterator endpoint is changed.
+        unsafe { self.tuple.get_borrowed_item_unchecked(self.index + idx) }
+    }
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -624,6 +736,27 @@ impl ExactSizeIterator for BorrowedTupleIterator<'_, '_> {
 
 impl FusedIterator for BorrowedTupleIterator<'_, '_> {}
 
+// SAFETY: the tuple borrow pins immutable storage; the private endpoints and
+// their exact difference describe all remaining items, including reverse reads.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedLen for BorrowedTupleIterator<'_, '_> {}
+
+// SAFETY: exhaustion is permanent for all combinations of the two lifetimes.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedFused for BorrowedTupleIterator<'_, '_> {}
+
+// SAFETY: random reads borrow immutable live slots without changing endpoints,
+// reference counts, or Python state. Allowed backward reads and drop remain safe.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedRandomAccessNoCoerce for BorrowedTupleIterator<'_, '_> {
+    const MAY_HAVE_SIDE_EFFECT: bool = false;
+}
+
+// SAFETY: lifetime coercions preserve the owner borrow and immutable storage;
+// all lifetime subtypes/supertypes implement the same random-access contract.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedRandomAccess for BorrowedTupleIterator<'_, '_> {}
+
 #[cold]
 fn wrong_tuple_length(t: Borrowed<'_, '_, PyTuple>, expected_length: usize) -> PyErr {
     let msg = format!(
@@ -650,7 +783,7 @@ macro_rules! tuple_conversion (($length:expr, $(($n:tt, $T:ident)),+) => {
         );
 
         fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+]))
+            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+], true $(&& $T::is_atomic())+))
         }
     }
 
@@ -669,7 +802,7 @@ macro_rules! tuple_conversion (($length:expr, $(($n:tt, $T:ident)),+) => {
         );
 
         fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+]))
+            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+], false))
         }
     }
 
@@ -954,6 +1087,7 @@ macro_rules! tuple_conversion (($length:expr, $(($n:tt, $T:ident)),+) => {
 fn array_into_tuple<'py, const N: usize>(
     py: Python<'py>,
     array: [Bound<'py, PyAny>; N],
+    known_atomic: bool,
 ) -> Bound<'py, PyTuple> {
     #[cfg(not(RustPython))]
     unsafe {
@@ -965,6 +1099,7 @@ fn array_into_tuple<'py, const N: usize>(
             #[cfg(any(Py_LIMITED_API, PyPy, GraalPy))]
             ffi::PyTuple_SetItem(ptr, index as ffi::Py_ssize_t, obj.into_ptr());
         }
+        untrack_atomic_tuple(&tup, N, known_atomic);
         tup
     }
 
@@ -1408,6 +1543,10 @@ mod tests {
         fn next(&mut self) -> Option<Self::Item> {
             self.0.next()
         }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (self.1, Some(self.1))
+        }
     }
 
     impl ExactSizeIterator for FaultyIter {
@@ -1418,18 +1557,18 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Attempted to create PyTuple but `elements` was larger than reported by its `ExactSizeIterator` implementation."
+        expected = "Attempted to create PyTuple but `elements` was larger than its exact size hint."
     )]
     fn too_long_iterator() {
         Python::attach(|py| {
-            let iter = FaultyIter(0..usize::MAX, 73);
+            let iter = FaultyIter(0..74, 73);
             let _tuple = PyTuple::new(py, iter);
         })
     }
 
     #[test]
     #[should_panic(
-        expected = "Attempted to create PyTuple but `elements` was smaller than reported by its `ExactSizeIterator` implementation."
+        expected = "Attempted to create PyTuple but `elements` was smaller than its exact size hint."
     )]
     fn too_short_iterator() {
         Python::attach(|py| {

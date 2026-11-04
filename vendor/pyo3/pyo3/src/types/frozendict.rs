@@ -319,6 +319,19 @@ impl ExactSizeIterator for BoundFrozenDictIterator<'_> {
     }
 }
 
+impl core::iter::FusedIterator for BoundFrozenDictIterator<'_> {}
+
+// SAFETY: the retained frozendict cannot change size. PyDict_Next walks its
+// native entries without invoking Python overrides, yielding exactly the
+// remaining count initialized from PyDict_Size and decremented on each item.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedLen for BoundFrozenDictIterator<'_> {}
+
+// SAFETY: exhaustion leaves the native cursor past the immutable entry array;
+// no later call can yield another entry.
+#[cfg(feature = "nightly")]
+unsafe impl core::iter::TrustedFused for BoundFrozenDictIterator<'_> {}
+
 impl<'py> IntoIterator for Bound<'py, PyFrozenDict> {
     type Item = (Bound<'py, PyAny>, Bound<'py, PyAny>);
     type IntoIter = BoundFrozenDictIterator<'py>;

@@ -7,7 +7,15 @@
 #![warn(missing_docs)]
 #![cfg_attr(
     feature = "nightly",
-    feature(auto_traits, negative_impls, iter_advance_by)
+    feature(
+        auto_traits,
+        negative_impls,
+        iter_advance_by,
+        min_specialization,
+        trusted_len,
+        trusted_fused,
+        trusted_random_access
+    )
 )]
 #![cfg_attr(all(feature = "nightly", Py_GIL_DISABLED), feature(try_trait_v2))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
