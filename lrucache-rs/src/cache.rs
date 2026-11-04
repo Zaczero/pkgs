@@ -222,6 +222,11 @@ impl LRUCache {
         self.inner.lock_py_attached(py).len()
     }
 
+    fn __contains__(&self, key: &Bound<'_, PyAny>) -> PyResult<bool> {
+        self.access(key, Action::Read { touch: false })
+            .map(|entry| entry.is_some())
+    }
+
     #[pyo3(name = "_get")]
     fn get_entry(&self, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyTuple>>> {
         self.access(key, Action::Read { touch: true })

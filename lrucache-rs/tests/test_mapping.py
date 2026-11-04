@@ -103,3 +103,4 @@ def test_pop_defaults_and_setdefault_recency():
     with pytest.raises(KeyError):
         cache.pop('missing')
     assert cache.setdefault('none') is None
+    assert 'none' in cache

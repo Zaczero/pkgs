@@ -152,6 +152,8 @@ def test_hash_collision_with_non_equal_keys():
     assert len(cache) == 2
     assert cache.get(k1) == 1
     assert cache.get(k2) == 2
+    assert Key('a') in cache
+    assert Key('missing') not in cache
 
     cache.get(Key('a'))
     cache[k3] = 3
@@ -197,6 +199,8 @@ def test_eq_exception_propagates():
     # Storing a second key with the same hash forces collision resolution -> __eq__.
     with pytest.raises(ValueError, match='boom'):
         cache[b] = 2
+    with pytest.raises(ValueError, match='boom'):
+        _ = b in cache
     # The cache is left in a sane state - a is still findable by identity.
     assert cache.get(a) == 1
 

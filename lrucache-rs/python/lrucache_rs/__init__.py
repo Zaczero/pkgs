@@ -50,9 +50,6 @@ class LRUCache(_Cache, MutableMapping[_K, _V]):
     def __class_getitem__(cls, _item: object) -> 'type[LRUCache[_K, _V]]':
         return cls
 
-    def __contains__(self, key: object, /) -> bool:
-        return self._peek(key) is not None
-
     def __getitem__(self, key: _K, /) -> _V:
         entry: tuple[_K, _V] | None = self._get(key)
         if entry is None:
