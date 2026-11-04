@@ -3,7 +3,8 @@ use std::io::{self, Read as _};
 use std::os::fd::FromRawFd as _;
 
 use perf_event_open_sys::{bindings as perf, perf_event_open};
-use serde::Serialize;
+use serde::ser::SerializeStruct as _;
+use serde::{Serialize, Serializer};
 
 #[derive(Debug, Serialize)]
 pub struct Policy {
@@ -18,31 +19,53 @@ pub struct Event {
     pub config: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Counter {
     pub name: &'static str,
-    #[serde(serialize_with = "optional_decimal")]
-    pub raw: Option<u64>,
-    #[serde(serialize_with = "optional_decimal")]
-    pub enabled_ns: Option<u64>,
-    #[serde(serialize_with = "optional_decimal")]
-    pub running_ns: Option<u64>,
-    pub unavailable: Option<String>,
+    pub reading: Result<Reading, String>,
+}
+
+/// One complete kernel counter reading, including its scheduling window.
+#[derive(Clone, Copy, Debug)]
+pub struct Reading {
+    pub raw: u64,
+    pub enabled_ns: u64,
+    pub running_ns: u64,
 }
 
 impl Counter {
     pub fn fully_scheduled(&self) -> Option<u64> {
-        let running = self.running_ns?;
-        (running > 0 && running == self.enabled_ns?).then_some(self.raw?)
+        let reading = self.reading.as_ref().ok()?;
+        (reading.running_ns > 0 && reading.running_ns == reading.enabled_ns).then_some(reading.raw)
     }
 
     pub fn usable(&self) -> Option<f64> {
-        let enabled = self.enabled_ns?;
-        let running = self.running_ns?;
+        let reading = self.reading.as_ref().ok()?;
+        let enabled = reading.enabled_ns;
+        let running = reading.running_ns;
         if running == 0 || (running as f64) / (enabled as f64) < 0.95 {
             return None;
         }
-        Some(self.raw? as f64 * enabled as f64 / running as f64)
+        Some(reading.raw as f64 * enabled as f64 / running as f64)
+    }
+}
+
+impl Serialize for Counter {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let reading = self.reading.as_ref().ok();
+        let mut fields = serializer.serialize_struct("Counter", 5)?;
+        fields.serialize_field("name", self.name)?;
+        fields.serialize_field("raw", &reading.map(|value| value.raw.to_string()))?;
+        fields.serialize_field(
+            "enabled_ns",
+            &reading.map(|value| value.enabled_ns.to_string()),
+        )?;
+        fields.serialize_field(
+            "running_ns",
+            &reading.map(|value| value.running_ns.to_string()),
+        )?;
+        fields.serialize_field("unavailable", &self.reading.as_ref().err())?;
+        fields.end()
     }
 }
 
@@ -96,44 +119,19 @@ impl Events {
                 let reading = handle.and_then(|mut file| {
                     let mut bytes = [0_u8; 24];
                     file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
-                    let mut words = bytes
-                        .as_chunks::<8>()
-                        .0
-                        .iter()
-                        .map(|&chunk| u64::from_ne_bytes(chunk));
-                    Ok((words.next(), words.next(), words.next()))
+                    let [raw, enabled_ns, running_ns] = bytes.as_chunks::<8>().0 else {
+                        unreachable!("a complete counter read contains three u64 words")
+                    };
+                    Ok(Reading {
+                        raw: u64::from_ne_bytes(*raw),
+                        enabled_ns: u64::from_ne_bytes(*enabled_ns),
+                        running_ns: u64::from_ne_bytes(*running_ns),
+                    })
                 });
-                match reading {
-                    Ok((raw, enabled_ns, running_ns)) => Counter {
-                        name,
-                        raw,
-                        enabled_ns,
-                        running_ns,
-                        unavailable: None,
-                    },
-                    Err(reason) => Counter {
-                        name,
-                        raw: None,
-                        enabled_ns: None,
-                        running_ns: None,
-                        unavailable: Some(reason),
-                    },
-                }
+                Counter { name, reading }
             })
             .collect()
     }
-}
-
-#[expect(
-    clippy::ref_option,
-    clippy::trivially_copy_pass_by_ref,
-    reason = "Serde serialize_with requires this exact reference signature"
-)]
-fn optional_decimal<S: serde::Serializer>(
-    value: &Option<u64>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    value.map(|v| v.to_string()).serialize(serializer)
 }
 
 fn is_zen3_vermeer() -> bool {
@@ -186,22 +184,58 @@ fn open(pid: i32, event_type: u32, config: u64) -> io::Result<File> {
 
 #[cfg(test)]
 mod tests {
-    use super::Counter;
+    use super::{Counter, Reading};
+
+    #[test]
+    fn counter_json_preserves_complete_and_unavailable_readings() {
+        let mut counter = Counter {
+            name: "instructions",
+            reading: Ok(Reading {
+                raw: u64::MAX,
+                enabled_ns: 100,
+                running_ns: 97,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&counter).unwrap(),
+            serde_json::json!({
+                "name": "instructions",
+                "raw": "18446744073709551615",
+                "enabled_ns": "100",
+                "running_ns": "97",
+                "unavailable": null,
+            })
+        );
+        counter.reading = Err("permission denied".into());
+        assert_eq!(
+            serde_json::to_value(&counter).unwrap(),
+            serde_json::json!({
+                "name": "instructions",
+                "raw": null,
+                "enabled_ns": null,
+                "running_ns": null,
+                "unavailable": "permission denied",
+            })
+        );
+        assert_eq!(counter.usable(), None);
+        assert_eq!(counter.fully_scheduled(), None);
+    }
 
     #[test]
     fn multiplexed_counts_cannot_supply_full_window_ratios() {
         let mut counter = Counter {
             name: "instructions",
-            raw: Some(970),
-            enabled_ns: Some(100),
-            running_ns: Some(97),
-            unavailable: None,
+            reading: Ok(Reading {
+                raw: 970,
+                enabled_ns: 100,
+                running_ns: 97,
+            }),
         };
         assert_eq!(counter.usable(), Some(1000.0));
         assert_eq!(counter.fully_scheduled(), None);
-        counter.running_ns = Some(100);
+        counter.reading.as_mut().unwrap().running_ns = 100;
         assert_eq!(counter.fully_scheduled(), Some(970));
-        counter.running_ns = Some(0);
+        counter.reading.as_mut().unwrap().running_ns = 0;
         assert_eq!(counter.usable(), None);
         assert_eq!(counter.fully_scheduled(), None);
     }

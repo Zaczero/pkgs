@@ -90,7 +90,7 @@ impl Storage {
             .into_boxed_slice()
             .into_vec();
         for counter in &mut observation.counters {
-            if let Some(reason) = &mut counter.unavailable {
+            if let Err(reason) = &mut counter.reading {
                 *reason = bounded_text(std::mem::take(reason));
             }
         }
@@ -177,7 +177,7 @@ fn metadata_bytes(observation: &Observation) -> usize {
             observation
                 .counters
                 .iter()
-                .filter_map(|counter| counter.unavailable.as_ref())
+                .filter_map(|counter| counter.reading.as_ref().err())
                 .map(String::capacity)
                 .sum::<usize>(),
         )

@@ -25,10 +25,7 @@ fn observation() -> Observation {
         outcome: Outcome::Success,
         counters: std::iter::repeat_with(|| Counter {
             name: "fixture",
-            raw: None,
-            enabled_ns: None,
-            running_ns: None,
-            unavailable: Some("e".repeat(256)),
+            reading: Err("e".repeat(256)),
         })
         .take(4)
         .collect(),
