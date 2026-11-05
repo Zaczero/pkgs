@@ -106,22 +106,20 @@ struct Batches {
 }
 
 impl Batches {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "Rows are complete runs with the first row's column count"
-    )]
     fn new(rows: &[Vec<u64>], count: usize) -> Self {
         let runs = rows.len();
         let columns = rows.first().map_or(0, Vec::len);
         let total = |slice: &[Vec<u64>], column: usize| {
             slice
                 .iter()
-                .map(|row| u128::from(row[column]))
+                .map(|row| u128::from(*row.get(column).expect("complete run column")))
                 .sum::<u128>() as f64
         };
         let batches = (0..count)
             .map(|index| {
-                let slice = &rows[partition(runs, count, index)];
+                let slice = rows
+                    .get(partition(runs, count, index))
+                    .expect("batch is within the run matrix");
                 let means = (0..columns)
                     .map(|column| total(slice, column) / slice.len() as f64)
                     .collect();
@@ -141,30 +139,34 @@ impl Batches {
     /// Estimated covariance of the two columns' overall means, from the size-weighted
     /// spread of batch means. For independent normal runs this is exact with
     /// `batches - 1` degrees of freedom, also for unequal batch sizes.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "Columns index the batch mean vectors built from the same rows"
-    )]
     fn covariance(&self, left: usize, right: usize) -> f64 {
         let spread = self
             .batches
             .iter()
             .map(|(size, means)| {
-                *size as f64 * (means[left] - self.means[left]) * (means[right] - self.means[right])
+                *size as f64
+                    * (means.get(left).expect("batch column")
+                        - self.means.get(left).expect("overall column"))
+                    * (means.get(right).expect("batch column")
+                        - self.means.get(right).expect("overall column"))
             })
             .sum::<f64>();
-        spread / self.batches.len().wrapping_sub(1).wrapping_mul(self.runs) as f64
+        let degrees = self
+            .batches
+            .len()
+            .checked_sub(1)
+            .expect("at least two batches");
+        spread
+            / degrees
+                .checked_mul(self.runs)
+                .expect("admitted covariance weight fits usize") as f64
     }
 
     /// Fieller's confidence set for the ratio of two means, or the t interval of
     /// one mean. Scaling by the denominator's mean keeps the quadratic well conditioned.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "Pair indices come from the family of this analysis's columns"
-    )]
     fn interval(&self, numerator: usize, denominator: Option<usize>, critical: f64) -> Bound {
         let Some(denominator) = denominator else {
-            let mean = self.means[numerator];
+            let mean = *self.means.get(numerator).expect("family column");
             let error = self.covariance(numerator, numerator).sqrt();
             if error <= RESOLUTION * mean {
                 return Bound::Degenerate;
@@ -174,8 +176,8 @@ impl Batches {
                 upper: critical.mul_add(error, mean),
             });
         };
-        let scale = self.means[denominator];
-        let ratio = self.means[numerator] / scale;
+        let scale = *self.means.get(denominator).expect("family denominator");
+        let ratio = self.means.get(numerator).expect("family numerator") / scale;
         let [vxx, vyy, vxy] = [
             (denominator, denominator),
             (numerator, numerator),
@@ -272,7 +274,10 @@ fn summarize(mut values: Vec<u64>) -> Summary {
             .iter()
             .map(|&x| (x as f64 - mean).powi(2))
             .sum::<f64>()
-            / values.len().wrapping_sub(1) as f64
+            / values
+                .len()
+                .checked_sub(1)
+                .expect("at least two observations") as f64
     } else {
         0.0
     };
@@ -312,7 +317,9 @@ fn family(columns: usize) -> Vec<(usize, Option<usize>)> {
     }
     (0..columns)
         .flat_map(|denominator| {
-            (denominator.wrapping_add(1)..columns)
+            (denominator
+                .checked_add(1)
+                .expect("pair successor fits column count")..columns)
                 .map(move |numerator| (numerator, Some(denominator)))
         })
         .collect()
@@ -327,8 +334,27 @@ pub fn batch_count(runs: usize) -> usize {
 
 /// The `index`th of `parts` contiguous ranges covering `0..len`, sizes differing by at most one.
 pub fn partition(len: usize, parts: usize, index: usize) -> std::ops::Range<usize> {
-    let bound = |part: usize| part.wrapping_mul(len).div_euclid(parts);
-    bound(index)..bound(index.wrapping_add(1))
+    assert!(
+        index < parts,
+        "partition index must be below a positive part count"
+    );
+    // Widen before multiplication: part*len can exceed usize even though each
+    // quotient lies in 0..=len. Supported pointer widths fit this exact product.
+    let bound = |part: usize| {
+        let numerator = (part as u128)
+            .checked_mul(len as u128)
+            .expect("usize product fits u128");
+        let offset = numerator
+            .checked_div(parts as u128)
+            .expect("positive part count");
+        usize::try_from(offset).expect("partition boundary does not exceed len")
+    };
+    bound(index)
+        ..bound(
+            index
+                .checked_add(1)
+                .expect("partition successor fits part count"),
+        )
 }
 
 /// Two-sided Student t quantile at the Bonferroni level for `family` intervals.
@@ -340,10 +366,6 @@ fn quantile(degrees: usize, family: usize) -> f64 {
 
 /// One-way ANOVA F test of the batch partition on per-run values of the contrast.
 /// Independent runs give F(b - 1, n - b); drift or correlated runs inflate it.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "Rows are complete runs; pair indices come from their column family"
-)]
 fn correlated(
     rows: &[Vec<u64>],
     count: usize,
@@ -352,26 +374,33 @@ fn correlated(
     family: usize,
 ) -> bool {
     let runs = rows.len();
-    if runs < count.wrapping_mul(2) || count < 2 {
+    if count < 2 || runs < count.checked_mul(2).expect("batch threshold fits usize") {
         return false;
     }
     let (numerator, denominator) = pair;
     let values: Vec<_> = rows
         .iter()
-        .map(|row| row[numerator] as f64 - denominator.map_or(0.0, |d| ratio * row[d] as f64))
+        .map(|row| {
+            *row.get(numerator).expect("contrast numerator") as f64
+                - denominator.map_or(0.0, |d| {
+                    ratio * *row.get(d).expect("contrast denominator") as f64
+                })
+        })
         .collect();
     let mean = values.iter().sum::<f64>() / runs as f64;
     let mut between = 0.0;
     let mut within = 0.0;
     for index in 0..count {
-        let batch = &values[partition(runs, count, index)];
+        let batch = values
+            .get(partition(runs, count, index))
+            .expect("batch is within contrast values");
         let batch_mean = batch.iter().sum::<f64>() / batch.len() as f64;
         between += batch.len() as f64 * (batch_mean - mean).powi(2);
         within += batch.iter().map(|v| (v - batch_mean).powi(2)).sum::<f64>();
     }
     let (d1, d2) = (
-        count.wrapping_sub(1) as f64,
-        runs.wrapping_sub(count) as f64,
+        count.checked_sub(1).expect("at least two batches") as f64,
+        runs.checked_sub(count).expect("batches partition runs") as f64,
     );
     if within <= 0.0 {
         return false;
@@ -385,15 +414,17 @@ fn correlated(
 
 /// Simultaneous 95% intervals for every command pair's ratio of arithmetic mean
 /// elapsed times (one command: its mean), from chronological complete runs.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "Rows are complete runs; family indices come from their column count"
-)]
 pub fn analyze(rows: &[Vec<u64>], margin: Option<f64>) -> Analysis {
     let runs = rows.len();
     let columns = rows.first().map_or(0, Vec::len);
     let summaries: Vec<_> = (0..columns)
-        .map(|column| summarize(rows.iter().map(|row| row[column]).collect()))
+        .map(|column| {
+            summarize(
+                rows.iter()
+                    .map(|row| *row.get(column).expect("complete run column"))
+                    .collect(),
+            )
+        })
         .collect();
     let count = batch_count(runs);
     let limitation = match runs {
@@ -406,14 +437,19 @@ pub fn analyze(rows: &[Vec<u64>], margin: Option<f64>) -> Analysis {
     };
     let pairs = family(columns);
     let batches = limitation.is_none().then(|| Batches::new(rows, count));
-    let critical = limitation
-        .is_none()
-        .then(|| quantile(count.wrapping_sub(1), pairs.len()));
+    let critical = limitation.is_none().then(|| {
+        quantile(
+            count.checked_sub(1).expect("at least two batches"),
+            pairs.len(),
+        )
+    });
     let comparisons = pairs
         .iter()
         .map(|&(numerator, denominator)| {
-            let estimate =
-                summaries[numerator].mean_ns / denominator.map_or(1.0, |d| summaries[d].mean_ns);
+            let estimate = summaries.get(numerator).expect("family numerator").mean_ns
+                / denominator.map_or(1.0, |d| {
+                    summaries.get(d).expect("family denominator").mean_ns
+                });
             let bound = batches
                 .as_ref()
                 .zip(critical)
@@ -455,10 +491,6 @@ pub fn analyze(rows: &[Vec<u64>], margin: Option<f64>) -> Analysis {
 
 /// Runs needed for every pair's interval to reach about ±1%, from the pilot's
 /// run-to-run variation of each relative contrast, assuming independent runs.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "Pilot rows are complete runs and pairs are constructed from their shared dimension"
-)]
 pub fn precision_count(rows: &[Vec<u64>]) -> usize {
     if rows.len() < 4 {
         return PREFERRED_RUNS;
@@ -466,7 +498,12 @@ pub fn precision_count(rows: &[Vec<u64>]) -> usize {
     let columns = rows.first().expect("at least four pilot runs").len();
     let pairs = family(columns);
     let means: Vec<_> = (0..columns)
-        .map(|column| rows.iter().map(|row| row[column] as f64).sum::<f64>() / rows.len() as f64)
+        .map(|column| {
+            rows.iter()
+                .map(|row| *row.get(column).expect("complete pilot column") as f64)
+                .sum::<f64>()
+                / rows.len() as f64
+        })
         .collect();
     let variance = pairs
         .iter()
@@ -474,7 +511,12 @@ pub fn precision_count(rows: &[Vec<u64>]) -> usize {
             let values: Vec<_> = rows
                 .iter()
                 .map(|row| {
-                    row[num] as f64 / means[num] - den.map_or(1.0, |d| row[d] as f64 / means[d])
+                    *row.get(num).expect("pilot numerator") as f64
+                        / means.get(num).expect("numerator mean")
+                        - den.map_or(1.0, |d| {
+                            *row.get(d).expect("pilot denominator") as f64
+                                / means.get(d).expect("denominator mean")
+                        })
                 })
                 .collect();
             let mean = values.iter().sum::<f64>() / values.len() as f64;
@@ -482,16 +524,24 @@ pub fn precision_count(rows: &[Vec<u64>]) -> usize {
                 .iter()
                 .map(|value| (value - mean).powi(2))
                 .sum::<f64>()
-                / values.len().wrapping_sub(1) as f64
+                / values
+                    .len()
+                    .checked_sub(1)
+                    .expect("at least four pilot runs") as f64
         })
         .fold(0.0_f64, f64::max);
-    let critical = quantile(batch_count(PREFERRED_RUNS).wrapping_sub(1), pairs.len());
+    let critical = quantile(
+        batch_count(PREFERRED_RUNS)
+            .checked_sub(1)
+            .expect("preferred run count gives multiple batches"),
+        pairs.len(),
+    );
     (critical * critical * variance / PRECISION.ln().powi(2)).ceil() as usize
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, Interval, Planner, analyze, batch_count, family, quantile};
+    use super::{Decision, Interval, Planner, analyze, batch_count, family, partition, quantile};
 
     #[test]
     fn arithmetic_mean_ratio_is_not_mean_of_ratios() {
@@ -658,6 +708,19 @@ mod tests {
     }
 
     #[test]
+    fn partition_preserves_full_width_boundaries_without_a_large_allocation() {
+        let third = usize::MAX / 3;
+        assert_eq!(partition(usize::MAX, 3, 0), 0..third);
+        assert_eq!(
+            partition(usize::MAX, 3, 2),
+            third.checked_mul(2).unwrap()..usize::MAX
+        );
+        let last = usize::MAX.checked_sub(1).unwrap();
+        assert_eq!(partition(usize::MAX, usize::MAX, last), last..usize::MAX);
+        assert_eq!(partition(0, 3, 2), 0..0);
+    }
+
+    #[test]
     fn two_quiet_runs_can_resolve_a_large_difference() {
         let result = analyze(
             &[vec![1_000_000, 1_500_000], vec![1_002_000, 1_501_000]],
@@ -687,14 +750,14 @@ mod tests {
         let steady: Vec<_> = (0..200_u64)
             .map(|run| {
                 vec![
-                    1000_u64.wrapping_add(run % 7),
-                    1000_u64.wrapping_add(run % 5),
+                    1000_u64.checked_add(run % 7).unwrap(),
+                    1000_u64.checked_add(run % 5).unwrap(),
                 ]
             })
             .collect();
         assert!(!analyze(&steady, None).comparisons[0].correlated);
         let drifting: Vec<_> = (0..200_u64)
-            .map(|run| vec![1000, 1000_u64.wrapping_add(run)])
+            .map(|run| vec![1000, 1000_u64.checked_add(run).unwrap()])
             .collect();
         assert!(analyze(&drifting, None).comparisons[0].correlated);
     }
