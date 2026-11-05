@@ -62,6 +62,12 @@ extern_libpython! {
     pub fn PyBytesWriter_Resize(writer: *mut PyBytesWriter, size: Py_ssize_t) -> c_int;
 
     pub fn PyBytesWriter_Grow(writer: *mut PyBytesWriter, size: Py_ssize_t) -> c_int;
+
+    pub fn PyBytesWriter_WriteBytes(
+        writer: *mut PyBytesWriter,
+        bytes: *const c_void,
+        size: Py_ssize_t,
+    ) -> c_int;
 }
 
 #[cfg(all(test, not(any(PyPy, GraalPy, Py_LIMITED_API))))]

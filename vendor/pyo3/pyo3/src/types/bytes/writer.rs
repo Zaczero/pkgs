@@ -139,6 +139,24 @@ impl<'py> PyBytesWriter<'py> {
         cfg_select! {
             Py_LIMITED_API => self.buffer.extend_from_slice(bytes),
 
+            Py_3_15 => {
+                let writer = self.writer_pointer()?;
+                // SAFETY: the writer owns its live storage, and a Rust byte
+                // slice's length fits Py_ssize_t. The source remains borrowed
+                // throughout the native growth and copy operation.
+                let result = unsafe {
+                    err::error_on_negative(
+                        self.python,
+                        ffi::PyBytesWriter_WriteBytes(
+                            writer.as_ptr(),
+                            bytes.as_ptr().cast(),
+                            bytes.len() as ffi::Py_ssize_t,
+                        ),
+                    )
+                };
+                self.check_write(result)?;
+            }
+
             _ => {
                 let len = bytes.len();
                 let pos = self.len();
