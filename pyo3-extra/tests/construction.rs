@@ -86,6 +86,45 @@ fn py_dict_uses_python_bool_singletons_for_bool_literals() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+fn bulk_dictionary_retains_borrowed_temporaries_and_duplicate_values() {
+    init_python();
+    Python::attach(|py| -> PyResult<()> {
+        let dict = dict!(py, {
+            "value" => &PyString::new(py, "temporary"),
+            "other" => &pyo3::types::PyList::empty(py),
+            "value" => 42,
+            "false" => false,
+        });
+        assert_eq!(dict.len(), 3);
+        assert_eq!(dict.get_item("value")?.unwrap().extract::<i32>()?, 42);
+        assert_eq!(dict.get_item("other")?.unwrap().len()?, 0);
+        assert!(!dict.get_item("false")?.unwrap().is_truthy()?);
+        assert!(dict!(py, {}).is_empty());
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
+fn bulk_dictionary_evaluates_values_in_order_once() {
+    init_python();
+    Python::attach(|py| -> PyResult<()> {
+        let mut seen = Vec::new();
+        let dict = dict!(py, {
+            "first" => { seen.push(1); 1 },
+            "second" => { seen.push(2); 2 },
+            "third" => { seen.push(3); 3 },
+        });
+        assert_eq!(seen, [1, 2, 3]);
+        assert_eq!(dict.len(), 3);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn py_dict_omits_false_conditional_fields() {
     init_python();
     Python::attach(|py| -> PyResult<()> {

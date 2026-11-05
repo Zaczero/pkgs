@@ -5,7 +5,7 @@ use crate::ffi::Py_ssize_t;
 use crate::ffi_ptr_ext::FfiPtrExt;
 use crate::instance::{Borrowed, Bound};
 use crate::py_result_ext::PyResultExt;
-use crate::types::{PyAny, PyList, PyMapping};
+use crate::types::{PyAny, PyAnyMethods, PyList, PyMapping};
 use crate::{BoundObject, IntoPyObject, IntoPyObjectExt, Python, ffi};
 #[cfg(RustPython)]
 use crate::{
@@ -57,6 +57,86 @@ impl PyDict {
     /// Creates a new empty dictionary.
     pub fn new(py: Python<'_>) -> Bound<'_, PyDict> {
         unsafe { ffi::PyDict_New().assume_owned(py).cast_into_unchecked() }
+    }
+
+    /// Creates an empty dictionary with an advisory expected item count.
+    ///
+    /// The hint never limits insertion. CPython may reserve less than requested;
+    /// runtimes or ABI modes without presizing create an ordinary empty dictionary.
+    /// Returns an allocation error if reservation fails.
+    /// For known string-key pairs, prefer [`Self::from_borrowed_items`] so CPython
+    /// can select compact string-key storage rather than a generic key table.
+    pub fn with_capacity(py: Python<'_>, capacity: usize) -> PyResult<Bound<'_, PyDict>> {
+        #[cfg(not(any(windows, Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+        if capacity != 0 {
+            let capacity = capacity.min(ffi::PY_SSIZE_T_MAX as usize) as Py_ssize_t;
+            // SAFETY: attached thread; the constructor returns a new exact dict
+            // reference or sets an exception. The signed hint is nonnegative.
+            return unsafe {
+                ffi::_PyDict_NewPresized(capacity)
+                    .assume_owned_or_err(py)
+                    .cast_into_unchecked()
+            };
+        }
+        let _ = capacity;
+        // SAFETY: attached thread; this fallback also preserves allocation
+        // exceptions rather than turning them into a constructor panic.
+        unsafe {
+            ffi::PyDict_New()
+                .assume_owned_or_err(py)
+                .cast_into_unchecked()
+        }
+    }
+
+    /// Creates a dictionary from borrowed key/value columns without Python pair objects.
+    ///
+    /// The returned dictionary retains its own references. Input owners need only
+    /// remain alive for this call. Duplicate keys keep their last value, preserving
+    /// first insertion order; hashing and equality errors propagate.
+    ///
+    /// The columns must have equal lengths; otherwise a `ValueError` is returned.
+    /// CPython selects compact string-key storage when every key is an exact string.
+    pub fn from_borrowed_items<'py>(
+        py: Python<'py>,
+        keys: &[Borrowed<'_, 'py, PyAny>],
+        values: &[Borrowed<'_, 'py, PyAny>],
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if keys.len() != values.len() {
+            return Err(crate::exceptions::PyValueError::new_err(
+                "dictionary key and value columns must have equal lengths",
+            ));
+        }
+        #[cfg(all(Py_3_13, not(any(windows, Py_LIMITED_API, PyPy, GraalPy, RustPython))))]
+        {
+            if keys.is_empty() {
+                return Self::with_capacity(py, 0);
+            }
+            // SAFETY: Borrowed is transparent over a non-null PyObject pointer.
+            // Each column is contiguous, with matching initialized lengths.
+            // Stride one keeps the C iterator's final advancement within each
+            // allocation's one-past boundary. Input owners retain every object
+            // across possible Python callbacks.
+            // _PyDict_FromItems copies references and owns cleanup on failure.
+            unsafe {
+                ffi::_PyDict_FromItems(
+                    keys.as_ptr().cast(),
+                    1,
+                    values.as_ptr().cast(),
+                    1,
+                    keys.len().try_into()?,
+                )
+                .assume_owned_or_err(py)
+                .cast_into_unchecked()
+            }
+        }
+        #[cfg(any(not(Py_3_13), windows, Py_LIMITED_API, PyPy, GraalPy, RustPython))]
+        {
+            let dict = Self::with_capacity(py, 0)?;
+            for (&key, &value) in keys.iter().zip(values) {
+                dict.set_item(key, value)?;
+            }
+            Ok(dict)
+        }
     }
 
     /// Creates a new dictionary from the sequence given.
@@ -809,8 +889,25 @@ where
     I: IntoIterator<Item = T>,
 {
     fn into_py_dict(self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new(py);
-        self.into_iter().try_for_each(|item| {
+        let mut items = self.into_iter();
+        let capacity = items.size_hint().0;
+        let Some(first) = items.next() else {
+            return PyDict::with_capacity(py, 0);
+        };
+        let (key, value) = first.unpack();
+        let key = key.into_pyobject_or_pyerr(py)?;
+        // Generic presizing forces the wider generic-key table. Leave exact
+        // string keys on CPython's compact incremental path; a non-string first
+        // key already requires generic storage for the completed dictionary.
+        let key_view = key.as_borrowed().into_any();
+        let capacity = if key_view.is_exact_instance_of::<crate::types::PyString>() {
+            0
+        } else {
+            capacity
+        };
+        let dict = PyDict::with_capacity(py, capacity)?;
+        dict.set_item(key_view, value)?;
+        items.try_for_each(|item| {
             let (key, value) = item.unpack();
             dict.set_item(key, value)
         })?;
@@ -856,9 +953,9 @@ mod tests {
     use super::*;
     use crate::platform::collections::HashMap;
     use crate::platform::prelude::*;
-    use crate::types::{PyAnyMethods as _, PyTuple};
     #[cfg(not(any(PyPy, GraalPy, RustPython)))]
     use crate::types::{PyDictItems, PyDictKeys, PyDictValues};
+    use crate::types::{PyListMethods as _, PyTuple};
     use alloc::collections::BTreeMap;
 
     #[test]
@@ -878,6 +975,106 @@ mod tests {
             assert_eq!(map, dict.extract().unwrap());
             let map: BTreeMap<i32, i32> = [(7, 32)].iter().cloned().collect();
             assert_eq!(map, dict.extract().unwrap());
+        });
+    }
+
+    #[test]
+    fn test_borrowed_items_keep_key_order_and_last_duplicate() {
+        Python::attach(|py| {
+            let keys: Vec<_> = (0..16)
+                .map(|index| crate::types::PyString::new(py, &format!("field_{index}")))
+                .collect();
+            let first = 1_u32.into_pyobject(py).unwrap().into_any();
+            let last = 2_u32.into_pyobject(py).unwrap().into_any();
+            let mut items: Vec<_> = keys
+                .iter()
+                .map(|key| [key.as_borrowed().into_any(), first.as_borrowed()])
+                .collect();
+            items.push([keys[0].as_borrowed().into_any(), last.as_borrowed()]);
+            let key_column: Vec<_> = items.iter().map(|pair| pair[0]).collect();
+            let value_column: Vec<_> = items.iter().map(|pair| pair[1]).collect();
+            let dict = PyDict::from_borrowed_items(py, &key_column, &value_column).unwrap();
+            let ordinary = PyDict::new(py);
+            for &[key, value] in &items {
+                ordinary.set_item(key, value).unwrap();
+            }
+            assert!(dict.eq(&ordinary).unwrap());
+            assert_eq!(
+                dict.get_item("field_0")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<i32>()
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                dict.keys()
+                    .get_item(0)
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "field_0",
+            );
+        });
+    }
+
+    #[test]
+    fn test_borrowed_items_retain_values_and_reject_unhashable_keys() {
+        Python::attach(|py| {
+            let key = crate::types::PyString::new(py, "items");
+            let value = PyList::empty(py);
+            let dict = PyDict::from_borrowed_items(
+                py,
+                &[key.as_borrowed().into_any()],
+                &[value.as_borrowed().into_any()],
+            )
+            .unwrap();
+            assert!(
+                PyDict::from_borrowed_items(
+                    py,
+                    &[value.as_borrowed().into_any()],
+                    &[key.as_borrowed().into_any()],
+                )
+                .unwrap_err()
+                .is_instance_of::<crate::exceptions::PyTypeError>(py)
+            );
+            drop(key);
+            drop(value);
+            dict.get_item("items")
+                .unwrap()
+                .unwrap()
+                .cast::<PyList>()
+                .unwrap()
+                .append(42)
+                .unwrap();
+            assert!(
+                PyDict::from_borrowed_items(py, &[], &[])
+                    .unwrap()
+                    .is_empty()
+            );
+            let key = 1_u32.into_pyobject(py).unwrap().into_any();
+            assert!(
+                PyDict::from_borrowed_items(py, &[key.as_borrowed()], &[])
+                    .unwrap_err()
+                    .is_instance_of::<crate::exceptions::PyValueError>(py)
+            );
+        });
+    }
+
+    #[test]
+    fn test_capacity_hint_does_not_limit_dictionary_construction() {
+        Python::attach(|py| {
+            let dict = PyDict::with_capacity(py, 1).unwrap();
+            for key in 0..32 {
+                dict.set_item(key, key).unwrap();
+            }
+            assert_eq!(dict.len(), 32);
+            let streamed = (0..32)
+                .filter(|_| true)
+                .map(|key| (key, key))
+                .into_py_dict(py)
+                .unwrap();
+            assert!(dict.eq(streamed).unwrap());
         });
     }
 

@@ -1,17 +1,16 @@
+#[cfg(all(not(PyPy), Py_3_13))]
+use core::ffi::c_char;
+#[cfg(Py_3_12)]
+use core::ffi::c_int;
+
 #[cfg(all(GraalPy, Py_3_13))]
 use crate::PyObject;
 #[cfg(not(GraalPy))]
 use crate::object::*;
 #[cfg(not(any(PyPy, GraalPy)))]
 use crate::pyport::Py_ssize_t;
-
 #[cfg(Py_3_15)]
 use crate::{PyDict_CheckExact, dictobject::PyDict_Check};
-
-#[cfg(all(not(PyPy), Py_3_13))]
-use core::ffi::c_char;
-#[cfg(Py_3_12)]
-use core::ffi::c_int;
 
 #[cfg(not(PyPy))]
 opaque_struct!(pub PyDictKeysObject);
@@ -107,7 +106,19 @@ extern_libpython! {
     pub fn PyDict_ContainsString(mp: *mut PyObject, key: *const c_char) -> c_int;
 }
 
-// skipped private _PyDict_NewPresized
+extern_libpython! {
+    #[cfg(not(any(windows, PyPy, GraalPy, RustPython)))]
+    pub fn _PyDict_NewPresized(minused: Py_ssize_t) -> *mut PyObject;
+
+    #[cfg(all(Py_3_13, not(any(windows, PyPy, GraalPy, RustPython))))]
+    pub fn _PyDict_FromItems(
+        keys: *const *mut PyObject,
+        keys_offset: Py_ssize_t,
+        values: *const *mut PyObject,
+        values_offset: Py_ssize_t,
+        length: Py_ssize_t,
+    ) -> *mut PyObject;
+}
 
 extern_libpython! {
     #[cfg(Py_3_13)]

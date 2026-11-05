@@ -5,7 +5,7 @@ use crate::ffi_ptr_ext::FfiPtrExt;
 use crate::instance::Bound;
 #[cfg(Py_LIMITED_API)]
 use crate::types::PyAnyMethods;
-use crate::types::{PyAny, PyList, PyMapping};
+use crate::types::{IntoPyDict, PyAny, PyList, PyMapping};
 use crate::{BoundObject, IntoPyObject, IntoPyObjectExt, Python, ffi};
 #[cfg(Py_LIMITED_API)]
 use crate::{
@@ -52,19 +52,19 @@ pyobject_native_type_core!(
 );
 
 impl PyFrozenDict {
-    /// Creates a new frozendict from an iterator of key/value pairs.
+    /// Creates a frozendict from one pass over key/value pairs.
+    ///
+    /// Pairs are inserted directly into a temporary dictionary, avoiding an
+    /// intermediate Python list and pair tuples. Conversion and hashing errors
+    /// stop consumption and release the partial dictionary.
     pub fn new<'py, K, V, I>(py: Python<'py>, iterable: I) -> PyResult<Bound<'py, PyFrozenDict>>
     where
         I: IntoIterator<Item = (K, V)>,
         K: IntoPyObject<'py>,
         V: IntoPyObject<'py>,
     {
-        // Python does not expose any way to build a frozen  dict from an
-        // iterator, so we have to build a list of items and then call the
-        // constructor.
-        let items = PyList::new(py, iterable)?;
-
-        Self::from_sequence(&items)
+        let items = iterable.into_py_dict(py)?;
+        Self::from_sequence(items.as_any())
     }
 
     /// Creates a new frozendict from the sequence given.

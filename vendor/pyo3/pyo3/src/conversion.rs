@@ -251,6 +251,26 @@ pub trait IntoPyObjectExt<'py>: IntoPyObject<'py> + into_pyobject_ext::Sealed {
             Err(err) => Err(err.into()),
         }
     }
+
+    /// Converts into an untyped Python object, preserving native reference ownership.
+    ///
+    /// Unlike [`Self::into_bound_py_any`], a borrowed conversion output remains
+    /// borrowed. The result exposes [`BoundObject`] for [`PyAny`], so generic
+    /// consumers can borrow it without knowing the conversion's concrete target
+    /// or promoting it to an owned reference. Conversion errors become [`PyErr`].
+    ///
+    /// ```
+    /// use pyo3::{prelude::*, BoundObject, IntoPyObjectExt};
+    ///
+    /// # Python::attach(|py| -> PyResult<()> {
+    /// let value = 42.into_pyobject_any(py)?;
+    /// assert_eq!(value.as_borrowed().extract::<i32>()?, 42);
+    /// # Ok(())
+    /// # }).unwrap();
+    /// ```
+    fn into_pyobject_any(self, py: Python<'py>) -> PyResult<impl BoundObject<'py, PyAny>> {
+        self.into_pyobject_or_pyerr(py).map(BoundObject::into_any)
+    }
 }
 
 impl<'py, T> IntoPyObjectExt<'py> for T where T: IntoPyObject<'py> {}
@@ -577,6 +597,26 @@ mod test_no_clone {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(any(PyPy, GraalPy, RustPython)))]
+    use crate::{
+        BoundObject, IntoPyObjectExt, Python,
+        types::{PyAnyMethods, PyList},
+    };
+
+    #[test]
+    #[cfg(not(any(PyPy, GraalPy, RustPython)))]
+    fn erased_conversion_preserves_borrowed_reference_ownership() {
+        Python::attach(|py| {
+            let source = PyList::empty(py);
+            let references = source.as_unbound()._get_refcnt(py);
+            let converted = (&source).into_pyobject_any(py).unwrap();
+            assert!(converted.as_borrowed().is(&source));
+            assert_eq!(source.as_unbound()._get_refcnt(py), references);
+            drop(converted);
+            assert_eq!(source.as_unbound()._get_refcnt(py), references);
+        });
+    }
+
     #[test]
     #[cfg(feature = "macros")]
     #[expect(deprecated)]

@@ -1,3 +1,6 @@
+//! Map conversions sharing the dictionary constructor's sizing and insertion policy.
+//! Python extraction retains owned values across mutable-dictionary iteration.
+
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::{PyStaticExpr, type_hint_subscript};
 #[cfg(feature = "experimental-inspect")]
@@ -6,7 +9,7 @@ use crate::{
     Borrowed, FromPyObject, PyAny, PyErr, Python,
     conversion::{FromPyObjectOwned, IntoPyObject},
     instance::Bound,
-    types::{PyDict, any::PyAnyMethods, dict::PyDictMethods},
+    types::{IntoPyDict, PyDict, any::PyAnyMethods, dict::PyDictMethods},
 };
 
 use core::cmp;
@@ -29,11 +32,7 @@ where
         type_hint_subscript!(PyDict::TYPE_HINT, K::OUTPUT_TYPE, V::OUTPUT_TYPE);
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let dict = PyDict::new(py);
-        for (k, v) in self {
-            dict.set_item(k, v)?;
-        }
-        Ok(dict)
+        self.into_py_dict(py)
     }
 }
 
@@ -53,11 +52,7 @@ where
         type_hint_subscript!(PyDict::TYPE_HINT, <&K>::OUTPUT_TYPE, <&V>::OUTPUT_TYPE);
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let dict = PyDict::new(py);
-        for (k, v) in self {
-            dict.set_item(k, v)?;
-        }
-        Ok(dict)
+        self.into_py_dict(py)
     }
 }
 
@@ -75,11 +70,7 @@ where
         type_hint_subscript!(PyDict::TYPE_HINT, K::OUTPUT_TYPE, V::OUTPUT_TYPE);
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let dict = PyDict::new(py);
-        for (k, v) in self {
-            dict.set_item(k, v)?;
-        }
-        Ok(dict)
+        self.into_py_dict(py)
     }
 }
 
@@ -99,11 +90,7 @@ where
         type_hint_subscript!(PyDict::TYPE_HINT, <&K>::OUTPUT_TYPE, <&V>::OUTPUT_TYPE);
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let dict = PyDict::new(py);
-        for (k, v) in self {
-            dict.set_item(k, v)?;
-        }
-        Ok(dict)
+        self.into_py_dict(py)
     }
 }
 

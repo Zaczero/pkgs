@@ -3,6 +3,11 @@
 Internal CPython primitives shared by the monorepo's PyO3 extensions. The crate
 uses PyO3's objects, conversions, ownership and exception handling directly.
 
+Object construction, borrowed views, reference ownership and interpreter API
+selection belong to the PyO3 fork. This crate composes those primitives into
+literal caching, macros and protocol helpers; it does not duplicate their C
+declarations or object-layout rules.
+
 ## Dictionary construction
 
 ```rust
@@ -25,11 +30,13 @@ fn message<'py>(
 }
 ```
 
-`dict!` reuses literal keys and values, reserves for the declared fields where
-CPython supports it, and accepts ordinary `IntoPyObject` expressions. Borrowed
-Python values stay borrowed during insertion. Expressions run once; omitted
-conditional fields do not evaluate their values. Conversion errors release the
-partially constructed dictionary and propagate through the caller's `PyResult`.
+`dict!` reuses literal keys and values and accepts ordinary `IntoPyObject`
+expressions. Unconditional fields use PyO3's borrowed bulk constructor, allowing
+CPython to select compact string-key storage without Python pair objects.
+Conditional fields are inserted incrementally. Borrowed Python values stay
+borrowed during construction. Expressions run once; omitted
+conditional fields do not evaluate their values. Conversion errors release
+temporary construction state and propagate through the caller's `PyResult`.
 
 Use PyO3's `intern!` directly for individual key lookups. `cached_string!` and
 `cached_bytes!` select from a fixed vocabulary with an uncached fallback. Their
