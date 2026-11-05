@@ -757,6 +757,20 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
         "/******************************************************************************\n",
         "#include \"proj/internal/include_nlohmann_json.hpp\"\n/******************************************************************************\n",
     )?;
+    // libc++ reports ERANGE as failbit even when decimal conversion returns a
+    // representable subnormal. Keep that value while retaining syntax and
+    // overflow rejection at the existing locale-independent parser.
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/internal.cpp",
+        r#"    double d;
+    iss >> d;
+    if (!iss.eof() || iss.fail()) {"#,
+        r#"    double d = 0;
+    iss >> d;
+    if (!iss.eof() ||
+        (iss.fail() && std::fpclassify(d) != FP_SUBNORMAL)) {"#,
+    )?;
     // PROJ's bundled formatter preserves binary64 round trips without requiring
     // the floating-point std::to_chars symbols introduced in macOS 13.3.
     const ROUNDTRIP_DOUBLE_FORMAT: &str = r#"std::string toString(double val, int) {
