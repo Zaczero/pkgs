@@ -42,15 +42,20 @@ use {
 #[macro_export]
 macro_rules! py_format {
     ($py: expr, $($arg:tt)*) => {{
-        if let Some(static_string) = format_args!($($arg)*).as_str() {
-            static INTERNED: $crate::sync::PyOnceLock<$crate::Py<$crate::types::PyString>> = $crate::sync::PyOnceLock::new();
-            Ok($crate::Bound::clone(
-                INTERNED
-                .get_or_init($py, || $crate::types::PyString::intern($py, static_string).unbind())
-                .bind($py)
-            ))
-        } else {
-            $crate::types::PyString::from_fmt($py, format_args!($($arg)*))
+        let __py = $py;
+        // A match extends the formatting temporaries through both paths without
+        // evaluating dynamic arguments again after the static-string probe.
+        match format_args!($($arg)*) {
+            __args => if let Some(static_string) = __args.as_str() {
+                static INTERNED: $crate::sync::PyOnceLock<$crate::Py<$crate::types::PyString>> = $crate::sync::PyOnceLock::new();
+                Ok($crate::Bound::clone(
+                    INTERNED
+                    .get_or_init(__py, || $crate::types::PyString::intern(__py, static_string).unbind())
+                    .bind(__py)
+                ))
+            } else {
+                $crate::types::PyString::from_fmt(__py, __args)
+            }
         }
     }}
 }
@@ -180,6 +185,28 @@ mod tests {
     use super::*;
     use crate::types::PyStringMethods;
     use crate::{IntoPyObject, Python};
+
+    #[test]
+    fn formatting_evaluates_dynamic_expressions_once() {
+        Python::attach(|py| {
+            let mut tokens = 0;
+            let mut values = 0;
+            let output = crate::py_format!(
+                {
+                    tokens += 1;
+                    py
+                },
+                "value:{}",
+                {
+                    values += 1;
+                    values
+                }
+            )
+            .unwrap();
+            assert_eq!(output.to_str().unwrap(), "value:1");
+            assert_eq!((tokens, values), (1, 1));
+        });
+    }
 
     #[test]
     #[allow(clippy::write_literal)]
