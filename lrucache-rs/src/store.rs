@@ -5,6 +5,7 @@
 //! equality callback's enclosing lookup.
 
 use core::num::niche_types::U32NotAllOnes;
+use std::iter;
 use std::num::NonZeroU32;
 
 use hashbrown::HashTable;
@@ -32,20 +33,22 @@ pub(crate) struct Store {
     head: Option<Slot>,
     tail: Option<Slot>,
     len: u32,
+    /// Cyclic mutation token for detecting changes across Python callbacks, not a total.
     revision: u64,
 }
 
 impl Store {
     pub(crate) fn new(maxsize: NonZeroU32) -> Self {
         let cap = maxsize.get();
-        let mut nodes: Box<[_]> = (0..cap)
-            .map(|index| Node {
+        let nodes: Box<[_]> = (1..cap)
+            .map(Slot::new)
+            .chain(iter::once(None))
+            .map(|next| Node {
                 hash: 0,
                 prev: None,
-                next: Slot::new(index.wrapping_add(1)),
+                next,
             })
             .collect();
-        nodes.last_mut().expect("positive capacity").next = None;
         Self {
             table: HashTable::with_capacity(cap as usize),
             nodes,
@@ -131,7 +134,7 @@ impl Store {
             self.tail = Some(idx);
         }
         self.head = Some(idx);
-        self.len = self.len.wrapping_add(1);
+        self.len = self.len.checked_add(1).expect("live entries fit the slab");
         let nodes = &self.nodes;
         self.table.insert_unique(hash as u64, idx, |&stored| {
             nodes
@@ -152,7 +155,7 @@ impl Store {
         self.unlink(prev, next);
         self.node_mut(idx).next = self.free;
         self.free = Some(idx);
-        self.len = self.len.wrapping_sub(1);
+        self.len = self.len.checked_sub(1).expect("removed slot was occupied");
         self.revision = self.revision.wrapping_add(1);
     }
 
