@@ -16,8 +16,11 @@ fn time_seconds_or_default(time: Option<f64>) -> Result<i64, TotpError> {
             Err(error) => {
                 let duration = error.duration();
                 i128::from(duration.as_secs())
-                    .wrapping_neg()
-                    .wrapping_sub(i128::from(duration.subsec_nanos() != 0))
+                    .checked_neg()
+                    .and_then(|seconds| {
+                        seconds.checked_sub(i128::from(duration.subsec_nanos() != 0))
+                    })
+                    .expect("negative u64 seconds and a fractional-second adjustment fit i128")
             },
         };
         i64::try_from(seconds).map_err(|_| TotpError::TimeSecondsOutOfRange)
@@ -33,7 +36,9 @@ pub(crate) fn time_window_from_time(
         return Err(TotpError::StepSecondsMustBePositive);
     }
 
-    let diff = i128::from(time_seconds_or_default(time)?).wrapping_sub(i128::from(t0));
+    let diff = i128::from(time_seconds_or_default(time)?)
+        .checked_sub(i128::from(t0))
+        .expect("the difference of two i64 timestamps fits i128");
     let counter = diff.div_euclid(i128::from(step_seconds));
     i64::try_from(counter).map_err(|_| TotpError::TimeWindowOutOfRange)
 }

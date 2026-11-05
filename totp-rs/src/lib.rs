@@ -11,7 +11,6 @@ mod time;
 mod totp;
 
 use std::ascii::Char;
-use std::hint::unlikely;
 use std::num::NonZeroU32;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -92,23 +91,15 @@ fn format_code_py(py: Python<'_>, mut code: u32, digits: Digits) -> PyResult<Py<
 
 fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
     let mut value = 0_u32;
-    let mut seen_digits = 0_u8;
-
-    for &b in code.as_bytes() {
-        if !b.is_ascii_digit() {
-            continue;
-        }
-        if unlikely(seen_digits == digits.count) {
-            return None;
-        }
-
-        value = value
-            .wrapping_mul(10)
-            .wrapping_add(u32::from(b.wrapping_sub(b'0')));
-        seen_digits = seen_digits.wrapping_add(1);
+    let mut decimal = code.bytes().filter(u8::is_ascii_digit);
+    for _ in 0..digits.count {
+        let digit = decimal
+            .next()?
+            .checked_sub(b'0')
+            .expect("ASCII decimal digit");
+        value = value.checked_mul(10)?.checked_add(u32::from(digit))?;
     }
-
-    (seen_digits == digits.count).then_some(value)
+    decimal.next().is_none().then_some(value)
 }
 
 enum Code<'a> {
