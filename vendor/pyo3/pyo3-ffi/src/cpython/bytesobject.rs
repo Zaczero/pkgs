@@ -1,10 +1,11 @@
-use crate::Py_ssize_t;
-use crate::object::*;
 #[cfg(not(Py_LIMITED_API))]
 use core::ffi::c_char;
 use core::ffi::c_int;
 #[cfg(Py_3_15)]
 use core::ffi::c_void;
+
+use crate::Py_ssize_t;
+use crate::object::*;
 
 #[cfg(not(any(PyPy, GraalPy, Py_LIMITED_API)))]
 #[repr(C)]
@@ -30,7 +31,9 @@ extern_libpython! {
 #[inline]
 pub unsafe fn PyBytes_AS_STRING(op: *mut PyObject) -> *const c_char {
     #[cfg(not(any(PyPy, GraalPy)))]
-    return &(*op.cast::<PyBytesObject>()).ob_sval as *const c_char;
+    // A newly allocated bytes object's payload may still be uninitialized and
+    // writable. Do not introduce a shared reference into its pointer provenance.
+    return (&raw const (*op.cast::<PyBytesObject>()).ob_sval).cast();
     #[cfg(any(PyPy, GraalPy))]
     return crate::PyBytes_AsString(op);
 }
@@ -59,4 +62,23 @@ extern_libpython! {
     pub fn PyBytesWriter_Resize(writer: *mut PyBytesWriter, size: Py_ssize_t) -> c_int;
 
     pub fn PyBytesWriter_Grow(writer: *mut PyBytesWriter, size: Py_ssize_t) -> c_int;
+}
+
+#[cfg(all(test, not(any(PyPy, GraalPy, Py_LIMITED_API))))]
+mod tests {
+    use core::mem::MaybeUninit;
+
+    use super::{PyBytes_AS_STRING, PyBytesObject};
+
+    #[test]
+    fn bytes_data_pointer_preserves_write_access_to_private_storage() {
+        let mut bytes = MaybeUninit::<PyBytesObject>::uninit();
+        // SAFETY: this test owns the allocation. The helper only computes the
+        // payload address; no header or uninitialized payload value is read.
+        unsafe {
+            let data = PyBytes_AS_STRING(bytes.as_mut_ptr().cast()).cast_mut();
+            data.write(65);
+            assert_eq!(data.read(), 65);
+        }
+    }
 }
