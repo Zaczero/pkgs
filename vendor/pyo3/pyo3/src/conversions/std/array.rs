@@ -158,9 +158,8 @@ fn array_try_from_fn_erased<E, T>(
                 self.array_mut
                     .get_unchecked_mut(self.initialized)
                     .write(item);
-
-                self.initialized = self.initialized.unchecked_add(1)
             }
+            self.initialized += 1;
         }
     }
 
