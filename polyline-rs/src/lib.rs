@@ -1,4 +1,5 @@
 #![feature(ascii_char)]
+#![feature(next_index)]
 
 mod constants;
 mod decode;
@@ -45,7 +46,11 @@ fn encode<const LATLON: bool>(
 ) -> PyResult<Vec<Char>> {
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
-    let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
+    let capacity = coordinates
+        .len()
+        .ok()
+        .and_then(|n| n.checked_mul(12))
+        .unwrap_or(0);
     let mut encoder = Encoder::new(&scale, capacity);
     for (index, coord) in coordinates.try_iter()?.enumerate() {
         encoder.push::<LATLON>(extract_coord_pair(&coord?, index)?, index)?;

@@ -39,11 +39,9 @@ fn encode_coordinate(
     }
 
     let current = rounded as i32;
-    // The difference of two i32 coordinates fits in i64; admission below
-    // rejects it if the wire's signed 32-bit delta cannot represent it.
-    let delta = i64::from(current).wrapping_sub(i64::from(previous));
-    let delta = i32::try_from(delta)
-        .map_err(|_| PolylineError::CoordinateDeltaOutOfRange { index, coordinate })?;
+    let delta = current
+        .checked_sub(previous)
+        .ok_or(PolylineError::CoordinateDeltaOutOfRange { index, coordinate })?;
     encode_value(out, delta);
     Ok(current)
 }

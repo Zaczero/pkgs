@@ -30,14 +30,17 @@ fn scale_for_precision(precision: i32) -> f64 {
     cached_precision_value(&SCALES, precision).unwrap_or_else(|| 10_f64.powi(precision))
 }
 
-fn inverse_scale_for_precision(precision: i32) -> f64 {
-    cached_precision_value(&INV_SCALES, precision)
-        .unwrap_or_else(|| 10_f64.powi(precision.saturating_neg()))
+fn inverse_scale_for_precision(precision: i32) -> Option<f64> {
+    cached_precision_value(&INV_SCALES, precision).or_else(|| {
+        precision
+            .checked_neg()
+            .map(|exponent| 10_f64.powi(exponent))
+    })
 }
 
 pub(crate) fn precision_scale(precision: i32) -> Option<PrecisionScale> {
     let scale = scale_for_precision(precision);
-    let inverse_scale = inverse_scale_for_precision(precision);
+    let inverse_scale = inverse_scale_for_precision(precision)?;
     // i32::MIN has the greatest absolute wire coordinate, so this also proves
     // every other accumulated i32 coordinate decodes to a finite f64.
     let largest_decoded_coordinate = f64::from(i32::MIN) * inverse_scale;

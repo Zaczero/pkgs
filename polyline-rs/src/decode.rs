@@ -1,3 +1,8 @@
+//! Signed wire-varint admission and checked coordinate reconstruction.
+
+use std::iter::Enumerate;
+use std::str::Bytes;
+
 use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, precision_scale};
 use crate::errors::PolylineError;
 use crate::zigzag::zigzag_decode;
@@ -5,41 +10,19 @@ use crate::zigzag::zigzag_decode;
 const MAX_CHUNK: u8 = CHUNK_MASK | CONTINUATION_BIT;
 const MAX_SHIFT: u32 = u32::BITS - 2;
 
-struct DecodeCursor<'a> {
-    bytes: &'a [u8],
-    index: usize,
-}
-
-impl<'a> DecodeCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, index: 0 }
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.index == self.bytes.len()
-    }
-
-    const fn index(&self) -> usize {
-        self.index
-    }
-}
-
-fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError> {
-    let start = cursor.index;
+fn decode_next_value(cursor: &mut Enumerate<Bytes<'_>>) -> Result<i32, PolylineError> {
+    let start = cursor.next_index();
     let mut value = 0_u32;
-    let mut shift = 0_u32;
 
-    loop {
-        let index = cursor.index;
-        let Some(&byte) = cursor.bytes.get(index) else {
+    for shift in (0..u32::BITS).step_by(CHUNK_BITS as usize) {
+        let Some((index, byte)) = cursor.next() else {
             return Err(PolylineError::UnterminatedPolylineValue { index: start });
         };
-        cursor.index = index.wrapping_add(1);
 
-        let b = byte.wrapping_sub(ASCII_OFFSET);
-        if b > MAX_CHUNK {
-            return Err(PolylineError::InvalidPolylineByte { index, byte });
-        }
+        let b = byte
+            .checked_sub(ASCII_OFFSET)
+            .filter(|&chunk| chunk <= MAX_CHUNK)
+            .ok_or(PolylineError::InvalidPolylineByte { index, byte })?;
 
         if shift == MAX_SHIFT && b > 0b11 {
             return Err(PolylineError::PolylineValueOverflow { index: start });
@@ -48,13 +31,11 @@ fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError
         value |= u32::from(b & CHUNK_MASK) << shift;
 
         if (b & CONTINUATION_BIT) == 0 {
-            break;
+            return Ok(zigzag_decode(value));
         }
-
-        shift = shift.wrapping_add(CHUNK_BITS);
     }
 
-    Ok(zigzag_decode(value))
+    Err(PolylineError::PolylineValueOverflow { index: start })
 }
 
 pub(crate) fn decode<const LATLON: bool>(
@@ -64,13 +45,13 @@ pub(crate) fn decode<const LATLON: bool>(
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
 
-    let mut cursor = DecodeCursor::new(line.trim().as_bytes());
+    let mut cursor = line.trim().bytes().enumerate();
     let mut last_lat = 0_i32;
     let mut last_lon = 0_i32;
     let mut out = Vec::new();
 
-    while !cursor.is_empty() {
-        let coord_index = cursor.index();
+    while cursor.len() != 0 {
+        let coord_index = cursor.next_index();
         let dlat = decode_next_value(&mut cursor)?;
         let dlon = decode_next_value(&mut cursor).map_err(|error| {
             if let PolylineError::UnterminatedPolylineValue { .. } = error {
