@@ -1,19 +1,31 @@
+//! Stateful coordinate encoding into a type-guaranteed ASCII character stream.
+
+use std::ascii::Char;
+
 use crate::constants::{ASCII_OFFSET, CHUNK_BITS, CHUNK_MASK, CONTINUATION_BIT, PrecisionScale};
 use crate::errors::PolylineError;
 use crate::zigzag::zigzag_encode;
 
-fn encode_value(out: &mut Vec<u8>, delta: i32) {
+/// Admits the protocol's ASCII offset without a dependent alphabet-table load.
+fn encode_chunk(chunk: u8) -> Char {
+    chunk
+        .checked_add(ASCII_OFFSET)
+        .and_then(Char::from_u8)
+        .expect("six-bit Polyline chunks encode as ASCII")
+}
+
+fn encode_value(out: &mut Vec<Char>, delta: i32) {
     let mut value = zigzag_encode(delta);
     while value >= u32::from(CONTINUATION_BIT) {
         let chunk = ((value as u8) & CHUNK_MASK) | CONTINUATION_BIT;
-        out.push(chunk.wrapping_add(ASCII_OFFSET));
+        out.push(encode_chunk(chunk));
         value >>= CHUNK_BITS;
     }
-    out.push((value as u8).wrapping_add(ASCII_OFFSET));
+    out.push(encode_chunk(value as u8));
 }
 
 fn encode_coordinate(
-    out: &mut Vec<u8>,
+    out: &mut Vec<Char>,
     coordinate_value: f64,
     scale: f64,
     previous: i32,
@@ -37,7 +49,7 @@ fn encode_coordinate(
 }
 
 pub(crate) struct Encoder {
-    out: Vec<u8>,
+    out: Vec<Char>,
     scale: f64,
     last_lat: i32,
     last_lon: i32,
@@ -84,8 +96,7 @@ impl Encoder {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> String {
-        // Safety: all bytes are ASCII.
-        unsafe { String::from_utf8_unchecked(self.out) }
+    pub(crate) fn finish(self) -> Vec<Char> {
+        self.out
     }
 }

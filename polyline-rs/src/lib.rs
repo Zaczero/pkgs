@@ -1,8 +1,12 @@
+#![feature(ascii_char)]
+
 mod constants;
 mod decode;
 mod encode;
 mod errors;
 mod zigzag;
+
+use std::ascii::Char;
 
 use constants::precision_scale;
 use decode::decode;
@@ -35,7 +39,10 @@ fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, 
     Ok((first.extract()?, second.extract()?))
 }
 
-fn encode<const LATLON: bool>(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<String> {
+fn encode<const LATLON: bool>(
+    coordinates: &Bound<'_, PyAny>,
+    precision: i32,
+) -> PyResult<Vec<Char>> {
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
     let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
@@ -48,13 +55,13 @@ fn encode<const LATLON: bool>(coordinates: &Bound<'_, PyAny>, precision: i32) ->
 
 #[pyfunction]
 #[pyo3(signature = (coordinates, precision = 5))]
-fn encode_lonlat(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<String> {
+fn encode_lonlat(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<Vec<Char>> {
     encode::<false>(coordinates, precision)
 }
 
 #[pyfunction]
 #[pyo3(signature = (coordinates, precision = 5))]
-fn encode_latlon(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<String> {
+fn encode_latlon(coordinates: &Bound<'_, PyAny>, precision: i32) -> PyResult<Vec<Char>> {
     encode::<true>(coordinates, precision)
 }
 
