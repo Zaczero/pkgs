@@ -76,6 +76,75 @@ pyobject_native_type_core!(
 );
 
 impl PyBytes {
+    /// Concatenates borrowed byte slices directly into the final Python allocation.
+    ///
+    /// A clone of the iterator determines the total byte length before allocation.
+    /// The original iterator then supplies the bytes in order, without an
+    /// intermediate buffer, growth, or zero-initialization pass. Source slices
+    /// are borrowed only during construction; the result owns its bytes.
+    ///
+    /// Returns an overflow error if the total length cannot fit Python's size
+    /// type, an allocation error if Python cannot allocate the result, or a
+    /// `ValueError` if cloning the iterator changes its total byte length.
+    /// Iterator panics discard the unfinished allocation.
+    pub fn from_slices<'a, 'py, I>(py: Python<'py>, slices: I) -> PyResult<Bound<'py, PyBytes>>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+        I::IntoIter: Clone,
+    {
+        let slices = slices.into_iter();
+        let length = slices
+            .clone()
+            .try_fold(0_usize, |total, slice| total.checked_add(slice.len()))
+            .ok_or_else(|| crate::exceptions::PyOverflowError::new_err("byte length overflow"))?;
+        // SAFETY: the checked length is representable by Python. The new bytes
+        // remain private until all their storage has been initialized below.
+        let bytes: Bound<'py, PyBytes> = unsafe {
+            ffi::PyBytes_FromStringAndSize(core::ptr::null(), length.try_into()?)
+                .assume_owned_or_err(py)?
+                .cast_into_unchecked()
+        };
+        // SAFETY: the constructor returned an exact bytes object. Its private
+        // payload is writable even though it has not been initialized yet.
+        let data = unsafe {
+            cfg_select! {
+                not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)) => {
+                    ffi::PyBytes_AS_STRING(bytes.as_ptr()).cast_mut()
+                }
+                _ => ffi::PyBytes_AsString(bytes.as_ptr()),
+            }
+        };
+        // SAFETY: the exact, private allocation contains `length` writable bytes.
+        // MaybeUninit permits its current uninitialized contents. No reference
+        // to the Python object or its storage escapes through the iterator.
+        let mut remaining = unsafe {
+            core::slice::from_raw_parts_mut(data.cast::<core::mem::MaybeUninit<u8>>(), length)
+        };
+        for slice in slices {
+            let (target, rest) = remaining.split_at_mut_checked(slice.len()).ok_or_else(|| {
+                crate::exceptions::PyValueError::new_err(
+                    "byte slices exceeded their measured length",
+                )
+            })?;
+            // SAFETY: the checked split gives exactly slice.len() writable
+            // bytes. This private allocation cannot overlap a source slice.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    slice.as_ptr(),
+                    target.as_mut_ptr().cast(),
+                    slice.len(),
+                );
+            }
+            remaining = rest;
+        }
+        if !remaining.is_empty() {
+            return Err(crate::exceptions::PyValueError::new_err(
+                "byte slices did not fill their measured length",
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// Creates a new Python bytestring object.
     /// The bytestring is initialized by copying the data from the `&[u8]`.
     ///
@@ -135,13 +204,15 @@ impl PyBytes {
 
     /// Creates a new Python `bytes` object using a writer closure.
     ///
-    /// This function allocates a Python `bytes` object with at least `reserved_capacity` bytes of capacity,
-    /// then provides a mutable writer to the closure `write`. The closure can write any number of bytes,
-    /// even more than the reserved capacity; the buffer will grow dynamically as needed.
+    /// This function reserves at least `reserved_capacity` bytes, then provides a
+    /// mutable writer to the closure `write`. The closure can write any number of
+    /// bytes, even more than the reserved capacity; the buffer grows as needed.
     ///
     /// If `reserved_capacity` is 0, the buffer will start empty and grow as the writer writes data.
     ///
     /// After the closure returns, the resulting bytes object contains the written data.
+    /// A failed native write discards unfinished storage and is returned even if
+    /// the closure ignores that write error and returns `Ok(())`.
     ///
     /// # Example
     ///
@@ -425,6 +496,60 @@ mod tests {
                     .unwrap()
                     .is_instance_of::<PyValueError>(py)
             );
+        });
+    }
+
+    #[test]
+    fn test_bytes_from_slices_preserves_segment_boundaries() {
+        Python::attach(|py| {
+            let data = [0x81; 257];
+            for slices in [
+                vec![],
+                vec![b"".as_slice()],
+                vec![b"x".as_slice()],
+                vec![b"ab".as_slice(), b"".as_slice(), b"\0cd".as_slice()],
+                vec![data.as_slice(), data.as_slice(), b"tail".as_slice()],
+            ] {
+                let expected = slices.concat();
+                let result = PyBytes::from_slices(py, slices.iter().copied()).unwrap();
+                assert_eq!(result.as_bytes(), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn test_bytes_from_slices_rejects_inconsistent_clone_lengths() {
+        struct Slices {
+            current: Option<&'static [u8]>,
+            measured: &'static [u8],
+        }
+        impl Clone for Slices {
+            fn clone(&self) -> Self {
+                Self {
+                    current: Some(self.measured),
+                    measured: self.measured,
+                }
+            }
+        }
+        impl Iterator for Slices {
+            type Item = &'static [u8];
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.current.take()
+            }
+        }
+        Python::attach(|py| {
+            for (current, measured) in [
+                (b"x".as_slice(), b"xyz".as_slice()),
+                (b"xyz".as_slice(), b"x".as_slice()),
+            ] {
+                let slices = Slices {
+                    current: Some(current),
+                    measured,
+                };
+                let error = PyBytes::from_slices(py, slices).unwrap_err();
+                assert!(error.is_instance_of::<crate::exceptions::PyValueError>(py));
+            }
         });
     }
 
