@@ -419,7 +419,10 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
                 out,
                 "{}  run {}: {} ({})",
                 id(invocation.candidate),
-                invocation.run.wrapping_add(1),
+                invocation
+                    .run
+                    .checked_add(1)
+                    .expect("displayed run count was admitted"),
                 duration(reading.elapsed_ns as f64),
                 if reading.outcome.success() {
                     "succeeded"
@@ -617,8 +620,9 @@ fn overall_conclusion(out: &mut impl io::Write, result: &Result) -> io::Result<(
         .filter(|c| c.denominator == Some(0) && c.decision == Decision::Less)
         .map(|c| c.numerator)
         .collect();
-    for (position, &left) in improvements.iter().enumerate() {
-        for &right in improvements.iter().skip(position.wrapping_add(1)) {
+    let mut remaining = improvements.as_slice();
+    while let Some((&left, tail)) = remaining.split_first() {
+        for &right in tail {
             if result.analysis.comparisons.iter().any(|c| {
                 c.denominator == Some(left)
                     && c.numerator == right
@@ -632,6 +636,7 @@ fn overall_conclusion(out: &mut impl io::Write, result: &Result) -> io::Result<(
                 )?;
             }
         }
+        remaining = tail;
     }
     let winner = (0..result.candidates.len()).find(|&candidate| {
         result
@@ -726,10 +731,7 @@ fn terminal_width() -> usize {
 /// than the remaining line is split.
 fn wrapped(out: &mut impl io::Write, text: &str, width: usize) -> io::Result<()> {
     // Indented lines continue at their own indent; others hang by three cells.
-    let indent = match text
-        .len()
-        .saturating_sub(text.trim_start_matches(' ').len())
-    {
+    let indent = match text.bytes().take_while(|&byte| byte == b' ').count() {
         0 => 3,
         indent => indent,
     };

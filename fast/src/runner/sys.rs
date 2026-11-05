@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::os::fd::{AsRawFd, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{io, ptr};
 
 pub(super) struct Child {
@@ -30,9 +30,10 @@ impl Child {
     }
 
     pub(super) fn signal(&self, signal: i32) {
+        let group = self.pid.checked_neg().expect("a child PID is positive");
         // SAFETY: the unreaped child reserves its PID/group identity.
         unsafe {
-            libc::kill(self.pid.wrapping_neg(), signal);
+            libc::kill(group, signal);
             libc::kill(self.pid, signal);
         }
     }
@@ -233,7 +234,13 @@ pub(super) fn spawn(launch: &Launch<'_>) -> io::Result<i32> {
             }
             let mut usage: libc::rusage = std::mem::zeroed();
             if libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) == 0 {
-                let launch_rss = (usage.ru_maxrss as u64).wrapping_mul(1024).to_ne_bytes();
+                let Some(launch_rss) = u64::try_from(usage.ru_maxrss)
+                    .ok()
+                    .and_then(|kib| kib.checked_mul(1024))
+                else {
+                    fail(libc::EOVERFLOW);
+                };
+                let launch_rss = launch_rss.to_ne_bytes();
                 if libc::write(launch.release, launch_rss.as_ptr().cast(), launch_rss.len()) != 8 {
                     fail(libc::EPIPE);
                 }
@@ -414,10 +421,14 @@ fn poll_fds(fds: &mut [libc::pollfd], deadline: Option<Instant>) -> io::Result<(
     Ok(())
 }
 
-pub(super) const fn timeval_ns(time: libc::timeval) -> u64 {
-    (time.tv_sec as u64)
-        .wrapping_mul(1_000_000_000)
-        .wrapping_add((time.tv_usec as u64).wrapping_mul(1000))
+/// Convert nonnegative kernel CPU usage to the nanosecond observation domain.
+pub(super) fn timeval_ns(time: libc::timeval) -> io::Result<u64> {
+    let seconds = u64::try_from(time.tv_sec).map_err(io::Error::other)?;
+    let micros = u64::try_from(time.tv_usec).map_err(io::Error::other)?;
+    let duration = Duration::from_secs(seconds)
+        .checked_add(Duration::from_micros(micros))
+        .ok_or_else(|| io::Error::other("CPU duration overflows"))?;
+    u64::try_from(duration.as_nanos()).map_err(io::Error::other)
 }
 
 pub(super) fn executable(path: &Path) -> bool {

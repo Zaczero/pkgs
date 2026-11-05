@@ -13,6 +13,7 @@ use super::{decimal, sys};
 #[derive(Debug, Default, Serialize)]
 pub struct Activity {
     pub tasks: Vec<Task>,
+    /// Completed sampling sweeps, clamped at usize::MAX.
     pub sweeps: usize,
     pub limited: bool,
     pub clock_ticks_per_second: u64,
@@ -37,7 +38,9 @@ pub struct Task {
     pub parent_pid: i32,
     pub last_parent_pid: i32,
     pub name: String,
+    /// Observed renames, clamped at usize::MAX.
     pub name_changes: usize,
+    /// Collected observations, clamped at usize::MAX.
     pub observations: usize,
     pub maximum_observed_rss_bytes: Option<u64>,
     pub samples: Vec<Sample>,
@@ -77,20 +80,19 @@ impl Task {
 
     fn observe(&mut self, stat: Stat, sample: Sample, rss: Option<u64>) {
         if self.samples.len() == 256 {
-            let mut index = 0_usize;
+            let mut keep = false;
             self.samples.retain(|_| {
-                let keep = index.is_multiple_of(2);
-                index = index.wrapping_add(1);
+                keep = !keep;
                 keep
             });
         }
         self.samples.push(sample);
-        self.observations = self.observations.wrapping_add(1);
+        self.observations = self.observations.saturating_add(1);
         self.maximum_observed_rss_bytes = self.maximum_observed_rss_bytes.max(rss);
         self.last_parent_pid = stat.ppid;
         if self.name != stat.comm {
             self.name = stat.comm;
-            self.name_changes = self.name_changes.wrapping_add(1);
+            self.name_changes = self.name_changes.saturating_add(1);
         }
     }
 }
@@ -137,7 +139,10 @@ impl Sampler {
                 done = true;
                 break;
             }
-            sweep.remaining = sweep.remaining.wrapping_sub(1);
+            sweep.remaining = sweep
+                .remaining
+                .checked_sub(1)
+                .expect("remaining sweep work is positive");
             if sweep.directory.is_none() {
                 let Some((pid, parent)) = sweep.queue.pop_front() else {
                     done = true;
@@ -185,7 +190,7 @@ impl Sampler {
         sweep.cpu = sweep.cpu.saturating_add(cost);
         self.interval = self.interval.max(sweep.cpu.saturating_mul(200));
         if done {
-            self.activity.sweeps = self.activity.sweeps.wrapping_add(1);
+            self.activity.sweeps = self.activity.sweeps.saturating_add(1);
             self.interval
         } else {
             self.sweep = Some(sweep);

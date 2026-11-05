@@ -45,7 +45,9 @@ fn counter_ratio(observations: &[&Observation], numerator: &str, denominator: &s
                 .iter()
                 .find(|counter| counter.name == name)?;
             // Separate events must cover the whole execution, not different multiplexed slices.
-            *total = total.wrapping_add(u128::from(counter.fully_scheduled()?));
+            *total = total
+                .checked_add(u128::from(counter.fully_scheduled()?))
+                .expect("u64 counters summed over a slice fit u128");
         }
     }
     let [numerator, denominator] = totals;
@@ -68,7 +70,15 @@ fn counter_variation(observations: &[&Observation], name: &str) -> Option<f64> {
             .usable()?;
         Some(sum + (value - mean).powi(2))
     })?;
-    Some((squares / observations.len().wrapping_sub(1) as f64).sqrt() / mean)
+    Some(
+        (squares
+            / observations
+                .len()
+                .checked_sub(1)
+                .expect("at least two observations") as f64)
+            .sqrt()
+            / mean,
+    )
 }
 
 pub(super) fn resources(
@@ -259,8 +269,10 @@ fn resource_rows(readings: &[Vec<&Observation>]) -> Vec<ResourceRow> {
                 .sum::<f64>()
                 / count;
             let launch = observations.iter().try_fold(0_u128, |sum, o| {
-                o.launch_max_rss_bytes
-                    .map(|value| sum.wrapping_add(u128::from(value)))
+                o.launch_max_rss_bytes.map(|value| {
+                    sum.checked_add(u128::from(value))
+                        .expect("u64 readings summed over a slice fit u128")
+                })
             });
             Some(launch.map_or_else(
                 || format!("{} / n/a", memory(peak)),

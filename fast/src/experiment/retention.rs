@@ -1,3 +1,5 @@
+//! Checked admission and accounting for the observation-retention allowance.
+
 use std::io;
 
 use serde::Serialize;
@@ -31,16 +33,21 @@ pub(super) struct Storage {
 
 impl Storage {
     pub(super) fn new(options: &Cli, commands: usize, counters: usize) -> io::Result<Self> {
-        let hooks = 1_usize
-            .wrapping_add(usize::from(options.prepare.is_some()))
-            .wrapping_add(usize::from(options.verify.is_some()));
+        // Namespace and unavailable-counter text are compacted and bounded on admission.
+        const COUNTER_BYTES: usize = size_of::<Counter>() + TEXT_BYTES;
+
+        let hooks = [true, options.prepare.is_some(), options.verify.is_some()]
+            .into_iter()
+            .filter(|&present| present)
+            .count();
         let invocations_per_run = commands
             .checked_mul(hooks)
             .ok_or_else(|| io::Error::other("too many commands"))?;
-        // Namespace and unavailable-counter text are compacted and bounded on admission.
-        let record_bytes = size_of::<Invocation>()
-            .wrapping_add(TEXT_BYTES)
-            .wrapping_add(counters.wrapping_mul(size_of::<Counter>().wrapping_add(TEXT_BYTES)));
+        let record_bytes = counters
+            .checked_mul(COUNTER_BYTES)
+            .and_then(|bytes| bytes.checked_add(size_of::<Invocation>()))
+            .and_then(|bytes| bytes.checked_add(TEXT_BYTES))
+            .ok_or_else(|| io::Error::other("counter storage size overflows"))?;
         let bytes_per_run = invocations_per_run
             .checked_mul(record_bytes)
             .ok_or_else(|| io::Error::other("too many commands"))?;
@@ -54,7 +61,8 @@ impl Storage {
         let required = options
             .warmup
             .unwrap_or(0)
-            .saturating_add(fixed.unwrap_or(8));
+            .checked_add(fixed.unwrap_or(8))
+            .ok_or_else(|| io::Error::other("requested run count overflows"))?;
         if required > capacity {
             return Err(io::Error::other(format!(
                 "requested runs exceed the 128 MiB observation allowance; at most {capacity} total runs fit"
@@ -66,8 +74,14 @@ impl Storage {
             invocations_per_run,
             record_bytes,
             detail_remaining: ALLOWANCE
-                .wrapping_sub(TERMINAL_RESERVE)
-                .wrapping_sub(runs.wrapping_mul(bytes_per_run)),
+                .checked_sub(TERMINAL_RESERVE)
+                .and_then(|bytes| {
+                    bytes.checked_sub(
+                        runs.checked_mul(bytes_per_run)
+                            .expect("admitted run storage fits usize"),
+                    )
+                })
+                .expect("admitted runs leave the detail reserve"),
             task_detail_omitted: false,
         })
     }
@@ -77,12 +91,24 @@ impl Storage {
     }
 
     pub(super) fn reserve(&self, records: &mut Vec<Invocation>, runs: usize) {
-        let count = runs.wrapping_mul(self.invocations_per_run);
         assert!(runs <= self.runs, "run plan was admitted before execution");
+        let count = runs
+            .checked_mul(self.invocations_per_run)
+            .expect("admitted invocation count");
         if records.capacity() < count {
-            records.reserve_exact(count.wrapping_sub(records.len()));
+            records.reserve_exact(
+                count
+                    .checked_sub(records.len())
+                    .expect("capacity is below the plan"),
+            );
         }
-        assert!(records.capacity() <= self.runs.wrapping_mul(self.invocations_per_run));
+        assert!(
+            records.capacity()
+                <= self
+                    .runs
+                    .checked_mul(self.invocations_per_run)
+                    .expect("admitted invocation count")
+        );
     }
 
     pub(super) fn retain(&mut self, observation: &mut Observation) {
@@ -97,15 +123,17 @@ impl Storage {
         if let Some(namespace) = &mut observation.activity.pid_namespace {
             *namespace = bounded_text(std::mem::take(namespace));
         }
-        let mut bytes = 0;
+        let mut remaining = self.detail_remaining;
         let mut kept = 0_usize;
         for task in &observation.activity.tasks {
-            let next = size_of::<Task>().wrapping_add(task_bytes(task));
-            if next > self.detail_remaining.wrapping_sub(bytes) {
+            let next = sum_bytes([size_of::<Task>(), task_bytes(task)]);
+            let Some(after) = remaining.checked_sub(next) else {
                 break;
-            }
-            bytes = bytes.wrapping_add(next);
-            kept = kept.wrapping_add(1);
+            };
+            remaining = after;
+            kept = kept
+                .checked_add(1)
+                .expect("retained tasks fit their vector");
         }
         if kept < observation.activity.tasks.len() {
             observation.activity.limited = true;
@@ -115,50 +143,44 @@ impl Storage {
         observation.activity.tasks = std::mem::take(&mut observation.activity.tasks)
             .into_boxed_slice()
             .into_vec();
-        self.detail_remaining = self.detail_remaining.wrapping_sub(bytes);
+        self.detail_remaining = remaining;
         debug_assert!(
-            size_of::<Invocation>().wrapping_add(metadata_bytes(observation)) <= self.record_bytes
+            sum_bytes([size_of::<Invocation>(), metadata_bytes(observation)]) <= self.record_bytes
         );
         debug_assert!(
-            observation
-                .diagnostics
-                .first
-                .capacity()
-                .wrapping_add(observation.diagnostics.last.capacity())
-                <= 2 * Diagnostics::CAPTURE_BYTES
+            sum_bytes([
+                observation.diagnostics.first.capacity(),
+                observation.diagnostics.last.capacity()
+            ]) <= 2 * Diagnostics::CAPTURE_BYTES
         );
     }
 
     pub(super) fn summary(&self, records: &Vec<Invocation>, stop_reason: &String) -> Summary {
-        let retained_bytes = size_of_val(records)
-            .wrapping_add(stop_reason.capacity())
-            .wrapping_add(records.capacity().wrapping_mul(size_of::<Invocation>()))
-            .wrapping_add(
-                records
-                    .iter()
-                    .map(|record| match &record.outcome {
-                        Collected::Observation(observation) => metadata_bytes(observation)
-                            .wrapping_add(
-                                observation
-                                    .activity
-                                    .tasks
-                                    .capacity()
-                                    .wrapping_mul(size_of::<Task>()),
-                            )
-                            .wrapping_add(
-                                observation
-                                    .activity
-                                    .tasks
-                                    .iter()
-                                    .map(task_bytes)
-                                    .sum::<usize>(),
-                            )
-                            .wrapping_add(observation.diagnostics.first.capacity())
-                            .wrapping_add(observation.diagnostics.last.capacity()),
-                        Collected::CollectorError(error) => error.capacity(),
-                    })
-                    .sum::<usize>(),
-            );
+        let retained_bytes = sum_bytes([
+            size_of_val(records),
+            stop_reason.capacity(),
+            records
+                .capacity()
+                .checked_mul(size_of::<Invocation>())
+                .expect("allocated records fit usize"),
+            sum_bytes(records.iter().map(|record| {
+                match &record.outcome {
+                    Collected::Observation(observation) => sum_bytes([
+                        metadata_bytes(observation),
+                        observation
+                            .activity
+                            .tasks
+                            .capacity()
+                            .checked_mul(size_of::<Task>())
+                            .expect("allocated tasks fit usize"),
+                        sum_bytes(observation.activity.tasks.iter().map(task_bytes)),
+                        observation.diagnostics.first.capacity(),
+                        observation.diagnostics.last.capacity(),
+                    ]),
+                    Collected::CollectorError(error) => error.capacity(),
+                }
+            })),
+        ]);
         assert!(retained_bytes <= ALLOWANCE, "admitted observation storage");
         Summary {
             allowance_bytes: ALLOWANCE,
@@ -168,41 +190,51 @@ impl Storage {
     }
 }
 
+/// Sum allocation extents without allowing accounting to wrap below the allowance.
+fn sum_bytes(parts: impl IntoIterator<Item = usize>) -> usize {
+    parts
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .expect("live allocation extents fit the address space")
+}
+
 fn metadata_bytes(observation: &Observation) -> usize {
-    observation
-        .counters
-        .capacity()
-        .wrapping_mul(size_of::<Counter>())
-        .wrapping_add(
+    sum_bytes([
+        observation
+            .counters
+            .capacity()
+            .checked_mul(size_of::<Counter>())
+            .expect("allocated counters fit usize"),
+        sum_bytes(
             observation
                 .counters
                 .iter()
                 .filter_map(|counter| counter.reading.as_ref().err())
-                .map(String::capacity)
-                .sum::<usize>(),
-        )
-        .wrapping_add(
-            observation
-                .activity
-                .pid_namespace
-                .as_ref()
-                .map_or(0, String::capacity),
-        )
+                .map(String::capacity),
+        ),
+        observation
+            .activity
+            .pid_namespace
+            .as_ref()
+            .map_or(0, String::capacity),
+    ])
 }
 
-const fn task_bytes(task: &Task) -> usize {
-    task.name
-        .capacity()
-        .wrapping_add(task.samples.capacity().wrapping_mul(size_of::<Sample>()))
+fn task_bytes(task: &Task) -> usize {
+    sum_bytes([
+        task.name.capacity(),
+        task.samples
+            .capacity()
+            .checked_mul(size_of::<Sample>())
+            .expect("allocated samples fit usize"),
+    ])
 }
 
 pub(super) fn bounded_text(mut text: String) -> String {
     const OMITTED: &str = " [truncated]";
     if text.len() > TEXT_BYTES {
-        let mut end = TEXT_BYTES.wrapping_sub(OMITTED.len());
-        while !text.is_char_boundary(end) {
-            end = end.wrapping_sub(1);
-        }
+        const PREFIX_BYTES: usize = TEXT_BYTES - OMITTED.len();
+        let end = text.floor_char_boundary(PREFIX_BYTES);
         text.truncate(end);
         text.push_str(OMITTED);
     }

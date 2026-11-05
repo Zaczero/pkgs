@@ -75,6 +75,7 @@ impl Outcome {
 pub struct Diagnostics {
     pub first: Vec<u8>,
     pub last: VecDeque<u8>,
+    /// Discarded diagnostic bytes, clamped at u64::MAX.
     pub omitted_bytes: u64,
     pub pipe_still_open: bool,
 }
@@ -89,16 +90,20 @@ impl Diagnostics {
 
     fn push(&mut self, bytes: &[u8]) {
         const CAPACITY: usize = Diagnostics::CAPTURE_BYTES;
-        let front = CAPACITY.wrapping_sub(self.first.len()).min(bytes.len());
+        let front = CAPACITY
+            .checked_sub(self.first.len())
+            .expect("diagnostic prefix fits capture budget")
+            .min(bytes.len());
         let (first, tail) = bytes.split_at(front);
         self.first.extend_from_slice(first);
         let removed = self
             .last
             .len()
-            .wrapping_add(tail.len())
+            .checked_add(tail.len())
+            .expect("one bounded read fits diagnostic accounting")
             .saturating_sub(CAPACITY);
         drop(self.last.drain(..removed));
-        self.omitted_bytes = self.omitted_bytes.wrapping_add(removed as u64);
+        self.omitted_bytes = self.omitted_bytes.saturating_add(removed as u64);
         self.last.extend(tail);
     }
 
@@ -354,11 +359,12 @@ impl Runner {
             post_exit_drain_ns,
             descendants_survived: survivors,
             cleanup_incomplete,
-            user_ns: sys::timeval_ns(usage.ru_utime),
-            system_ns: sys::timeval_ns(usage.ru_stime),
+            user_ns: sys::timeval_ns(usage.ru_utime)?,
+            system_ns: sys::timeval_ns(usage.ru_stime)?,
             max_rss_bytes: u64::try_from(usage.ru_maxrss)
-                .unwrap_or(0)
-                .wrapping_mul(1024),
+                .map_err(io::Error::other)?
+                .checked_mul(1024)
+                .ok_or_else(|| io::Error::other("peak RSS byte count overflows"))?,
             launch_max_rss_bytes,
             minor_faults: usage.ru_minflt,
             major_faults: usage.ru_majflt,
@@ -441,7 +447,7 @@ mod tests {
         let initial = before.launch_max_rss_bytes.expect("initial launch floor");
         let inflated = after.launch_max_rss_bytes.expect("inflated launch floor");
         assert!(
-            inflated >= initial.saturating_add(32 * 1024 * 1024),
+            inflated >= initial.checked_add(32 * 1024 * 1024).unwrap(),
             "inherited allocation not identified: {initial} -> {inflated}"
         );
         assert!(after.max_rss_bytes >= inflated);

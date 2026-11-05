@@ -535,7 +535,7 @@ fn inherited_counters_include_synchronous_child_work() {
             .expect("integer");
         assert!(baseline_count > 0);
         assert!(
-            child_count > baseline_count.saturating_mul(2),
+            child_count > baseline_count.checked_mul(2).unwrap(),
             "fork-without-exec work missing from {name}: {baseline} {child_work}"
         );
         assert_ne!(child_work["running_ns"], "0");
@@ -586,7 +586,7 @@ fn counters_exclude_prior_invocations_and_hooks() {
         .expect("measured runs");
     assert!(smallest > 0);
     assert!(
-        largest < smallest.saturating_mul(2),
+        largest < smallest.checked_mul(2).unwrap(),
         "counter includes earlier commands or the much larger preparation hook: {baseline:?} {prepared:?}"
     );
 }
@@ -962,7 +962,9 @@ fn discarded_warmup_is_excluded_from_the_analysis(#[case] warmup: Option<&'stati
         .filter(|i| i["phase"] != "warmup")
         .count()
         / 2;
-    let kept = measured.wrapping_sub(discarded);
+    let kept = measured
+        .checked_sub(discarded)
+        .expect("discarded runs belong to measured pilot");
     assert_eq!(result["analysis"]["runs"], kept, "{plan}");
     assert_eq!(plan["planned_runs"], kept, "{plan}");
 }

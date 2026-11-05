@@ -209,16 +209,9 @@ impl Result {
     /// Complete runs used by the analysis: pilot runs after any discarded warmup, then
     /// production runs.
     pub(crate) fn measured(&self) -> Vec<Vec<&Invocation>> {
-        let mut discard = self.plan.discarded_runs;
         self.complete_runs()
-            .filter(|(phase, _)| match phase {
-                Phase::Warmup => false,
-                Phase::Pilot if discard > 0 => {
-                    discard = discard.wrapping_sub(1);
-                    false
-                },
-                Phase::Pilot | Phase::Production => true,
-            })
+            .filter(|(phase, _)| *phase != Phase::Warmup)
+            .skip(self.plan.discarded_runs)
             .map(|(_, run)| run)
             .collect()
     }
@@ -311,9 +304,12 @@ impl Context {
         let clock_resolution_ns = unsafe {
             let mut time: libc::timespec = std::mem::zeroed();
             libc::clock_getres(libc::CLOCK_MONOTONIC, &raw mut time);
-            (time.tv_sec as u64)
-                .wrapping_mul(1_000_000_000)
-                .wrapping_add(time.tv_nsec as u64)
+            let resolution = Duration::new(
+                u64::try_from(time.tv_sec).expect("clock resolution has nonnegative seconds"),
+                u32::try_from(time.tv_nsec)
+                    .expect("clock resolution has a normalized nanosecond field"),
+            );
+            u64::try_from(resolution.as_nanos()).expect("clock resolution fits nanoseconds")
         };
         Self {
             architecture: std::env::consts::ARCH,
@@ -384,7 +380,7 @@ impl Experiment<'_> {
             return false;
         }
         if let Some(signal) = self.runner.interrupted {
-            self.result.exit_code = 128_u8.wrapping_add(signal as u8);
+            self.result.exit_code = interruption_exit_code(signal);
             self.result.stop_reason = format!("interrupted by signal {signal}");
             return false;
         }
@@ -413,11 +409,19 @@ impl Experiment<'_> {
             vec![
                 (
                     "FAST_COMMAND_INDEX".into(),
-                    candidate.wrapping_add(1).to_string(),
+                    candidate
+                        .checked_add(1)
+                        .expect("scheduled candidate fits command list")
+                        .to_string(),
                 ),
                 ("FAST_COMMAND_ID".into(), id(candidate)),
                 ("FAST_PHASE".into(), phase.name().into()),
-                ("FAST_RUN_INDEX".into(), run.wrapping_add(1).to_string()),
+                (
+                    "FAST_RUN_INDEX".into(),
+                    run.checked_add(1)
+                        .expect("run count was admitted")
+                        .to_string(),
+                ),
             ]
         };
         let timeout = if role == Role::Command {
@@ -444,7 +448,7 @@ impl Experiment<'_> {
                     observation.diagnostics.discard();
                 } else {
                     self.result.exit_code = match observation.outcome {
-                        Outcome::Interrupted { signal } => 128_u8.wrapping_add(signal as u8),
+                        Outcome::Interrupted { signal } => interruption_exit_code(signal),
                         Outcome::Success
                         | Outcome::Exit { .. }
                         | Outcome::Signal { .. }
@@ -459,7 +463,7 @@ impl Experiment<'_> {
                 // warmup; the automatic warmup decision settles which.
                 if role != Role::Command
                     || phase == Phase::Warmup
-                    || run >= self.result.plan.warmup_runs.wrapping_add(2)
+                    || run.saturating_sub(self.result.plan.warmup_runs) >= 2
                 {
                     observation.activity.tasks.clear();
                     observation.activity.tasks.shrink_to_fit();
@@ -491,7 +495,7 @@ impl Experiment<'_> {
     fn run(&mut self, phase: Phase) -> bool {
         let started = Instant::now();
         let run = self.next_run;
-        self.next_run = run.wrapping_add(1);
+        self.next_run = run.checked_add(1).expect("run count was admitted");
         let mut order: Vec<_> = (0..self.commands.len()).collect();
         self.rng.shuffle(&mut order);
         for (position, candidate) in order.into_iter().enumerate() {
@@ -626,12 +630,17 @@ impl Experiment<'_> {
                     .min(capacity.saturating_sub(self.next_run));
                 self.result.plan.planned_runs = costs
                     .len()
-                    .wrapping_sub(self.result.plan.discarded_runs)
-                    .wrapping_add(additional);
+                    .checked_sub(self.result.plan.discarded_runs)
+                    .and_then(|kept| kept.checked_add(additional))
+                    .expect("discarded pilot and admitted additional run counts");
                 (additional, Some((!strict).then_some(target_seconds)))
             },
         };
-        self.total_runs = Some(self.next_run.wrapping_add(production));
+        self.total_runs = Some(
+            self.next_run
+                .checked_add(production)
+                .expect("total run count was admitted"),
+        );
         self.storage.reserve(
             &mut self.result.invocations,
             self.total_runs.expect("settled run count"),
@@ -656,14 +665,27 @@ impl Experiment<'_> {
 pub(crate) fn id(mut index: usize) -> String {
     let mut bytes = Vec::new();
     loop {
-        bytes.push(b'A'.wrapping_add((index % 26) as u8));
+        bytes.push(
+            b'A'.checked_add((index % 26) as u8)
+                .expect("candidate alphabet digit"),
+        );
         if index < 26 {
             break;
         }
-        index = (index / 26).wrapping_sub(1);
+        index = (index / 26)
+            .checked_sub(1)
+            .expect("another candidate digit remains");
     }
     bytes.reverse();
     String::from_utf8(bytes).expect("ASCII candidate ID")
+}
+
+/// Preserve the terminating signal in the benchmark process's shell status.
+fn interruption_exit_code(signal: i32) -> u8 {
+    let signal = u8::try_from(signal).expect("Linux interruption signals are positive bytes");
+    128_u8
+        .checked_add(signal)
+        .expect("Linux interruption signals fit a shell exit status")
 }
 
 fn commands(options: &Cli) -> io::Result<(Vec<Command>, Option<OsString>)> {
@@ -805,7 +827,11 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
     };
     experiment.storage.reserve(
         &mut experiment.result.invocations,
-        options.warmup.unwrap_or(0).wrapping_add(fixed.unwrap_or(8)),
+        options
+            .warmup
+            .unwrap_or(0)
+            .checked_add(fixed.unwrap_or(8))
+            .expect("initial run count was admitted"),
     );
     experiment.execute(capacity);
     experiment.result.wall_ns = experiment.start.elapsed().as_nanos() as u64;
@@ -815,7 +841,7 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         .map_err(Failure::Collector)?;
     if let Some(signal) = experiment.runner.interrupted {
         experiment.result.completed = false;
-        experiment.result.exit_code = 128_u8.wrapping_add(signal as u8);
+        experiment.result.exit_code = interruption_exit_code(signal);
         experiment.result.stop_reason = format!("interrupted by signal {signal}");
     }
     experiment.result.conclude(options.margin, options.check);

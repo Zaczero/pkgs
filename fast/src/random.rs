@@ -42,7 +42,9 @@ impl Random {
                     return Err(error);
                 }
             } else {
-                filled = filled.wrapping_add(count.unsigned_abs());
+                filled = filled
+                    .checked_add(count.unsigned_abs())
+                    .expect("getrandom fills the remaining buffer");
             }
         }
         Ok(u64::from_ne_bytes(bytes))
@@ -65,14 +67,18 @@ impl Random {
     pub fn below(&mut self, bound: usize) -> usize {
         assert!(bound > 0, "empty range");
         let bound = bound as u64;
-        let mut product = u128::from(self.next_u64()).wrapping_mul(u128::from(bound));
+        let mut product = u128::from(self.next_u64())
+            .checked_mul(u128::from(bound))
+            .expect("two u64 factors fit u128");
         if (product as u64) < bound {
             let threshold = bound
                 .wrapping_neg()
                 .checked_rem(bound)
                 .expect("asserted nonzero bound");
             while (product as u64) < threshold {
-                product = u128::from(self.next_u64()).wrapping_mul(u128::from(bound));
+                product = u128::from(self.next_u64())
+                    .checked_mul(u128::from(bound))
+                    .expect("two u64 factors fit u128");
             }
         }
         (product >> 64) as usize
@@ -85,7 +91,10 @@ impl Random {
 
     pub fn shuffle<T>(&mut self, items: &mut [T]) {
         for index in (1..items.len()).rev() {
-            items.swap(index, self.below(index.wrapping_add(1)));
+            items.swap(
+                index,
+                self.below(index.checked_add(1).expect("shuffle bound fits the slice")),
+            );
         }
     }
 }

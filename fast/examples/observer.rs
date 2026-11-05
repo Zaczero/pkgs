@@ -25,7 +25,7 @@ fn main() -> io::Result<()> {
     let mut counter_policy = None;
     let mut random = Random::new(42);
     let mut rows = Vec::with_capacity(options.runs);
-    let mut observations = Vec::with_capacity(options.runs.wrapping_mul(2));
+    let mut observations = Vec::with_capacity(options.runs.checked_mul(2).unwrap_or(0));
     for _ in 0..options.runs {
         let mut row = [0; 2];
         let order = if random.next_u64() >> 63 == 1 {

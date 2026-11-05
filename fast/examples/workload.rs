@@ -56,7 +56,9 @@ fn main() -> io::Result<ExitCode> {
     while remaining > 0 {
         let count = remaining.min(bytes.len());
         io::stderr().write_all(bytes.get(..count).expect("bounded write"))?;
-        remaining = remaining.wrapping_sub(count);
+        remaining = remaining
+            .checked_sub(count)
+            .expect("written block fits remaining workload");
     }
     for mut child in children {
         if !child.wait()?.success() {

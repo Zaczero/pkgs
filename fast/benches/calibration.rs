@@ -223,7 +223,10 @@ impl Workload {
                 (value * 1_000_000.0).round().max(1.0) as u64;
             self.previous = column;
         }
-        self.position = self.position.wrapping_add(1);
+        self.position = self
+            .position
+            .checked_add(1)
+            .expect("calibration count fits usize");
         row
     }
 
@@ -305,7 +308,10 @@ impl Totals {
         let mut moments = Moments::default();
         let mut workload = Workload::new(options, trial);
         let rows = workload.rows(options);
-        self.runs = self.runs.wrapping_add(rows.len());
+        self.runs = self
+            .runs
+            .checked_add(rows.len())
+            .expect("calibration count fits usize");
         let result = statistics::analyze(&rows, None);
         let mut covered = true;
         let mut wrong = false;
@@ -325,7 +331,10 @@ impl Totals {
                 covered &= interval.lower <= truth && interval.upper >= truth;
                 if interval.lower > 0.0 {
                     moments.log_width += (interval.upper / interval.lower).ln();
-                    moments.bounded = moments.bounded.wrapping_add(1);
+                    moments.bounded = moments
+                        .bounded
+                        .checked_add(1)
+                        .expect("calibration count fits usize");
                 }
                 wrong |= comparison.denominator.is_some()
                     && ((comparison.decision == Decision::Less && truth >= 1.0)
@@ -339,23 +348,62 @@ impl Totals {
                 unbounded = true;
             }
         }
-        self.covered = self.covered.wrapping_add(usize::from(covered));
-        self.false_direction = self.false_direction.wrapping_add(usize::from(wrong));
-        self.detected = self.detected.wrapping_add(usize::from(detected));
-        self.unbounded = self.unbounded.wrapping_add(usize::from(unbounded));
-        self.insufficient = self.insufficient.wrapping_add(usize::from(insufficient));
-        self.flagged = self.flagged.wrapping_add(usize::from(flagged));
+        self.covered = self
+            .covered
+            .checked_add(usize::from(covered))
+            .expect("calibration count fits usize");
+        self.false_direction = self
+            .false_direction
+            .checked_add(usize::from(wrong))
+            .expect("calibration count fits usize");
+        self.detected = self
+            .detected
+            .checked_add(usize::from(detected))
+            .expect("calibration count fits usize");
+        self.unbounded = self
+            .unbounded
+            .checked_add(usize::from(unbounded))
+            .expect("calibration count fits usize");
+        self.insufficient = self
+            .insufficient
+            .checked_add(usize::from(insufficient))
+            .expect("calibration count fits usize");
+        self.flagged = self
+            .flagged
+            .checked_add(usize::from(flagged))
+            .expect("calibration count fits usize");
         moments
     }
 
     const fn merge(&mut self, other: Self) {
-        self.covered = self.covered.wrapping_add(other.covered);
-        self.false_direction = self.false_direction.wrapping_add(other.false_direction);
-        self.detected = self.detected.wrapping_add(other.detected);
-        self.unbounded = self.unbounded.wrapping_add(other.unbounded);
-        self.insufficient = self.insufficient.wrapping_add(other.insufficient);
-        self.flagged = self.flagged.wrapping_add(other.flagged);
-        self.runs = self.runs.wrapping_add(other.runs);
+        self.covered = self
+            .covered
+            .checked_add(other.covered)
+            .expect("calibration count fits usize");
+        self.false_direction = self
+            .false_direction
+            .checked_add(other.false_direction)
+            .expect("calibration count fits usize");
+        self.detected = self
+            .detected
+            .checked_add(other.detected)
+            .expect("calibration count fits usize");
+        self.unbounded = self
+            .unbounded
+            .checked_add(other.unbounded)
+            .expect("calibration count fits usize");
+        self.insufficient = self
+            .insufficient
+            .checked_add(other.insufficient)
+            .expect("calibration count fits usize");
+        self.flagged = self
+            .flagged
+            .checked_add(other.flagged)
+            .expect("calibration count fits usize");
+        self.runs = self
+            .runs
+            .checked_add(other.runs)
+            .expect("calibration count fits usize");
     }
 }
 
