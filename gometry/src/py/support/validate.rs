@@ -117,7 +117,7 @@ pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
             .get_mut(..PREFIX.len())
             .expect("prefix fits the note buffer")
             .copy_from_slice(PREFIX);
-        let mut number = std::fmt::NumBuffer::new();
+        let mut number = core::fmt::NumBuffer::new();
         let digits = row.format_into(&mut number).as_bytes();
         let start = PREFIX.len();
         let note_end = start.wrapping_add(digits.len());
