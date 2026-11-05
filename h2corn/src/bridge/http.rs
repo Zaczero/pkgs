@@ -48,6 +48,7 @@ pub(crate) struct RequestInputShared {
 
 /// Optional request-body accounting capability. The allocation exists only
 /// when access logging consumes it, keeping the default request signal small.
+/// Diagnostic byte totals clamp at u64::MAX.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RequestBodyCounter {
     bytes: Arc<AtomicU64>,
@@ -107,7 +108,9 @@ impl RequestInputShared {
                 started.checked_add(1)
             })
             .expect("HTTP receive generation space exhausted");
-        let ticket = previous.wrapping_add(1);
+        let ticket = previous
+            .checked_add(1)
+            .expect("receive generation update admitted its successor");
         HttpReceiveWaitGuard {
             signal: Arc::clone(self),
             ticket,
@@ -117,7 +120,10 @@ impl RequestInputShared {
 
 impl RequestBodyCounter {
     pub(crate) fn add(&self, len: u64) {
-        self.bytes.fetch_add(len, Ordering::Relaxed);
+        self.bytes
+            .update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
+                bytes.saturating_add(len)
+            });
     }
 
     pub(crate) fn load(&self) -> u64 {

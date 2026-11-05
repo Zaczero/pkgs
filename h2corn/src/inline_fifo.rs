@@ -51,7 +51,10 @@ impl<T, const N: usize> InlineFifo<T, N> {
 
     pub(crate) fn len(&self) -> usize {
         debug_assert!(self.front <= self.items.len());
-        self.items.len().wrapping_sub(self.front)
+        self.items
+            .len()
+            .checked_sub(self.front)
+            .expect("front stays within queue storage")
     }
 
     pub(crate) fn front(&self) -> Option<&T> {
@@ -128,7 +131,10 @@ impl<T, const N: usize> InlineFifo<T, N> {
 
     fn advance_front(&mut self) {
         debug_assert!(!self.is_empty());
-        self.front = self.front.wrapping_add(1);
+        self.front = self
+            .front
+            .checked_add(1)
+            .expect("front advances within queue storage");
         if self.is_empty() {
             // Every slot has either been moved out or was already consumed.
             // Clearing MaybeUninit resets storage without running T's drop
@@ -245,7 +251,9 @@ mod tests {
                 for _ in 0..initial {
                     queue.push_back(next);
                     model.push_back(next);
-                    next = next.wrapping_add(1);
+                    next = next
+                        .checked_add(1)
+                        .expect("boundary fixture value fits u32");
                 }
                 for _ in 0..consumed {
                     assert_eq!(queue.pop_front(), model.pop_front());
@@ -256,7 +264,9 @@ mod tests {
                         0 => {
                             queue.push_back(next);
                             model.push_back(next);
-                            next = next.wrapping_add(1);
+                            next = next
+                                .checked_add(1)
+                                .expect("boundary fixture value fits u32");
                         },
                         1 => assert_eq!(queue.pop_front(), model.pop_front()),
                         2 => {
@@ -265,10 +275,14 @@ mod tests {
                         },
                         3 => {
                             if let Some(value) = queue.front_mut() {
-                                *value = value.wrapping_add(17);
+                                *value = value
+                                    .checked_add(17)
+                                    .expect("boundary fixture value fits u32");
                             }
                             if let Some(value) = model.front_mut() {
-                                *value = value.wrapping_add(17);
+                                *value = value
+                                    .checked_add(17)
+                                    .expect("boundary fixture value fits u32");
                             }
                         },
                         _ => unreachable!(),

@@ -124,7 +124,10 @@ impl ResponseBytePermit {
             return;
         }
         let released = u32::try_from(len).unwrap_or(u32::MAX).min(self.remaining);
-        self.remaining = self.remaining.wrapping_sub(released);
+        self.remaining = self
+            .remaining
+            .checked_sub(released)
+            .expect("released credit was bounded by retained charge");
         self.permits.add_permits(released as usize);
     }
 }

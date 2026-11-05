@@ -73,18 +73,16 @@ use crate::http::header::{
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 const fn request_header_name_bytes_are_valid(name: &[u8]) -> bool {
-    let mut index = 0;
-    while index < name.len() {
-        if crate::ascii::HEADER_NAME_FLAGS[name[index] as usize] != crate::ascii::HEADER_NAME_VALID
-        {
+    let mut remaining = name;
+    while let Some((&byte, rest)) = remaining.split_first() {
+        if !matches!(
+            crate::ascii::classify_header_name_byte(byte),
+            crate::ascii::HeaderNameClass::Canonical
+        ) {
             return false;
         }
-        index = index.wrapping_add(1);
+        remaining = rest;
     }
     !name.is_empty()
 }
@@ -427,7 +425,8 @@ impl TryFrom<BytesStr> for ConnectAuthority {
                 rest.iter()
                     .position(|byte| *byte == b']')
                     .is_some_and(|close| {
-                        matches!(rest.get(close.wrapping_add(1)..), Some([b':', ..]))
+                        rest.get(close..)
+                            .is_some_and(|suffix| suffix.starts_with(b"]:"))
                     })
             },
         );
@@ -1450,7 +1449,7 @@ mod tests {
     #[case::count_17(17)]
     #[case::count_32(32)]
     fn h1_arena_spills_only_above_its_inline_capacity(#[case] count: usize) {
-        let mut raw = Vec::with_capacity(count.wrapping_mul(12));
+        let mut raw = Vec::with_capacity(count.checked_mul(12).unwrap());
         for index in 0..count {
             raw.extend_from_slice(format!("x-{index}: value\r\n").as_bytes());
         }
@@ -1458,10 +1457,8 @@ mod tests {
         let mut headers = H1RequestHeaders::new(head.clone());
         for line in head.as_ref().split(|byte| *byte == b'\n').take(count) {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
-            let colon = line.iter().position(|byte| *byte == b':').unwrap();
-            headers
-                .push(&line[..colon], line[colon.wrapping_add(1)..].trim_ascii())
-                .unwrap();
+            let (name, value) = line.split_once(|byte| *byte == b':').unwrap();
+            headers.push(name, value.trim_ascii()).unwrap();
         }
         assert_eq!(headers.fields.len(), count);
         assert_eq!(headers.fields.spilled(), count > H1_HEADER_INLINE_CAPACITY);

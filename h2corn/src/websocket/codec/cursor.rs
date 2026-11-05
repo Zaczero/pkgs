@@ -3,7 +3,7 @@ use std::cmp::min;
 use bytes::{Buf as _, Bytes, BytesMut};
 
 use crate::inline_fifo::InlineFifo;
-use crate::websocket::codec::mask::{MaskKey, apply_websocket_mask_phase};
+use crate::websocket::codec::mask::{MaskKey, MaskPhase, apply_websocket_mask_phase};
 
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {
@@ -26,7 +26,10 @@ impl<const N: usize> SegmentCursor<N> {
             return;
         }
 
-        self.len = self.len.wrapping_add(segment.len());
+        self.len = self
+            .len
+            .checked_add(segment.len())
+            .expect("buffered transport length fits usize");
         self.segments.push_back(segment);
     }
 
@@ -50,7 +53,10 @@ impl<const N: usize> SegmentCursor<N> {
 
     pub(super) fn skip(&mut self, mut len: usize) {
         debug_assert!(len <= self.len);
-        self.len = self.len.wrapping_sub(len);
+        self.len = self
+            .len
+            .checked_sub(len)
+            .expect("consumed prefix is buffered");
 
         while len != 0 {
             let available = {
@@ -65,7 +71,9 @@ impl<const N: usize> SegmentCursor<N> {
                 front.len()
             };
 
-            len = len.wrapping_sub(available);
+            len = len
+                .checked_sub(available)
+                .expect("whole segment fits consumed prefix");
             self.segments.pop_front();
         }
     }
@@ -77,8 +85,8 @@ impl<const N: usize> SegmentCursor<N> {
         &mut self,
         len: usize,
         key: MaskKey,
-        phase: usize,
-    ) -> (BytesMut, usize) {
+        phase: MaskPhase,
+    ) -> (BytesMut, MaskPhase) {
         debug_assert!(len <= self.len);
 
         // A transport segment commonly contains exactly one complete WebSocket
@@ -98,7 +106,10 @@ impl<const N: usize> SegmentCursor<N> {
             let mut payload = segment
                 .try_into_mut()
                 .expect("uniquely owned Bytes converts without copying");
-            self.len = self.len.wrapping_sub(len);
+            self.len = self
+                .len
+                .checked_sub(len)
+                .expect("unique payload is buffered");
             let phase = apply_websocket_mask_phase(payload.as_mut(), key, phase);
             return (payload, phase);
         }
@@ -106,7 +117,10 @@ impl<const N: usize> SegmentCursor<N> {
         let mut out = BytesMut::with_capacity(len);
         let mut remaining = len;
         let mut phase = phase;
-        self.len = self.len.wrapping_sub(len);
+        self.len = self
+            .len
+            .checked_sub(len)
+            .expect("masked payload is buffered");
         while remaining != 0 {
             let front = self
                 .segments
@@ -123,7 +137,9 @@ impl<const N: usize> SegmentCursor<N> {
                 key,
                 phase,
             );
-            remaining = remaining.wrapping_sub(take);
+            remaining = remaining
+                .checked_sub(take)
+                .expect("copied chunk fits remaining payload");
             if consumed_front {
                 self.segments.pop_front();
             }
@@ -136,7 +152,7 @@ impl<const N: usize> SegmentCursor<N> {
 mod tests {
     use bytes::Bytes;
 
-    use super::{MaskKey, SegmentCursor};
+    use super::{MaskKey, MaskPhase, SegmentCursor};
 
     #[test]
     fn complete_unique_segment_is_unmasked_in_place() {
@@ -155,7 +171,7 @@ mod tests {
         cursor.push(segment);
         cursor.skip(prefix_len);
 
-        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), 0);
+        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), MaskPhase::First);
 
         assert_eq!(payload.as_ref(), b"payload");
         assert_eq!(
@@ -179,7 +195,7 @@ mod tests {
         let mut cursor = SegmentCursor::<2>::default();
         cursor.push(segment);
 
-        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), 0);
+        let (payload, _) = cursor.take_masked_chunk(7, MaskKey::new(mask), MaskPhase::First);
 
         assert_eq!(payload.as_ref(), b"payload");
         assert_ne!(other_owner.as_ref(), b"payload");

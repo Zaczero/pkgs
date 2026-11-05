@@ -21,10 +21,6 @@ use crate::http::types::{
 };
 use crate::runtime::RequestContext;
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
     let Some(first_escape) = ascii::find_byte(b'%', bytes) else {
@@ -32,32 +28,36 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     };
 
     let mut out = None::<Vec<u8>>;
-    let mut index = first_escape;
-    let mut copied = 0;
-    while let Some(tail) = bytes.get(index..).filter(|tail| !tail.is_empty()) {
-        if let [b'%', high_digit, low_digit, ..] = *tail {
-            let high = ascii::HEX_VALUE[usize::from(high_digit)];
-            let low = ascii::HEX_VALUE[usize::from(low_digit)];
+    let mut remaining = bytes.split_at(first_escape).1;
+    let mut uncopied = bytes;
+    while let Some(index) = ascii::find_byte(b'%', remaining) {
+        let tail = remaining.split_at(index).1;
+        if let [b'%', high_digit, low_digit, suffix @ ..] = tail {
+            let high = *ascii::HEX_VALUE
+                .get(usize::from(*high_digit))
+                .expect("byte table entry");
+            let low = *ascii::HEX_VALUE
+                .get(usize::from(*low_digit))
+                .expect("byte table entry");
             if high != ascii::INVALID_VALUE && low != ascii::INVALID_VALUE {
                 let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
-                out.extend_from_slice(
-                    bytes
-                        .get(copied..index)
-                        .expect("copied and index advance within the path"),
-                );
+                let prefix_len = uncopied
+                    .len()
+                    .checked_sub(tail.len())
+                    .expect("escape belongs to the uncopied path suffix");
+                out.extend_from_slice(uncopied.split_at(prefix_len).0);
                 out.push((high << 4) | low);
-                index = index.wrapping_add(3);
-                copied = index;
+                remaining = suffix;
+                uncopied = suffix;
                 continue;
             }
         }
-        index = index.wrapping_add(1);
+        remaining = tail.split_first().expect("located percent byte").1;
     }
     let Some(mut out) = out else {
         return Cow::Borrowed(raw_path);
     };
-    out.extend_from_slice(bytes.get(copied..).expect("copied remains within the path"));
-
+    out.extend_from_slice(uncopied);
     String::from_utf8(out).map_or(Cow::Borrowed(raw_path), Cow::Owned)
 }
 

@@ -162,7 +162,9 @@ fn find_dynamic(
         if entry.name() != name {
             continue;
         }
-        let index = static_table::DYNAMIC_INDEX_OFFSET.wrapping_add(offset);
+        let index = static_table::DYNAMIC_INDEX_OFFSET
+            .checked_add(offset)
+            .expect("retained dynamic entries fit HPACK indices");
         if entry.value() == value {
             return (Some(index), Some(index));
         }
@@ -190,7 +192,9 @@ fn should_index_header(
     else {
         return false;
     };
-    size <= max_size.wrapping_sub(max_size.div_ceil(4))
+    size <= max_size
+        .checked_sub(max_size.div_ceil(4))
+        .expect("one quarter does not exceed the table capacity")
 }
 
 fn encode_literal(name: LiteralName<'_>, value: &[u8], mode: LiteralMode, dst: &mut BytesMut) {
@@ -234,14 +238,18 @@ fn encode_string(value: &[u8], dst: &mut BytesMut) {
 
 fn encode_int(value: usize, prefix: u8, mask: u8, dst: &mut BytesMut) {
     debug_assert!((1..=8).contains(&prefix));
-    let max_prefix = (1_usize << usize::from(prefix)).wrapping_sub(1);
+    let max_prefix = (1_usize << usize::from(prefix))
+        .checked_sub(1)
+        .expect("positive prefix width");
     if value < max_prefix {
         dst.extend_from_slice(&[(value as u8) | mask]);
         return;
     }
 
     dst.extend_from_slice(&[(max_prefix as u8) | mask]);
-    let mut remaining = value.wrapping_sub(max_prefix);
+    let mut remaining = value
+        .checked_sub(max_prefix)
+        .expect("extended integer exceeds prefix");
     while remaining >= 128 {
         dst.extend_from_slice(&[((remaining & 0x7F) as u8) | 0x80]);
         remaining >>= 7;

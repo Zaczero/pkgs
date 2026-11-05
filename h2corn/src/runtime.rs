@@ -185,7 +185,12 @@ impl RuntimeLimits {
         let Some(limit) = self.max_requests else {
             return;
         };
-        if self.completed_tasks.fetch_add(1, Ordering::Relaxed) < limit.get().wrapping_sub(1) {
+        if self.completed_tasks.fetch_add(1, Ordering::Relaxed)
+            < limit
+                .get()
+                .checked_sub(1)
+                .expect("request limit is positive")
+        {
             return;
         }
         // Past the threshold every completion takes this lock once and finds

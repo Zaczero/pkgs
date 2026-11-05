@@ -34,8 +34,9 @@ where
     K: Copy + Eq + Ord,
 {
     pub(super) fn schedule(&mut self, key: K, at: Instant) {
-        self.next_generation = self.next_generation.wrapping_add(1);
-        if self.next_generation == 0 {
+        self.next_generation = if let Some(generation) = self.next_generation.checked_add(1) {
+            generation
+        } else {
             self.entries.sort_unstable_by_key(|entry| entry.generation);
             let mut generation = 0_u32;
             for entry in &mut self.entries {
@@ -44,10 +45,10 @@ where
                     .expect("live deadlines fit generation space");
                 entry.generation = generation;
             }
-            self.next_generation = generation
+            generation
                 .checked_add(1)
-                .expect("new deadline fits generation space");
-        }
+                .expect("new deadline fits generation space")
+        };
         let generation = self.next_generation;
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
             *entry = DeadlineEntry {

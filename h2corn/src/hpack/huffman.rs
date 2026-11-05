@@ -1,6 +1,8 @@
+//! HPACK Huffman coding with checked output admission and initialized-byte publication.
+
 mod table;
 
-use bytes::BytesMut;
+use bytes::{BufMut as _, BytesMut};
 
 use crate::hpack::DecoderError;
 use crate::hpack::huffman::table::{DECODE_TABLE, ENCODE_TABLE, MAX_CODE_BITS};
@@ -32,9 +34,19 @@ impl DecodeEntry {
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
-    let initial_len = buf.len();
 
-    buf.reserve(src.len().saturating_mul(8).div_ceil(MIN_CODE_BITS));
+    // Divide before multiplying: the bit count can overflow even when its
+    // decoded-byte bound fits. The final partial group needs at most eight bytes.
+    let groups = src.len() / MIN_CODE_BITS;
+    let tail = (src.len() % MIN_CODE_BITS)
+        .checked_mul(8)
+        .expect("partial code group fits usize")
+        .div_ceil(MIN_CODE_BITS);
+    let capacity = groups
+        .checked_mul(8)
+        .and_then(|bytes| bytes.checked_add(tail))
+        .expect("Huffman bound for an admitted slice fits usize");
+    buf.reserve(capacity);
 
     // Borrow the spare capacity once. Taking it per symbol rebuilds the slice
     // from ptr/len/cap, and because the store lands in the same heap buffer the
@@ -80,11 +92,13 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
         Ok(())
     })();
 
-    let decoded_len = spare_len.wrapping_sub(spare.len());
+    let decoded_len = spare_len
+        .checked_sub(spare.len())
+        .expect("spare cursor only advances");
     // SAFETY: `decoded_len` never exceeds the `MIN_CODE_BITS` reserve bound,
     // and every counted byte was written into the corresponding spare slot.
     unsafe {
-        buf.set_len(initial_len.wrapping_add(decoded_len));
+        buf.advance_mut(decoded_len);
     }
     result?;
 
@@ -103,15 +117,15 @@ fn decode_entry(state: usize, nibble: u8) -> DecodeEntry {
 pub(crate) fn encoded_len(src: &[u8]) -> usize {
     // Each chunk's bit count fits usize; the complete count fits u128 because
     // a slice has at most isize::MAX bytes and each code fits MAX_CODE_BITS.
-    let mut bit_len = 0_u128;
-    for chunk in src.chunks(usize::MAX / MAX_CODE_BITS) {
-        let mut chunk_bits = 0_usize;
-        for &byte in chunk {
-            chunk_bits =
-                chunk_bits.wrapping_add((encode_entry(byte) >> ENCODE_LENGTH_SHIFT) as usize);
-        }
-        bit_len = bit_len.wrapping_add(chunk_bits as u128);
-    }
+    let bit_len = src
+        .chunks(usize::MAX / MAX_CODE_BITS)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|&byte| (encode_entry(byte) >> ENCODE_LENGTH_SHIFT) as usize)
+                .sum::<usize>() as u128
+        })
+        .sum::<u128>();
     usize::try_from(bit_len.div_ceil(8)).expect("Huffman encoded byte length fits usize")
 }
 
@@ -130,18 +144,24 @@ pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut
         let packed = encode_entry(byte);
         let code_bits = (packed >> ENCODE_LENGTH_SHIFT) as usize;
         let code = packed & ENCODE_CODE_MASK;
-        bits_left = bits_left.wrapping_sub(code_bits);
+        bits_left = bits_left
+            .checked_sub(code_bits)
+            .expect("code fits the bit accumulator");
         bits |= code << bits_left;
 
         while bits_left <= 32 {
             dst.extend_from_slice(&[(bits >> 32) as u8]);
             bits <<= 8;
-            bits_left = bits_left.wrapping_add(8);
+            bits_left = bits_left
+                .checked_add(8)
+                .expect("emitted byte restores accumulator space");
         }
     }
 
     if bits_left != 40 {
-        bits |= (1_u64 << bits_left).wrapping_sub(1);
+        bits |= (1_u64 << bits_left)
+            .checked_sub(1)
+            .expect("nonempty Huffman padding mask");
         dst.extend_from_slice(&[(bits >> 32) as u8]);
     }
 }

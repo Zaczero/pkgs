@@ -74,9 +74,17 @@ impl SendfileCursor<'_> {
 impl Drop for SendfileCursor<'_> {
     fn drop(&mut self) {
         debug_assert!(*self.file_offset >= self.initial_offset);
-        let advanced = self.file_offset.wrapping_sub(self.initial_offset);
+        let advanced = self
+            .file_offset
+            .checked_sub(self.initial_offset)
+            .expect("sendfile offset only advances");
         debug_assert!(advanced <= *self.unread_file_len as u64);
-        *self.unread_file_len = self.unread_file_len.wrapping_sub(advanced as usize);
+        let advanced =
+            usize::try_from(advanced).expect("sendfile advance fits admitted file segment");
+        *self.unread_file_len = self
+            .unread_file_len
+            .checked_sub(advanced)
+            .expect("sendfile advance fits unread file segment");
     }
 }
 
@@ -100,20 +108,30 @@ impl PathCursor {
     fn record_read(&mut self, read: usize) -> io::Result<()> {
         debug_assert!(read <= self.unread_file_len);
         self.buffered = 0..read;
-        self.file_offset = self.file_offset.wrapping_add(read as u64);
+        self.file_offset = self
+            .file_offset
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::other("file offset overflows"))?;
         if read == 0 {
             if self.unread_file_len != 0 {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
             }
         } else {
-            self.unread_file_len = self.unread_file_len.wrapping_sub(read);
+            self.unread_file_len = self
+                .unread_file_len
+                .checked_sub(read)
+                .expect("read fits requested file segment");
         }
         Ok(())
     }
 
     fn consume_buffered(&mut self, len: usize) {
         debug_assert!(len <= self.buffered.len());
-        self.buffered.start = self.buffered.start.wrapping_add(len);
+        self.buffered.start = self
+            .buffered
+            .start
+            .checked_add(len)
+            .expect("consumed bytes fit rolling file buffer");
         if self.buffered.start == self.buffered.end {
             self.buffered = 0..0;
         }

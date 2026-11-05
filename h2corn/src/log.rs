@@ -2,10 +2,11 @@ mod event;
 mod sink;
 
 use core::fmt::NumBuffer;
+use std::ascii::Char;
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU8, NonZeroU64};
 use std::str;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use owo_colors::{OwoColorize as _, Style};
 use smallvec::SmallVec;
 
 use crate::config::{BindTarget, LogFormat, ServerConfig};
+use crate::http::digits;
 use crate::http::response::{FinalResponseBody, ResponseAction};
 use crate::http::scope::{ScopeHost, resolve_scope_view};
 use crate::http::types::{BytesStr, HttpStatusCode, HttpVersion, RequestHead, status_code};
@@ -71,8 +73,8 @@ enum Decimals {
 }
 
 impl Decimals {
-    const fn factor(self) -> NonZeroU64 {
-        NonZeroU64::new(match self {
+    const fn factor(self) -> NonZeroU8 {
+        NonZeroU8::new(match self {
             Self::None => 1,
             Self::One => 10,
             Self::Two => 100,
@@ -186,28 +188,21 @@ impl AccessLogBuf {
             unreachable!();
         };
         let used = usize::from(*len);
-        if value.len() <= ACCESS_LOG_LINE_CAPACITY.wrapping_sub(used) {
-            let start = used;
-            // SAFETY: the initialized prefix ends at `start`; `value.len()` is
-            // bounded by the remaining inline capacity, so the destination is a
-            // disjoint in-bounds range. `len` is published only after this copy.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    value.as_ptr(),
-                    bytes.as_mut_ptr().cast::<u8>().add(start),
-                    value.len(),
-                );
-            }
-            *len = len.wrapping_add(value.len() as u8);
+        let end = used
+            .checked_add(value.len())
+            .expect("access line extent fits usize");
+        if let Some(destination) = bytes.get_mut(used..end) {
+            destination.write_copy_of_slice(value);
+            *len = u8::try_from(end).expect("inline access line fits its length field");
             return;
         }
 
         // A first spill happens before the rest of the access-line fields are
         // formatted. Leave room for that suffix rather than immediately
         // reallocating and copying this prefix on the next append.
-        let capacity = used
-            .saturating_add(value.len())
-            .next_power_of_two()
+        let capacity = end
+            .checked_next_power_of_two()
+            .unwrap_or(end)
             .max(ACCESS_LOG_LINE_CAPACITY * 2);
         let mut spilled = Vec::with_capacity(capacity);
         spilled.extend_from_slice(self.as_slice());
@@ -768,10 +763,6 @@ fn write_access_log_line(
     );
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a nibble indexes the 16-byte hex table"
-)]
 fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -785,8 +776,10 @@ fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
         out.extend_from_slice(&[
             b'\\',
             b'x',
-            HEX[usize::from(control >> 4)],
-            HEX[usize::from(control & 15)],
+            *HEX.get(usize::from(control >> 4))
+                .expect("high nibble fits hex alphabet"),
+            *HEX.get(usize::from(control & 15))
+                .expect("low nibble fits hex alphabet"),
         ]);
         rest = tail;
     }
@@ -954,12 +947,15 @@ fn write_scaled_to(
         Decimals::Two
     };
 
-    let factor = decimals.factor();
+    let factor = NonZeroU64::from(decimals.factor());
     let scaled = (value % scale)
-        .wrapping_mul(factor.get())
-        .wrapping_add(scale.get() / 2)
+        .checked_mul(factor.get())
+        .and_then(|value| value.checked_add(scale.get() / 2))
+        .expect("supported unit scales fit the fixed-point rounding numerator")
         / scale;
-    let integer = whole.wrapping_add(scaled / factor);
+    let integer = whole
+        .checked_add(scaled / factor)
+        .expect("rounded magnitude fits u64");
     let fractional = scaled % factor;
 
     write_integer(out, integer)?;
@@ -969,15 +965,15 @@ fn write_scaled_to(
             // `factor` is one, so `fractional` is zero and this arm is dead.
             Decimals::None => {},
             Decimals::One => {
-                out.write_char(char::from(b'0'.wrapping_add(fractional as u8)))?;
+                out.write_str(
+                    Char::digit(fractional as u8)
+                        .expect("one decimal place")
+                        .as_str(),
+                )?;
             },
             Decimals::Two => {
-                let tens = (fractional / 10) as u8;
-                let ones = (fractional % 10) as u8;
-                out.write_char(char::from(b'0'.wrapping_add(tens)))?;
-                if ones != 0 {
-                    out.write_char(char::from(b'0'.wrapping_add(ones)))?;
-                }
+                let pair = digits::two_digits(fractional as u8);
+                out.write_str(pair.as_str().trim_end_matches('0'))?;
             },
         }
     }
@@ -990,9 +986,7 @@ fn write_integer(out: &mut impl fmt::Write, value: u64) -> fmt::Result {
 }
 
 fn write_two_digits(out: &mut impl fmt::Write, value: u8) -> fmt::Result {
-    debug_assert!(value < 100);
-    out.write_char(char::from(b'0'.wrapping_add(value / 10)))?;
-    out.write_char(char::from(b'0'.wrapping_add(value % 10)))
+    out.write_str(digits::two_digits(value).as_str())
 }
 
 const fn status_style(status: HttpStatusCode) -> Style {

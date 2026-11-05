@@ -65,24 +65,31 @@ impl HeaderBudget {
             self.account_field()?;
         }
         if let Some(max_header_list_size) = self.limits.max_list_size {
-            self.list_size = self.list_size.saturating_add(field.table_size());
-            if self.list_size > max_header_list_size.get() {
+            let admitted = self
+                .list_size
+                .checked_add(field.table_size())
+                .filter(|&size| size <= max_header_list_size.get());
+            let Some(size) = admitted else {
                 return Err(RequestHeadError::reject(
                     status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
                 ));
-            }
+            };
+            self.list_size = size;
         }
         Ok(())
     }
 
     const fn account_field(&mut self) -> Result<(), RequestHeadError> {
         if let Some(max_fields) = self.limits.max_fields {
-            self.fields = self.fields.saturating_add(1);
-            if self.fields > max_fields.get() {
-                return Err(RequestHeadError::reject(
-                    status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                ));
-            }
+            let fields = match self.fields.checked_add(1) {
+                Some(fields) if fields <= max_fields.get() => fields,
+                _ => {
+                    return Err(RequestHeadError::reject(
+                        status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    ));
+                },
+            };
+            self.fields = fields;
         }
         Ok(())
     }

@@ -1,4 +1,6 @@
-use bytes::{Bytes, BytesMut};
+//! Per-message raw DEFLATE state, bounded output windows and extension negotiation.
+
+use bytes::{BufMut as _, Bytes, BytesMut};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::error::WebSocketProtocolError;
@@ -77,8 +79,12 @@ impl MessageDeflater {
 
         self.compressor.reset();
         self.out.clear();
-        self.out
-            .reserve(payload.len().saturating_add(FLATE_INITIAL_GROWTH_SLACK));
+        self.out.reserve(
+            payload
+                .len()
+                .checked_add(FLATE_INITIAL_GROWTH_SLACK)
+                .unwrap_or(payload.len()),
+        );
 
         loop {
             let before = self.compressor.total_out();
@@ -89,11 +95,17 @@ impl MessageDeflater {
                 self.out.spare_capacity_mut(),
                 FlushCompress::Sync,
             )?;
-            let written = self.compressor.total_out().wrapping_sub(before) as usize;
+            let written = usize::try_from(
+                self.compressor
+                    .total_out()
+                    .checked_sub(before)
+                    .expect("per-message compressor output is monotonic"),
+            )
+            .expect("produced bytes fit the supplied spare capacity");
             // SAFETY: `compress_uninit` writes exactly `written` initialized
             // bytes into the spare capacity returned by `BytesMut`.
             unsafe {
-                self.out.set_len(self.out.len().wrapping_add(written));
+                self.out.advance_mut(written);
             }
             if self.compressor.total_in() as usize == payload.len() && status != Status::BufError {
                 break;
@@ -101,8 +113,9 @@ impl MessageDeflater {
             self.out.reserve(self.out.len().max(FLATE_MIN_GROWTH));
         }
 
-        if self.out.ends_with(TAIL) {
-            self.out.truncate(self.out.len().wrapping_sub(TAIL.len()));
+        if let Some(prefix) = self.out.strip_suffix(TAIL) {
+            let len = prefix.len();
+            self.out.truncate(len);
         }
         if self.out.len() >= payload.len() {
             return Ok(None);
@@ -170,17 +183,29 @@ impl MessageInflater {
                     flush,
                 )
                 .map_err(|_| WebSocketProtocolError::InvalidCompressedPayload)?;
-            let written = self.decoder.total_out().wrapping_sub(before) as usize;
+            let written = usize::try_from(
+                self.decoder
+                    .total_out()
+                    .checked_sub(before)
+                    .expect("per-message decoder output is monotonic"),
+            )
+            .expect("produced bytes fit the supplied output window");
             // SAFETY: `decompress_uninit` writes exactly `written`
             // initialized bytes into the spare capacity returned by
             // `BytesMut`.
             unsafe {
-                self.out.set_len(self.out.len().wrapping_add(written));
+                self.out.advance_mut(written);
             }
             if max_message_size.is_some_and(|limit| self.out.len() > limit) {
                 return Err(WebSocketProtocolError::MessageTooLarge);
             }
-            let consumed = self.decoder.total_in().wrapping_sub(consumed_before) as usize;
+            let consumed = usize::try_from(
+                self.decoder
+                    .total_in()
+                    .checked_sub(consumed_before)
+                    .expect("per-message decoder input is monotonic"),
+            )
+            .expect("consumed bytes fit the supplied input");
             *input = input
                 .get(consumed..)
                 .expect("decompressor consumes only supplied input");
@@ -393,6 +418,7 @@ fn valid_window_bits(value: ExtensionParameterValue<'_>) -> bool {
 
 fn quoted_window_bits_are_valid(value: &[u8]) -> bool {
     let mut unescaped = [0; 2];
+    let capacity = unescaped.len();
     let mut output = unescaped.iter_mut();
     let mut input = value.iter().copied();
     while let Some(byte) = input.next() {
@@ -409,7 +435,9 @@ fn quoted_window_bits_are_valid(value: &[u8]) -> bool {
         };
         *slot = byte;
     }
-    let length = 2_usize.wrapping_sub(output.len());
+    let length = capacity
+        .checked_sub(output.len())
+        .expect("unescape cursor advances within its fixed window");
     window_bits_are_valid(unescaped.split_at(length).0)
 }
 
@@ -453,7 +481,10 @@ fn read_quoted_string<'a>(value: &mut &'a [u8]) -> Option<&'a [u8]> {
     *value = value.strip_prefix(b"\"")?;
     let content = *value;
     while let Some((&byte, rest)) = value.split_first() {
-        let consumed = content.len().wrapping_sub(value.len());
+        let consumed = content
+            .len()
+            .checked_sub(value.len())
+            .expect("quoted parser retains a content suffix");
         *value = rest;
         match byte {
             b'\"' => return Some(content.split_at(consumed).0),
@@ -504,7 +535,7 @@ fn inflate_window(
 }
 
 fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
-    let estimated = payload_len.saturating_mul(4).max(64);
+    let estimated = payload_len.checked_mul(4).unwrap_or(payload_len).max(64);
     max_message_size.map_or(estimated, |limit| estimated.min(limit))
 }
 
@@ -524,7 +555,7 @@ mod tests {
     fn compressed_zeroes(len: usize) -> Vec<u8> {
         let mut compressor = Compress::new(Compression::default(), false);
         let source = vec![0_u8; len];
-        let mut out = vec![0_u8; (len / 8).saturating_add(1024)];
+        let mut out = vec![0_u8; (len / 8).checked_add(1024).unwrap()];
         let status = compressor
             .compress(&source, &mut out, FlushCompress::Sync)
             .expect("zeroes compress");

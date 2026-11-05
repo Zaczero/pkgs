@@ -1,3 +1,7 @@
+//! Incremental HTTP/1 request framing and admission before application launch.
+
+mod chunk;
+
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::str;
 use std::sync::LazyLock;
@@ -9,11 +13,11 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, Bu
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use crate::ascii;
 use crate::async_util::send_if_open;
 use crate::config::ServerConfig;
 use crate::error::{ErrorExt as _, ErrorKind, H2CornError, Http1Error};
 use crate::h1::http::write_empty_response;
+use crate::h1::parse::chunk::parse_chunk_size;
 use crate::h1::{
     ConnectionPersistence, ParsedRequest, RequestBodyKind, RequestRoute, UpgradeRequest,
 };
@@ -66,7 +70,11 @@ impl<'a> BufferedTerminatorFinder<'a> {
     fn find(&mut self, buffer: &[u8]) -> Option<usize> {
         let start = self.search_start.min(buffer.len());
         if let Some(offset) = buffer.get(start..).and_then(|tail| self.finder.find(tail)) {
-            return Some(start.wrapping_add(offset));
+            return Some(
+                start
+                    .checked_add(offset)
+                    .expect("located delimiter is within buffer"),
+            );
         }
         self.search_start = buffer.len().saturating_sub(self.overlap);
         None
@@ -222,7 +230,10 @@ impl HeaderParseState {
         limit_request_field_size: Option<usize>,
     ) -> bool {
         let too_many_header_fields = if let Some(limit) = limit_request_fields {
-            self.header_field_count = self.header_field_count.saturating_add(1);
+            let Some(count) = self.header_field_count.checked_add(1) else {
+                return true;
+            };
+            self.header_field_count = count;
             self.header_field_count > limit
         } else {
             false
@@ -419,11 +430,12 @@ where
 {
     let mut header_search =
         BufferedTerminatorFinder::new(&HEADER_TERMINATOR_FINDER, HEADER_TERMINATOR.len());
-    let header_len = loop {
+    let (header_len, total_len) = loop {
         if let Some(end) = header_search.find(buffer) {
-            if limit_request_head_size
-                .is_some_and(|limit| end.wrapping_add(HEADER_TERMINATOR.len()) > limit)
-            {
+            let total_len = end
+                .checked_add(HEADER_TERMINATOR.len())
+                .expect("located header terminator fits buffer");
+            if limit_request_head_size.is_some_and(|limit| total_len > limit) {
                 write_empty_response(
                     writer,
                     config,
@@ -433,7 +445,7 @@ where
                 .await?;
                 return Ok(None);
             }
-            break end;
+            break (end, total_len);
         }
         let read_cap = limit_request_head_size.map(|limit| limit.saturating_sub(buffer.len()));
         if read_cap == Some(0) {
@@ -459,7 +471,7 @@ where
         }
     };
 
-    let mut head = buffer.split_to(header_len.wrapping_add(HEADER_TERMINATOR.len()));
+    let mut head = buffer.split_to(total_len);
     head.truncate(header_len);
     Ok(Some(head.freeze()))
 }
@@ -819,7 +831,9 @@ where
         }
         let chunk_len = usize::min(buffer.len(), remaining);
         consume_body_bytes(buffer, chunk_len, tx, body).await?;
-        remaining = remaining.saturating_sub(chunk_len);
+        remaining = remaining
+            .checked_sub(chunk_len)
+            .expect("consumed bytes fit remaining fixed body");
     }
 
     Ok(())
@@ -887,7 +901,9 @@ where
             }
             let chunk_len = buffer.len().min(remaining);
             batch.push(buffer, chunk_len, tx, body).await?;
-            remaining = remaining.saturating_sub(chunk_len);
+            remaining = remaining
+                .checked_sub(chunk_len)
+                .expect("consumed bytes fit remaining chunk");
         }
 
         if let Err(error) = consume_chunk_crlf(reader, buffer, timeout_duration).await {
@@ -956,7 +972,11 @@ where
         return Http1Error::InvalidChunkSize.err();
     };
     let size = parse_chunk_size(line)?;
-    buffer.advance(line_end.wrapping_add(LINE_TERMINATOR.len()));
+    buffer.advance(
+        line_end
+            .checked_add(LINE_TERMINATOR.len())
+            .expect("located chunk line terminator fits buffer"),
+    );
     Ok(size)
 }
 
@@ -1014,16 +1034,15 @@ fn validate_trailer_line(line: &[u8], limits: FieldLimits) -> Result<(), H2CornE
 
 /// RFC 9112 OWS is exactly SP / HTAB. `trim_ascii` also removes illegal
 /// controls, which would turn malformed wire bytes into valid field values.
-fn trim_ows(value: &[u8]) -> &[u8] {
-    let start = value
-        .iter()
-        .position(|byte| !matches!(byte, b' ' | b'\t'))
-        .unwrap_or(value.len());
-    let end = value
-        .iter()
-        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
-        .map_or(start, |index| index.wrapping_add(1));
-    value.get(start..end).expect("trim bounds come from value")
+const fn trim_ows(value: &[u8]) -> &[u8] {
+    let mut remaining = value;
+    while let [b' ' | b'\t', rest @ ..] = remaining {
+        remaining = rest;
+    }
+    while let [rest @ .., b' ' | b'\t'] = remaining {
+        remaining = rest;
+    }
+    remaining
 }
 
 async fn drain_chunked_trailers<R>(
@@ -1035,22 +1054,24 @@ async fn drain_chunked_trailers<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut fields = 0_usize;
+    let mut field_budget = limits.max_fields;
     let mut line_search =
         BufferedTerminatorFinder::new(&LINE_TERMINATOR_FINDER, LINE_TERMINATOR.len());
-    let mut section_bytes = 0_usize;
+    let mut byte_budget = MAX_TRAILER_SECTION_BYTES;
     loop {
         let Some(end) = line_search.find(buffer) else {
-            let buffered_bytes = section_bytes.saturating_add(buffer.len());
-            if buffered_bytes >= MAX_TRAILER_SECTION_BYTES {
+            let Some(read_cap) = byte_budget
+                .checked_sub(buffer.len())
+                .filter(|&bytes| bytes != 0)
+            else {
                 return Http1Error::MalformedHeaderLine.err();
-            }
+            };
             if !read_more(
                 reader,
                 buffer,
                 timeout_duration,
                 Http1Error::RequestBodyTimedOut,
-                Some(MAX_TRAILER_SECTION_BYTES.saturating_sub(buffered_bytes)),
+                Some(read_cap),
             )
             .await?
             {
@@ -1058,18 +1079,20 @@ where
             }
             continue;
         };
-        let line_len = end.wrapping_add(LINE_TERMINATOR.len());
-        section_bytes = section_bytes.saturating_add(line_len);
-        if section_bytes > MAX_TRAILER_SECTION_BYTES {
-            return Http1Error::MalformedHeaderLine.err();
-        }
+        let line_len = end
+            .checked_add(LINE_TERMINATOR.len())
+            .expect("located trailer line terminator fits buffer");
+        byte_budget = byte_budget
+            .checked_sub(line_len)
+            .ok_or(Http1Error::MalformedHeaderLine)?;
         if end == 0 {
             buffer.advance(line_len);
             return Ok(());
         }
-        fields = fields.saturating_add(1);
-        if limits.max_fields.is_some_and(|limit| fields > limit) {
-            return Http1Error::TooManyTrailerFields.err();
+        if let Some(remaining) = &mut field_budget {
+            *remaining = remaining
+                .checked_sub(1)
+                .ok_or(Http1Error::TooManyTrailerFields)?;
         }
         let Some(line) = buffer.get(..end) else {
             return Http1Error::MalformedHeaderLine.err();
@@ -1184,139 +1207,6 @@ fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
         && request_scheme_is_valid(scheme)
         && request_authority_is_valid(authority)
         && (path_and_query.is_empty() || request_path_is_valid(method, path_and_query))
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
-fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
-    let mut value = 0_usize;
-    let mut index = 0;
-    while let Some(&byte) = line.get(index) {
-        let digit = ascii::HEX_VALUE[usize::from(byte)];
-        if digit == ascii::INVALID_VALUE {
-            break;
-        }
-        value = value
-            .checked_mul(16)
-            .and_then(|value| value.checked_add(usize::from(digit)))
-            .ok_or(Http1Error::InvalidChunkSize)?;
-        index = index.wrapping_add(1);
-    }
-    if index == 0 {
-        return Http1Error::InvalidChunkSize.err();
-    }
-    let mut trailing_whitespace = false;
-    while line
-        .get(index)
-        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-    {
-        trailing_whitespace = true;
-        index = index.wrapping_add(1);
-    }
-    if index == line.len() {
-        return if trailing_whitespace {
-            Http1Error::InvalidChunkSize.err()
-        } else {
-            Ok(value)
-        };
-    }
-
-    loop {
-        if line.get(index) != Some(&b';') {
-            return Http1Error::InvalidChunkSize.err();
-        }
-        index = index.wrapping_add(1);
-        while line
-            .get(index)
-            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-        {
-            index = index.wrapping_add(1);
-        }
-        let token_start = index;
-        while line
-            .get(index)
-            .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
-        {
-            index = index.wrapping_add(1);
-        }
-        if index == token_start {
-            return Http1Error::InvalidChunkSize.err();
-        }
-        trailing_whitespace = false;
-        while line
-            .get(index)
-            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-        {
-            trailing_whitespace = true;
-            index = index.wrapping_add(1);
-        }
-        if line.get(index) == Some(&b'=') {
-            index = index.wrapping_add(1);
-            while line
-                .get(index)
-                .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-            {
-                index = index.wrapping_add(1);
-            }
-            if line.get(index) == Some(&b'\"') {
-                index = index.wrapping_add(1);
-                let mut closed = false;
-                while let Some(&byte) = line.get(index) {
-                    index = index.wrapping_add(1);
-                    match byte {
-                        b'\"' => {
-                            closed = true;
-                            break;
-                        },
-                        b'\\' => {
-                            let Some(&escaped) = line.get(index) else {
-                                return Http1Error::InvalidChunkSize.err();
-                            };
-                            if escaped.is_ascii_control() || escaped == 0x7F {
-                                return Http1Error::InvalidChunkSize.err();
-                            }
-                            index = index.wrapping_add(1);
-                        },
-                        byte if byte.is_ascii_control() || byte == 0x7F => {
-                            return Http1Error::InvalidChunkSize.err();
-                        },
-                        _ => {},
-                    }
-                }
-                if !closed {
-                    return Http1Error::InvalidChunkSize.err();
-                }
-            } else {
-                let value_start = index;
-                while line
-                    .get(index)
-                    .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
-                {
-                    index = index.wrapping_add(1);
-                }
-                if index == value_start {
-                    return Http1Error::InvalidChunkSize.err();
-                }
-            }
-            trailing_whitespace = false;
-            while line
-                .get(index)
-                .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-            {
-                trailing_whitespace = true;
-                index = index.wrapping_add(1);
-            }
-        }
-        if index == line.len() {
-            return if trailing_whitespace {
-                Http1Error::InvalidChunkSize.err()
-            } else {
-                Ok(value)
-            };
-        }
-    }
 }
 
 fn parse_http2_settings(value: &[u8]) -> Result<PeerSettings, H2CornError> {

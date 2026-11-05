@@ -275,14 +275,21 @@ mod tests {
             _cx: &mut Context<'_>,
             bufs: &[io::IoSlice<'_>],
         ) -> Poll<io::Result<usize>> {
-            self.vectored_calls = self.vectored_calls.wrapping_add(1);
+            self.vectored_calls = self
+                .vectored_calls
+                .checked_add(1)
+                .expect("fixture call count fits usize");
             let mut remaining = 3;
             let mut written = 0_usize;
             for buf in bufs {
                 let take = remaining.min(buf.len());
                 self.bytes.extend_from_slice(&buf[..take]);
-                written = written.wrapping_add(take);
-                remaining = remaining.wrapping_sub(take);
+                written = written
+                    .checked_add(take)
+                    .expect("fixture write stays within its budget");
+                remaining = remaining
+                    .checked_sub(take)
+                    .expect("fixture write stays within its budget");
                 if remaining == 0 {
                     break;
                 }

@@ -55,7 +55,10 @@ impl AsyncWrite for GatedWriter {
         }
         let written = bytes.len().min(gate.allowance);
         gate.bytes.extend_from_slice(&bytes[..written]);
-        gate.allowance = gate.allowance.wrapping_sub(written);
+        gate.allowance = gate
+            .allowance
+            .checked_sub(written)
+            .expect("fixture writes stay within allowance");
         drop(gate);
         Poll::Ready(Ok(written))
     }
@@ -95,8 +98,10 @@ async fn bounded_ready_scan_wakes_unexamined_writable_tail() {
     let target = GatedWriter::new(usize::MAX, true);
     let gate = Arc::clone(&target.0);
     let mut writer = WriterState::new_test(target);
-    let ids: Vec<_> = (0_u32..65)
-        .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+    let ids: Vec<_> = (1_u32..)
+        .step_by(2)
+        .take(65)
+        .map(|id| StreamId::new(id).unwrap())
         .collect();
     for &id in &ids {
         writer
@@ -173,8 +178,10 @@ fn bounded_ready_scan_sleeps_after_all_file_reads_are_pending() {
         let mut writer = WriterState::new_test(target);
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"owned").unwrap();
-        let ids: Vec<_> = (0_u32..65)
-            .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+        let ids: Vec<_> = (1_u32..)
+            .step_by(2)
+            .take(65)
+            .map(|id| StreamId::new(id).unwrap())
             .collect();
         for &id in &ids {
             writer
@@ -580,8 +587,10 @@ async fn admitted_responses_finish_across_output_quanta() {
     let target = GatedWriter::new(usize::MAX, true);
     let gate = Arc::clone(&target.0);
     let mut writer = WriterState::new_test(target);
-    let ids: Vec<_> = (0_u32..40)
-        .map(|index| StreamId::new(index.wrapping_mul(2).wrapping_add(1)).unwrap())
+    let ids: Vec<_> = (1_u32..)
+        .step_by(2)
+        .take(40)
+        .map(|id| StreamId::new(id).unwrap())
         .collect();
     for &id in &ids {
         writer.register_stream(id, None);
@@ -828,7 +837,7 @@ async fn final_body_preserves_stall_anchor_when_settings_reduce_credit(
         })
         .unwrap();
     let prefix = if headers_complete {
-        writer.header_state.block().len().wrapping_add(9)
+        writer.header_state.block().len().checked_add(9).unwrap()
     } else {
         5
     };
@@ -899,7 +908,7 @@ async fn failed_final_response_finishes_only_the_started_frame(#[case] data_star
         })
         .unwrap();
     let prefix = if data_started {
-        writer.header_state.block().len().wrapping_add(12)
+        writer.header_state.block().len().checked_add(12).unwrap()
     } else {
         5
     };

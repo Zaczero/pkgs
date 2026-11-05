@@ -5135,19 +5135,17 @@ pub(super) const DECODE_TABLE: [[u32; 16]; 256] = [
     ],
 ];
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "const evaluation bounds-checks these writes when the table is built"
-)]
 const fn pack_encode_table(source: &[(usize, u64); 257]) -> [u64; 257] {
     let mut packed = [0; 257];
     let mut index = 0;
     while index < source.len() {
-        let (code_bits, code) = source[index];
+        let &(code_bits, code) = source.get(index).expect("encoding table cursor");
         assert!(code_bits <= MAX_CODE_BITS);
         assert!(code <= u32::MAX as u64);
-        packed[index] = code | ((code_bits as u64) << 32);
-        index = index.wrapping_add(1);
+        *packed.get_mut(index).expect("packed table entry") = code | ((code_bits as u64) << 32);
+        index = index
+            .checked_add(1)
+            .expect("encoding table cursor fits usize");
     }
     packed
 }

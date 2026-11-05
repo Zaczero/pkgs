@@ -51,7 +51,10 @@ impl DynamicBuffer {
         self.evict_to_fit(size);
         let entry = entry();
         debug_assert_eq!(entry.table_size(), size);
-        self.size = self.size.wrapping_add(size);
+        self.size = self
+            .size
+            .checked_add(size)
+            .expect("eviction admitted the entry size");
         self.entries.push_back(entry);
     }
 
@@ -62,13 +65,19 @@ impl DynamicBuffer {
 
     fn evict_to_fit(&mut self, incoming: usize) {
         debug_assert!(incoming <= self.max_size);
-        let available = self.max_size.wrapping_sub(incoming);
+        let available = self
+            .max_size
+            .checked_sub(incoming)
+            .expect("incoming entry fits table limit");
         while self.size > available {
             let entry = self
                 .entries
                 .pop_front()
                 .expect("retained size belongs to live entries");
-            self.size = self.size.wrapping_sub(entry.table_size());
+            self.size = self
+                .size
+                .checked_sub(entry.table_size())
+                .expect("evicted entry belongs to retained size");
         }
     }
 }

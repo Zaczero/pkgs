@@ -14,13 +14,31 @@ use crate::runtime::ApplicationFailure;
 
 enum HttpSendMode {
     Inline {
-        accepted: u8,
+        accepted: InlineAdmissions,
     },
     Streaming {
         tx: mpsc::Sender<AdmittedHttpOutboundEvent>,
         rx: Option<mpsc::Receiver<AdmittedHttpOutboundEvent>>,
     },
     Closed,
+}
+
+/// Exactly the two admissions available before the send path becomes streaming.
+#[derive(Clone, Copy)]
+enum InlineAdmissions {
+    None,
+    One,
+    Two,
+}
+
+impl InlineAdmissions {
+    const fn after_admission(self) -> Option<Self> {
+        match self {
+            Self::None => Some(Self::One),
+            Self::One => Some(Self::Two),
+            Self::Two => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -259,7 +277,9 @@ impl HttpSendState {
     ) -> (Self, HttpSendBuffer) {
         let shared = Arc::new(HttpSendShared {
             events: BufferedState::new(HttpSendControl {
-                mode: HttpSendMode::Inline { accepted: 0 },
+                mode: HttpSendMode::Inline {
+                    accepted: InlineAdmissions::None,
+                },
                 phase: HttpSendPhase::AwaitingStart,
                 close_signal: None,
                 finished_waiters: BTreeMap::new(),
@@ -384,11 +404,9 @@ impl HttpSendState {
             },
             HttpSendMode::Closed => return Admission::Closed,
         };
-        let admission = if accepted < 2 {
+        let admission = if let Some(accepted) = accepted.after_admission() {
             inner.queue.push_back(event);
-            inner.state.mode = HttpSendMode::Inline {
-                accepted: accepted.wrapping_add(1),
-            };
+            inner.state.mode = HttpSendMode::Inline { accepted };
             Admission::Buffered
         } else {
             let (tx, rx) = mpsc::channel(HTTP_ASGI_QUEUE_CAPACITY);

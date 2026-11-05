@@ -78,6 +78,7 @@ impl Cancellation {
 enum FutureState {
     Pending {
         callbacks: Callbacks,
+        /// Cyclic token invalidating snapshots across reentrant callback comparisons.
         callback_removal_revision: u64,
         cancellation: Option<Cancellation>,
         resolution_claimed: bool,
@@ -406,10 +407,9 @@ impl RustFuture {
             debug_assert!(callbacks.len() >= snapshot.len());
             let before = callbacks.len();
             let mut retired = Callbacks::new();
-            let mut index = 0;
+            let mut decisions = snapshot.iter();
             callbacks.retain_mut(|entry| {
-                let keep = snapshot.get(index).is_none_or(|entry| entry.1);
-                index = index.wrapping_add(1);
+                let keep = decisions.next().is_none_or(|entry| entry.1);
                 if !keep {
                     // `retain_mut` drops rejected slots in place, so move
                     // Python-owned references out before it does.
@@ -417,7 +417,9 @@ impl RustFuture {
                 }
                 keep
             });
-            let removed = before.wrapping_sub(callbacks.len());
+            let removed = before
+                .checked_sub(callbacks.len())
+                .expect("retaining callbacks only removes entries");
             if removed != 0 {
                 *callback_removal_revision = callback_removal_revision.wrapping_add(1);
             }

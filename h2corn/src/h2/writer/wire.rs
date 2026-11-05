@@ -1,4 +1,7 @@
+//! Prepared frame ownership and resumable transport progress for the HTTP/2 writer.
+
 use std::io::{self, IoSlice};
+use std::ops::Range;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
@@ -27,10 +30,16 @@ pub(super) struct DataFrame {
     header: [u8; FRAME_HEADER_LEN],
     source: usize,
     offset: usize,
-    len: usize,
+    len: FramePayloadLen,
 }
 
 impl DataFrame {
+    const fn wire_len(&self) -> usize {
+        FRAME_HEADER_LEN
+            .checked_add(self.len.as_usize())
+            .expect("HTTP/2 frame extent fits usize")
+    }
+
     pub(super) fn new(
         stream_id: StreamId,
         source: usize,
@@ -53,7 +62,7 @@ impl DataFrame {
             ),
             source,
             offset,
-            len: len.as_usize(),
+            len,
         }
     }
 }
@@ -93,57 +102,60 @@ impl DataCursor {
     }
 
     fn wire_len(&self) -> usize {
-        self.frames
-            .iter()
-            .map(|frame| FRAME_HEADER_LEN.wrapping_add(frame.len))
-            .sum()
+        self.frame_ranges().last().map_or(0, |(_, range)| range.end)
+    }
+
+    /// Each retained frame paired with its extent in this ordered transport batch.
+    fn frame_ranges(&self) -> impl Iterator<Item = (&DataFrame, Range<usize>)> {
+        self.frames.iter().scan(0_usize, |start, frame| {
+            let end = start
+                .checked_add(frame.wire_len())
+                .expect("prepared frame batch fits usize");
+            let range = *start..end;
+            *start = end;
+            Some((frame, range))
+        })
     }
 
     pub(super) fn retire(&mut self) {
         self.retired = true;
-        let mut before = 0_usize;
-        let current = self.frames.iter().position(|frame| {
-            let end = before
-                .wrapping_add(FRAME_HEADER_LEN)
-                .wrapping_add(frame.len);
-            let active = self.written > before && self.written < end;
-            before = end;
-            active
-        });
-        let Some(current) = current else {
+        let active = self
+            .frame_ranges()
+            .enumerate()
+            .find_map(|(index, (frame, range))| {
+                (self.written > range.start && self.written < range.end).then_some((
+                    index,
+                    frame.source,
+                    range.start,
+                ))
+            });
+        let Some((current, source, frame_start)) = active else {
             self.frames.clear();
             self.body = PendingBody::new();
             self.written = 0;
             return;
         };
-        let source = self
-            .frames
-            .get(current)
-            .expect("active frame exists")
-            .source;
-        let frame_start: usize = self
-            .frames
-            .iter()
-            .take(current)
-            .map(|frame| FRAME_HEADER_LEN.wrapping_add(frame.len))
-            .sum();
-        let mut retained = None;
-        let mut index = 0_usize;
-        while let Some(item) = self.body.pop_front() {
-            if index == source {
-                retained = Some(item);
-            }
-            index = index.wrapping_add(1);
+        for _ in 0..source {
+            self.body
+                .pop_front()
+                .expect("preceding frame source is retained");
         }
-        self.body
-            .push_back(retained.expect("active DATA frame retains its payload owner"));
+        let retained = self
+            .body
+            .pop_front()
+            .expect("active DATA frame retains its payload owner");
+        self.body.clear();
+        self.body.push_back(retained);
         self.frames.drain(..current);
         self.frames.truncate(1);
         self.frames
             .first_mut()
             .expect("active frame retained")
             .source = 0;
-        self.written = self.written.wrapping_sub(frame_start);
+        self.written = self
+            .written
+            .checked_sub(frame_start)
+            .expect("active frame begins before transport cursor");
     }
 
     pub(super) fn constrain(&mut self, available: i64, maximum: FramePayloadLen) -> bool {
@@ -151,42 +163,47 @@ impl DataCursor {
             return false;
         }
         let mut budget = available.max(0) as usize;
-        let mut before = 0_usize;
-        for (index, frame) in self.frames.iter().enumerate() {
-            if self.written <= before {
-                if frame.len > budget || frame.len > maximum.as_usize() {
-                    if self.written == 0 {
-                        return true;
+        let truncate = self
+            .frame_ranges()
+            .enumerate()
+            .find_map(|(index, (frame, range))| {
+                if self.written <= range.start {
+                    if frame.len.as_usize() > budget || frame.len > maximum {
+                        return Some(index);
                     }
-                    self.frames.truncate(index);
-                    self.end_stream = self
-                        .frames
-                        .last()
-                        .is_some_and(|frame| frame.header[4] & 1 != 0);
-                    return false;
+                    budget = budget
+                        .checked_sub(frame.len.as_usize())
+                        .expect("frame fits available peer credit");
                 }
-                budget = budget.wrapping_sub(frame.len);
+                None
+            });
+        if let Some(index) = truncate {
+            if self.written == 0 {
+                return true;
             }
-            before = before
-                .wrapping_add(FRAME_HEADER_LEN)
-                .wrapping_add(frame.len);
+            self.frames.truncate(index);
+            self.end_stream = self
+                .frames
+                .last()
+                .is_some_and(|frame| frame.header[4] & 1 != 0);
         }
         false
     }
 
     fn record_written(&mut self, bytes: usize) -> WriteProgress {
-        let after = self.written.wrapping_add(bytes);
-        let mut before = 0_usize;
+        let after = self
+            .written
+            .checked_add(bytes)
+            .expect("transport progress fits prepared batch");
         let mut flow_bytes = 0_usize;
-        for frame in &self.frames {
+        for (frame, range) in self.frame_ranges() {
             // A prepared frame has not spent peer credit. Commit its full
             // payload once its first byte enters the ordered transport.
-            if self.written <= before && after > before {
-                flow_bytes = flow_bytes.wrapping_add(frame.len);
+            if self.written <= range.start && after > range.start {
+                flow_bytes = flow_bytes
+                    .checked_add(frame.len.as_usize())
+                    .expect("flow bytes fit prepared batch");
             }
-            before = before
-                .wrapping_add(FRAME_HEADER_LEN)
-                .wrapping_add(frame.len);
         }
         self.written = after;
         WriteProgress {
@@ -212,18 +229,17 @@ impl DataCursor {
             return self.poll_sendfile(writer, cx);
         }
         let mut slices = SmallVec::<[IoSlice<'_>; 27]>::new();
-        let mut sources = self.body.iter();
-        let mut source_index = 0_usize;
-        let mut source = sources.next().expect("DATA batch has a source");
+        let mut sources = self.body.iter().enumerate();
+        let (mut source_index, mut source) = sources.next().expect("DATA batch has a source");
         for frame in &self.frames {
             while source_index < frame.source {
-                source = sources.next().expect("frame source is retained");
-                source_index = source_index.wrapping_add(1);
+                (source_index, source) = sources.next().expect("frame source is retained");
             }
             slices.push(IoSlice::new(&frame.header));
             match source {
                 BodyItem::Chunk(chunk) => {
-                    let (first, second) = chunk.remaining_slices(frame.offset, frame.len);
+                    let (first, second) =
+                        chunk.remaining_slices(frame.offset, frame.len.as_usize());
                     if !first.is_empty() {
                         slices.push(IoSlice::new(first));
                     }
@@ -234,7 +250,8 @@ impl DataCursor {
                 BodyItem::File(file) => {
                     slices.push(IoSlice::new(
                         file.remaining()
-                            .get(frame.offset..frame.offset.wrapping_add(frame.len))
+                            .get(frame.offset..)
+                            .and_then(|remaining| remaining.get(..frame.len.as_usize()))
                             .expect("prepared DATA fits its retained file buffer"),
                     ));
                 },
@@ -281,9 +298,10 @@ impl DataCursor {
             .sendfile_cursor()
             .expect("sendfile remains in its selected mode");
         let (file, offset) = cursor.parts();
-        let remaining = FRAME_HEADER_LEN
-            .wrapping_add(frame.len)
-            .wrapping_sub(self.written);
+        let remaining = frame
+            .wire_len()
+            .checked_sub(self.written)
+            .expect("sendfile progress stays within frame");
         let written = ready!(W::poll_send_file(writer, file, offset, remaining, cx))?;
         if written == 0 {
             return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
@@ -310,11 +328,11 @@ impl DataCursor {
             };
             let drained = match item {
                 BodyItem::Chunk(chunk) => {
-                    chunk.consume(frame.len);
+                    chunk.consume(frame.len.as_usize());
                     chunk.remaining_len() == 0
                 },
                 BodyItem::File(file) => {
-                    file.consume(frame.len);
+                    file.consume(frame.len.as_usize());
                     file.is_drained() || file.needs_fill()
                 },
             };
@@ -366,11 +384,12 @@ impl HeaderCursor {
         if self.written == 0 {
             self.maximum = maximum.min_usize(BYTE_QUANTUM);
         }
-        let len = self
-            .maximum
-            .min_usize(block.len().wrapping_sub(self.block_offset));
-        let end = self.block_offset.wrapping_add(len.as_usize());
-        let last = end == block.len();
+        let remaining = block
+            .get(self.block_offset..)
+            .expect("header cursor fits encoded block");
+        let len = self.maximum.min_usize(remaining.len());
+        let (payload, suffix) = remaining.split_at(len.as_usize());
+        let last = suffix.is_empty();
         let first = self.block_offset == 0;
         let mut flags = if last {
             FrameFlags::END_HEADERS
@@ -392,14 +411,21 @@ impl HeaderCursor {
             },
             len,
         );
-        let payload = block
-            .get(self.block_offset..end)
-            .expect("header fragment fits its encoded block");
         let mut slices = [IoSlice::new(&header), IoSlice::new(payload)];
         let written = ready!(poll_slices(writer, cx, &mut slices, self.written))?;
-        self.written = self.written.wrapping_add(written);
-        if self.written == FRAME_HEADER_LEN.wrapping_add(len.as_usize()) {
-            self.block_offset = end;
+        self.written = self
+            .written
+            .checked_add(written)
+            .expect("header transport cursor fits frame");
+        if self.written
+            == FRAME_HEADER_LEN
+                .checked_add(payload.len())
+                .expect("header frame extent fits usize")
+        {
+            self.block_offset = block
+                .len()
+                .checked_sub(suffix.len())
+                .expect("fragment suffix belongs to encoded block");
             self.written = 0;
             Poll::Ready(Ok(WriteProgress {
                 bytes: written,
@@ -469,7 +495,9 @@ pub(super) fn poll_control<W: AsyncWrite + Unpin>(
     if count == 0 {
         return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
     }
-    *written = written.wrapping_add(count);
+    *written = written
+        .checked_add(count)
+        .expect("control transport cursor fits frame");
     Poll::Ready(Ok(WriteProgress {
         bytes: count,
         complete: *written == frame.len(),

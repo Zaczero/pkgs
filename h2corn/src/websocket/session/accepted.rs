@@ -338,7 +338,9 @@ where
                 self.transport.flush_buffered_frames().await?;
             }
 
-            frames = frames.wrapping_add(1);
+            frames = frames
+                .checked_add(1)
+                .expect("outbound batch frame count is bounded by the fairness quantum");
             payload_bytes = payload_bytes.saturating_add(outbound.payload_len());
             if let ControlFlow::Break(result) = self.handle_outbound(outbound).await? {
                 return Ok(ControlFlow::Break(result));

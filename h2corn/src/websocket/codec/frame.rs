@@ -153,12 +153,17 @@ pub(super) fn decode_control_frame(
 pub(crate) fn encode_frame_into(opcode: u8, payload: &[u8], compressed: bool, out: &mut BytesMut) {
     let header = encode_frame_header(opcode, payload.len(), compressed);
     out.clear();
-    out.reserve(payload.len().saturating_add(header.as_slice().len()));
+    out.reserve(
+        payload
+            .len()
+            .checked_add(header.as_slice().len())
+            .expect("payload slice and frame prefix fit usize"),
+    );
     out.extend_from_slice(header.as_slice());
     out.extend_from_slice(payload);
 }
 
-pub(crate) fn encode_frame_header(
+pub(crate) const fn encode_frame_header(
     opcode: u8,
     payload_len: usize,
     compressed: bool,
@@ -197,9 +202,16 @@ pub(crate) fn encode_close_frame_into(
         return WebSocketError::CloseReasonTooLong.err();
     }
 
-    let payload_len = reason.len().wrapping_add(2);
+    let payload_len = reason
+        .len()
+        .checked_add(2)
+        .expect("validated close reason fits control payload");
     out.clear();
-    out.reserve(wire::CLOSE_FRAME_HEADER_LEN.wrapping_add(payload_len));
+    out.reserve(
+        wire::CLOSE_FRAME_HEADER_LEN
+            .checked_add(payload_len)
+            .expect("close frame extent fits usize"),
+    );
     out.extend_from_slice(&[wire::FIN | opcode::CLOSE, payload_len as u8]);
     out.extend_from_slice(&code.get().to_be_bytes());
     out.extend_from_slice(reason.as_bytes());

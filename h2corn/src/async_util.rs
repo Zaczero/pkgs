@@ -102,7 +102,10 @@ mod write_all_vectored_tests {
         ) -> Poll<io::Result<usize>> {
             let take = buf.len().min(self.max_per_call);
             self.bytes.extend_from_slice(&buf[..take]);
-            self.calls = self.calls.wrapping_add(1);
+            self.calls = self
+                .calls
+                .checked_add(1)
+                .expect("fixture call count fits usize");
             Poll::Ready(Ok(take))
         }
 
@@ -116,13 +119,20 @@ mod write_all_vectored_tests {
             for buf in bufs {
                 let take = remaining.min(buf.len());
                 self.bytes.extend_from_slice(&buf[..take]);
-                written = written.wrapping_add(take);
-                remaining = remaining.wrapping_sub(take);
+                written = written
+                    .checked_add(take)
+                    .expect("fixture write stays within its budget");
+                remaining = remaining
+                    .checked_sub(take)
+                    .expect("fixture write stays within its budget");
                 if remaining == 0 {
                     break;
                 }
             }
-            self.calls = self.calls.wrapping_add(1);
+            self.calls = self
+                .calls
+                .checked_add(1)
+                .expect("fixture call count fits usize");
             Poll::Ready(Ok(written))
         }
 

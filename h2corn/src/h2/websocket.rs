@@ -145,7 +145,13 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
             },
             EncodedWebSocketFrame::Segmented { header, payload } => {
                 let credit = self
-                    .acquire_outbound_credit(header.as_slice().len().wrapping_add(payload.len()))
+                    .acquire_outbound_credit(
+                        header
+                            .as_slice()
+                            .len()
+                            .checked_add(payload.len())
+                            .expect("outbound WebSocket frame extent fits usize"),
+                    )
                     .await?;
                 self.connection
                     .send_websocket_data(self.stream_id, header, payload, credit)

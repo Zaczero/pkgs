@@ -7,7 +7,7 @@ use crate::error::WebSocketProtocolError;
 use crate::http::types::BytesStr;
 use crate::websocket::codec::cursor::SegmentCursor;
 use crate::websocket::codec::frame::{decode_control_frame, parse_frame_header};
-use crate::websocket::codec::mask::MaskKey;
+use crate::websocket::codec::mask::{MaskKey, MaskPhase};
 use crate::websocket::codec::wire::opcode;
 use crate::websocket::codec::{DecodedFrame, wire};
 use crate::websocket::deflate::PerMessageDeflateMode;
@@ -27,7 +27,7 @@ struct CurrentFrame {
     opcode: u8,
     mask: MaskKey,
     remaining: usize,
-    mask_phase: usize,
+    mask_phase: MaskPhase,
     payload: BytesMut,
 }
 
@@ -82,7 +82,10 @@ impl WebSocketCodec {
                 self.segmented
                     .take_masked_chunk(take, current.mask, current.mask_phase);
             current.mask_phase = phase;
-            current.remaining = current.remaining.wrapping_sub(chunk.len());
+            current.remaining = current
+                .remaining
+                .checked_sub(chunk.len())
+                .expect("transport chunk fits remaining frame payload");
 
             if self.current_frame_is_compressed(&current) {
                 M::push_decompress(inflater, chunk.as_ref(), max_message_size)?;
@@ -118,7 +121,10 @@ impl WebSocketCodec {
         };
         self.validate_frame_header_state(&header, max_message_size)?;
 
-        let mask_end = header.header_len.wrapping_add(wire::CLIENT_MASK_LEN);
+        let mask_end = header
+            .header_len
+            .checked_add(wire::CLIENT_MASK_LEN)
+            .expect("fixed frame prefix fits usize");
         if self.segmented.len() < mask_end {
             return Ok(());
         }
@@ -148,7 +154,7 @@ impl WebSocketCodec {
             opcode: header.opcode,
             mask: MaskKey::new(mask),
             remaining: header.payload_len,
-            mask_phase: 0,
+            mask_phase: MaskPhase::First,
             payload: BytesMut::new(),
         });
         Ok(())
@@ -180,7 +186,9 @@ impl WebSocketCodec {
                 };
                 if !compressed {
                     Self::ensure_message_size(
-                        data.len().saturating_add(header.payload_len),
+                        data.len()
+                            .checked_add(header.payload_len)
+                            .ok_or(WebSocketProtocolError::MessageTooLarge)?,
                         max_message_size,
                     )?;
                 }
@@ -323,7 +331,8 @@ mod tests {
         let mut out = Vec::with_capacity(
             payload
                 .len()
-                .saturating_add(wire::CLIENT_FRAME_PREFIX_MAX_LEN),
+                .checked_add(wire::CLIENT_FRAME_PREFIX_MAX_LEN)
+                .unwrap(),
         );
         out.push(first);
         match payload.len() {
@@ -373,7 +382,7 @@ mod tests {
 
     fn stored_permessage_deflate(payload: &[u8]) -> Vec<u8> {
         let len = u16::try_from(payload.len()).expect("test payload fits a stored DEFLATE block");
-        let mut out = Vec::with_capacity(payload.len().saturating_add(5));
+        let mut out = Vec::with_capacity(payload.len().checked_add(5).unwrap());
         // BFINAL=0, BTYPE=00, then the byte-aligned stored-block length.
         out.push(0);
         out.extend_from_slice(&len.to_le_bytes());
@@ -574,7 +583,7 @@ mod tests {
             let header = masked_header_only(opcode, true, payload_len);
             for (index, byte) in header.iter().enumerate() {
                 codec.push_segment(Bytes::copy_from_slice(std::slice::from_ref(byte)));
-                if index.wrapping_add(1) == header.len() {
+                if index.checked_add(1).expect("header test index fits slice") == header.len() {
                     let Err(err) = decode(&mut codec) else {
                         panic!(
                             "reserved opcode {opcode} with payload length {payload_len} must fail once its header is available"

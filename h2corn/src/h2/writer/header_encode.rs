@@ -111,7 +111,7 @@ fn encode_status_header(encoder: &Encoder, out: &mut BytesMut, status: HttpStatu
     if indexed != 0 {
         out.extend_from_slice(&[indexed]);
     } else {
-        encoder.encode_indexed_name_bytes(8, &digits::three_digit_bytes(status.get()), out);
+        encoder.encode_indexed_name_bytes(8, digits::three_digits(status).as_bytes(), out);
     }
 }
 

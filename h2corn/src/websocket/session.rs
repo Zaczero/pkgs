@@ -283,8 +283,12 @@ pub(crate) fn append_ws_accept_headers(
     subprotocol: Option<&str>,
     per_message_deflate: bool,
 ) {
-    headers
-        .reserve(usize::from(subprotocol.is_some()).wrapping_add(usize::from(per_message_deflate)));
+    headers.reserve(
+        [subprotocol.is_some(), per_message_deflate]
+            .into_iter()
+            .filter(|&present| present)
+            .count(),
+    );
     if let Some(subprotocol) = subprotocol {
         headers.push((
             Bytes::from_static(b"sec-websocket-protocol").into(),

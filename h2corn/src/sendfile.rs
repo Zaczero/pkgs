@@ -110,7 +110,14 @@ pub(crate) async fn sendfile_all_tcp(
                     "sendfile wrote zero bytes",
                 ));
             },
-            written => remaining = remaining.wrapping_sub(written),
+            written => {
+                remaining = remaining.checked_sub(written).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        "sendfile exceeded the requested byte count",
+                    )
+                })?;
+            },
         }
     }
     Ok(())
@@ -182,7 +189,7 @@ mod tests {
 
         let mut source = tempfile::tempfile().expect("create sendfile source");
         let contents: Vec<_> = (0..START + LEN + 19)
-            .map(|index| (index.wrapping_mul(37) % 251) as u8)
+            .map(|index| ((index % 251).checked_mul(37).unwrap() % 251) as u8)
             .collect();
         source.write_all(&contents).expect("write sendfile source");
         let expected = contents[START..START + LEN].to_vec();

@@ -311,7 +311,9 @@ where
 
     loop {
         if let Some(end) = find_crlf(reader.buffered()) {
-            let line_len = end.wrapping_add(2);
+            let line_len = end
+                .checked_add(2)
+                .expect("located PROXY line terminator fits buffer");
             if line_len > PROXY_V1_MAX_LEN {
                 return ProxyError::ProxyV1HeaderTooLong.err();
             }
@@ -497,7 +499,11 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
     let family = header.family_transport >> 4;
     let transport = header.family_transport & 0x0F;
     let payload_len = usize::from(header.payload_len.get());
-    if frame.len() != size_of::<ProxyV2Header>().wrapping_add(payload_len) {
+    if frame.len()
+        != size_of::<ProxyV2Header>()
+            .checked_add(payload_len)
+            .expect("u16 PROXY payload and fixed header fit usize")
+    {
         return ProxyError::TruncatedProxyV2Header.err();
     }
     match command {
@@ -573,7 +579,10 @@ const fn prefix_to_mask_v4(prefix: u8) -> u32 {
     if prefix == 0 {
         0
     } else {
-        u32::MAX << u32::BITS.wrapping_sub(prefix as u32)
+        u32::MAX
+            << u32::BITS
+                .checked_sub(prefix as u32)
+                .expect("IPv4 prefix was admitted")
     }
 }
 
@@ -581,7 +590,10 @@ const fn prefix_to_mask_v6(prefix: u8) -> u128 {
     if prefix == 0 {
         0
     } else {
-        u128::MAX << u128::BITS.wrapping_sub(prefix as u32)
+        u128::MAX
+            << u128::BITS
+                .checked_sub(prefix as u32)
+                .expect("IPv6 prefix was admitted")
     }
 }
 

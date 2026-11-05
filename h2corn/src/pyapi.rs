@@ -1050,7 +1050,7 @@ async fn run_serve_task(task: ServeTask) {
 ///
 /// Args:
 ///     prepared_application (PreparedApplication): The primary loop's prepared app and source.
-///     fds (list[int]): Listener descriptors to borrow and duplicate.
+///     fds (`list[int]`): Listener descriptors to borrow and duplicate.
 ///     config (Config): The validated server configuration.
 ///     shutdown_trigger (Awaitable[str]): Awaited to begin a graceful shutdown.
 ///     retire_trigger (Callable[[], None] | None): Called when accepting stops

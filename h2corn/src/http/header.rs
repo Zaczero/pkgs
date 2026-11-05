@@ -4,7 +4,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 #[cfg(not(target_os = "linux"))]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+use std::time::{Duration, UNIX_EPOCH};
 use std::{iter, str};
 
 use atoi_simd::parse_pos;
@@ -16,19 +17,8 @@ use rustix::time::{ClockId, clock_gettime};
 
 use crate::ascii;
 use crate::config::{ResponseHeaderConfig, ServerConfig};
-use crate::http::digits;
 use crate::http::types::{Protocol, ResponseHeaderKind, ResponseHeaderName, ResponseHeaders};
 use crate::proxy_protocol::trusted_host_matches;
-
-const SECONDS_PER_DAY: u64 = 86_400;
-const HTTP_DATE_TEMPLATE: [u8; 29] = *b"Thu, 01 Jan 1970 00:00:00 GMT";
-const WEEKDAYS: [[u8; 3]; 7] = [
-    *b"Sun", *b"Mon", *b"Tue", *b"Wed", *b"Thu", *b"Fri", *b"Sat",
-];
-const MONTHS: [[u8; 3]; 12] = [
-    *b"Jan", *b"Feb", *b"Mar", *b"Apr", *b"May", *b"Jun", *b"Jul", *b"Aug", *b"Sep", *b"Oct",
-    *b"Nov", *b"Dec",
-];
 
 /// `server`, `date`, and `content-length` are the only built-in response
 /// fields that default preparation can append. The exact Python-list ingress
@@ -140,9 +130,10 @@ pub(crate) struct ForwardedView<'a> {
     pub(crate) host: Option<(Cow<'a, str>, Option<u16>)>,
 }
 
-struct ForwardedParameterValue<'a> {
-    value: &'a str,
-    quoted: bool,
+/// Grammar-admitted token or quoted content; quoted escapes remain borrowed until needed.
+enum ForwardedParameterValue<'a> {
+    Token(&'a str),
+    Quoted(&'a str),
 }
 
 impl<'a> ForwardedParameterValue<'a> {
@@ -165,24 +156,25 @@ impl<'a> ForwardedParameterValue<'a> {
             if escaped {
                 return None;
             }
-            return Some(Self {
-                value,
-                quoted: true,
-            });
+            return Some(Self::Quoted(value));
         }
-        protocol_token_is_valid(value.as_bytes()).then_some(Self {
-            value,
-            quoted: false,
-        })
+        protocol_token_is_valid(value.as_bytes()).then_some(Self::Token(value))
     }
 
     fn decode(self) -> Cow<'a, str> {
-        if !self.quoted || !self.value.as_bytes().contains(&b'\\') {
-            return Cow::Borrowed(self.value);
-        }
-
-        let mut decoded = Vec::with_capacity(self.value.len().saturating_sub(1));
-        let mut bytes = self.value.bytes();
+        let value = match self {
+            Self::Token(value) => return Cow::Borrowed(value),
+            Self::Quoted(value) if !value.as_bytes().contains(&b'\\') => {
+                return Cow::Borrowed(value);
+            },
+            Self::Quoted(value) => value,
+        };
+        let capacity = value
+            .len()
+            .checked_sub(1)
+            .expect("a validated escape contains a backslash and its byte");
+        let mut decoded = Vec::with_capacity(capacity);
+        let mut bytes = value.bytes();
         while let Some(byte) = bytes.next() {
             decoded.push(if byte == b'\\' {
                 bytes
@@ -197,7 +189,7 @@ impl<'a> ForwardedParameterValue<'a> {
     }
 
     fn node(self) -> Result<Option<Cow<'a, str>>, ()> {
-        let quoted = self.quoted;
+        let quoted = matches!(&self, Self::Quoted(_));
         match self.decode() {
             Cow::Borrowed(value) => match parse_forwarded_node(value, quoted).ok_or(())? {
                 ForwardedNode::Usable(host) => Ok(Some(Cow::Borrowed(host))),
@@ -347,25 +339,24 @@ pub(crate) const fn application_response_field(name: &[u8]) -> ApplicationRespon
 fn csv_delimiters(value: &str) -> impl Iterator<Item = usize> + '_ {
     let bytes = value.as_bytes();
     let mut in_quotes = false;
-    let mut escaped = false;
-    let mut index = 0_usize;
+    let mut remaining = bytes;
 
     iter::from_fn(move || {
-        while index < bytes.len() {
-            if escaped {
-                escaped = false;
-                index = index.wrapping_add(1);
-                continue;
-            }
-            let tail = bytes.get(index..)?;
-            let offset = memchr3(b'\\', b'"', b',', tail)?;
-            let &delimiter = tail.get(offset)?;
-            let current = index.wrapping_add(offset);
-            index = current.wrapping_add(1);
+        while let Some(offset) = memchr3(b'\\', b'"', b',', remaining) {
+            let tail = remaining.split_at(offset).1;
+            let (&delimiter, rest) = tail.split_first()?;
+            remaining = rest;
             match delimiter {
-                b'\\' if in_quotes => escaped = true,
+                b'\\' if in_quotes => remaining = remaining.split_first()?.1,
                 b'"' => in_quotes = !in_quotes,
-                b',' if !in_quotes => return Some(current),
+                b',' if !in_quotes => {
+                    return Some(
+                        bytes
+                            .len()
+                            .checked_sub(tail.len())
+                            .expect("delimiter suffix belongs to header"),
+                    );
+                },
                 _ => {},
             }
         }
@@ -379,7 +370,7 @@ pub(crate) fn last_csv_token(value: &str) -> &str {
     // of the type rather than arguing it away in a comment.
     csv_delimiters(value)
         .last()
-        .and_then(|index| value.get(index.wrapping_add(1)..))
+        .and_then(|index| value.get(index..)?.strip_prefix(','))
         .unwrap_or(value)
         .trim_ascii()
 }
@@ -545,32 +536,34 @@ pub(crate) fn protocol_token_is_valid(value: &[u8]) -> bool {
 }
 
 pub(crate) fn classify_transfer_coding(value: &[u8]) -> TransferCoding {
-    let mut chunked = 0_usize;
-    let mut others = 0_usize;
-    let mut final_is_chunked = false;
+    let mut chunked = false;
+    let mut others = false;
     for coding in split_commas_bytes(value).map(<[u8]>::trim_ascii) {
         // RFC 9110 5.6.1.2 lets a list carry empty elements; they mean nothing.
         if coding.is_empty() {
             continue;
         }
+        // Once chunked appears, any later nonempty coding is invalid.
+        if chunked {
+            return TransferCoding::Malformed;
+        }
         if !protocol_token_is_valid(coding) {
             return TransferCoding::Malformed;
         }
-        final_is_chunked = coding.eq_ignore_ascii_case(b"chunked");
-        if final_is_chunked {
-            chunked = chunked.wrapping_add(1);
+        if coding.eq_ignore_ascii_case(b"chunked") {
+            chunked = true;
         } else {
-            others = others.wrapping_add(1);
+            others = true;
         }
     }
     // "A sender MUST NOT apply the chunked transfer coding more than once."
-    if chunked != 1 || !final_is_chunked {
+    if !chunked {
         return TransferCoding::Malformed;
     }
-    if others == 0 {
-        TransferCoding::Chunked
-    } else {
+    if others {
         TransferCoding::Unsupported
+    } else {
+        TransferCoding::Chunked
     }
 }
 
@@ -636,27 +629,16 @@ pub(crate) const fn configured_response_field_is_forbidden(name: &[u8]) -> bool 
         || name.eq_ignore_ascii_case(b"trailer")
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 fn percent_escapes_are_valid(value: &[u8]) -> bool {
     let mut rest = value;
     while let Some(index) = memchr(b'%', rest) {
-        let Some(&[high, low]) = rest
-            .get(index.wrapping_add(1)..)
-            .and_then(<[u8]>::first_chunk::<2>)
-        else {
+        let [b'%', high, low, suffix @ ..] = rest.split_at(index).1 else {
             return false;
         };
-        if ascii::HEX_VALUE[usize::from(high)] == ascii::INVALID_VALUE
-            || ascii::HEX_VALUE[usize::from(low)] == ascii::INVALID_VALUE
-        {
+        if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
             return false;
         }
-        rest = rest
-            .get(index.wrapping_add(3)..)
-            .expect("the validated escape occupies three bytes");
+        rest = suffix;
     }
     true
 }
@@ -781,57 +763,10 @@ fn cached_date_value() -> Bytes {
 }
 
 fn format_http_date(unix_seconds: u64) -> Bytes {
-    let mut value = HTTP_DATE_TEMPLATE;
-    write_http_date(&mut value, unix_seconds);
-    Bytes::copy_from_slice(&value)
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "rem_euclid(7) and a month in 1..=12 stay inside their own tables"
-)]
-fn write_http_date(out: &mut [u8; 29], unix_seconds: u64) {
-    let days = (unix_seconds / SECONDS_PER_DAY) as i64;
-    let seconds_of_day = (unix_seconds % SECONDS_PER_DAY) as usize;
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day / 60) % 60;
-    let second = seconds_of_day % 60;
-    let (year, month, day) = civil_from_days(days);
-    debug_assert!(year < 10_000);
-
-    out[..3].copy_from_slice(&WEEKDAYS[days.wrapping_add(4).rem_euclid(7) as usize]);
-    out[5..7].copy_from_slice(&digits::two_digit_bytes(day as usize));
-    out[8..11].copy_from_slice(&MONTHS[month.wrapping_sub(1) as usize]);
-    out[12..14].copy_from_slice(&digits::two_digit_bytes((year / 100) as usize));
-    out[14..16].copy_from_slice(&digits::two_digit_bytes((year % 100) as usize));
-    out[17..19].copy_from_slice(&digits::two_digit_bytes(hour));
-    out[20..22].copy_from_slice(&digits::two_digit_bytes(minute));
-    out[23..25].copy_from_slice(&digits::two_digit_bytes(second));
-}
-
-fn civil_from_days(days: i64) -> (u32, u32, u32) {
-    let shifted = days.wrapping_add(719_468);
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era = day_of_era
-        .wrapping_sub(day_of_era / 1_460)
-        .wrapping_add(day_of_era / 36_524)
-        .wrapping_sub(day_of_era / 146_096)
-        / 365;
-    let mut year = year_of_era.wrapping_add(era.wrapping_mul(400));
-    let day_of_year = day_of_era.wrapping_sub(
-        year_of_era
-            .wrapping_mul(365)
-            .wrapping_add(year_of_era / 4)
-            .wrapping_sub(year_of_era / 100),
-    );
-    let month_prime = day_of_year.wrapping_mul(5).wrapping_add(2) / 153;
-    let day = day_of_year
-        .wrapping_sub(month_prime.wrapping_mul(153).wrapping_add(2) / 5)
-        .wrapping_add(1);
-    let month = month_prime.wrapping_add(if month_prime < 10 { 3 } else { -9 });
-    year = year.wrapping_add(i64::from(month <= 2));
-    (year as u32, month as u32, day as u32)
+    let time = UNIX_EPOCH
+        .checked_add(Duration::from_secs(unix_seconds))
+        .expect("HTTP date fits SystemTime");
+    Bytes::from(httpdate::fmt_http_date(time))
 }
 
 pub(crate) fn apply_default_response_headers_with_scan(
@@ -848,13 +783,18 @@ fn default_response_header_capacity(
     scan: &ResponseHeaderScan,
     defaults: &ResponseHeaderConfig,
 ) -> usize {
+    let builtins = [
+        defaults.server_header.is_some() && !scan.has_server(),
+        defaults.date_header && !scan.has_date(),
+    ]
+    .into_iter()
+    .filter(|&present| present)
+    .count();
     defaults
         .extra_headers
         .len()
-        .saturating_add(usize::from(
-            defaults.server_header.is_some() && !scan.has_server(),
-        ))
-        .saturating_add(usize::from(defaults.date_header && !scan.has_date()))
+        .checked_add(builtins)
+        .expect("configured header count and two defaults fit usize")
 }
 
 /// Fill in what the application did not send, most specific source first.
@@ -917,9 +857,11 @@ pub(crate) fn prepare_fixed_length_response_headers_with_scan(
     defaults: &ResponseHeaderConfig,
     len: usize,
 ) {
-    let additional = default_response_header_capacity(scan, defaults).saturating_add(usize::from(
-        scan.content_length_state() == ResponseContentLength::Missing,
-    ));
+    let additional = default_response_header_capacity(scan, defaults)
+        .checked_add(usize::from(
+            scan.content_length_state() == ResponseContentLength::Missing,
+        ))
+        .expect("one content-length default fits the admitted header count");
     headers.reserve(additional);
     append_default_response_headers(headers, scan, defaults);
     canonicalize_fixed_length_response_headers_with_scan(headers, scan, len);
@@ -961,43 +903,30 @@ pub(crate) fn apply_default_response_headers(headers: &mut ResponseHeaders, conf
     apply_default_response_headers_with_scan(headers, &mut scan, config);
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     if name.is_empty() {
         return None;
     }
 
     let mut needs_lowercase = false;
-    for byte in name {
-        let flags = ascii::HEADER_NAME_FLAGS[usize::from(*byte)];
-        if flags & ascii::HEADER_NAME_VALID == 0 {
-            return None;
+    for &byte in name {
+        match ascii::classify_header_name_byte(byte) {
+            ascii::HeaderNameClass::Invalid => return None,
+            ascii::HeaderNameClass::Canonical => {},
+            ascii::HeaderNameClass::Uppercase => needs_lowercase = true,
         }
-        needs_lowercase |= flags & ascii::HEADER_NAME_UPPER != 0;
     }
     Some(needs_lowercase)
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    for &byte in name {
-        let flags = ascii::HEADER_NAME_FLAGS[usize::from(byte)];
-        if flags & ascii::HEADER_NAME_VALID == 0 || flags & ascii::HEADER_NAME_UPPER != 0 {
-            return false;
-        }
-    }
-
-    true
+    !name.is_empty()
+        && name.iter().all(|&byte| {
+            matches!(
+                ascii::classify_header_name_byte(byte),
+                ascii::HeaderNameClass::Canonical
+            )
+        })
 }
 
 /// RFC 9110 7.8: protocol names are registered with a preferred case, but
@@ -1071,22 +1000,34 @@ fn parse_forwarded_node(value: &str, quoted: bool) -> Option<ForwardedNode<'_>> 
     None
 }
 
-fn forwarded_reg_name(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    !bytes.is_empty()
-        && bytes.iter().enumerate().all(|(index, &byte)| {
-            if byte == b'%' {
-                return bytes
-                    .get(index.wrapping_add(1)..=index.wrapping_add(2))
-                    .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit));
+const fn forwarded_reg_name(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let mut remaining = value.as_bytes();
+    while let Some((&byte, rest)) = remaining.split_first() {
+        if byte == b'%' {
+            let [high, low, suffix @ ..] = rest else {
+                return false;
+            };
+            if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
+                return false;
             }
-            byte.is_ascii_alphanumeric()
+            remaining = suffix;
+        } else {
+            if !(byte.is_ascii_alphanumeric()
                 || matches!(byte, b'-' | b'.' | b'_' | b'~')
                 || matches!(
                     byte,
                     b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
-                )
-        })
+                ))
+            {
+                return false;
+            }
+            remaining = rest;
+        }
+    }
+    true
 }
 
 fn forwarded_ipv_future(value: &str) -> bool {
@@ -1238,14 +1179,12 @@ pub(crate) fn parse_forwarded_value<'a>(
     let mut cursor = ForwardedDelimiterCursor::new(value, b',');
     let mut selected = None;
     let mut nearest = None;
-    let mut element_count = 0_usize;
     while let Some(element) = cursor.next() {
         let element = element.ok()?;
         let element = forwarded_ows_trim(element);
         if element.is_empty() {
             continue;
         }
-        element_count = element_count.wrapping_add(1);
         let parsed = parse_forwarded_element(element)?;
         let ForwardedView {
             client_host,
@@ -1264,9 +1203,6 @@ pub(crate) fn parse_forwarded_value<'a>(
             selected = None;
         }
         nearest = Some((proto, host));
-    }
-    if element_count == 0 {
-        return None;
     }
     let (proto, host) = nearest?;
     Some(ForwardedView {
@@ -1352,7 +1288,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::{
-        ResponseContentLength, civil_from_days, format_http_date, inspect_response_default_headers,
+        ResponseContentLength, format_http_date, inspect_response_default_headers,
         inspect_response_headers, last_csv_token, parse_content_length_header,
         parse_forwarded_value, parse_host_port, parse_x_forwarded_for_value,
         prepare_fixed_length_response_headers_with_scan, request_authority_is_valid,
@@ -1932,12 +1868,5 @@ mod tests {
         #[case] expected: &'static str,
     ) {
         assert_eq!(format_http_date(unix_seconds).as_ref(), expected.as_bytes());
-    }
-
-    #[test]
-    fn civil_from_days_handles_leap_and_non_leap_boundaries() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-        assert_eq!(civil_from_days(47_541), (2100, 3, 1));
     }
 }

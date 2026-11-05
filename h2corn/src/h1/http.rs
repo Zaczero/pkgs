@@ -634,7 +634,7 @@ fn append_status_line(dst: &mut ResponseBuf, status: HttpStatusCode) {
 }
 
 fn append_status_code(dst: &mut ResponseBuf, status: HttpStatusCode) {
-    dst.extend_from_slice(&digits::three_digit_bytes(status.get()));
+    dst.extend_from_slice(digits::three_digits(status).as_bytes());
 }
 
 fn append_response_headers(
@@ -696,11 +696,9 @@ fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
     let mut slots = digits.iter_mut().rev();
     loop {
         let digit = (value & 0xF) as u8;
-        *slots.next().expect("usize fits sixteen hexadecimal digits") = if digit < 10 {
-            b'0'.wrapping_add(digit)
-        } else {
-            b'A'.wrapping_add(digit.wrapping_sub(10))
-        };
+        *slots.next().expect("usize fits sixteen hexadecimal digits") = digit
+            .checked_add(if digit < 10 { b'0' } else { b'A' - 10 })
+            .expect("hexadecimal digit fits ASCII");
         value >>= 4;
         if value == 0 {
             let start = slots.len();
@@ -747,7 +745,10 @@ mod tests {
         }
 
         fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.flushes = self.flushes.wrapping_add(1);
+            self.flushes = self
+                .flushes
+                .checked_add(1)
+                .expect("fixture flush count fits usize");
             Poll::Ready(Ok(()))
         }
 

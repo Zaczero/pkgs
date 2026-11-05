@@ -236,7 +236,9 @@ impl Representation {
 }
 
 fn dynamic_entry(table: &DynamicBuffer, index: usize) -> Result<&HpackField, DecoderError> {
-    let offset = index.wrapping_sub(static_table::DYNAMIC_INDEX_OFFSET);
+    let offset = index
+        .checked_sub(static_table::DYNAMIC_INDEX_OFFSET)
+        .ok_or(DecoderError::InvalidTableIndex)?;
     table
         .entry_from_end(offset)
         .ok_or(DecoderError::InvalidTableIndex)
@@ -265,12 +267,20 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
     const VARINT_MASK: u8 = 0b0111_1111;
     const VARINT_FLAG: u8 = 0b1000_0000;
 
-    debug_assert!((1..=8).contains(&PREFIX_SIZE));
+    const {
+        assert!(
+            PREFIX_SIZE >= 1 && PREFIX_SIZE <= 8,
+            "HPACK prefix width is one through eight bits"
+        );
+    };
     if !buf.has_remaining() {
         return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
     }
 
-    let mask = u8::MAX >> u8::BITS.wrapping_sub(u32::from(PREFIX_SIZE));
+    let mask = u8::MAX
+        >> u8::BITS
+            .checked_sub(u32::from(PREFIX_SIZE))
+            .expect("admitted prefix width");
     let mut value = usize::from(buf.get_u8() & mask);
     if value < usize::from(mask) {
         return Ok(value);
@@ -282,7 +292,9 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
         }
         let byte = buf.get_u8();
         let addition = usize::from(byte & VARINT_MASK) << shift;
-        value = value.wrapping_add(addition);
+        value = value
+            .checked_add(addition)
+            .ok_or(DecoderError::IntegerOverflow)?;
         if byte & VARINT_FLAG == 0 {
             return Ok(value);
         }

@@ -690,15 +690,23 @@ impl<W: WriteTarget> WriterState<W> {
                 let mut offset = 0;
                 loop {
                     let len = maximum
-                        .min_usize(remaining.wrapping_sub(offset))
+                        .min_usize(
+                            remaining
+                                .checked_sub(offset)
+                                .expect("DATA cursor stays within source"),
+                        )
                         .min_usize(budget);
-                    let end = offset.wrapping_add(len.as_usize());
+                    let end = offset
+                        .checked_add(len.as_usize())
+                        .expect("prepared DATA fragment fits source");
                     let terminal = end_stream && end == remaining;
                     cursor
                         .frames
                         .push(DataFrame::new(stream_id, source, offset, len, terminal));
                     cursor.end_stream = terminal;
-                    budget = budget.wrapping_sub(len.as_usize());
+                    budget = budget
+                        .checked_sub(len.as_usize())
+                        .expect("prepared DATA fits peer credit");
                     offset = end;
                     if terminal || budget == 0 || cursor.frames.len() == FRAME_QUANTUM || sendfile {
                         break 'sources;
@@ -864,15 +872,23 @@ impl<W: WriteTarget> WriterState<W> {
                         self.dirty |= progress.bytes != 0;
                         self.connection_send_window = self
                             .connection_send_window
-                            .wrapping_sub(progress.flow_bytes as i64);
+                            .checked_sub(progress.flow_bytes as i64)
+                            .expect("committed DATA fits connection credit");
                         if let Some(stream) = data_stream.and_then(|id| self.streams.get_mut(id)) {
-                            stream.send_window = stream.send_window.wrapping_sub(
-                                i32::try_from(progress.flow_bytes)
-                                    .expect("one DATA batch fits the send window"),
-                            );
+                            stream.send_window = stream
+                                .send_window
+                                .checked_sub(
+                                    i32::try_from(progress.flow_bytes)
+                                        .expect("one DATA batch fits the send window"),
+                                )
+                                .expect("committed DATA fits stream window representation");
                         }
-                        turns = turns.wrapping_add(1);
-                        bytes = bytes.wrapping_add(progress.bytes);
+                        turns = turns
+                            .checked_add(1)
+                            .expect("writer turns are bounded by the scheduling quantum");
+                        bytes = bytes
+                            .checked_add(progress.bytes)
+                            .expect("writer progress is bounded by the scheduling quantum");
                         if progress.complete {
                             self.finish_active();
                         }
@@ -883,7 +899,9 @@ impl<W: WriteTarget> WriterState<W> {
                 }
             } else if let Some(command) = self.commands.pop_front() {
                 self.apply_command(command)?;
-                turns = turns.wrapping_add(1);
+                turns = turns
+                    .checked_add(1)
+                    .expect("writer turns are bounded by the scheduling quantum");
             } else {
                 match self.prepare_body(cx)? {
                     BodyPreparation::Ready => {},
@@ -894,7 +912,9 @@ impl<W: WriteTarget> WriterState<W> {
                     },
                     BodyPreparation::Blocked => {
                         if !self.drained_app_writes.is_empty() && self.drain_app_writes()? {
-                            turns = turns.wrapping_add(1);
+                            turns = turns
+                                .checked_add(1)
+                                .expect("writer turns are bounded by the scheduling quantum");
                             if turns >= FRAME_QUANTUM {
                                 self.flushing = true;
                             }
@@ -1082,19 +1102,27 @@ impl<W: WriteTarget> WriterState<W> {
         let next = settings
             .initial_window_size
             .map_or(self.initial_stream_send_window, i64::from);
-        let delta = next.wrapping_sub(self.initial_stream_send_window);
+        let delta = next
+            .checked_sub(self.initial_stream_send_window)
+            .expect("difference of admitted 31-bit settings fits i64");
         let max = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
         if delta > 0
-            && self
-                .streams
-                .values()
-                .any(|stream| i64::from(stream.send_window) > max.wrapping_sub(delta))
+            && self.streams.values().any(|stream| {
+                i64::from(stream.send_window)
+                    > max
+                        .checked_sub(delta)
+                        .expect("settings delta fits widened window domain")
+            })
         {
             return Err(InitialWindowAdjustmentOverflow);
         }
         for stream in self.streams.values_mut() {
-            stream.send_window = i32::try_from(i64::from(stream.send_window).wrapping_add(delta))
-                .expect("SETTINGS window adjustment was preflighted");
+            stream.send_window = i32::try_from(
+                i64::from(stream.send_window)
+                    .checked_add(delta)
+                    .expect("adjusted stream window fits i64"),
+            )
+            .expect("SETTINGS window adjustment was preflighted");
         }
         self.initial_stream_send_window = next;
         if let Some(size) = settings.max_frame_size {
@@ -1127,7 +1155,8 @@ impl<W: WriteTarget> WriterState<W> {
     ) -> Result<(), WindowOverflow> {
         let next = self
             .connection_send_window
-            .wrapping_add(i64::from(increment.get()));
+            .checked_add(i64::from(increment.get()))
+            .ok_or(WindowOverflow)?;
         if next > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) {
             return Err(WindowOverflow);
         }
@@ -1182,8 +1211,12 @@ pub(crate) async fn init_writer<W: WriteTarget>(
         h2_frame::append_window_update(
             &mut state.frame_buf,
             None,
-            WindowIncrement::new(window.wrapping_sub(h2_frame::DEFAULT_WINDOW_SIZE))
-                .expect("positive initial credit"),
+            WindowIncrement::new(
+                window
+                    .checked_sub(h2_frame::DEFAULT_WINDOW_SIZE)
+                    .expect("configured receive window exceeds initial credit"),
+            )
+            .expect("positive initial credit"),
         );
     }
     state.active = Some(ActiveOutput::Control {

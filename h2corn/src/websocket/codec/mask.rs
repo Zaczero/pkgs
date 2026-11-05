@@ -1,6 +1,32 @@
+//! SIMD masking with a four-state cursor retained across payload segments.
+
 use std::simd::{Simd, ToBytes as _};
 
 const WS_MASK_LANES: usize = 32;
+
+/// The next key byte to apply; the enum retains its two-bit domain for code generation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum MaskPhase {
+    #[default]
+    First,
+    Second,
+    Third,
+    Fourth,
+}
+
+impl MaskPhase {
+    const fn advance(self, bytes: usize) -> Self {
+        let offset = (self as u8)
+            .checked_add((bytes & 3) as u8)
+            .expect("two mask positions sum to at most six");
+        match offset & 3 {
+            0 => Self::First,
+            1 => Self::Second,
+            2 => Self::Third,
+            _ => Self::Fourth,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct MaskKey {
@@ -14,8 +40,10 @@ impl MaskKey {
         }
     }
 
-    const fn word(self, phase: usize) -> u32 {
-        let rotation = (phase & 3).saturating_mul(u8::BITS as usize) as u32;
+    const fn word(self, phase: MaskPhase) -> u32 {
+        let rotation = (phase as u32)
+            .checked_mul(u8::BITS)
+            .expect("four byte positions fit one word");
         if cfg!(target_endian = "little") {
             self.word.rotate_right(rotation)
         } else {
@@ -24,7 +52,7 @@ impl MaskKey {
     }
 }
 
-fn apply_u32_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize {
+fn apply_u32_mask_phase(payload: &mut [u8], key: MaskKey, phase: MaskPhase) -> MaskPhase {
     let payload_len = payload.len();
     let mask_word = key.word(phase);
     let (words, suffix) = payload.as_chunks_mut::<4>();
@@ -36,17 +64,21 @@ fn apply_u32_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize
     for (byte, mask_byte) in suffix.iter_mut().zip(suffix_mask) {
         *byte ^= mask_byte;
     }
-    phase.wrapping_add(payload_len) & 3
+    phase.advance(payload_len)
 }
 
-pub(super) fn apply_websocket_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize {
+pub(super) fn apply_websocket_mask_phase(
+    payload: &mut [u8],
+    key: MaskKey,
+    phase: MaskPhase,
+) -> MaskPhase {
     let payload_len = payload.len();
     if payload_len < 4 {
         let mask = key.word(phase).to_ne_bytes();
         for (byte, mask_byte) in payload.iter_mut().zip(mask) {
             *byte ^= mask_byte;
         }
-        return phase.wrapping_add(payload_len) & 3;
+        return phase.advance(payload_len);
     }
 
     let (prefix, lanes, suffix) = payload.as_simd_mut::<WS_MASK_LANES>();
@@ -57,12 +89,12 @@ pub(super) fn apply_websocket_mask_phase(payload: &mut [u8], key: MaskKey, phase
     }
 
     apply_u32_mask_phase(suffix, key, lane_phase);
-    phase.wrapping_add(payload_len) & 3
+    phase.advance(payload_len)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MaskKey, apply_websocket_mask_phase};
+    use super::{MaskKey, MaskPhase, apply_websocket_mask_phase};
 
     fn apply_websocket_mask_scalar(payload: &mut [u8], mask: [u8; 4], phase: usize) -> usize {
         for (index, byte) in payload.iter_mut().enumerate() {
@@ -104,14 +136,14 @@ mod tests {
                     for len in BOUNDARIES.iter().chain(long_lengths).copied() {
                         let total = offset + len + 32;
                         for (index, byte) in candidate[..total].iter_mut().enumerate() {
-                            *byte = index.wrapping_mul(29) as u8;
+                            *byte = (index as u8).wrapping_mul(29);
                         }
                         reference[..total].copy_from_slice(&candidate[..total]);
 
                         let candidate_phase = apply_websocket_mask_phase(
                             &mut candidate[offset..offset + len],
                             MaskKey::new(mask),
-                            phase,
+                            MaskPhase::First.advance(phase),
                         );
                         let reference_phase = apply_websocket_mask_scalar(
                             &mut reference[offset..offset + len],
@@ -124,7 +156,7 @@ mod tests {
                             reference[..total],
                             "len={len}, offset={offset}, phase={phase}"
                         );
-                        assert_eq!(candidate_phase, reference_phase);
+                        assert_eq!(candidate_phase as usize, reference_phase);
                     }
                 }
             }
@@ -156,16 +188,16 @@ mod tests {
         let mask = [0x37, 0xFA, 0x21, 0x3D];
 
         let source = (0..len)
-            .map(|value| value.wrapping_mul(31) as u8)
+            .map(|value| (value as u8).wrapping_mul(31))
             .collect::<Vec<_>>();
         let expected = copy_masked_scalar(&source, mask, 0);
         for split in 0..=len {
             let mut candidate = source.clone();
             let key = MaskKey::new(mask);
-            let phase = apply_websocket_mask_phase(&mut candidate[..split], key, 0);
+            let phase = apply_websocket_mask_phase(&mut candidate[..split], key, MaskPhase::First);
             let final_phase = apply_websocket_mask_phase(&mut candidate[split..], key, phase);
             assert_eq!(candidate, expected, "len={len}, split={split}");
-            assert_eq!(final_phase, len & 3);
+            assert_eq!(final_phase as usize, len & 3);
         }
     }
 }

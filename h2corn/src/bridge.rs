@@ -1071,37 +1071,20 @@ fn parse_header_iterable(
                 value,
             )
         })?;
-        let pair = item.try_iter().map_err(|_| {
-            field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
-        })?;
-        let mut fields = [None, None];
-        let mut field_count = 0_usize;
-        for field in pair {
-            let field = field.map_err(|_| {
-                field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
-            })?;
-            if let Some(slot) = fields.get_mut(field_count) {
-                *slot = Some(field);
-            }
-            if field_count < 3 {
-                field_count = field_count.wrapping_add(1);
-            }
-        }
-        let [Some(name), Some(value)] = fields else {
-            return Err(field_type_error(
-                container,
-                "headers",
-                "two-item (bytes, bytes) pairs",
-                &item,
-            ));
+        let invalid_pair =
+            || field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item);
+        let mut pair = item.try_iter().map_err(|_| invalid_pair())?;
+        let mut next_field = || {
+            pair.next()
+                .ok_or_else(invalid_pair)?
+                .map_err(|_| invalid_pair())
         };
-        if field_count != 2 {
-            return Err(field_type_error(
-                container,
-                "headers",
-                "two-item (bytes, bytes) pairs",
-                &item,
-            ));
+        let name = next_field()?;
+        let value = next_field()?;
+        // One surplus item establishes rejection; an unbounded malformed pair
+        // must not trap the response parser while it drains the iterator.
+        if pair.next().is_some() {
+            return Err(invalid_pair());
         }
         let name = cast_exact_first::<PyBytes>(&name)
             .map_err(|_| {
@@ -1123,8 +1106,11 @@ fn parse_header_iterable(
 fn try_parse_exact_header_list(
     list: &Bound<'_, PyList>,
 ) -> Result<Option<ResponseHeaders>, H2CornError> {
-    let mut headers =
-        ResponseHeaders::with_capacity(list.len().saturating_add(RESPONSE_DEFAULT_BUILTIN_SLOTS));
+    let entries = list.len();
+    let capacity = entries
+        .checked_add(RESPONSE_DEFAULT_BUILTIN_SLOTS)
+        .unwrap_or(entries);
+    let mut headers = ResponseHeaders::with_capacity(capacity);
     for item in list.iter() {
         let Ok(tuple) = item.cast_exact::<pyo3::types::PyTuple>() else {
             return Ok(None);

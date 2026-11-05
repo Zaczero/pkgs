@@ -65,7 +65,10 @@ impl WebSocketData {
     }
 
     pub(super) fn len(&self) -> usize {
-        self.header().len().wrapping_add(self.payload.len())
+        self.header()
+            .len()
+            .checked_add(self.payload.len())
+            .expect("queued WebSocket frame extent fits usize")
     }
 }
 

@@ -60,7 +60,10 @@ impl Write for IpText {
             .and_then(|remaining| remaining.get_mut(..value.len()))
             .ok_or(fmt::Error)?;
         destination.copy_from_slice(value.as_bytes());
-        self.len = self.len.wrapping_add(value.len());
+        self.len = self
+            .len
+            .checked_add(value.len())
+            .expect("formatted IP text fits its destination");
         Ok(())
     }
 }
@@ -281,7 +284,12 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
             {
                 return Cow::Borrowed(original_root_path);
             }
-            let mut joined = String::with_capacity(root_path.len().saturating_add(1));
+            let mut joined = String::with_capacity(
+                root_path
+                    .len()
+                    .checked_add(1)
+                    .expect("root path and slash fit usize"),
+            );
             joined.push('/');
             joined.push_str(root_path);
             Cow::Owned(joined)
@@ -290,8 +298,9 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
             let mut joined = String::with_capacity(
                 prefix
                     .len()
-                    .saturating_add(root_path.len())
-                    .saturating_add(1),
+                    .checked_add(root_path.len())
+                    .and_then(|bytes| bytes.checked_add(1))
+                    .expect("two path strings and separator fit usize"),
             );
             joined.push_str(prefix);
             joined.push('/');

@@ -225,7 +225,10 @@ impl ReadyStreamQueue {
                 self.unexamined = 0;
                 break;
             };
-            self.unexamined = self.unexamined.wrapping_sub(1);
+            self.unexamined = self
+                .unexamined
+                .checked_sub(1)
+                .expect("ready scan has unexamined streams");
             let Some(stream) = streams.get_mut(stream_id) else {
                 continue;
             };
@@ -497,7 +500,9 @@ impl StreamBodyState {
 
 impl PendingChunk {
     pub(super) fn remaining_len(&self) -> usize {
-        self.len().wrapping_sub(self.offset)
+        self.len()
+            .checked_sub(self.offset)
+            .expect("chunk cursor stays within its payload")
     }
 
     fn len(&self) -> usize {
@@ -508,14 +513,17 @@ impl PendingChunk {
     }
 
     pub(super) fn remaining_slices(&self, additional_offset: usize, len: usize) -> (&[u8], &[u8]) {
-        let offset = self.offset.wrapping_add(additional_offset);
+        let offset = self
+            .offset
+            .checked_add(additional_offset)
+            .expect("prepared offset fits chunk");
         let (first, second): (&[u8], &[u8]) = match &self.data {
             PendingChunkData::Plain(bytes) => (bytes.as_ref(), &[]),
             PendingChunkData::WebSocket(data) => (data.header(), data.payload()),
         };
-        if offset >= first.len() {
+        if let Some(second_offset) = offset.checked_sub(first.len()) {
             let remaining = second
-                .get(offset.wrapping_sub(first.len())..)
+                .get(second_offset..)
                 .expect("chunk offset fits its two buffers");
             return (remaining.split_at(len).0, &[]);
         }
@@ -523,13 +531,21 @@ impl PendingChunk {
         let first_len = len.min(remaining.len());
         (
             remaining.split_at(first_len).0,
-            second.split_at(len.wrapping_sub(first_len)).0,
+            second
+                .split_at(
+                    len.checked_sub(first_len)
+                        .expect("first slice is bounded by requested length"),
+                )
+                .0,
         )
     }
 
     pub(super) fn consume(&mut self, len: usize) {
         debug_assert!(len <= self.remaining_len());
-        self.offset = self.offset.wrapping_add(len);
+        self.offset = self
+            .offset
+            .checked_add(len)
+            .expect("consumed bytes fit chunk");
         if let Some(credit) = &mut self.credit {
             credit.release_written(len);
         }

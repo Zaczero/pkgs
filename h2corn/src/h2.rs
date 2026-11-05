@@ -1344,7 +1344,9 @@ where
         let mut stop_after_flush = false;
         let event = ingest_connection_input(state).await?;
         if matches!(&event, IngestEvent::Frame(_)) {
-            consecutive_peer_frames = consecutive_peer_frames.wrapping_add(1);
+            consecutive_peer_frames = consecutive_peer_frames
+                .checked_add(1)
+                .expect("peer-frame turns are bounded by their fairness quantum");
         } else {
             consecutive_peer_frames = 0;
         }

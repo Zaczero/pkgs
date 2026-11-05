@@ -637,7 +637,9 @@ class Headers:
             parse_http_outbound_event(&message).unwrap_err().to_string(),
             "http.response.start headers must be two-item (bytes, bytes) pairs, got Pair"
         );
-        assert_eq!(pair.getattr("next_calls")?.extract::<usize>()?, 4);
+        // The first surplus field decides cardinality without draining a
+        // possibly unbounded iterator or executing its later exception.
+        assert_eq!(pair.getattr("next_calls")?.extract::<usize>()?, 3);
 
         let pair = py.eval(c_str!("Pair([b'x', b'y'], 'inner')"), Some(&locals), None)?;
         locals.set_item("pair", &pair)?;

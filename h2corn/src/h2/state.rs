@@ -265,11 +265,8 @@ impl ReceiveWindow {
 
     fn receive(&mut self, len: u32) -> Result<(), ()> {
         debug_assert!(self.0 >= 0, "receive credit is non-negative");
-        let available = self.0.cast_unsigned();
-        if len > available {
-            return Err(());
-        }
-        self.0 = available.wrapping_sub(len).cast_signed();
+        let remaining = self.0.cast_unsigned().checked_sub(len).ok_or(())?;
+        self.0 = remaining.cast_signed();
         Ok(())
     }
 
@@ -486,12 +483,16 @@ impl RequestTask {
 }
 
 impl RequestTasks {
-    fn new(max_concurrent_streams: usize, log_format: crate::config::LogFormat) -> Self {
-        let limit = max_concurrent_streams.saturating_mul(2).max(2);
+    fn new(max_concurrent_streams: NonZeroU32, log_format: crate::config::LogFormat) -> Self {
+        let limit = (max_concurrent_streams.get() as usize)
+            .checked_mul(2)
+            .expect("two generations of admitted streams fit usize");
         // A task owns one reserved slot until its completion id is consumed.
         // The second generation covers tasks synchronously cancelled and
         // joined between connection-turn reaps.
-        let completion_capacity = limit.saturating_mul(2);
+        let completion_capacity = limit
+            .checked_mul(2)
+            .expect("completion generations fit usize");
         let (completed_tx, completed_rx) = mpsc::channel(completion_capacity);
         Self {
             log_format,
@@ -869,7 +870,7 @@ impl<R, W> H2ConnectionState<R, W> {
         shutdown: watch::Receiver<ShutdownState>,
         drain_state: ConnectionDrainState,
     ) -> Self {
-        let stream_capacity = context.config.http2.max_concurrent_streams.get() as usize;
+        let max_concurrent_streams = context.config.http2.max_concurrent_streams;
         let local_max_frame_size =
             FramePayloadLen::new(context.config.http2.max_inbound_frame_size.get() as usize)
                 .expect(
@@ -896,7 +897,7 @@ impl<R, W> H2ConnectionState<R, W> {
             input_flow: Arc::default(),
             released_input_credits: Vec::new(),
             request_deadlines: DeadlineQueue::default(),
-            request_tasks: RequestTasks::new(stream_capacity, log_format),
+            request_tasks: RequestTasks::new(max_concurrent_streams, log_format),
         }
     }
 
@@ -905,9 +906,10 @@ impl<R, W> H2ConnectionState<R, W> {
             .len()
             .checked_sub(self.retained_closed_streams)
             .expect("retained closed stream accounting cannot exceed the stream map")
-            .wrapping_add(usize::from(self.pending_headers.as_ref().is_some_and(
+            .checked_add(usize::from(self.pending_headers.as_ref().is_some_and(
                 |pending| matches!(pending.target, HeaderBlockTarget::RequestHead { .. }),
             )))
+            .expect("active streams fit admitted connection state")
     }
 
     pub(super) fn wire_is_idle(&self) -> bool {
@@ -995,7 +997,10 @@ impl<R, W> H2ConnectionState<R, W> {
             match entry.get().closed_disposition(was_closed) {
                 ClosedStreamDisposition::Keep => {},
                 ClosedStreamDisposition::Retain => {
-                    self.retained_closed_streams = self.retained_closed_streams.wrapping_add(1);
+                    self.retained_closed_streams = self
+                        .retained_closed_streams
+                        .checked_add(1)
+                        .expect("retained stream is present in the map");
                 },
                 ClosedStreamDisposition::Remove => {
                     entry.remove();
@@ -1015,7 +1020,10 @@ impl<R, W> H2ConnectionState<R, W> {
                 match entry.get().closed_disposition(was_closed) {
                     ClosedStreamDisposition::Keep => {},
                     ClosedStreamDisposition::Retain => {
-                        self.retained_closed_streams = self.retained_closed_streams.wrapping_add(1);
+                        self.retained_closed_streams = self
+                            .retained_closed_streams
+                            .checked_add(1)
+                            .expect("retained stream is present in the map");
                     },
                     ClosedStreamDisposition::Remove => {
                         entry.remove();
@@ -1277,7 +1285,7 @@ mod tests {
         let stream_id = StreamId::new(1).expect("non-zero stream id");
         let (started_tx, started_rx) = oneshot::channel();
         let (dropped_tx, dropped_rx) = oneshot::channel();
-        let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
+        let mut tasks = RequestTasks::new(NonZeroU32::MIN, crate::config::LogFormat::Text);
         tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
             let _drop_signal = DropSignal(Some(dropped_tx));
             started_tx
@@ -1305,7 +1313,8 @@ mod tests {
                 .build()
                 .expect("current-thread runtime builds")
                 .block_on(async {
-                    let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
+                    let mut tasks =
+                        RequestTasks::new(NonZeroU32::MIN, crate::config::LogFormat::Text);
                     let cancelled = StreamId::new(1).expect("non-zero stream id");
                     let completion = tasks.reserve_completion(cancelled);
                     tasks.spawn(cancelled, RequestTaskCancellation::Immediate, async move {
@@ -1379,7 +1388,8 @@ mod tests {
         // it had taken — and a dropped `JoinHandle` detaches, leaving
         // application code running with nothing to wait on it. Cancelling in
         // place keeps them here, where this scope's `Drop` still aborts them.
-        let mut tasks = RequestTasks::new(4, crate::config::LogFormat::Text);
+        let mut tasks =
+            RequestTasks::new(NonZeroU32::new(4).unwrap(), crate::config::LogFormat::Text);
         for raw_id in [1_u32, 3, 5] {
             let stream_id = StreamId::new(raw_id).expect("non-zero stream id");
             tasks.spawn(stream_id, RequestTaskCancellation::Immediate, pending());
@@ -1406,7 +1416,7 @@ mod tests {
     async fn request_task_budget_allows_one_bounded_retained_generation() {
         let first = StreamId::new(1).unwrap();
         let second = StreamId::new(3).unwrap();
-        let mut tasks = RequestTasks::new(1, crate::config::LogFormat::Text);
+        let mut tasks = RequestTasks::new(NonZeroU32::MIN, crate::config::LogFormat::Text);
         let first_settlement = tasks.reserve_completion(first);
         let _second_settlement = tasks.reserve_completion(second);
         tasks.spawn(first, RequestTaskCancellation::Immediate, pending());

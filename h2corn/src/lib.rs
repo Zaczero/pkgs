@@ -1,4 +1,8 @@
+#![feature(ascii_char)]
+#![feature(ascii_char_variants)]
 #![feature(cfg_sanitize)]
+#![feature(const_index)]
+#![feature(const_trait_impl)]
 // Derives the response-header variant names in `http::types`.
 #![feature(macro_metavar_expr_concat)]
 // Retained for the WebSocket masking SIMD fast path in

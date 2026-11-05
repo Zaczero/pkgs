@@ -240,8 +240,11 @@ pub(crate) fn own_serve_fds(
     fds: Vec<i64>,
     quiesce_fd: Option<i64>,
 ) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), OwnFdsError> {
-    let mut unique =
-        HashSet::with_capacity(fds.len().saturating_add(usize::from(quiesce_fd.is_some())));
+    let mut unique = HashSet::with_capacity(
+        fds.len()
+            .checked_add(usize::from(quiesce_fd.is_some()))
+            .expect("descriptor slice and optional quiesce slot fit usize"),
+    );
     let mut validated = Vec::with_capacity(fds.len());
     for fd in fds {
         let fd = i32::try_from(fd)
@@ -608,7 +611,9 @@ async fn accept_one(
         {
             match listener.poll_accept_item(cx) {
                 Poll::Ready(Ok(connection)) => {
-                    let next = index.wrapping_add(1);
+                    let next = index
+                        .checked_add(1)
+                        .expect("accepted listener index is within the listener slice");
                     return Poll::Ready(Ok((
                         if next == listeners.len() { 0 } else { next },
                         connection,

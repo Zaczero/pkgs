@@ -5,36 +5,38 @@ use crate::ascii::{BASE64_VALUE, BASE64URL_VALUE, INVALID_VALUE};
 const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Whether a byte is in the standard alphabet, padding excluded.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 pub(crate) const fn is_base64(byte: u8) -> bool {
-    BASE64_VALUE[byte as usize] != INVALID_VALUE
+    *BASE64_VALUE.get(byte as usize).expect("byte table entry") != INVALID_VALUE
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "each operand is masked to six bits, which the 64-entry alphabet covers"
-)]
 pub(crate) const fn encode_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     [
-        TABLE[(b0 >> 2) as usize],
-        TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize],
-        TABLE[(b2 & 0x3F) as usize],
+        *TABLE
+            .get((b0 >> 2) as usize)
+            .expect("six-bit alphabet index"),
+        *TABLE
+            .get((((b0 & 0x03) << 4) | (b1 >> 4)) as usize)
+            .expect("six-bit alphabet index"),
+        *TABLE
+            .get((((b1 & 0x0F) << 2) | (b2 >> 6)) as usize)
+            .expect("six-bit alphabet index"),
+        *TABLE
+            .get((b2 & 0x3F) as usize)
+            .expect("six-bit alphabet index"),
     ]
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "each operand is masked to six bits, which the 64-entry alphabet covers"
-)]
 pub(crate) const fn encode_remainder(b0: u8, b1: u8) -> [u8; 4] {
     [
-        TABLE[(b0 >> 2) as usize],
-        TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize],
-        TABLE[((b1 & 0x0F) << 2) as usize],
+        *TABLE
+            .get((b0 >> 2) as usize)
+            .expect("six-bit alphabet index"),
+        *TABLE
+            .get((((b0 & 0x03) << 4) | (b1 >> 4)) as usize)
+            .expect("six-bit alphabet index"),
+        *TABLE
+            .get(((b1 & 0x0F) << 2) as usize)
+            .expect("six-bit alphabet index"),
         b'=',
     ]
 }
@@ -48,7 +50,12 @@ pub(crate) fn decode_url(src: &[u8]) -> Result<Vec<u8>, ()> {
         3 => 2,
         _ => return Err(()),
     };
-    let mut out = Vec::with_capacity(blocks.len().saturating_mul(3).saturating_add(extra));
+    let capacity = blocks
+        .len()
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(extra))
+        .expect("decoded base64 is no larger than its input");
+    let mut out = Vec::with_capacity(capacity);
     for block in blocks {
         let [Ok(a), Ok(b), Ok(c), Ok(d)] = block.map(decode_sextet) else {
             return Err(());
