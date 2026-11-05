@@ -42,18 +42,25 @@ fn zid() -> PyResult<u64> {
 /// counts beyond the platform's usize range or an exhausted timestamp horizon.
 /// Forked children must exec before generation; there is no automatic reset.
 fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
-    if unlikely(n == 0) {
+    let Some(additional) = n.checked_sub(1) else {
         return Ok(PyList::empty(py));
-    }
+    };
     if unlikely(n > MAX_ZIDS_AT_ONCE) {
         return Err(ZidError::TooManyZIDsAtOnce { attempted: n }.into());
     }
 
-    let (time, start_seq) = reserve_sequences(n.wrapping_sub(1) as u16)?;
+    let (time, start_seq) =
+        reserve_sequences(u16::try_from(additional).expect("batch size is admitted"))?;
+    // The reserved sequence values fit u16, but the exclusive endpoint can be
+    // 65536. Widen the range so iteration needs no inclusive-end state.
+    let start = u32::from(start_seq);
+    let end = start
+        .checked_add(u32::try_from(n).expect("batch size is admitted"))
+        .expect("a u16 start and admitted batch length fit u32");
 
     PyList::new(
         py,
-        (0..n).map(|i| zid_from_time_and_sequence(time, start_seq.wrapping_add(i as u16))),
+        (start..end).map(|sequence| zid_from_time_and_sequence(time, sequence as u16)),
     )
 }
 

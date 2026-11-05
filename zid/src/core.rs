@@ -44,7 +44,10 @@ impl RandBuffer {
             .get(self.pos)
             .expect("refill leaves a random word available");
         let value = u16::from_be_bytes(*bytes);
-        self.pos = self.pos.wrapping_add(1);
+        self.pos = self
+            .pos
+            .checked_add(1)
+            .expect("the random buffer position fits usize");
         value
     }
 }
@@ -77,11 +80,17 @@ fn random_start_seq(max_start: u16, draw: &mut impl FnMut() -> u16) -> u16 {
             // not divide 2^16 — the CSPRNG-backed sequence privacy should
             // not carry modulo bias. The low-sliver rejection re-draws with
             // probability < range / 2^16.
-            let range = NonZeroU32::new(u32::from(max_start).wrapping_add(1))
-                .expect("u16 successor fits a nonzero u32");
+            let range = NonZeroU32::new(
+                u32::from(max_start)
+                    .checked_add(1)
+                    .expect("u16 successor fits u32"),
+            )
+            .expect("u16 successor fits a nonzero u32");
             let threshold = 0x1_0000 % range;
             loop {
-                let product = u32::from(draw()).wrapping_mul(range.get());
+                let product = u32::from(draw())
+                    .checked_mul(range.get())
+                    .expect("a u16 draw times a range at most 65536 fits u32");
                 if (product & 0xFFFF) >= threshold {
                     break (product >> 16) as u16;
                 }
@@ -107,7 +116,9 @@ impl Generator {
         if now > MAX_TIMESTAMP {
             return Err(ZidError::TimestampExhausted);
         }
-        let max_start = u16::MAX.wrapping_sub(additional);
+        let max_start = u16::MAX
+            .checked_sub(additional)
+            .expect("additional is a u16 count");
         loop {
             let last = self.last.load(Ordering::Relaxed);
             let last_time = last >> 16;
@@ -122,7 +133,9 @@ impl Generator {
                         if zid_time == MAX_TIMESTAMP {
                             return Err(ZidError::TimestampExhausted);
                         }
-                        zid_time = zid_time.wrapping_add(1);
+                        zid_time = zid_time
+                            .checked_add(1)
+                            .expect("the timestamp horizon fits u64");
                         random_start_seq(max_start, &mut draw)
                     },
                 }
@@ -130,7 +143,9 @@ impl Generator {
                 random_start_seq(max_start, &mut draw)
             };
 
-            let end_seq = start_seq.wrapping_add(additional);
+            let end_seq = start_seq
+                .checked_add(additional)
+                .expect("the reservation fits the sequence space");
             let next_last = make_zid(zid_time, end_seq);
 
             if likely(
@@ -167,6 +182,7 @@ mod proofs;
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
     use std::sync::Barrier;
     use std::sync::atomic::Ordering;
     use std::thread;
@@ -255,22 +271,27 @@ mod tests {
     #[case::half_domain_plus_one(0x8000)]
     #[case::all_but_one(0xFFFE)]
     fn bounded_random_starts_are_uniform_across_the_input_domain(#[case] max_start: u16) {
-        let range = u32::from(max_start) + 1;
-        let threshold = 0x0001_0000_u32.wrapping_rem(range);
-        let mut counts = vec![0_u32; range as usize];
+        let range = NonZeroU32::new(
+            u32::from(max_start)
+                .checked_add(1)
+                .expect("u16 successor fits u32"),
+        )
+        .expect("a bounded-draw range is positive");
+        let threshold = 0x0001_0000_u32 % range;
+        let mut counts = vec![0_u32; range.get() as usize];
         for word in 0..=u16::MAX {
-            let product = u32::from(word).wrapping_mul(range);
+            let product = u32::from(word)
+                .checked_mul(range.get())
+                .expect("bounded draw product fits u32");
             if product & 0xFFFF >= threshold {
                 let result = random_start_seq(max_start, &mut || word);
                 let count = counts.get_mut(usize::from(result)).expect("bounded");
-                *count = count.wrapping_add(1);
+                *count = count
+                    .checked_add(1)
+                    .expect("histogram has at most 65536 observations");
             }
         }
-        assert!(
-            counts
-                .iter()
-                .all(|count| *count == 0x0001_0000_u32.wrapping_div(range))
-        );
+        assert!(counts.iter().all(|count| *count == 0x0001_0000_u32 / range));
     }
 
     #[test]
