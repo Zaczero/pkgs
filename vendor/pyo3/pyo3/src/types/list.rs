@@ -469,7 +469,10 @@ impl<'py> PyListMethods<'py> for Bound<'py, PyList> {
 struct Index(usize);
 struct Length(usize);
 
-/// Used by `PyList::iter()`.
+/// Iterates within the list's original extent, allowing Python-side mutation.
+///
+/// The remaining count can shrink during callbacks, so [`Iterator::size_hint`]
+/// supplies only an upper bound. Observed exhaustion is permanent.
 pub struct BoundListIterator<'py> {
     list: Bound<'py, PyList>,
     index: Index,
@@ -485,6 +488,21 @@ impl<'py> BoundListIterator<'py> {
         }
     }
 
+    /// Snapshot of the items currently available within the remaining range.
+    ///
+    /// Python-side mutation can change this count before the next read.
+    pub fn len(&self) -> usize {
+        self.length
+            .0
+            .min(self.list.len())
+            .saturating_sub(self.index.0)
+    }
+
+    /// Whether the remaining range currently contains no available list items.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// # Safety
     ///
     /// The caller must hold an active critical section on this list.
@@ -494,15 +512,17 @@ impl<'py> BoundListIterator<'py> {
         length: &mut Length,
         list: &Bound<'py, PyList>,
     ) -> Option<Bound<'py, PyAny>> {
-        let length = length.0.min(list.len());
+        let current_length = length.0.min(list.len());
         let my_index = index.0;
 
-        if index.0 < length {
+        if index.0 < current_length {
             // SAFETY: index.0 < list.len() guarantees in bounds
             let item = unsafe { list.get_item_unchecked(my_index) };
             index.0 += 1;
             Some(item)
         } else {
+            // Observing exhaustion must be permanent even if Python later grows the list.
+            length.0 = index.0;
             None
         }
     }
@@ -532,6 +552,7 @@ impl<'py> BoundListIterator<'py> {
         // n overflows the remaining length of the list;
         // nth must exhaust all remaining items
         index.0 = current_length;
+        length.0 = current_length;
         None
     }
 
@@ -552,6 +573,8 @@ impl<'py> BoundListIterator<'py> {
             length.0 = current_length - 1;
             Some(item)
         } else {
+            // The iterator is fused even if the underlying list subsequently grows.
+            length.0 = index.0;
             None
         }
     }
@@ -620,8 +643,7 @@ impl<'py> Iterator for BoundListIterator<'py> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.len();
-        (len, Some(len))
+        (0, Some(self.length.0.saturating_sub(self.index.0)))
     }
 
     #[inline]
@@ -776,6 +798,7 @@ impl<'py> Iterator for BoundListIterator<'py> {
             if let Some(overflow) = NonZero::new(n.saturating_sub(items_left)) {
                 // n overflows the remaining length of the list; advance_by must exhaust all remaining items
                 index.0 = current_length;
+                length.0 = current_length;
                 return Err(overflow);
             }
 
@@ -854,12 +877,6 @@ impl DoubleEndedIterator for BoundListIterator<'_> {
             length.0 = current_length - n;
             Ok(())
         })
-    }
-}
-
-impl ExactSizeIterator for BoundListIterator<'_> {
-    fn len(&self) -> usize {
-        self.length.0.saturating_sub(self.index.0)
     }
 }
 
@@ -1046,14 +1063,86 @@ mod tests {
             let list = ob.cast::<PyList>().unwrap();
 
             let mut iter = list.iter();
-            assert_eq!(iter.size_hint(), (v.len(), Some(v.len())));
+            assert_eq!(iter.size_hint(), (0, Some(v.len())));
             iter.next();
-            assert_eq!(iter.size_hint(), (v.len() - 1, Some(v.len() - 1)));
+            assert_eq!(iter.size_hint(), (0, Some(v.len() - 1)));
 
             // Exhaust iterator.
             for _ in &mut iter {}
 
             assert_eq!(iter.size_hint(), (0, Some(0)));
+        });
+    }
+
+    #[test]
+    fn test_iter_remaining_count_tracks_list_shrinkage() {
+        Python::attach(|py| {
+            let list = PyList::new(py, [2, 3, 5, 7]).unwrap();
+            let mut iter = list.iter();
+            assert_eq!(iter.next().unwrap().extract::<i32>().unwrap(), 2);
+            list.del_item(3).unwrap();
+            assert_eq!(iter.len(), 2);
+            assert_eq!(iter.size_hint(), (0, Some(3)));
+            assert_eq!(iter.count(), 2);
+        });
+    }
+
+    #[test]
+    fn test_tuple_construction_accepts_list_mutation_during_iteration() {
+        Python::attach(|py| {
+            let list = PyList::new(py, [2, 3, 5]).unwrap();
+            let iter = list.iter().inspect(|_| {
+                list.del_slice(0, list.len()).unwrap();
+            });
+            let tuple = PyTuple::new(py, iter).unwrap();
+            assert_eq!(tuple.extract::<Vec<i32>>().unwrap(), [2]);
+            assert!(list.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_iter_exhaustion_survives_list_regrowth() {
+        Python::attach(|py| {
+            for backwards in [false, true] {
+                let list = PyList::new(py, [2, 3, 5]).unwrap();
+                let mut iter = list.iter();
+                list.del_slice(0, 3).unwrap();
+                assert!(
+                    if backwards {
+                        iter.next_back()
+                    } else {
+                        iter.next()
+                    }
+                    .is_none()
+                );
+                list.append(7).unwrap();
+                assert_eq!(iter.size_hint(), (0, Some(0)));
+                assert!(iter.next().is_none());
+                assert!(iter.next_back().is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn test_iter_skipping_exhaustion_survives_list_regrowth() {
+        Python::attach(|py| {
+            for backwards in [false, true] {
+                let list = PyList::new(py, [2, 3, 5]).unwrap();
+                let mut iter = list.iter();
+                list.del_slice(0, 3).unwrap();
+                assert!(
+                    if backwards {
+                        iter.nth_back(usize::MAX)
+                    } else {
+                        iter.nth(usize::MAX)
+                    }
+                    .is_none()
+                );
+                list.append(7).unwrap();
+                assert_eq!(iter.len(), 0);
+                assert!(iter.next().is_none());
+                assert!(iter.next_back().is_none());
+            }
         });
     }
 
@@ -1066,16 +1155,16 @@ mod tests {
 
             let mut iter = list.iter().rev();
 
-            assert_eq!(iter.size_hint(), (4, Some(4)));
+            assert_eq!(iter.size_hint(), (0, Some(4)));
 
             assert_eq!(iter.next().unwrap().extract::<i32>().unwrap(), 7);
-            assert_eq!(iter.size_hint(), (3, Some(3)));
+            assert_eq!(iter.size_hint(), (0, Some(3)));
 
             assert_eq!(iter.next().unwrap().extract::<i32>().unwrap(), 5);
-            assert_eq!(iter.size_hint(), (2, Some(2)));
+            assert_eq!(iter.size_hint(), (0, Some(2)));
 
             assert_eq!(iter.next().unwrap().extract::<i32>().unwrap(), 3);
-            assert_eq!(iter.size_hint(), (1, Some(1)));
+            assert_eq!(iter.size_hint(), (0, Some(1)));
 
             assert_eq!(iter.next().unwrap().extract::<i32>().unwrap(), 2);
             assert_eq!(iter.size_hint(), (0, Some(0)));
