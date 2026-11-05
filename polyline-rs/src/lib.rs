@@ -25,7 +25,8 @@ impl From<errors::PolylineError> for PyErr {
 
 fn extract_coord_pair(coord: &Bound<'_, PyAny>, index: usize) -> PyResult<(f64, f64)> {
     if let Ok(tuple) = coord.cast_exact::<PyTuple>() {
-        let [first, second, ..] = tuple.as_slice() else {
+        let mut items = tuple.iter_borrowed();
+        let (Some(first), Some(second)) = (items.next(), items.next()) else {
             return Err(PolylineError::CoordinateMustContain2Values { index }.into());
         };
         return Ok((first.extract()?, second.extract()?));
