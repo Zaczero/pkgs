@@ -2582,14 +2582,13 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
 ):
     release = asyncio.Event()
     completed = asyncio.Event()
-    received = 0
+    received = bytearray()
 
     async def app(scope, receive, send):
-        nonlocal received
         await release.wait()
         while True:
             message = await receive()
-            received += len(message.get('body', b''))
+            received.extend(message.get('body', b''))
             if not message.get('more_body', False):
                 break
         completed.set()
@@ -2621,12 +2620,13 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
             first_frames = await _read_through_ping_ack(reader, first_ping)
             assert not any(frame_type == 0x08 for frame_type, *_ in first_frames)
 
+            second_chunk = b'y' * len(chunk)
             second_ping = b'credit-2'
             writer.write(
                 b''.join(
                     encode_h2_frame(
                         0x00,
-                        chunk,
+                        second_chunk,
                         flags=0x01 if index == 15 else 0,
                         stream_id=1,
                     )
@@ -2640,7 +2640,7 @@ async def test_h2_receive_credit_waits_for_app_consumption_without_stalling_inpu
 
             release.set()
             await asyncio.wait_for(completed.wait(), timeout=3)
-            assert received == 32 * len(chunk)
+            assert received == chunk * 16 + second_chunk * 16
         finally:
             release.set()
             writer.close()

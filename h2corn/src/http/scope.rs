@@ -215,10 +215,8 @@ fn http_scope_extensions<'py>(
     // exists. Advertising it elsewhere would promise a capability the parser is
     // not even compiled with.
     //
-    // Conditional entries rather than one arm per combination: `dict!`
-    // reserves for the maximum declared field count and evaluates each
-    // condition once, so spelling the four combinations out would duplicate a
-    // list that could drift apart.
+    // Conditional entries keep each capability in one place. `dict!` evaluates
+    // conditions once and leaves values in omitted branches unevaluated.
     let extensions = dict!(py, {
         "http.response.pathsend" => empty_extension_params(py)?,
         if cfg!(unix) => {

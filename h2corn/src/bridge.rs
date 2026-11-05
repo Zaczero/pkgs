@@ -981,17 +981,7 @@ fn build_http_inbound_event_ref(py: Python<'_>, event: &HttpInboundEvent) -> PyR
             bodies, body_bytes, ..
         } => {
             debug_assert_eq!(*body_bytes, bodies.iter().map(Bytes::len).sum::<usize>());
-            let body = PyBytes::new_with_writer(py, *body_bytes, |writer| {
-                if let [first, second] = bodies.as_slice() {
-                    writer.write_bytes(first.as_ref())?;
-                    writer.write_bytes(second.as_ref())?;
-                } else {
-                    for body in bodies {
-                        writer.write_bytes(body.as_ref())?;
-                    }
-                }
-                Ok(())
-            })?;
+            let body = PyBytes::from_slices(py, bodies.iter().map(Bytes::as_ref))?;
             dict!(py, {
                 "type" => "http.request",
                 "body" => body,
