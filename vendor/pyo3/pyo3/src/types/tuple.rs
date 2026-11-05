@@ -32,6 +32,7 @@ use core::ascii::Char;
 use core::iter::FusedIterator;
 #[cfg(feature = "nightly")]
 use core::num::NonZero;
+use core::ops::Range;
 
 #[cfg(all(not(any(PyPy, GraalPy)), any(not(Py_LIMITED_API), Py_3_12)))]
 use libc::size_t;
@@ -131,13 +132,6 @@ trait AtomicConversion {
     fn is_atomic() -> bool;
 }
 
-#[cfg(feature = "nightly")]
-impl<T> AtomicConversion for T {
-    default fn is_atomic() -> bool {
-        false
-    }
-}
-
 #[cfg(not(feature = "nightly"))]
 impl<T> AtomicConversion for T {
     fn is_atomic() -> bool {
@@ -148,6 +142,14 @@ impl<T> AtomicConversion for T {
 #[cfg(feature = "nightly")]
 macro_rules! atomic_conversions {
     ($($ty:ty),* $(,)?) => {
+        // Keep specialization syntax inside the gated expansion: rustc still
+        // feature-checks parsed syntax in a cfg-disabled ordinary item.
+        impl<T> AtomicConversion for T {
+            default fn is_atomic() -> bool {
+                false
+            }
+        }
+
         $(impl AtomicConversion for $ty {
             fn is_atomic() -> bool {
                 true
@@ -466,8 +468,7 @@ impl<'a, 'py> Borrowed<'a, 'py, PyTuple> {
 /// Used by `PyTuple::into_iter()`.
 pub struct BoundTupleIterator<'py> {
     tuple: Bound<'py, PyTuple>,
-    index: usize,
-    length: usize,
+    indices: Range<usize>,
 }
 
 impl<'py> BoundTupleIterator<'py> {
@@ -475,8 +476,7 @@ impl<'py> BoundTupleIterator<'py> {
         let length = tuple.len();
         BoundTupleIterator {
             tuple,
-            index: 0,
-            length,
+            indices: 0..length,
         }
     }
 }
@@ -488,19 +488,14 @@ impl<'py> Iterator for BoundTupleIterator<'py> {
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item {
         // SAFETY: the caller guarantees idx < remaining length. The retained
         // immutable tuple keeps this slot live; reading does not move either end.
-        unsafe { self.tuple.get_item_unchecked(self.index + idx) }
+        unsafe { self.tuple.get_item_unchecked(self.indices.start + idx) }
     }
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.length {
-            // SAFETY: self.index < self.length
-            let item = unsafe { self.tuple.get_item_unchecked(self.index) };
-            self.index += 1;
-            Some(item)
-        } else {
-            None
-        }
+        let index = self.indices.next()?;
+        // SAFETY: the range contains only indices of the retained immutable tuple.
+        Some(unsafe { self.tuple.get_item_unchecked(index) })
     }
 
     #[inline]
@@ -526,100 +521,51 @@ impl<'py> Iterator for BoundTupleIterator<'py> {
     }
 
     #[inline]
-    #[cfg(not(feature = "nightly"))]
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        if let Some(target_index) = self.index.checked_add(n) {
-            if target_index < self.length {
-                // SAFETY: target_index < self.length
-                let item = unsafe { self.tuple.get_item_unchecked(target_index) };
-                // +1 cannot overflow as target_index < self.length
-                self.index = target_index + 1;
-                return Some(item);
-            }
-        }
-
-        // n overflows the remaining length of the tuple;
-        // nth must exhaust all remaining items
-        self.index = self.length;
-        None
+        let index = self.indices.nth(n)?;
+        // SAFETY: Range owns checked skipping and cannot yield an index outside the tuple.
+        Some(unsafe { self.tuple.get_item_unchecked(index) })
     }
 
     #[inline]
     #[cfg(feature = "nightly")]
     fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
-        let items_left = self.length.saturating_sub(self.index);
-        if let Some(overflow) = NonZero::new(n.saturating_sub(items_left)) {
-            // n overflows the remaining length of the tuple; advance_by must exhaust all remaining items
-            self.index = self.length;
-            return Err(overflow);
-        }
-
-        // cannot overflow as self.length - self.index >= n
-        self.index += n;
-        Ok(())
+        self.indices.advance_by(n)
     }
 }
 
 impl DoubleEndedIterator for BoundTupleIterator<'_> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.index < self.length {
-            let target_index = self.length - 1;
-            // SAFETY: target_index < self.length
-            let item = unsafe { self.tuple.get_item_unchecked(target_index) };
-            self.length = target_index;
-            Some(item)
-        } else {
-            None
-        }
+        let index = self.indices.next_back()?;
+        // SAFETY: the range contains only indices of the retained immutable tuple.
+        Some(unsafe { self.tuple.get_item_unchecked(index) })
     }
 
     #[inline]
-    #[cfg(not(feature = "nightly"))]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        if let Some(index_after_item) = self.length.checked_sub(n) {
-            if self.index < index_after_item {
-                // -1 cannot underflow as index_after_item > self.index
-                let target_index = index_after_item - 1;
-                // SAFETY: target_index < self.length
-                let item = unsafe { self.tuple.get_item_unchecked(target_index) };
-                self.length = target_index;
-                return Some(item);
-            }
-        }
-
-        // n overflows the remaining length of the tuple;
-        // nth must exhaust all remaining items
-        self.length = self.index;
-        None
+        let index = self.indices.nth_back(n)?;
+        // SAFETY: Range owns checked skipping and cannot yield an index outside the tuple.
+        Some(unsafe { self.tuple.get_item_unchecked(index) })
     }
 
     #[inline]
     #[cfg(feature = "nightly")]
     fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
-        let items_left = self.length.saturating_sub(self.index);
-        if let Some(overflow) = NonZero::new(n.saturating_sub(items_left)) {
-            // n overflows the remaining length of the tuple; advance_back_by must exhaust all remaining items
-            self.length = self.index;
-            return Err(overflow);
-        }
-
-        // cannot overflow as self.length - self.index >= n
-        self.length -= n;
-        Ok(())
+        self.indices.advance_back_by(n)
     }
 }
 
 impl ExactSizeIterator for BoundTupleIterator<'_> {
     fn len(&self) -> usize {
-        self.length.saturating_sub(self.index)
+        self.indices.len()
     }
 }
 
 impl FusedIterator for BoundTupleIterator<'_> {}
 
 // SAFETY: tuple storage and length are immutable while retained. All traversal
-// operations maintain index <= length, and size_hint reports their difference.
+// operations delegate to the range initialized from that length, including skipping.
 #[cfg(feature = "nightly")]
 unsafe impl core::iter::TrustedLen for BoundTupleIterator<'_> {}
 
@@ -660,8 +606,7 @@ impl<'py> IntoIterator for &Bound<'py, PyTuple> {
 /// Used by `PyTuple::iter_borrowed()`.
 pub struct BorrowedTupleIterator<'a, 'py> {
     tuple: Borrowed<'a, 'py, PyTuple>,
-    index: usize,
-    length: usize,
+    indices: Range<usize>,
 }
 
 impl<'a, 'py> BorrowedTupleIterator<'a, 'py> {
@@ -669,8 +614,7 @@ impl<'a, 'py> BorrowedTupleIterator<'a, 'py> {
         let length = tuple.len();
         BorrowedTupleIterator {
             tuple,
-            index: 0,
-            length,
+            indices: 0..length,
         }
     }
 }
@@ -682,19 +626,28 @@ impl<'a, 'py> Iterator for BorrowedTupleIterator<'a, 'py> {
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item {
         // SAFETY: idx is within the remaining range and the tuple borrow keeps
         // every immutable slot live. Neither iterator endpoint is changed.
-        unsafe { self.tuple.get_borrowed_item_unchecked(self.index + idx) }
+        unsafe {
+            self.tuple
+                .get_borrowed_item_unchecked(self.indices.start + idx)
+        }
     }
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.length {
-            // SAFETY: self.index < self.length
-            let item = unsafe { self.tuple.get_borrowed_item_unchecked(self.index) };
-            self.index += 1;
-            Some(item)
-        } else {
-            None
-        }
+        let index = self.indices.next()?;
+        // SAFETY: the range contains only indices of the borrowed immutable tuple.
+        Some(unsafe { self.tuple.get_borrowed_item_unchecked(index) })
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        let index = self.indices.nth(n)?;
+        // SAFETY: Range owns checked skipping and the borrow retains the tuple storage.
+        Some(unsafe { self.tuple.get_borrowed_item_unchecked(index) })
+    }
+
+    #[cfg(feature = "nightly")]
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        self.indices.advance_by(n)
     }
 
     #[inline]
@@ -723,22 +676,26 @@ impl<'a, 'py> Iterator for BorrowedTupleIterator<'a, 'py> {
 impl DoubleEndedIterator for BorrowedTupleIterator<'_, '_> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.index < self.length {
-            // Cannot underflow as self.index < self.length implies self.length > 0
-            let target_index = self.length - 1;
-            // SAFETY: target_index < self.length
-            let item = unsafe { self.tuple.get_borrowed_item_unchecked(target_index) };
-            self.length = target_index;
-            Some(item)
-        } else {
-            None
-        }
+        let index = self.indices.next_back()?;
+        // SAFETY: the range contains only indices of the borrowed immutable tuple.
+        Some(unsafe { self.tuple.get_borrowed_item_unchecked(index) })
+    }
+
+    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
+        let index = self.indices.nth_back(n)?;
+        // SAFETY: Range owns checked skipping and the borrow retains the tuple storage.
+        Some(unsafe { self.tuple.get_borrowed_item_unchecked(index) })
+    }
+
+    #[cfg(feature = "nightly")]
+    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        self.indices.advance_back_by(n)
     }
 }
 
 impl ExactSizeIterator for BorrowedTupleIterator<'_, '_> {
     fn len(&self) -> usize {
-        self.length.saturating_sub(self.index)
+        self.indices.len()
     }
 }
 
