@@ -343,6 +343,10 @@ path = "tests/test_pyself.rs"
 required-features = ["macros"]
 
 [[test]]
+name = "test_refcount"
+path = "tests/test_refcount.rs"
+
+[[test]]
 name = "test_sequence"
 path = "tests/test_sequence.rs"
 required-features = ["macros"]

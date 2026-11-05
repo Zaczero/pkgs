@@ -1,5 +1,3 @@
-use crate::PyObject;
-use crate::pyport::Py_ssize_t;
 #[cfg(all(not(Py_LIMITED_API), py_sys_config = "Py_REF_DEBUG"))]
 use core::ffi::c_char;
 #[cfg(any(
@@ -16,6 +14,9 @@ use core::ffi::c_ulong;
 use core::ptr;
 #[cfg(all(Py_GIL_DISABLED, not(Py_LIMITED_API)))]
 use core::sync::atomic::Ordering::Relaxed;
+
+use crate::PyObject;
+use crate::pyport::Py_ssize_t;
 
 #[cfg(all(Py_3_14, not(Py_3_15)))]
 const _Py_STATICALLY_ALLOCATED_FLAG: c_int = 1 << 7;
@@ -107,7 +108,16 @@ pub unsafe fn Py_REFCNT(ob: *mut PyObject) -> Py_ssize_t {
     {
         #[cfg(not(PyPy))]
         {
-            (*ob).ob_refcnt.ob_refcnt
+            #[cfg(all(Py_3_14, target_pointer_width = "64"))]
+            {
+                // The other half of the union contains overflow/flag fields,
+                // not high reference-count bits.
+                (*ob).ob_refcnt.refcnt_and_flags.ob_refcnt as Py_ssize_t
+            }
+            #[cfg(not(all(Py_3_14, target_pointer_width = "64")))]
+            {
+                (*ob).ob_refcnt.ob_refcnt
+            }
         }
 
         #[cfg(PyPy)]
@@ -222,11 +232,16 @@ pub unsafe fn Py_INCREF(op: *mut PyObject) {
     {
         #[cfg(all(Py_3_14, target_pointer_width = "64"))]
         {
-            let cur_refcnt = (*op).ob_refcnt.ob_refcnt;
-            if (cur_refcnt as i32) < 0 {
+            let cur_refcnt = (*op).ob_refcnt.refcnt_and_flags.ob_refcnt;
+            // INCREF and DECREF have different immortal thresholds. Continue
+            // increasing a newly immortal count until the initial threshold,
+            // as CPython's refcount.h does.
+            if cur_refcnt >= _Py_IMMORTAL_INITIAL_REFCNT as u32 {
                 return;
             }
-            (*op).ob_refcnt.ob_refcnt = cur_refcnt.wrapping_add(1);
+            (*op).ob_refcnt.refcnt_and_flags.ob_refcnt = cur_refcnt
+                .checked_add(1)
+                .expect("a count below the immortal threshold has a successor");
         }
 
         #[cfg(all(Py_3_12, not(Py_3_14), target_pointer_width = "64"))]
@@ -311,16 +326,31 @@ pub unsafe fn Py_DECREF(op: *mut PyObject) {
 
         #[cfg(Py_3_12)]
         {
-            (*op).ob_refcnt.ob_refcnt -= 1;
+            #[cfg(all(Py_3_14, target_pointer_width = "64"))]
+            let new_refcnt = {
+                let current = (*op).ob_refcnt.refcnt_and_flags.ob_refcnt;
+                // Widening retains a negative diagnostic for an invalid zero
+                // count without touching the adjacent flags or overflowing.
+                let next = i64::from(current)
+                    .checked_sub(1)
+                    .expect("a widened u32 decrement fits i64");
+                (*op).ob_refcnt.refcnt_and_flags.ob_refcnt = next as u32;
+                next
+            };
+            #[cfg(not(all(Py_3_14, target_pointer_width = "64")))]
+            let new_refcnt = {
+                (*op).ob_refcnt.ob_refcnt -= 1;
+                (*op).ob_refcnt.ob_refcnt
+            };
 
             #[cfg(py_sys_config = "Py_REF_DEBUG")]
-            if (*op).ob_refcnt.ob_refcnt < 0 {
+            if new_refcnt < 0 {
                 let location = core::panic::Location::caller();
                 let filename = alloc::ffi::CString::new(location.file()).unwrap();
                 _Py_NegativeRefcount(filename.as_ptr(), location.line() as i32, op);
             }
 
-            if (*op).ob_refcnt.ob_refcnt == 0 {
+            if new_refcnt == 0 {
                 _Py_Dealloc(op);
             }
         }
