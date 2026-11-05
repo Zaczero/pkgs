@@ -94,7 +94,9 @@ pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<EncodedShortlink, E
     let encoded_y = (wrapped_y * Y_SCALE) as u32;
     let cell = interleave_bits(encoded_x, encoded_y);
 
-    let bit_count = zoom.wrapping_add(MIN_ZOOM_BIT_COUNT);
+    let bit_count = zoom
+        .checked_add(MIN_ZOOM_BIT_COUNT)
+        .expect("admitted zoom fits coordinate bits");
     Ok(EncodedShortlink {
         cell,
         digits: bit_count.div_ceil(BITS_PER_DIGIT),
@@ -124,10 +126,11 @@ impl EncodedShortlink {
     pub(crate) fn write(&self, characters: &mut [Char]) {
         assert_eq!(characters.len(), self.len(), "shortlink output length");
         let (digits, padding) = characters.split_at_mut(self.digits as usize);
-        for (index, character) in digits.iter_mut().enumerate() {
-            let shift = 58_u32.wrapping_sub((index as u32).wrapping_mul(6));
-            let digit = ((self.cell >> shift) & 0x3F) as usize;
+        let mut cell = self.cell;
+        for character in digits {
+            let digit = (cell >> 58) as usize;
             *character = *CHARSET.get(digit).expect("six-bit Morton digit");
+            cell <<= 6;
         }
         padding.fill(Char::HyphenMinus);
     }
@@ -148,11 +151,7 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
             continue;
         }
         if packed == DECODE_OFFSET {
-            offset_bits = if offset_bits == 0 {
-                BITS_PER_DIGIT - 1
-            } else {
-                offset_bits.wrapping_sub(1)
-            };
+            offset_bits = offset_bits.checked_sub(1).unwrap_or(BITS_PER_DIGIT - 1);
             continue;
         }
 
@@ -162,23 +161,26 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
 
         x = (x << BITS_PER_DIGIT) | u32::from(packed & 0b111);
         y = (y << BITS_PER_DIGIT) | u32::from(packed >> 3);
-        z = z.wrapping_add(BITS_PER_DIGIT);
+        z = z
+            .checked_add(BITS_PER_DIGIT)
+            .expect("admitted digit count fits coordinate bits");
     }
 
-    if unlikely(z < MIN_ZOOM_BIT_COUNT.wrapping_add(offset_bits)) {
-        return Err(DecodeError::TooShort);
-    }
+    let minimum_bits = MIN_ZOOM_BIT_COUNT
+        .checked_add(offset_bits)
+        .expect("zoom suffix is at most two bits");
+    let zoom = z.checked_sub(minimum_bits).ok_or(DecodeError::TooShort)?;
 
-    let shift = COORD_BITS.wrapping_sub(z);
+    let shift = COORD_BITS
+        .checked_sub(z)
+        .expect("coordinate precision was admitted");
     x <<= shift;
     y <<= shift;
-
-    z = z.wrapping_sub(MIN_ZOOM_BIT_COUNT).wrapping_sub(offset_bits);
 
     Ok((
         (f64::from(x) * X_SCALE_INV) - 180.0,
         (f64::from(y) * Y_SCALE_INV) - 90.0,
-        z,
+        zoom,
     ))
 }
 
