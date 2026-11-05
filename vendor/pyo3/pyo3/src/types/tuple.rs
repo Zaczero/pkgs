@@ -1054,6 +1054,19 @@ fn array_into_tuple<'py, const N: usize>(
     array: [Bound<'py, PyAny>; N],
     known_atomic: bool,
 ) -> Bound<'py, PyTuple> {
+    #[cfg(all(Py_3_15, not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython))))]
+    if N == 2 {
+        let pointers = array.map(Bound::into_ptr);
+        // SAFETY: this branch has exactly two owned references. CPython steals
+        // both even on allocation failure and initializes every slot before
+        // publication, tracking the pair only when its elements can support GC.
+        return unsafe {
+            ffi::_PyTuple_FromPairSteal(pointers[0], pointers[1])
+                .assume_owned(py)
+                .cast_into_unchecked()
+        };
+    }
+
     #[cfg(not(RustPython))]
     unsafe {
         let ptr = ffi::PyTuple_New(N.try_into().expect("0 < N <= 12"));

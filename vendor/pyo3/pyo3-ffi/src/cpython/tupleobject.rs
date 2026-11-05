@@ -15,6 +15,15 @@ pub struct PyTupleObject {
 // skipped _PyTuple_Resize
 // skipped _PyTuple_MaybeUntrack
 
+#[cfg(all(Py_3_15, not(any(PyPy, GraalPy, RustPython))))]
+extern_libpython! {
+    // Both references are stolen, including on allocation failure.
+    pub fn _PyTuple_FromPairSteal(
+        first: *mut PyObject,
+        second: *mut PyObject,
+    ) -> *mut PyObject;
+}
+
 // skipped _PyTuple_CAST
 
 /// Macro, trading safety for speed
