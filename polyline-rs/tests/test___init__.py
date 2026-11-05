@@ -77,7 +77,7 @@ def test_encode_accepts_extra_tuple_values_and_subclass_iterators():
         def __iter__(self):
             return iter((0.000006, 0.000002))
 
-    assert encode_latlon([(0.000006, 0.000002, 'ignored')]) == 'A?'
+    assert encode_latlon([(0.000006, 0.000002, float('nan'))]) == 'A?'
     assert encode_latlon([CustomTuple((42.0, 42.0))]) == 'A?'
     with pytest.raises(ValueError, match='coordinate'):
         encode_latlon([(0.0,)])
@@ -86,7 +86,7 @@ def test_encode_accepts_extra_tuple_values_and_subclass_iterators():
 @pytest.mark.parametrize('decode', [decode_latlon, decode_lonlat])
 def test_decoded_points_do_not_prevent_collection_of_containing_cycles(decode):
     class Owner:
-        pass
+        points: list[object]
 
     owner = Owner()
     points = decode('?A' * 100)
@@ -96,7 +96,7 @@ def test_decoded_points_do_not_prevent_collection_of_containing_cycles(decode):
         and all(type(value) is float for value in point)
         for point in points
     )
-    owner.points: list[object] = points
+    owner.points = points
     owner.points.append(owner)
     reference = weakref.ref(owner)
     del owner, points
