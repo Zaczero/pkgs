@@ -729,7 +729,6 @@ def inspect_sdist(
         f'{root}/tools/quality_runtime.py',
         f'{root}/tools/release_artifact.py',
         f'{root}/native/cmake-flags/src/lib.rs',
-        f'{root}/vendor/h3o/GOMETRY_DIVERGENCE.md',
         f'{root}/vendor/libtiff/libtiff.pin',
         f'{root}/vendor/libtiff/notices/libtiff-license.md',
         f'{root}/vendor/libtiff/notices/libtiff-lzw-license.md',

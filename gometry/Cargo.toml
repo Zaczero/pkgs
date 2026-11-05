@@ -37,8 +37,7 @@ geographiclib-rs = { version = "0.2.7", default-features = false, features = [
   "accurate"
 ] }
 getrandom = { version = "0.4.3", default-features = false, features = ["std"] }
-# Root-vendored from HydroniumLabs/h3o; vendor/h3o/GOMETRY_DIVERGENCE.md records
-# local carriers and correctness fixes.
+# Root-vendored from HydroniumLabs/h3o with local carriers and correctness fixes.
 h3o = { path = "../vendor/h3o", default-features = false, features = [
   "std"
 ] }
