@@ -1,4 +1,6 @@
-use super::{decode_array, push_base83};
+use std::ascii::Char;
+
+use super::{decode_array, write_base83};
 
 fn digit(byte: u8) -> Option<u32> {
     match byte {
@@ -34,13 +36,14 @@ fn digit(byte: u8) -> Option<u32> {
 #[kani::unwind(8)]
 fn single_digit_fields_match_the_base83_alphabet() {
     let value: u32 = kani::any();
-    let prefix: [u8; 2] = kani::any();
-    let mut output = Vec::with_capacity(1 + prefix.len());
-    output.extend_from_slice(&prefix);
-    push_base83::<1>(&mut output, value);
+    let prefix_bytes: [u8; 2] = kani::any();
+    let prefix = prefix_bytes.map(|byte| Char::from_u8(byte % 128).unwrap());
+    let mut output = [prefix[0], prefix[1], Char::MIN];
+    let remaining = write_base83::<1>(&mut output[prefix.len()..], value);
+    assert!(remaining.is_empty());
     assert_eq!(&output[..prefix.len()], &prefix);
     assert_eq!(output.len(), prefix.len() + 1);
-    assert_eq!(digit(output[prefix.len()]), Some(value % 83));
+    assert_eq!(digit(output[prefix.len()].to_u8()), Some(value % 83));
 
     let byte: u8 = kani::any();
     assert_eq!(decode_array(&[byte]), digit(byte));

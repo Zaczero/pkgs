@@ -1,3 +1,4 @@
+#![feature(ascii_char)]
 #![feature(likely_unlikely)]
 #![feature(const_index)]
 #![feature(const_trait_impl)]
@@ -9,9 +10,9 @@ mod secret;
 mod time;
 mod totp;
 
+use std::ascii::Char;
 use std::hint::unlikely;
 use std::num::NonZeroU32;
-use std::str;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -74,21 +75,19 @@ const fn admit_digits(count: u8) -> Result<Digits, TotpError> {
     Ok(Digits { count, modulus })
 }
 
-fn format_code_py(py: Python<'_>, mut code: u32, digits: Digits) -> Py<PyString> {
-    let mut buf = [b'0'; 9];
-
-    let start = buf.len().wrapping_sub(usize::from(digits.count));
-    let view = buf
-        .get_mut(start..)
-        .expect("admitted digit count fits code buffer");
-    for c in view.iter_mut().rev() {
-        *c = b'0'.wrapping_add((code % 10) as u8);
-        code /= 10;
-    }
-
-    // Safety: all bytes are ASCII digits.
-    let view = unsafe { str::from_utf8_unchecked(view) };
-    PyString::new(py, view).into()
+fn format_code_py(py: Python<'_>, mut code: u32, digits: Digits) -> PyResult<Py<PyString>> {
+    // The finite decimal alphabet carries ASCII validity into the direct writer.
+    const DECIMAL: &[Char; 10] = b"0123456789".as_ascii().unwrap();
+    PyString::new_ascii_with(py, usize::from(digits.count), |characters| {
+        for character in characters.iter_mut().rev() {
+            *character = *DECIMAL
+                .get((code % 10) as usize)
+                .expect("decimal remainder is below ten");
+            code /= 10;
+        }
+        Ok(())
+    })
+    .map(Bound::unbind)
 }
 
 fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
@@ -176,7 +175,7 @@ fn totp_generate(
         ))
     })?;
 
-    Ok(format_code_py(py, code, digits))
+    format_code_py(py, code, digits)
 }
 
 #[pyfunction]

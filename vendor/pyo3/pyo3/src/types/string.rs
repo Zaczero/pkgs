@@ -1,5 +1,10 @@
 //! Python strings and related types.
 
+#[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
+pub use crate::fmt::PyUnicodeWriter;
+
+#[cfg(all(feature = "nightly", any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+use crate::exceptions::PyMemoryError;
 #[cfg(not(Py_LIMITED_API))]
 use crate::exceptions::PyUnicodeDecodeError;
 use crate::ffi_ptr_ext::FfiPtrExt;
@@ -15,6 +20,8 @@ use crate::{
     types::{PyType, PyTypeMethods},
 };
 use alloc::borrow::Cow;
+#[cfg(feature = "nightly")]
+use core::ascii::Char;
 use core::ffi::CStr;
 use core::{fmt, str};
 
@@ -176,6 +183,65 @@ pyobject_native_type_core!(
 );
 
 impl PyString {
+    /// Copies typed ASCII characters into a new Python string.
+    ///
+    /// ASCII validity is carried by the input type, so the full CPython API
+    /// neither decodes UTF-8 nor scans for a maximum code point. The input is
+    /// borrowed only for this call; the returned string owns its characters.
+    #[cfg(feature = "nightly")]
+    pub fn from_ascii<'py>(py: Python<'py>, characters: &[Char]) -> PyResult<Bound<'py, PyString>> {
+        if let [character] = characters {
+            // SAFETY: ASCII is a valid Unicode scalar fitting c_int. This also
+            // preserves CPython's cached single-character construction path.
+            return unsafe {
+                ffi::PyUnicode_FromOrdinal(i32::from(character.to_u8()))
+                    .assume_owned_or_err(py)
+                    .cast_into_unchecked()
+            };
+        }
+        #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+        unsafe {
+            // SAFETY: size is representable and maxchar requests one-byte ASCII
+            // storage. The exact string remains private until every byte has
+            // been copied from initialized, type-guaranteed ASCII input.
+            let string: Bound<'py, PyString> =
+                ffi::PyUnicode_New(characters.len().try_into()?, 127)
+                    .assume_owned_or_err(py)
+                    .cast_into_unchecked()?;
+            if !characters.is_empty() {
+                core::ptr::copy_nonoverlapping(
+                    characters.as_ptr().cast::<u8>(),
+                    ffi::PyUnicode_1BYTE_DATA(string.as_ptr()),
+                    characters.len(),
+                );
+            }
+            Ok(string)
+        }
+        #[cfg(any(Py_LIMITED_API, PyPy, GraalPy, RustPython))]
+        Self::from_bytes(py, characters.as_bytes())
+    }
+
+    /// Constructs Unicode incrementally in CPython-owned storage.
+    ///
+    /// `capacity` is an advisory character count, not a byte count or limit.
+    /// The initializer can append Rust text, Unicode characters, native Python
+    /// strings, and typed ASCII. `write!` returns `PyResult` for direct propagation.
+    /// Errors and panics discard unfinished storage. Successful completion
+    /// consumes the writer and returns the constructed immutable string.
+    #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
+    pub fn new_with_writer<'py, F>(
+        py: Python<'py>,
+        capacity: usize,
+        init: F,
+    ) -> PyResult<Bound<'py, PyString>>
+    where
+        F: FnOnce(&mut PyUnicodeWriter<'py>) -> PyResult<()>,
+    {
+        let mut writer = crate::fmt::PyUnicodeWriter::with_capacity(py, capacity)?;
+        init(&mut writer)?;
+        writer.into_py_string()
+    }
+
     /// Creates a new Python string object.
     ///
     /// Panics if out of memory.
@@ -186,6 +252,69 @@ impl PyString {
             ffi::PyUnicode_FromStringAndSize(ptr, len)
                 .assume_owned(py)
                 .cast_into_unchecked()
+        }
+    }
+
+    /// Creates an ASCII string by filling its final character storage.
+    ///
+    /// `length` counts ASCII characters, each occupying one byte. The initializer
+    /// receives zero-initialized [`core::ascii::Char`] values; this type keeps every
+    /// safe write valid ASCII without a validation pass. It may leave characters
+    /// as NUL. The mutable view cannot escape the initializer.
+    ///
+    /// Initializer errors and panics discard the string. Allocation errors
+    /// propagate. Single characters use CPython's character cache. Longer strings
+    /// initialize final Unicode storage on CPython's full API; other runtimes and
+    /// ABI modes use a temporary character buffer.
+    #[cfg(feature = "nightly")]
+    pub fn new_ascii_with<'py, F>(
+        py: Python<'py>,
+        length: usize,
+        init: F,
+    ) -> PyResult<Bound<'py, PyString>>
+    where
+        F: FnOnce(&mut [Char]) -> PyResult<()>,
+    {
+        if length == 1 {
+            let mut character = [Char::MIN];
+            init(&mut character)?;
+            return Self::from_ascii(py, &character);
+        }
+        #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+        {
+            let length_signed: ffi::Py_ssize_t = length.try_into()?;
+            // SAFETY: a nonnegative length and ASCII maximum request compact,
+            // one-byte storage. Ownership is retained until initialization ends;
+            // neither the object nor its pointer is exposed to the initializer.
+            let string: Bound<'py, PyString> = unsafe {
+                ffi::PyUnicode_New(length_signed, 127)
+                    .assume_owned_or_err(py)
+                    .cast_into_unchecked()?
+            };
+            if length == 0 {
+                init(&mut [])?;
+            } else {
+                // SAFETY: new exact Unicode storage has `length` writable bytes.
+                // Char has size/alignment one and repr(u8); initializing every
+                // byte to zero establishes its validity before making a slice.
+                // The higher-ranked callback borrow cannot escape this call.
+                unsafe {
+                    let data = ffi::PyUnicode_1BYTE_DATA(string.as_ptr());
+                    data.write_bytes(0, length);
+                    init(core::slice::from_raw_parts_mut(data.cast(), length))?;
+                }
+            }
+            Ok(string)
+        }
+        #[cfg(any(Py_LIMITED_API, PyPy, GraalPy, RustPython))]
+        {
+            let mut characters = Vec::new();
+            characters.try_reserve_exact(length).map_err(|_| {
+                PyMemoryError::new_err("could not allocate ASCII initialization buffer")
+            })?;
+            characters.resize(length, Char::MIN);
+            init(&mut characters)?;
+            Self::from_bytes(py, characters.as_bytes())
         }
     }
 
@@ -267,12 +396,8 @@ impl PyString {
         #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
         {
             use crate::fmt::PyUnicodeWriter;
-            use core::fmt::Write as _;
-
             let mut writer = PyUnicodeWriter::new(py)?;
-            writer
-                .write_fmt(args)
-                .map_err(|_| writer.take_error().expect("expected error"))?;
+            writer.write_fmt(args)?;
             writer.into_py_string()
         }
 
@@ -619,6 +744,84 @@ impl PartialEq<Borrowed<'_, '_, PyString>> for &'_ str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
+    fn test_incremental_unicode_keeps_native_surrogates() {
+        Python::attach(|py| {
+            let text = py
+                .eval(c"'🐈\\ud800'", None, None)
+                .unwrap()
+                .cast_into::<PyString>()
+                .unwrap();
+            let value = PyString::new_with_writer(py, 8, |writer| {
+                #[cfg(feature = "nightly")]
+                writer.write_ascii(b"left:".as_ascii().unwrap())?;
+                #[cfg(not(feature = "nightly"))]
+                writer.write_str("left:")?;
+                writer.write_py_string(&text)?;
+                writer.write_char('!')?;
+                Ok(())
+            })
+            .unwrap();
+            let expected = py.eval(c"'left:🐈\\ud800!'", None, None).unwrap();
+            assert!(value.as_any().eq(expected).unwrap());
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "nightly")]
+    fn test_ascii_initializer_keeps_storage_live_across_detachment_and_collection() {
+        Python::attach(|py| {
+            let value = PyString::new_ascii_with(py, 8, |characters| {
+                py.detach(|| {
+                    Python::attach(|nested| {
+                        nested
+                            .import("gc")
+                            .unwrap()
+                            .call_method0("collect")
+                            .unwrap();
+                    });
+                    characters.copy_from_slice(b"detached".as_ascii().unwrap());
+                });
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(value.to_str().unwrap(), "detached");
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "nightly")]
+    fn test_ascii_initializer_writes_final_storage_and_keeps_nuls_valid() {
+        Python::attach(|py| {
+            for length in [0, 1, 32, 4096] {
+                let value = PyString::new_ascii_with(py, length, |characters| {
+                    for (index, character) in characters.iter_mut().enumerate() {
+                        *character = core::ascii::Char::from_u8((index % 128) as u8).unwrap();
+                    }
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(
+                    value.to_str().unwrap().as_bytes(),
+                    (0..length)
+                        .map(|index| (index % 128) as u8)
+                        .collect::<Vec<_>>()
+                );
+            }
+            let zeros = PyString::new_ascii_with(py, 4, |_| Ok(())).unwrap();
+            assert_eq!(zeros.to_str().unwrap(), "\0\0\0\0");
+            let error = PyString::new_ascii_with(py, 32, |_| {
+                Err(crate::exceptions::PyValueError::new_err(
+                    "initializer sentinel",
+                ))
+            })
+            .unwrap_err();
+            assert!(error.is_instance_of::<crate::exceptions::PyValueError>(py));
+        });
+    }
+
     use crate::{IntoPyObject, exceptions::PyLookupError, types::PyAnyMethods as _};
 
     #[test]

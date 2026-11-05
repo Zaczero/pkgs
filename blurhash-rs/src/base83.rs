@@ -1,15 +1,20 @@
+//! Typed base83 output and a byte-admission lookup table generated from one alphabet.
+
+use std::ascii::Char;
 use std::hint::unlikely;
 use std::num::NonZeroU32;
 
-const CHARSET: &[u8; 83] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
+const CHARSET: &[Char; 83] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~"
+        .as_ascii()
+        .unwrap();
 
 const INVALID: u8 = 0xFF;
 const DECODE: [u8; 256] = {
     let mut table = [INVALID; 256];
     let mut i = 0_usize;
     while let Some(&byte) = CHARSET.get(i) {
-        let Some(slot) = table.get_mut(byte as usize) else {
+        let Some(slot) = table.get_mut(byte.to_u8() as usize) else {
             unreachable!()
         };
         *slot = i as u8;
@@ -46,15 +51,21 @@ pub(crate) fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<
     Some(value)
 }
 
-pub(crate) fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
+/// Writes the low fixed-width base83 digits and returns the unfilled ASCII suffix.
+///
+/// Panics if the remaining view is too short. Admitted BlurHash shapes supply
+/// exactly the sum of their field widths.
+pub(crate) fn write_base83<const LENGTH: usize>(out: &mut [Char], value: u32) -> &mut [Char] {
     const { assert!(LENGTH <= POW83.len(), "base83 field exceeds u32 range") };
-    for &divisor in POW83.iter().take(LENGTH).rev() {
+    let (field, remaining) = out.split_at_mut(LENGTH);
+    for (character, &divisor) in field.iter_mut().zip(POW83.iter().take(LENGTH).rev()) {
         let digit = (value / divisor) % 83;
         let Some(&byte) = CHARSET.get(digit as usize) else {
             unreachable!("base83 remainder indexes the alphabet")
         };
-        out.push(byte);
+        *character = byte;
     }
+    remaining
 }
 
 #[cfg(kani)]

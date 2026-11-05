@@ -1,10 +1,13 @@
+//! Rust text conversion using native Unicode construction and borrowed UTF-8 views.
+
+use crate::ffi_ptr_ext::FfiPtrExt;
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::PyStaticExpr;
 use crate::platform::prelude::*;
 #[cfg(feature = "experimental-inspect")]
 use crate::type_object::PyTypeInfo;
 use crate::{
-    Borrowed, FromPyObject, PyAny, PyErr, Python, conversion::IntoPyObject, instance::Bound,
+    Borrowed, FromPyObject, PyAny, PyErr, Python, conversion::IntoPyObject, ffi, instance::Bound,
     types::PyString,
 };
 use alloc::borrow::Cow;
@@ -75,8 +78,13 @@ impl<'py> IntoPyObject<'py> for char {
     const OUTPUT_TYPE: PyStaticExpr = String::OUTPUT_TYPE;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let mut bytes = [0u8; 4];
-        Ok(PyString::new(py, self.encode_utf8(&mut bytes)))
+        // SAFETY: Rust char is a Unicode scalar at most 0x10ffff, fitting c_int.
+        // The attached constructor returns one owned Unicode character.
+        unsafe {
+            Ok(ffi::PyUnicode_FromOrdinal(self as i32)
+                .assume_owned(py)
+                .cast_into_unchecked())
+        }
     }
 }
 
@@ -233,10 +241,11 @@ mod tests {
     #[test]
     fn test_extract_char() {
         Python::attach(|py| {
-            let ch = '😃';
-            let py_string = ch.into_pyobject(py).unwrap();
-            let ch2: char = py_string.extract().unwrap();
-            assert_eq!(ch, ch2);
+            for ch in ['\0', '\u{7f}', 'é', '😃', '\u{10ffff}'] {
+                let py_string = ch.into_pyobject(py).unwrap();
+                let ch2: char = py_string.extract().unwrap();
+                assert_eq!(ch, ch2);
+            }
         })
     }
 

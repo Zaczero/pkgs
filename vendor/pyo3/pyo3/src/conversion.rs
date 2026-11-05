@@ -63,7 +63,7 @@ pub trait IntoPyObject<'py>: Sized {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error>;
 
     /// Converts sequence of Self into a Python object. Used to specialize `Vec<u8>`, `[u8; N]`
-    /// and `SmallVec<[u8; N]>` as a sequence of bytes into a `bytes` object.
+    /// and `SmallVec<[u8; N]>` as bytes, and nightly typed ASCII sequences as strings.
     #[doc(hidden)]
     fn owned_sequence_into_pyobject<I>(
         iter: I,
@@ -78,7 +78,7 @@ pub trait IntoPyObject<'py>: Sized {
     }
 
     /// Converts sequence of Self into a Python object. Used to specialize `&[u8]` and `Cow<[u8]>`
-    /// as a sequence of bytes into a `bytes` object.
+    /// as bytes, and nightly typed ASCII sequences as strings.
     #[doc(hidden)]
     fn borrowed_sequence_into_pyobject<I>(
         iter: I,

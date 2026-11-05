@@ -1,8 +1,10 @@
+use core::ffi::{c_char, c_int, c_uint, c_void};
+
+use libc::wchar_t;
+
 #[cfg(any(Py_3_11, not(PyPy)))]
 use crate::Py_hash_t;
 use crate::{Py_UCS1, Py_UCS2, Py_UCS4, Py_ssize_t, PyObject};
-use core::ffi::{c_char, c_int, c_uint, c_void};
-use libc::wchar_t;
 
 // skipped PY_UNICODE_TYPE
 
@@ -687,11 +689,17 @@ extern_libpython! {
         str: *const c_char,
         size: Py_ssize_t,
     ) -> c_int;
-    // skipped PyUnicodeWriter_WriteASCII
+    #[cfg(Py_3_14)]
+    pub fn PyUnicodeWriter_WriteASCII(
+        writer: *mut PyUnicodeWriter,
+        str: *const c_char,
+        size: Py_ssize_t,
+    ) -> c_int;
     // skipped PyUnicodeWriter_WriteWideChar
     // skipped PyUnicodeWriter_WriteUCS4
 
-    // skipped PyUnicodeWriter_WriteStr
+    #[cfg(Py_3_14)]
+    pub fn PyUnicodeWriter_WriteStr(writer: *mut PyUnicodeWriter, obj: *mut PyObject) -> c_int;
     // skipped PyUnicodeWriter_WriteRepr
     // skipped PyUnicodeWriter_WriteSubstring
     // skipped PyUnicodeWriter_Format

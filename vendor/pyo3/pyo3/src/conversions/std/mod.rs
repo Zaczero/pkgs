@@ -1,4 +1,6 @@
 mod array;
+#[cfg(feature = "nightly")]
+mod ascii;
 mod cell;
 mod cstring;
 mod ipaddr;

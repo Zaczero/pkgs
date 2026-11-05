@@ -1,3 +1,6 @@
+//! Separable cosine accumulation and type-guaranteed ASCII BlurHash output.
+
+use std::ascii::Char;
 use std::hint::unlikely;
 
 use crate::color::{
@@ -6,7 +9,8 @@ use crate::color::{
 use crate::errors::BlurhashError;
 use crate::{RgbDimensions, base83, cos, srgb};
 
-struct ComponentGrid {
+/// Native cosine coefficients and their grid layout.
+struct Factors {
     x_components: usize,
     y_components: usize,
     blocks: usize,
@@ -17,25 +21,64 @@ fn sign_pow_05(v: f32) -> f32 {
     v.signum() * v.abs().sqrt()
 }
 
-pub(crate) fn encode_rgb(
-    rgb: &[u8],
-    dimensions: &RgbDimensions,
+/// A validated image and component grid, borrowing the input for native encoding.
+///
+/// Construction admits all lengths and dimensions before output allocation.
+/// Writing needs no Python access and can run detached into final ASCII storage.
+pub(crate) struct RgbEncoder<'a> {
+    rgb: &'a [u8],
+    dimensions: &'a RgbDimensions,
     x_components: u8,
     y_components: u8,
-) -> Result<String, BlurhashError> {
-    let rgb_len = dimensions.rgb_len();
-    if unlikely(rgb.len() != rgb_len) {
-        return Err(BlurhashError::InvalidRGBBufferLength {
-            expected: rgb_len,
-            got: rgb.len(),
-        });
+}
+
+impl<'a> RgbEncoder<'a> {
+    /// Admits the packed RGB buffer, component counts and native working layout.
+    pub(crate) fn new(
+        rgb: &'a [u8],
+        dimensions: &'a RgbDimensions,
+        x_components: u8,
+        y_components: u8,
+    ) -> Result<Self, BlurhashError> {
+        let rgb_len = dimensions.rgb_len();
+        if unlikely(rgb.len() != rgb_len) {
+            return Err(BlurhashError::InvalidRGBBufferLength {
+                expected: rgb_len,
+                got: rgb.len(),
+            });
+        }
+        validate_component_count("x", x_components)?;
+        validate_component_count("y", y_components)?;
+        dimensions
+            .validate_working_storage(usize::from(x_components), usize::from(y_components))?;
+        Ok(Self {
+            rgb,
+            dimensions,
+            x_components,
+            y_components,
+        })
     }
 
-    validate_component_count("x", x_components)?;
-    validate_component_count("y", y_components)?;
-    dimensions.validate_working_storage(usize::from(x_components), usize::from(y_components))?;
+    /// Four header characters plus two per coefficient.
+    pub(crate) fn len(&self) -> usize {
+        usize::from(self.x_components)
+            .checked_mul(usize::from(self.y_components))
+            .and_then(|components| components.checked_mul(2))
+            .and_then(|characters| characters.checked_add(4))
+            .expect("validated BlurHash character count fits usize")
+    }
 
-    Ok(encode_rgb_impl(rgb, dimensions, x_components, y_components))
+    /// Computes and writes the hash; panics if output is not exactly len() characters.
+    pub(crate) fn write(&self, output: &mut [Char]) {
+        assert_eq!(output.len(), self.len(), "BlurHash output length");
+        let factors = encode_rgb_impl(
+            self.rgb,
+            self.dimensions,
+            self.x_components,
+            self.y_components,
+        );
+        encode_factors(&factors, output);
+    }
 }
 
 fn validate_component_count(axis: &'static str, count: u8) -> Result<(), BlurhashError> {
@@ -50,14 +93,14 @@ fn encode_rgb_impl(
     dimensions: &RgbDimensions,
     x_components: u8,
     y_components: u8,
-) -> String {
+) -> Factors {
     let width = dimensions.width();
     let height = dimensions.height();
     let x_components = x_components as usize;
     let y_components = y_components as usize;
     let mut factors = accumulate_factors(rgb, width, height, x_components, y_components);
     scale_factors(&mut factors, dimensions.pixels());
-    encode_factors(&factors)
+    factors
 }
 
 fn accumulate_factors(
@@ -66,7 +109,7 @@ fn accumulate_factors(
     height: usize,
     x_components: usize,
     y_components: usize,
-) -> ComponentGrid {
+) -> Factors {
     let blocks = x_components.div_ceil(LANES);
     match blocks {
         1 => accumulate_factors_with_blocks::<1>(rgb, width, height, x_components, y_components),
@@ -82,7 +125,7 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     height: usize,
     x_components: usize,
     y_components: usize,
-) -> ComponentGrid {
+) -> Factors {
     debug_assert_eq!(x_components.div_ceil(LANES), BLOCKS);
 
     let cos_y = cos::cos_axis_cached(height, y_components);
@@ -149,7 +192,7 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
         }
     }
 
-    ComponentGrid {
+    Factors {
         x_components,
         y_components,
         blocks: BLOCKS,
@@ -157,7 +200,7 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     }
 }
 
-fn scale_factors(factors: &mut ComponentGrid, pixel_count: usize) {
+fn scale_factors(factors: &mut Factors, pixel_count: usize) {
     let inv_wh = 1.0_f32 / pixel_count as f32;
     let scale_ac = inv_wh * 2.0;
     for j in 0..factors.y_components {
@@ -187,7 +230,7 @@ fn scale_component(channel: &mut [V4], index: usize, scale: V4) {
     *value *= scale;
 }
 
-fn max_ac_value(factors: &ComponentGrid) -> f32 {
+fn max_ac_value(factors: &Factors) -> f32 {
     let mut maximum_value = 0.0_f32;
     for j in 0..factors.y_components {
         let base = j.wrapping_mul(factors.blocks);
@@ -232,7 +275,7 @@ fn max_ac_value(factors: &ComponentGrid) -> f32 {
     maximum_value
 }
 
-fn encode_factors(factors: &ComponentGrid) -> String {
+fn encode_factors(factors: &Factors, mut out: &mut [Char]) {
     let num_components = factors.x_components.wrapping_mul(factors.y_components);
     let maximum_value = max_ac_value(factors);
     let (quantised_max_value, maximum_value) = if num_components > 1 {
@@ -242,20 +285,14 @@ fn encode_factors(factors: &ComponentGrid) -> String {
         (0, 1.0)
     };
 
-    let total_len = num_components
-        .wrapping_sub(1)
-        .wrapping_mul(2)
-        .wrapping_add(6);
-    let mut out = Vec::with_capacity(total_len);
-
     let size_flag = (factors.x_components.wrapping_sub(1).wrapping_add(
         factors
             .y_components
             .wrapping_sub(1)
             .wrapping_mul(MAX_COMPONENTS),
     )) as u32;
-    base83::push_base83::<1>(&mut out, size_flag);
-    base83::push_base83::<1>(&mut out, quantised_max_value);
+    out = base83::write_base83::<1>(out, size_flag);
+    out = base83::write_base83::<1>(out, quantised_max_value);
 
     let dc_r = component_lane(&factors.vectors[RED], 0, 0);
     let dc_g = component_lane(&factors.vectors[GREEN], 0, 0);
@@ -263,7 +300,7 @@ fn encode_factors(factors: &ComponentGrid) -> String {
     let dc_value = (u32::from(srgb::linear_to_srgb_u8(dc_r)) << 16)
         | (u32::from(srgb::linear_to_srgb_u8(dc_g)) << 8)
         | u32::from(srgb::linear_to_srgb_u8(dc_b));
-    base83::push_base83::<4>(&mut out, dc_value);
+    out = base83::write_base83::<4>(out, dc_value);
 
     for j in 0..factors.y_components {
         for i in 0..factors.x_components {
@@ -292,12 +329,10 @@ fn encode_factors(factors: &ComponentGrid) -> String {
                 .wrapping_mul(19)
                 .wrapping_add(quant_g.wrapping_mul(19))
                 .wrapping_add(quant_b);
-            base83::push_base83::<2>(&mut out, ac_value);
+            out = base83::write_base83::<2>(out, ac_value);
         }
     }
-
-    // Safety: all bytes are ASCII (base83).
-    unsafe { String::from_utf8_unchecked(out) }
+    debug_assert!(out.is_empty());
 }
 
 fn component_lane(channel: &[V4], index: usize, lane: usize) -> f32 {

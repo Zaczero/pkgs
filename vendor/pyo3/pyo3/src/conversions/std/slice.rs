@@ -20,7 +20,8 @@ where
     #[cfg(feature = "experimental-inspect")]
     const OUTPUT_TYPE: PyStaticExpr = <&T>::SEQUENCE_OUTPUT_TYPE;
 
-    /// Turns [`&[u8]`](core::slice) into [`PyBytes`], all other `T`s will be turned into a [`PyList`]
+    /// Turns `&[u8]` into [`PyBytes`]. With `nightly`, `&[ascii::Char]`
+    /// becomes a Python string; other element types become a [`PyList`].
     ///
     /// [`PyBytes`]: crate::types::PyBytes
     /// [`PyList`]: crate::types::PyList
@@ -73,7 +74,8 @@ where
     #[cfg(feature = "experimental-inspect")]
     const OUTPUT_TYPE: PyStaticExpr = <&T>::SEQUENCE_OUTPUT_TYPE;
 
-    /// Turns `Cow<[u8]>` into [`PyBytes`], all other `T`s will be turned into a [`PyList`]
+    /// Turns `Cow<[u8]>` into [`PyBytes`]. With `nightly`, `Cow<[ascii::Char]>`
+    /// becomes a Python string; other element types become a [`PyList`].
     ///
     /// [`PyBytes`]: crate::types::PyBytes
     /// [`PyList`]: crate::types::PyList

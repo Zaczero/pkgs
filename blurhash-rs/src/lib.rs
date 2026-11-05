@@ -1,3 +1,4 @@
+#![feature(ascii_char)]
 #![feature(const_index)]
 #![feature(const_trait_impl)]
 #![feature(likely_unlikely)]
@@ -15,7 +16,7 @@ use std::num::NonZeroUsize;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyString};
 
 use crate::errors::BlurhashError;
 
@@ -105,17 +106,20 @@ impl RgbDimensions {
 }
 
 #[pyfunction]
-fn encode_rgb(
-    py: Python<'_>,
+fn encode_rgb<'py>(
+    py: Python<'py>,
     rgb: &[u8],
     width: usize,
     height: usize,
     x_components: u8,
     y_components: u8,
-) -> PyResult<String> {
+) -> PyResult<Bound<'py, PyString>> {
     let dimensions = RgbDimensions::new(width, height)?;
-    py.detach(|| encode::encode_rgb(rgb, &dimensions, x_components, y_components))
-        .map_err(PyErr::from)
+    let encoder = encode::RgbEncoder::new(rgb, &dimensions, x_components, y_components)?;
+    PyString::new_ascii_with(py, encoder.len(), |characters| {
+        py.detach(|| encoder.write(characters));
+        Ok(())
+    })
 }
 
 #[pyfunction]

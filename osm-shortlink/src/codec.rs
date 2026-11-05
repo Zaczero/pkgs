@@ -1,7 +1,8 @@
+//! Coordinate admission, Morton encoding and direct ASCII output.
+
+use std::ascii::Char;
 use std::hint::unlikely;
 use std::simd::u64x2;
-
-use arrayvec::ArrayString;
 
 use crate::constants::{
     CHARSET, DECODE_INVALID, DECODE_LUT, DECODE_OFFSET, X_SCALE, X_SCALE_INV, Y_SCALE, Y_SCALE_INV,
@@ -13,8 +14,6 @@ const MIN_ZOOM_BIT_COUNT: u8 = 8;
 const BITS_PER_DIGIT: u8 = 3;
 pub(crate) const MAX_ZOOM: u8 = 22;
 const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
-const MAX_LINK_LENGTH: usize =
-    MAX_ZOOM_BIT_COUNT.div_ceil(BITS_PER_DIGIT) as usize + (BITS_PER_DIGIT as usize - 1);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT.is_multiple_of(BITS_PER_DIGIT));
 
@@ -33,11 +32,7 @@ fn interleave_bits(x: u32, y: u32) -> u64 {
     (sx << 1) | sy
 }
 
-pub(crate) fn encode(
-    lon: f64,
-    lat: f64,
-    zoom: u8,
-) -> Result<ArrayString<MAX_LINK_LENGTH>, EncodeError> {
+pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<EncodedShortlink, EncodeError> {
     if unlikely(zoom > MAX_ZOOM) {
         return Err(EncodeError::ZoomOutOfRange { zoom });
     }
@@ -100,24 +95,42 @@ pub(crate) fn encode(
     let cell = interleave_bits(encoded_x, encoded_y);
 
     let bit_count = zoom.wrapping_add(MIN_ZOOM_BIT_COUNT);
-    let padding = (bit_count % BITS_PER_DIGIT) as usize;
-    let digit_count = bit_count.div_ceil(BITS_PER_DIGIT) as usize;
+    Ok(EncodedShortlink {
+        cell,
+        digits: bit_count.div_ceil(BITS_PER_DIGIT),
+        padding: bit_count % BITS_PER_DIGIT,
+    })
+}
 
-    let mut out = ArrayString::new();
+/// Admitted coordinates with a fixed output shape, ready for final-storage filling.
+pub(crate) struct EncodedShortlink {
+    /// Morton-interleaved longitude and latitude bits.
+    cell: u64,
+    /// Six-bit alphabet characters preceding the zoom suffix.
+    digits: u8,
+    /// Hyphens representing the remaining zoom bits.
+    padding: u8,
+}
 
-    for i in 0..digit_count {
-        let shift = 58_u32.wrapping_sub((i as u32).wrapping_mul(6));
-        let digit = ((cell >> shift) & 0x3F) as usize;
-        let Some(&byte) = CHARSET.get(digit) else {
-            unreachable!("six-bit digit indexes the 64-byte alphabet")
-        };
-        out.push(byte as char);
+impl EncodedShortlink {
+    /// Number of one-byte ASCII characters in the encoded link.
+    pub(crate) const fn len(&self) -> usize {
+        (self.digits as usize)
+            .checked_add(self.padding as usize)
+            .expect("two widened u8 counts fit usize")
     }
-    for _ in 0..padding {
-        out.push('-');
-    }
 
-    Ok(out)
+    /// Fills an exactly sized output view; panics if its length differs from len().
+    pub(crate) fn write(&self, characters: &mut [Char]) {
+        assert_eq!(characters.len(), self.len(), "shortlink output length");
+        let (digits, padding) = characters.split_at_mut(self.digits as usize);
+        for (index, character) in digits.iter_mut().enumerate() {
+            let shift = 58_u32.wrapping_sub((index as u32).wrapping_mul(6));
+            let digit = ((self.cell >> shift) & 0x3F) as usize;
+            *character = *CHARSET.get(digit).expect("six-bit Morton digit");
+        }
+        padding.fill(Char::HyphenMinus);
+    }
 }
 
 pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {

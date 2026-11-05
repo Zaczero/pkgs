@@ -9,7 +9,6 @@ crate-type = ["cdylib"]
 name = "osm_shortlink"
 
 [dependencies]
-arrayvec = "0.7.6"
 pyo3.workspace = true
 thiserror.workspace = true
 

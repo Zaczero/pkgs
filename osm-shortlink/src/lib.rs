@@ -1,3 +1,5 @@
+#![feature(ascii_char)]
+#![feature(ascii_char_variants)]
 #![feature(likely_unlikely)]
 #![feature(portable_simd)]
 #![feature(const_index)]
@@ -26,7 +28,11 @@ impl From<errors::EncodeError> for PyErr {
 #[pyfunction]
 fn shortlink_encode(py: Python<'_>, lon: f64, lat: f64, zoom: u8) -> PyResult<Py<PyString>> {
     let encoded = codec::encode(lon, lat, zoom)?;
-    Ok(PyString::new(py, &encoded).into())
+    PyString::new_ascii_with(py, encoded.len(), |characters| {
+        encoded.write(characters);
+        Ok(())
+    })
+    .map(Bound::unbind)
 }
 
 #[pyfunction]

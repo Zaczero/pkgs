@@ -19,7 +19,8 @@ where
     #[cfg(feature = "experimental-inspect")]
     const OUTPUT_TYPE: PyStaticExpr = T::SEQUENCE_OUTPUT_TYPE;
 
-    /// Turns [`[u8; N]`](core::array) into [`PyBytes`], all other `T`s will be turned into a [`PyList`]
+    /// Turns `[u8; N]` into [`PyBytes`]. With `nightly`, `[ascii::Char; N]`
+    /// becomes a Python string; other element types become a [`PyList`].
     ///
     /// [`PyBytes`]: crate::types::PyBytes
     /// [`PyList`]: crate::types::PyList

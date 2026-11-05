@@ -73,6 +73,8 @@ pub use self::sequence::{PySequence, PySequenceMethods};
 pub use self::set::{PySet, PySetMethods};
 #[doc(inline)]
 pub use self::slice::{PySlice, PySliceMethods};
+#[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
+pub use self::string::PyUnicodeWriter;
 #[doc(inline)]
 pub use self::string::{PyString, PyStringMethods};
 #[doc(inline)]

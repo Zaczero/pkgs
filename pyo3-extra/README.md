@@ -61,3 +61,18 @@ These static caches follow PyO3's single-interpreter extension model.
 
 Domain-specific validation, error messages and conversion policies belong to
 the consuming package.
+
+## Text construction
+
+Use PyO3's `PyString::new_with_writer` to append Rust text, Unicode characters
+or existing Python strings directly into Python-owned Unicode storage with the
+full CPython 3.14+ API. Native
+Python-string appends preserve surrogates and do not request a second UTF-8
+representation.
+
+For formats guaranteed to produce ASCII, keep alphabets and output buffers
+typed as `std::ascii::Char`. PyO3 converts character slices, arrays and vectors
+to Python strings, not lists. `PyString::from_ascii` copies an existing typed
+buffer once; `PyString::new_ascii_with` fills the final Python allocation when
+the character count is known. Binary inputs remain byte buffers, and general
+text remains Unicode.

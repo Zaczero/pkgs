@@ -1,10 +1,19 @@
-// TODO https://github.com/PyO3/pyo3/issues/5487
-#![allow(clippy::undocumented_unsafe_blocks)]
+//! Python-owned Unicode construction and Rust formatting integration.
+//!
+//! The writer owns unfinished CPython storage until finish or drop. Native
+//! append methods propagate Python exceptions; fmt::Write stores its exception
+//! until the caller retrieves it or consumes the writer.
+
+#![warn(clippy::undocumented_unsafe_blocks)]
 
 #[allow(unused_imports, reason = "used to build docs")]
 use crate::platform::prelude::*;
+#[cfg(all(feature = "experimental-inspect", Py_3_14, not(Py_LIMITED_API)))]
+use crate::{PyTypeInfo, inspect::PyStaticExpr};
 #[cfg(any(doc, all(Py_3_14, not(Py_LIMITED_API))))]
 use crate::{Python, types::PyString};
+#[cfg(all(feature = "nightly", Py_3_14, not(Py_LIMITED_API)))]
+use core::ascii::Char;
 #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
 use {
     crate::IntoPyObject,
@@ -61,8 +70,14 @@ macro_rules! py_format {
 }
 
 #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
-/// The `PyUnicodeWriter` is a utility for efficiently constructing Python strings
-pub(crate) struct PyUnicodeWriter<'py> {
+/// Owns an unfinished Python Unicode string until completion or drop.
+///
+/// Append operations copy directly into CPython-managed storage, widening its
+/// character representation when needed. Capacity is advisory and measured in
+/// characters. Dropping the writer releases unfinished storage; finishing consumes
+/// it even if CPython reports an error. Rust formatting errors retain their Python
+/// cause until [`Self::take_error`] or [`Self::into_py_string`] retrieves it.
+pub struct PyUnicodeWriter<'py> {
     python: Python<'py>,
     writer: NonNull<ffi::PyUnicodeWriter>,
     last_error: Option<PyErr>,
@@ -70,6 +85,65 @@ pub(crate) struct PyUnicodeWriter<'py> {
 
 #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
 impl<'py> PyUnicodeWriter<'py> {
+    /// Appends Rust formatted arguments, preserving a Python allocation error.
+    ///
+    /// This is the native `write!` entry point, so callers can propagate its
+    /// `PyResult` directly. As with Rust string formatting, a Display
+    /// implementation that returns an error without a writer error panics.
+    pub fn write_fmt(&mut self, arguments: fmt::Arguments<'_>) -> PyResult<()> {
+        fmt::Write::write_fmt(self, arguments).map_err(|_| {
+            self.take_error()
+                .expect("a formatter returned an error without a writer error")
+        })
+    }
+
+    /// Appends Rust UTF-8 text without an intermediate Python string.
+    pub fn write_str(&mut self, text: &str) -> PyResult<()> {
+        // SAFETY: this attached owner retains the live writer; str supplies valid
+        // UTF-8 and a live pointer for the checked byte count. CPython copies it.
+        crate::err::error_on_negative(self.python, unsafe {
+            PyUnicodeWriter_WriteUTF8(self.as_ptr(), text.as_ptr().cast(), text.len().try_into()?)
+        })
+    }
+
+    /// Appends one Unicode scalar value.
+    pub fn write_char(&mut self, character: char) -> PyResult<()> {
+        // SAFETY: the writer is live and attached, and Rust char is a valid scalar.
+        crate::err::error_on_negative(self.python, unsafe {
+            PyUnicodeWriter_WriteChar(self.as_ptr(), character.into())
+        })
+    }
+
+    /// Appends a Python string in its native Unicode representation.
+    ///
+    /// No UTF-8 encoding or cache is requested, and unpaired surrogates are
+    /// preserved. The input is borrowed only for this append.
+    pub fn write_py_string(&mut self, text: &Bound<'_, PyString>) -> PyResult<()> {
+        // SAFETY: both objects remain live for this attached call. CPython copies
+        // the text or retains its own reference when reusing read-only storage.
+        crate::err::error_on_negative(self.python, unsafe {
+            ffi::PyUnicodeWriter_WriteStr(self.as_ptr(), text.as_ptr())
+        })
+    }
+
+    /// Appends typed ASCII without UTF-8 decoding.
+    ///
+    /// The character slice is borrowed only for this call. Allocation errors
+    /// propagate without consuming the writer.
+    #[cfg(feature = "nightly")]
+    pub fn write_ascii(&mut self, characters: &[Char]) -> PyResult<()> {
+        let bytes = characters.as_bytes();
+        // SAFETY: Char guarantees ASCII; the pointer is live for the call.
+        // CPython copies it into writer-owned storage and reports allocation errors.
+        crate::err::error_on_negative(self.python, unsafe {
+            ffi::PyUnicodeWriter_WriteASCII(
+                self.as_ptr(),
+                bytes.as_ptr().cast(),
+                bytes.len().try_into()?,
+            )
+        })
+    }
+
     /// Creates a new `PyUnicodeWriter`.
     pub fn new(py: Python<'py>) -> PyResult<Self> {
         Self::with_capacity(py, 0)
@@ -78,6 +152,8 @@ impl<'py> PyUnicodeWriter<'py> {
     /// Creates a new `PyUnicodeWriter` with the specified initial capacity.
     #[inline]
     pub fn with_capacity(py: Python<'py>, capacity: usize) -> PyResult<Self> {
+        // SAFETY: attached thread and representable capacity; CPython returns a
+        // new writer owned here, or null with an exception.
         match NonNull::new(unsafe { PyUnicodeWriter_Create(capacity.try_into()?) }) {
             Some(ptr) => Ok(PyUnicodeWriter {
                 python: py,
@@ -95,6 +171,8 @@ impl<'py> PyUnicodeWriter<'py> {
         if let Some(error) = self.take_error() {
             Err(error)
         } else {
+            // SAFETY: finish consumes this live writer even on failure and returns
+            // a new exact str or an exception. Suppress Drop's second discard.
             unsafe {
                 PyUnicodeWriter_Finish(ManuallyDrop::new(self).as_ptr())
                     .assume_owned_or_err(py)
@@ -113,36 +191,29 @@ impl<'py> PyUnicodeWriter<'py> {
     fn as_ptr(&self) -> *mut ffi::PyUnicodeWriter {
         self.writer.as_ptr()
     }
-
-    #[inline]
-    fn set_error(&mut self) {
-        self.last_error = Some(PyErr::fetch(self.python));
-    }
 }
 
 #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
 impl fmt::Write for PyUnicodeWriter<'_> {
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let result = unsafe {
-            PyUnicodeWriter_WriteUTF8(self.as_ptr(), s.as_ptr().cast(), s.len() as isize)
-        };
-        if result < 0 {
-            self.set_error();
-            Err(fmt::Error)
-        } else {
-            Ok(())
+        match PyUnicodeWriter::write_str(self, s) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.last_error = Some(error);
+                Err(fmt::Error)
+            }
         }
     }
 
     #[inline]
     fn write_char(&mut self, c: char) -> fmt::Result {
-        let result = unsafe { PyUnicodeWriter_WriteChar(self.as_ptr(), c.into()) };
-        if result < 0 {
-            self.set_error();
-            Err(fmt::Error)
-        } else {
-            Ok(())
+        match PyUnicodeWriter::write_char(self, c) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.last_error = Some(error);
+                Err(fmt::Error)
+            }
         }
     }
 }
@@ -151,6 +222,8 @@ impl fmt::Write for PyUnicodeWriter<'_> {
 impl Drop for PyUnicodeWriter<'_> {
     #[inline]
     fn drop(&mut self) {
+        // SAFETY: only unfinished writers reach Drop; successful or failed finish
+        // transfers ownership out through ManuallyDrop.
         unsafe {
             PyUnicodeWriter_Discard(self.as_ptr());
         }
@@ -162,6 +235,9 @@ impl<'py> IntoPyObject<'py> for PyUnicodeWriter<'py> {
     type Target = PyString;
     type Output = Bound<'py, Self::Target>;
     type Error = PyErr;
+
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = PyString::TYPE_HINT;
 
     #[inline]
     fn into_pyobject(self, _py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
@@ -212,7 +288,6 @@ mod tests {
     #[allow(clippy::write_literal)]
     #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
     fn unicode_writer_test() {
-        use core::fmt::Write;
         Python::attach(|py| {
             let mut writer = PyUnicodeWriter::new(py).unwrap();
             write!(writer, "Hello {}!", "world").unwrap();
@@ -226,7 +301,6 @@ mod tests {
     #[allow(clippy::write_literal)]
     #[cfg(all(Py_3_14, not(Py_LIMITED_API)))]
     fn unicode_writer_with_capacity() {
-        use core::fmt::Write;
         Python::attach(|py| {
             let mut writer = PyUnicodeWriter::with_capacity(py, 10).unwrap();
             write!(writer, "Hello {}!", "world").unwrap();

@@ -1234,7 +1234,6 @@ dependencies = [
 name = "osm_shortlink"
 version = "2.0.0"
 dependencies = [
- "arrayvec",
  "pyo3",
  "thiserror",
 ]

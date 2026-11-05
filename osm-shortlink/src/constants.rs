@@ -1,6 +1,12 @@
-// 64 chars to encode 6 bits.
-pub(crate) const CHARSET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~";
+//! Coordinate scaling and byte admission generated from the typed encoding alphabet.
+
+use std::ascii::Char;
+
+// 64 characters encode six interleaved coordinate bits.
+pub(crate) const CHARSET: &[Char; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_~"
+        .as_ascii()
+        .unwrap();
 
 pub(crate) const X_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 360.0;
 pub(crate) const Y_SCALE: f64 = ((u32::MAX as f64) + 1.0) / 180.0;
@@ -26,7 +32,7 @@ pub(crate) const DECODE_LUT: [u8; 256] = {
         let y_chunk = ((t & 1) | (((t >> 2) & 1) << 1) | (((t >> 4) & 1) << 2)) as u8;
         let packed = x_chunk | (y_chunk << 3);
 
-        *lut.get_mut(byte as usize)
+        *lut.get_mut(byte.to_u8() as usize)
             .expect("alphabet byte fits lookup table") = packed;
         i += 1;
     }
