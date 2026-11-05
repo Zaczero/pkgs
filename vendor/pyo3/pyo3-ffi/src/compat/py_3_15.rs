@@ -71,7 +71,7 @@ compat_function!(
         let result = if size == 0 {
             crate::PyBytes_FromStringAndSize(c"".as_ptr(), 0)
         } else if (*writer).obj.is_null() {
-            crate::PyBytes_FromStringAndSize((*writer).small_buffer.as_ptr(), size)
+            crate::PyBytes_FromStringAndSize((*writer).small_buffer.as_ptr().cast(), size)
         } else {
             if size != crate::PyBytes_Size((*writer).obj) && crate::_PyBytes_Resize(&mut (*writer).obj, size) < 0 {
                     PyBytesWriter_Discard(writer);
@@ -130,7 +130,8 @@ compat_function!(
 #[repr(C)]
 #[cfg(not(any(Py_3_15, Py_LIMITED_API)))]
 pub struct PyBytesWriter {
-    small_buffer: [core::ffi::c_char; 256],
+    // Only the prefix published by the caller is initialized.
+    small_buffer: [core::mem::MaybeUninit<core::ffi::c_char>; 256],
     obj: *mut crate::PyObject,
     size: crate::Py_ssize_t,
 }
@@ -168,10 +169,10 @@ unsafe fn _PyBytesWriter_Resize_impl(
     }
 
     if !(*writer).obj.is_null() {
-        if crate::_PyBytes_Resize(&mut (*writer).obj, size) > 0 {
+        // As with the native writer API, a failed growth requires discard.
+        if crate::_PyBytes_Resize(&mut (*writer).obj, size) < 0 {
             return -1;
         }
-        assert!(!(*writer).obj.is_null())
     } else {
         (*writer).obj = crate::PyBytes_FromStringAndSize(core::ptr::null_mut(), size);
         if (*writer).obj.is_null() {
@@ -184,7 +185,7 @@ unsafe fn _PyBytesWriter_Resize_impl(
             core::ptr::copy_nonoverlapping(
                 (*writer).small_buffer.as_ptr(),
                 crate::PyBytes_AS_STRING((*writer).obj) as *mut _,
-                core::mem::size_of_val(&(*writer).small_buffer),
+                (*writer).size as usize,
             );
         }
     }

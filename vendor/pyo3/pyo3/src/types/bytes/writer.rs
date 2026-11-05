@@ -27,10 +27,13 @@ use crate::{
 use core::{mem::ManuallyDrop, ptr::NonNull};
 
 /// Type used to create a [`PyBytes`], used in [`PyBytes::new_with_writer`].
+///
+/// A native write failure discards unfinished storage. Further writes and
+/// completion return that error rather than publishing a partial result.
 pub struct PyBytesWriter<'py> {
     python: Python<'py>,
     #[cfg(not(Py_LIMITED_API))]
-    writer: NonNull<ffi::compat::PyBytesWriter>,
+    writer: PyResult<NonNull<ffi::compat::PyBytesWriter>>,
     #[cfg(Py_LIMITED_API)]
     buffer: Vec<u8>,
 }
@@ -41,21 +44,26 @@ impl<'py> PyBytesWriter<'py> {
     #[cfg_attr(Py_LIMITED_API, allow(clippy::unnecessary_wraps))]
     pub(super) fn with_capacity(py: Python<'py>, capacity: usize) -> PyResult<Self> {
         cfg_select! {
-            not(Py_LIMITED_API) => NonNull::new(unsafe { PyBytesWriter_Create(capacity as _) }).map_or_else(
-                || Err(PyErr::fetch(py)),
-                |writer| {
-                    let mut writer = PyBytesWriter { python: py, writer };
-                    if capacity > 0 {
-                        // SAFETY: By setting the length to 0, we ensure no bytes are considered uninitialized.
-                        unsafe { writer.set_len(0)? };
-                    }
-                    Ok(writer)
-                },
-            ),
+            not(Py_LIMITED_API) => {
+                NonNull::new(unsafe { PyBytesWriter_Create(capacity.try_into()?) }).map_or_else(
+                    || Err(PyErr::fetch(py)),
+                    |writer| {
+                        let mut writer = PyBytesWriter {
+                            python: py,
+                            writer: Ok(writer),
+                        };
+                        if capacity > 0 {
+                            // SAFETY: By setting the length to 0, we ensure no bytes are considered uninitialized.
+                            unsafe { writer.set_len(0)? };
+                        }
+                        Ok(writer)
+                    },
+                )
+            }
             Py_LIMITED_API => Ok(PyBytesWriter {
                 python: py,
                 buffer: Vec::with_capacity(capacity),
-            })
+            }),
         }
     }
 
@@ -65,38 +73,64 @@ impl<'py> PyBytesWriter<'py> {
         self.len() == 0
     }
 
-    /// Get the current length of the internal buffer.
+    /// Get the current length of the internal buffer, or zero after a native write failure.
     #[inline]
     pub fn len(&self) -> usize {
         cfg_select! {
-            not(Py_LIMITED_API) => unsafe {
-                PyBytesWriter_GetSize(self.writer.as_ptr()) as _
-            },
-            Py_LIMITED_API => self.buffer.len()
+            not(Py_LIMITED_API) => self.writer.as_ref().map_or(0, |writer| unsafe {
+                PyBytesWriter_GetSize(writer.as_ptr()) as _
+            }),
+            Py_LIMITED_API => self.buffer.len(),
         }
+    }
+
+    #[cfg(not(Py_LIMITED_API))]
+    fn writer_pointer(&self) -> PyResult<NonNull<ffi::compat::PyBytesWriter>> {
+        self.writer
+            .as_ref()
+            .copied()
+            .map_err(|error| error.clone_ref(self.python))
+    }
+
+    #[cfg(not(Py_LIMITED_API))]
+    fn check_write(&mut self, result: PyResult<()>) -> PyResult<()> {
+        if let Err(error) = result {
+            let previous = core::mem::replace(&mut self.writer, Err(error.clone_ref(self.python)));
+            if let Ok(writer) = previous {
+                // SAFETY: the failing operation leaves only discard permitted.
+                // This transition removes the handle before releasing it.
+                unsafe { PyBytesWriter_Discard(writer.as_ptr()) };
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     #[inline]
     #[cfg(not(Py_LIMITED_API))]
-    fn as_mut_ptr(&mut self) -> *mut u8 {
-        unsafe { PyBytesWriter_GetData(self.writer.as_ptr()) as _ }
+    fn as_mut_ptr(&mut self) -> PyResult<*mut u8> {
+        // SAFETY: only a live writer can pass writer_pointer.
+        Ok(unsafe { PyBytesWriter_GetData(self.writer_pointer()?.as_ptr()) as _ })
     }
 
     /// Set the length of the internal buffer to `new_len`. The new bytes are uninitialized.
     ///
     /// # Safety
-    /// The caller must ensure the new bytes are initialized. This will also make all pointers
+    /// On success, the caller must ensure the new bytes are initialized. This will also make all pointers
     /// returned by `as_mut_ptr` invalid, so the caller must not hold any references to the buffer
     /// across this call.
     #[inline]
     #[cfg(not(Py_LIMITED_API))]
     unsafe fn set_len(&mut self, new_len: usize) -> PyResult<()> {
-        unsafe {
-            err::error_on_negative(
-                self.python,
-                PyBytesWriter_Resize(self.writer.as_ptr(), new_len as _),
-            )
-        }
+        let writer = self.writer_pointer()?;
+        let result = new_len.try_into().map_err(PyErr::from).and_then(|size| {
+            // SAFETY: the handle is live, and the caller initializes new bytes
+            // before publication. A failed resize is discarded by check_write.
+            unsafe {
+                err::error_on_negative(self.python, PyBytesWriter_Resize(writer.as_ptr(), size))
+            }
+        });
+        self.check_write(result)
     }
 
     /// Writes the `bytes` into `self`.
@@ -108,12 +142,17 @@ impl<'py> PyBytesWriter<'py> {
             _ => {
                 let len = bytes.len();
                 let pos = self.len();
+                // Each length fits isize, so the sum fits usize. set_len
+                // checks Python's smaller signed size limit.
+                let new_len = pos + len;
 
                 // SAFETY: We write the new uninitialized bytes below.
-                unsafe { self.set_len(pos + len)? }
+                unsafe { self.set_len(new_len)? }
 
                 // SAFETY: We have ensured enough capacity above.
-                unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.as_mut_ptr().add(pos), len) };
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.as_mut_ptr()?.add(pos), len)
+                };
             }
         }
 
@@ -132,11 +171,17 @@ impl<'py> TryFrom<PyBytesWriter<'py>> for Bound<'py, PyBytes> {
             //  - we no longer use `value` after this call
             //  - `PyBytesWriter_Finish` will return a new reference to a bytes object on success
             not(Py_LIMITED_API) => unsafe {
-                PyBytesWriter_Finish(ManuallyDrop::new(value).writer.as_ptr())
-                    .assume_owned_or_err(py)
-                    .cast_into_unchecked()
+                let value = ManuallyDrop::new(value);
+                // Move the sole handle or remembered error out without running
+                // Drop. Finish consumes a live handle even when it fails.
+                match core::ptr::read(&value.writer) {
+                    Ok(writer) => PyBytesWriter_Finish(writer.as_ptr())
+                        .assume_owned_or_err(py)
+                        .cast_into_unchecked(),
+                    Err(error) => Err(error),
+                }
             },
-            Py_LIMITED_API => Ok(PyBytes::new(py, &value.buffer))
+            Py_LIMITED_API => Ok(PyBytes::new(py, &value.buffer)),
         }
     }
 }
@@ -159,7 +204,10 @@ impl<'py> IntoPyObject<'py> for PyBytesWriter<'py> {
 impl<'py> Drop for PyBytesWriter<'py> {
     #[inline]
     fn drop(&mut self) {
-        unsafe { PyBytesWriter_Discard(self.writer.as_ptr()) }
+        if let Ok(writer) = &self.writer {
+            // SAFETY: failed writers were already discarded by check_write.
+            unsafe { PyBytesWriter_Discard(writer.as_ptr()) }
+        }
     }
 }
 
@@ -171,15 +219,23 @@ impl std::io::Write for PyBytesWriter<'_> {
     }
 
     fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
-        let len = bufs.iter().map(|b| b.len()).sum();
+        let len = bufs
+            .iter()
+            .try_fold(0_usize, |total, buf| total.checked_add(buf.len()))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "byte length overflow")
+            })?;
         let pos = self.len();
+        let new_len = pos.checked_add(len).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "byte length overflow")
+        })?;
 
         // SAFETY: We write the new uninitialized bytes below.
-        unsafe { self.set_len(self.len() + len)? }
+        unsafe { self.set_len(new_len)? }
 
         // SAFETY: We ensured enough capacity above and the ptr will be valid because we will not be
         // resizing the buffer until we have written all the data.
-        let mut ptr = unsafe { self.as_mut_ptr().add(pos) };
+        let mut ptr = unsafe { self.as_mut_ptr()?.add(pos) };
 
         for buf in bufs {
             // SAFETY: We have ensured enough capacity above.
@@ -227,7 +283,9 @@ impl std::io::Write for PyBytesWriter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(wip_feature_std)]
+    #[cfg(not(Py_LIMITED_API))]
+    use crate::types::PyAnyMethods;
+    #[cfg(any(wip_feature_std, Py_LIMITED_API))]
     use crate::types::PyBytesMethods;
     #[cfg(wip_feature_std)]
     use std::io::{IoSlice, Write};
@@ -237,6 +295,28 @@ mod tests {
         Python::attach(|py| {
             let writer = PyBytesWriter::with_capacity(py, 0).unwrap();
             assert!(writer.is_empty());
+        });
+    }
+
+    #[test]
+    #[cfg(not(Py_LIMITED_API))]
+    fn failed_byteswriter_growth_discards_unfinished_storage() {
+        Python::attach(|py| {
+            let mut writer = PyBytesWriter::with_capacity(py, 512).unwrap();
+            writer.write_bytes(&[0x81; 512]).unwrap();
+            // SAFETY: the writer is live. No Python bytes allocation can hold
+            // PY_SSIZE_T_MAX payload bytes plus its object header, so this
+            // request must fail without acquiring uninitialized storage.
+            let error = unsafe { writer.set_len(ffi::PY_SSIZE_T_MAX as usize) }.unwrap_err();
+            assert!(
+                error.is_instance_of::<crate::exceptions::PyMemoryError>(py)
+                    || error.is_instance_of::<crate::exceptions::PyOverflowError>(py)
+            );
+            assert!(writer.is_empty());
+            let repeated = writer.write_bytes(b"tail").unwrap_err();
+            assert!(repeated.value(py).is(error.value(py)));
+            let finished = Bound::<'_, PyBytes>::try_from(writer).unwrap_err();
+            assert!(finished.value(py).is(error.value(py)));
         });
     }
 
