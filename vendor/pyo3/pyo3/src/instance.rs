@@ -1494,6 +1494,8 @@ impl<'a, 'py, T> BoundObject<'py, T> for Borrowed<'a, 'py, T> {
 pub struct Py<T>(NonNull<ffi::PyObject>, PhantomData<T>);
 
 #[cfg(feature = "nightly")]
+// SAFETY: ownership retains the Python object without an attached view. Python
+// access requires attachment; detached drops do not dereference the Python object.
 unsafe impl<T> crate::marker::Ungil for Py<T> {}
 // SAFETY: Python objects can be sent between threads
 unsafe impl<T> Send for Py<T> {}

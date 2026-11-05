@@ -94,7 +94,7 @@ fn unknown_length_iterator_is_consumed_once() {
     Python::initialize();
     Python::attach(|py| {
         let mut calls = 0;
-        let stream = std::iter::from_fn(|| {
+        let stream = core::iter::from_fn(|| {
             calls += 1;
             (calls <= 4).then_some(calls)
         });
@@ -114,19 +114,25 @@ fn ordinary_tuple_construction_handles_filtered_iterators_and_gc() {
             (0..20).step_by(2).collect::<Vec<_>>()
         );
         let gc = py.import("gc").unwrap();
-        assert!(
-            !gc.call_method1("is_tracked", (&tuple,))
-                .unwrap()
-                .is_truthy()
-                .unwrap()
-        );
         let scalar = (1.25_f64, 2.5_f64).into_pyobject(py).unwrap();
-        assert!(
-            !gc.call_method1("is_tracked", (&scalar,))
-                .unwrap()
-                .is_truthy()
-                .unwrap()
-        );
+        assert_eq!(scalar.extract::<(f64, f64)>().unwrap(), (1.25, 2.5));
+        // Eager untracking uses the full CPython API; all modes retain the same
+        // values and must still keep cycle-capable elements visible to GC.
+        #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+        {
+            assert!(
+                !gc.call_method1("is_tracked", (&tuple,))
+                    .unwrap()
+                    .is_truthy()
+                    .unwrap()
+            );
+            assert!(
+                !gc.call_method1("is_tracked", (&scalar,))
+                    .unwrap()
+                    .is_truthy()
+                    .unwrap()
+            );
+        }
         let list = pyo3::types::PyList::empty(py);
         let tracked = PyTuple::new(py, [&list]).unwrap();
         list.append(&tracked).unwrap();
@@ -143,22 +149,25 @@ fn ordinary_tuple_construction_handles_filtered_iterators_and_gc() {
 fn atomic_scalars_are_untracked_and_preserve_values() {
     Python::initialize();
     Python::attach(|py| {
-        let gc = py.import("gc").unwrap();
         let point = (1.25_f64, -2.5_f64).into_pyobject(py).unwrap();
         let triple = (f64::INFINITY, -0.0_f64, 255_u8).into_pyobject(py).unwrap();
         assert_eq!(point.extract::<(f64, f64)>().unwrap(), (1.25, -2.5));
-        assert!(
-            !gc.call_method1("is_tracked", (&point,))
-                .unwrap()
-                .is_truthy()
-                .unwrap()
-        );
-        assert!(
-            !gc.call_method1("is_tracked", (&triple,))
-                .unwrap()
-                .is_truthy()
-                .unwrap()
-        );
+        #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy, RustPython)))]
+        {
+            let gc = py.import("gc").unwrap();
+            assert!(
+                !gc.call_method1("is_tracked", (&point,))
+                    .unwrap()
+                    .is_truthy()
+                    .unwrap()
+            );
+            assert!(
+                !gc.call_method1("is_tracked", (&triple,))
+                    .unwrap()
+                    .is_truthy()
+                    .unwrap()
+            );
+        }
         let (infinity, zero, integer) = triple.extract::<(f64, f64, u8)>().unwrap();
         assert!(infinity.is_infinite() && infinity.is_sign_positive());
         assert!(zero == 0.0 && zero.is_sign_negative());
@@ -198,7 +207,7 @@ fn borrowed_pairs_retain_identity_and_collect_cycles() {
 fn borrowed_arrays_support_empty_and_long_tuples() {
     Python::initialize();
     Python::attach(|py| {
-        let empty = PyTuple::new(py, std::iter::empty::<u8>()).unwrap();
+        let empty = PyTuple::new(py, core::iter::empty::<u8>()).unwrap();
         assert!(empty.is_empty());
         let value = 123_u32.into_pyobject(py).unwrap().into_any();
         let long = PyTuple::new(py, [&value; 17]).unwrap();

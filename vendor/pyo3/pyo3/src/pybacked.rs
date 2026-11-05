@@ -5,6 +5,7 @@
 
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::PyStaticExpr;
+#[cfg(test)]
 use crate::platform::prelude::*;
 use crate::sync::critical_section::with_critical_section;
 #[cfg(feature = "experimental-inspect")]
@@ -164,8 +165,11 @@ impl<'py> IntoPyObject<'py> for PyBackedStr {
     }
 }
 
-impl<'py> IntoPyObject<'py> for &PyBackedStr {
+impl<'a, 'py> IntoPyObject<'py> for &'a PyBackedStr {
     type Target = PyString;
+    #[cfg(any(Py_3_10, not(Py_LIMITED_API)))]
+    type Output = Borrowed<'a, 'py, PyString>;
+    #[cfg(not(any(Py_3_10, not(Py_LIMITED_API))))]
     type Output = Bound<'py, Self::Target>;
     type Error = Infallible;
 
@@ -174,7 +178,7 @@ impl<'py> IntoPyObject<'py> for &PyBackedStr {
 
     #[cfg(any(Py_3_10, not(Py_LIMITED_API)))]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        Ok(self.storage.bind(py).to_owned())
+        Ok(self.storage.bind_borrowed(py))
     }
 
     #[cfg(not(any(Py_3_10, not(Py_LIMITED_API))))]
@@ -183,18 +187,25 @@ impl<'py> IntoPyObject<'py> for &PyBackedStr {
     }
 }
 
-/// A wrapper around `[u8]` where the storage is either owned by a Python `bytes` object, or a Rust `Box<[u8]>`.
+/// An immutable byte view retaining either Python `bytes` or Rust `Arc<[u8]>` storage.
 ///
-/// This type gives access to the underlying data via a `Deref` implementation.
+/// The view remains available while detached from Python. Mutable Python
+/// bytearrays are copied during acquisition; Python bytes retain their original
+/// allocation. Cloning shares the appropriate owner without copying payload data.
 #[cfg_attr(feature = "py-clone", derive(Clone))]
 pub struct PyBackedBytes {
     storage: PyBackedBytesStorage,
-    data: NonNull<[u8]>,
 }
 
 #[cfg_attr(feature = "py-clone", derive(Clone))]
 enum PyBackedBytesStorage {
-    Python(Py<PyBytes>),
+    /// Python ownership and its cached immutable view; attachment is unnecessary
+    /// for later reads. Both fields are established together at acquisition.
+    Python {
+        bytes: Py<PyBytes>,
+        data: NonNull<[u8]>,
+    },
+    /// Arc already carries its slice pointer and length, so no parallel view is needed.
     Rust(Arc<[u8]>),
 }
 
@@ -205,12 +216,12 @@ impl PyBackedBytes {
     pub fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             storage: match &self.storage {
-                PyBackedBytesStorage::Python(bytes) => {
-                    PyBackedBytesStorage::Python(bytes.clone_ref(py))
-                }
+                PyBackedBytesStorage::Python { bytes, data } => PyBackedBytesStorage::Python {
+                    bytes: bytes.clone_ref(py),
+                    data: *data,
+                },
                 PyBackedBytesStorage::Rust(bytes) => PyBackedBytesStorage::Rust(bytes.clone()),
             },
-            data: self.data,
         }
     }
 }
@@ -218,8 +229,12 @@ impl PyBackedBytes {
 impl Deref for PyBackedBytes {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
-        // Safety: `data` is known to be immutable and owned by self
-        unsafe { self.data.as_ref() }
+        match &self.storage {
+            // SAFETY: acquisition cached the live immutable Python bytes view,
+            // and the same variant retains its owner for this borrow.
+            PyBackedBytesStorage::Python { data, .. } => unsafe { data.as_ref() },
+            PyBackedBytesStorage::Rust(bytes) => bytes,
+        }
     }
 }
 
@@ -265,8 +280,10 @@ impl From<Bound<'_, PyBytes>> for PyBackedBytes {
         let b = py_bytes.as_bytes();
         let data = NonNull::from(b);
         Self {
-            storage: PyBackedBytesStorage::Python(py_bytes.to_owned().unbind()),
-            data,
+            storage: PyBackedBytesStorage::Python {
+                bytes: py_bytes.unbind(),
+                data,
+            },
         }
     }
 }
@@ -281,10 +298,8 @@ impl From<Bound<'_, PyByteArray>> for PyBackedBytes {
             //  * We don't mutate the underlying slice
             Arc::<[u8]>::from(unsafe { py_bytearray.as_bytes() })
         });
-        let data = NonNull::from(s.as_ref());
         Self {
             storage: PyBackedBytesStorage::Rust(s),
-            data,
         }
     }
 }
@@ -327,7 +342,7 @@ impl<'py> IntoPyObject<'py> for PyBackedBytes {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self.storage {
-            PyBackedBytesStorage::Python(bytes) => Ok(bytes.into_bound(py)),
+            PyBackedBytesStorage::Python { bytes, .. } => Ok(bytes.into_bound(py)),
             PyBackedBytesStorage::Rust(bytes) => Ok(PyBytes::new(py, &bytes)),
         }
     }
@@ -343,7 +358,7 @@ impl<'py> IntoPyObject<'py> for &PyBackedBytes {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match &self.storage {
-            PyBackedBytesStorage::Python(bytes) => Ok(bytes.bind(py).clone()),
+            PyBackedBytesStorage::Python { bytes, .. } => Ok(bytes.bind(py).clone()),
             PyBackedBytesStorage::Rust(bytes) => Ok(PyBytes::new(py, bytes)),
         }
     }
@@ -685,8 +700,10 @@ mod test {
             let b1: PyBackedBytes = PyBytes::new(py, b"abcde").into();
             let b2 = b1.clone_ref(py);
             assert_eq!(b1, b2);
-            let (PyBackedBytesStorage::Python(s1), PyBackedBytesStorage::Python(s2)) =
-                (&b1.storage, &b2.storage)
+            let (
+                PyBackedBytesStorage::Python { bytes: s1, .. },
+                PyBackedBytesStorage::Python { bytes: s2, .. },
+            ) = (&b1.storage, &b2.storage)
             else {
                 panic!("Expected Python-backed bytes");
             };

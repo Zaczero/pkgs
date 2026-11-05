@@ -8,6 +8,7 @@
 #![cfg_attr(
     feature = "nightly",
     feature(
+        array_try_from_fn,
         ascii_char,
         auto_traits,
         negative_impls,

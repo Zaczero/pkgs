@@ -198,18 +198,18 @@ mod nightly {
     }
 
     define! {
-        /// Types that are safe to access while the GIL is not held.
+        /// Types that are safe to access while detached from Python.
         ///
         /// # Safety
         ///
         /// The type must not carry borrowed Python references or, if it does, not allow access to them if
-        /// the GIL is not held.
+        /// the thread is detached.
         ///
-        /// See the [module-level documentation](self) for more information.
+        /// See [`Python::detach`](crate::Python::detach) for the attachment contract.
         ///
         /// # Examples
         ///
-        /// Types which are `Ungil` cannot be used in contexts where the GIL was released, e.g.
+        /// Types which are not `Ungil` cannot be accessed while detached, e.g.
         ///
         /// ```compile_fail
         /// # use pyo3::prelude::*;
@@ -223,7 +223,7 @@ mod nightly {
         /// });
         /// ```
         ///
-        /// This applies to the [`Python`] token itself as well, e.g.
+        /// This applies to the [`Python`](crate::Python) token itself as well, e.g.
         ///
         /// ```compile_fail
         /// # use pyo3::prelude::*;

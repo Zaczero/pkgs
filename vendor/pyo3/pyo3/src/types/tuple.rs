@@ -27,6 +27,8 @@ use crate::{
     sync::PyOnceLock,
     types::{PyType, PyTypeMethods},
 };
+#[cfg(feature = "nightly")]
+use core::ascii::Char;
 use core::iter::FusedIterator;
 #[cfg(feature = "nightly")]
 use core::num::NonZero;
@@ -150,13 +152,19 @@ macro_rules! atomic_conversions {
             fn is_atomic() -> bool {
                 true
             }
+        }
+        impl AtomicConversion for &$ty {
+            fn is_atomic() -> bool {
+                true
+            }
         })*
     };
 }
 
 #[cfg(feature = "nightly")]
 atomic_conversions!(
-    bool, f32, f64, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+    bool, char, Char, String, f32, f64, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128,
+    usize
 );
 
 /// Represents a Python `tuple` object.
@@ -802,7 +810,7 @@ macro_rules! tuple_conversion (($length:expr, $(($n:tt, $T:ident)),+) => {
         );
 
         fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+], false))
+            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+], true $(&& <&$T as AtomicConversion>::is_atomic())+))
         }
     }
 

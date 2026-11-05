@@ -1,11 +1,17 @@
+//! Fixed-array conversions with exact-length admission and fallible initialization.
+//! Exact tuple inputs borrow immutable slots; other sequences retain Python dispatch.
+
 use crate::conversion::{FromPyObjectOwned, FromPyObjectSequence, IntoPyObject};
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::{PyStaticExpr, type_hint_identifier, type_hint_subscript};
-use crate::types::PySequence;
 use crate::types::any::PyAnyMethods;
+use crate::types::{PySequence, PyTuple, PyTupleMethods};
 use crate::{Borrowed, Bound, PyErr, exceptions};
 use crate::{FromPyObject, PyAny, PyResult, PyTypeInfo, Python, err::CastError, ffi};
 
+#[cfg(feature = "nightly")]
+use core::array::try_from_fn as array_try_from_fn;
+#[cfg(not(feature = "nightly"))]
 use core::mem::MaybeUninit;
 
 impl<'py, T, const N: usize> IntoPyObject<'py> for [T; N]
@@ -72,6 +78,21 @@ fn create_array_from_obj<'py, T, const N: usize>(obj: Borrowed<'_, 'py, PyAny>) 
 where
     T: FromPyObjectOwned<'py>,
 {
+    if let Ok(tuple) = obj.cast_exact::<PyTuple>() {
+        let len = tuple.len();
+        if len != N {
+            return Err(invalid_sequence_length(N, len));
+        }
+        let mut items = tuple.iter_borrowed();
+        return array_try_from_fn(|_| {
+            items
+                .next()
+                .expect("tuple length matches array length")
+                .extract()
+                .map_err(Into::into)
+        });
+    }
+
     // Types that pass `PySequence_Check` usually implement enough of the sequence protocol
     // to support this function and if not, we will only fail extraction safely.
     // SAFETY: passing valid pointer to python API
@@ -89,8 +110,9 @@ where
     })
 }
 
-// TODO: use `core::array::try_from_fn`, if that stabilises:
-// https://github.com/rust-lang/rust/issues/89379
+// Stable-feature fallback; nightly uses the standard library's initializer
+// and its partial-initialization cleanup instead of this local guard.
+#[cfg(not(feature = "nightly"))]
 fn array_try_from_fn<E, F, T, const N: usize>(mut cb: F) -> Result<[T; N], E>
 where
     F: FnMut(usize) -> Result<T, E>,
@@ -106,6 +128,7 @@ where
     Ok(array.map(|elem| unsafe { elem.assume_init() }))
 }
 
+#[cfg(not(feature = "nightly"))]
 fn array_try_from_fn_erased<E, T>(
     buffer: &mut [MaybeUninit<T>],
     cb: &mut impl FnMut(usize) -> Result<T, E>,

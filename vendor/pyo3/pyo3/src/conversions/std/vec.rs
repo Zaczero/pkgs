@@ -1,3 +1,6 @@
+//! Rust vector conversion, including byte/ASCII specialization and borrowed tuple reads.
+//! Mutable and overridden sequence traversal stays on Python's iterator protocol.
+
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::{PyStaticExpr, type_hint_identifier, type_hint_subscript};
 use crate::platform::prelude::*;
@@ -6,7 +9,7 @@ use crate::{
     conversion::{FromPyObject, FromPyObjectOwned, FromPyObjectSequence, IntoPyObject},
     exceptions::PyTypeError,
     ffi,
-    types::{PyAnyMethods, PySequence, PyString},
+    types::{PyAnyMethods, PySequence, PyString, PyTuple, PyTupleMethods},
 };
 use crate::{Bound, PyAny, PyErr, Python};
 
@@ -85,6 +88,18 @@ fn extract_sequence<'py, T>(obj: Borrowed<'_, 'py, PyAny>) -> PyResult<Vec<T>>
 where
     T: FromPyObjectOwned<'py>,
 {
+    // Exact tuples retain immutable storage throughout extraction, including
+    // callbacks and free-threaded execution. Borrow the items directly instead
+    // of allocating a Python iterator and owning every intermediate reference.
+    // Subclasses keep their overridable iterator semantics on the generic path.
+    if let Ok(tuple) = obj.cast_exact::<PyTuple>() {
+        let mut values = Vec::with_capacity(tuple.len());
+        for item in tuple.iter_borrowed() {
+            values.push(item.extract::<T>().map_err(Into::into)?);
+        }
+        return Ok(values);
+    }
+
     // Types that pass `PySequence_Check` usually implement enough of the sequence protocol
     // to support this function and if not, we will only fail extraction safely.
     // SAFETY: passing valid pointer to python API
@@ -104,7 +119,7 @@ mod tests {
     use crate::Python;
     use crate::conversion::IntoPyObject;
     use crate::platform::prelude::*;
-    use crate::types::{PyAnyMethods, PyBytes, PyBytesMethods, PyList};
+    use crate::types::{PyAnyMethods, PyBytes, PyBytesMethods, PyDictMethods, PyList};
 
     #[test]
     fn test_vec_intopyobject_impl() {
@@ -160,6 +175,16 @@ mod tests {
         Python::attach(|py| {
             let v: Vec<i32> = py.eval(c"(1, 2)", None, None).unwrap().extract().unwrap();
             assert_eq!(v, [1, 2]);
+        });
+    }
+
+    #[test]
+    fn test_tuple_subclass_keeps_iteration_override() {
+        Python::attach(|py| {
+            let namespace = crate::types::PyDict::new(py);
+            py.run(c"class Values(tuple):\n def __iter__(self): return iter([7, 8])\nvalues = Values((1, 2, 3))", Some(&namespace), None).unwrap();
+            let values = namespace.get_item("values").unwrap().unwrap();
+            assert_eq!(values.extract::<Vec<i32>>().unwrap(), [7, 8]);
         });
     }
 
