@@ -3,9 +3,7 @@
 use std::ascii::Char;
 use std::hint::unlikely;
 
-use crate::color::{
-    BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
-};
+use crate::color::{ComponentVectors, LANES, MAX_COMPONENTS, V4, component_vectors, row_vectors};
 use crate::errors::BlurhashError;
 use crate::{RgbDimensions, base83, cos, srgb};
 
@@ -15,6 +13,63 @@ struct Factors {
     y_components: usize,
     blocks: usize,
     vectors: ComponentVectors,
+}
+
+impl Factors {
+    /// The DC coefficient at the first lane of each color channel.
+    fn dc(&self) -> [f32; 3] {
+        self.vectors.each_ref().map(|channel| {
+            *channel
+                .first()
+                .expect("component storage includes DC")
+                .as_array()
+                .first()
+                .expect("SIMD storage includes its first lane")
+        })
+    }
+
+    /// Equal-length RGB lane views in wire order, excluding DC and padded lanes.
+    fn ac_blocks(&self) -> impl Iterator<Item = [&[f32]; 3]> + '_ {
+        let active_vectors = self
+            .blocks
+            .checked_mul(self.y_components)
+            .expect("admitted coefficient storage fits usize");
+        let last_block = self.blocks.checked_sub(1).expect("positive block count");
+        let tail_lanes = self
+            .x_components
+            .checked_sub(
+                last_block
+                    .checked_mul(LANES)
+                    .expect("component block offset fits admitted grid"),
+            )
+            .expect("final component block starts within admitted row");
+        let [red, green, blue] = self.vectors.each_ref().map(|channel| {
+            channel
+                .get(..active_vectors)
+                .expect("active coefficient prefix fits storage")
+        });
+        red.iter()
+            .zip(green)
+            .zip(blue)
+            .enumerate()
+            .map(move |(index, ((red, green), blue))| {
+                let block = index
+                    .checked_rem(self.blocks)
+                    .expect("positive block count");
+                let lanes = if block == last_block {
+                    tail_lanes
+                } else {
+                    LANES
+                };
+                let first_lane = usize::from(index == 0);
+                [red, green, blue].map(|vector| {
+                    vector
+                        .as_array()
+                        .get(first_lane..lanes)
+                        .expect("active lanes fit the SIMD block")
+                })
+            })
+    }
 }
 
 fn sign_pow_05(v: f32) -> f32 {
@@ -141,7 +196,7 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     //   C[i,j] = sum_y cos_y[y,j] * (sum_x cos_x[x,i] * pixel[x,y])
     //
     // This computes all coefficients in a single image scan.
-    let rgb_row_len = width.wrapping_mul(3);
+    let rgb_row_len = width.checked_mul(3).expect("RGB row size was admitted");
     for (rgb_row, cos_y_row) in rgb
         .chunks_exact(rgb_row_len)
         .zip(cos_y.chunks_exact(y_components))
@@ -173,18 +228,18 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
             }
         }
 
-        for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
-            let cos_y_vector = V4::splat(cos_y_value);
-            let base = j.wrapping_mul(BLOCKS);
-            let end = base.wrapping_add(BLOCKS);
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "this accumulates the separable BlurHash cosine basis"
-            )]
-            for (target, source) in factors.iter_mut().zip(&row) {
-                let target = target
-                    .get_mut(base..end)
-                    .expect("component row fits admitted grid");
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "floating-point SIMD accumulation cannot panic"
+        )]
+        for (channel, source) in factors.iter_mut().zip(&row) {
+            for (target, &cos_y_value) in channel
+                .as_chunks_mut::<BLOCKS>()
+                .0
+                .iter_mut()
+                .zip(cos_y_row)
+            {
+                let cos_y_vector = V4::splat(cos_y_value);
                 for (target, &source) in target.iter_mut().zip(source) {
                     *target += source * cos_y_vector;
                 }
@@ -200,83 +255,49 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "floating-point SIMD scaling cannot panic"
+)]
 fn scale_factors(factors: &mut Factors, pixel_count: usize) {
     let inv_wh = 1.0_f32 / pixel_count as f32;
     let scale_ac = inv_wh * 2.0;
-    for j in 0..factors.y_components {
-        let base = j.wrapping_mul(factors.blocks);
-        for block in 0..factors.blocks {
-            let scale = if unlikely(j == 0 && block == 0) {
+    let active_vectors = factors
+        .blocks
+        .checked_mul(factors.y_components)
+        .expect("admitted coefficient storage fits usize");
+    for channel in &mut factors.vectors {
+        for (index, value) in channel
+            .get_mut(..active_vectors)
+            .expect("active coefficient prefix fits storage")
+            .iter_mut()
+            .enumerate()
+        {
+            let scale = if unlikely(index == 0) {
                 V4::from_array([inv_wh, scale_ac, scale_ac, scale_ac])
             } else {
                 V4::splat(scale_ac)
             };
-            let idx = base.wrapping_add(block);
-            scale_component(&mut factors.vectors[RED], idx, scale);
-            scale_component(&mut factors.vectors[GREEN], idx, scale);
-            scale_component(&mut factors.vectors[BLUE], idx, scale);
+            *value *= scale;
         }
     }
-}
-
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "scaling a decoded floating-point component is the operation's numerical contract"
-)]
-fn scale_component(channel: &mut [V4], index: usize, scale: V4) {
-    let Some(value) = channel.get_mut(index) else {
-        unreachable!("validated component index fits vector storage")
-    };
-    *value *= scale;
 }
 
 fn max_ac_value(factors: &Factors) -> f32 {
-    let mut maximum_value = 0.0_f32;
-    for j in 0..factors.y_components {
-        let base = j.wrapping_mul(factors.blocks);
-        for block in 0..factors.blocks {
-            let idx = base.wrapping_add(block);
-            let Some(red) = factors.vectors[RED].get(idx) else {
-                unreachable!("validated component index fits red storage")
-            };
-            let Some(green) = factors.vectors[GREEN].get(idx) else {
-                unreachable!("validated component index fits green storage")
-            };
-            let Some(blue) = factors.vectors[BLUE].get(idx) else {
-                unreachable!("validated component index fits blue storage")
-            };
-            let r = red.to_array();
-            let g = green.to_array();
-            let b = blue.to_array();
-
-            let start_lane = usize::from(j == 0 && block == 0);
-            let lanes = if block.wrapping_add(1) == factors.blocks {
-                factors.x_components.wrapping_sub(block.wrapping_mul(LANES))
-            } else {
-                LANES
-            };
-            for ((&red, &green), &blue) in r
-                .get(start_lane..lanes)
-                .expect("active lanes fit the SIMD block")
-                .iter()
-                .zip(
-                    g.get(start_lane..lanes)
-                        .expect("active lanes fit the SIMD block"),
-                )
-                .zip(
-                    b.get(start_lane..lanes)
-                        .expect("active lanes fit the SIMD block"),
-                )
-            {
-                maximum_value = maximum_value.max(red.abs().max(green.abs()).max(blue.abs()));
-            }
+    let mut maximum = 0.0_f32;
+    for [red, green, blue] in factors.ac_blocks() {
+        for ((&red, &green), &blue) in red.iter().zip(green).zip(blue) {
+            maximum = maximum.max(red.abs().max(green.abs()).max(blue.abs()));
         }
     }
-    maximum_value
+    maximum
 }
 
 fn encode_factors(factors: &Factors, mut out: &mut [Char]) {
-    let num_components = factors.x_components.wrapping_mul(factors.y_components);
+    let num_components = factors
+        .x_components
+        .checked_mul(factors.y_components)
+        .expect("admitted component grid fits usize");
     let maximum_value = max_ac_value(factors);
     let (quantised_max_value, maximum_value) = if num_components > 1 {
         let quantised = ((maximum_value * 166.0 - 0.5).floor() as i32).clamp(0, 82) as u32;
@@ -285,36 +306,32 @@ fn encode_factors(factors: &Factors, mut out: &mut [Char]) {
         (0, 1.0)
     };
 
-    let size_flag = (factors.x_components.wrapping_sub(1).wrapping_add(
-        factors
-            .y_components
-            .wrapping_sub(1)
-            .wrapping_mul(MAX_COMPONENTS),
-    )) as u32;
+    let x_flag = factors
+        .x_components
+        .checked_sub(1)
+        .expect("positive X component count");
+    let y_flag = factors
+        .y_components
+        .checked_sub(1)
+        .expect("positive Y component count");
+    let size_flag = y_flag
+        .checked_mul(MAX_COMPONENTS)
+        .and_then(|row| row.checked_add(x_flag))
+        .expect("admitted size flag fits base83") as u32;
     out = base83::write_base83::<1>(out, size_flag);
     out = base83::write_base83::<1>(out, quantised_max_value);
 
-    let dc_r = component_lane(&factors.vectors[RED], 0, 0);
-    let dc_g = component_lane(&factors.vectors[GREEN], 0, 0);
-    let dc_b = component_lane(&factors.vectors[BLUE], 0, 0);
+    let [dc_r, dc_g, dc_b] = factors.dc();
     let dc_value = (u32::from(srgb::linear_to_srgb_u8(dc_r)) << 16)
         | (u32::from(srgb::linear_to_srgb_u8(dc_g)) << 8)
         | u32::from(srgb::linear_to_srgb_u8(dc_b));
     out = base83::write_base83::<4>(out, dc_value);
 
-    for j in 0..factors.y_components {
-        for i in 0..factors.x_components {
-            if j == 0 && i == 0 {
-                continue;
-            }
-
-            let block = i / LANES;
-            let lane = i % LANES;
-            let idx = j.wrapping_mul(factors.blocks).wrapping_add(block);
-
-            let r = component_lane(&factors.vectors[RED], idx, lane) / maximum_value;
-            let g = component_lane(&factors.vectors[GREEN], idx, lane) / maximum_value;
-            let b = component_lane(&factors.vectors[BLUE], idx, lane) / maximum_value;
+    for [red, green, blue] in factors.ac_blocks() {
+        for ((&r, &g), &b) in red.iter().zip(green).zip(blue) {
+            let r = r / maximum_value;
+            let g = g / maximum_value;
+            let b = b / maximum_value;
 
             let quant_r = (sign_pow_05(r) * 9.0 + 9.5).floor() as i32;
             let quant_g = (sign_pow_05(g) * 9.0 + 9.5).floor() as i32;
@@ -325,20 +342,13 @@ fn encode_factors(factors: &Factors, mut out: &mut [Char]) {
             let quant_b = quant_b.clamp(0, 18) as u32;
 
             let ac_value = quant_r
-                .wrapping_mul(19)
-                .wrapping_mul(19)
-                .wrapping_add(quant_g.wrapping_mul(19))
-                .wrapping_add(quant_b);
+                .checked_mul(19)
+                .and_then(|value| value.checked_add(quant_g))
+                .and_then(|value| value.checked_mul(19))
+                .and_then(|value| value.checked_add(quant_b))
+                .expect("three base19 quantization digits fit u32");
             out = base83::write_base83::<2>(out, ac_value);
         }
     }
     debug_assert!(out.is_empty());
-}
-
-fn component_lane(channel: &[V4], index: usize, lane: usize) -> f32 {
-    channel
-        .get(index)
-        .and_then(|vector| vector.as_array().get(lane))
-        .copied()
-        .expect("validated component coordinates fit vector storage")
 }

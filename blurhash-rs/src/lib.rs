@@ -133,7 +133,7 @@ fn decode_rgb(
     let dimensions = RgbDimensions::new(width, height)?;
     let blurhash = blurhash.trim();
     let layout = decode::decode_layout(blurhash.as_bytes(), punch)?;
-    dimensions.validate_working_storage(layout.num_x, layout.num_y)?;
+    dimensions.validate_working_storage(layout.num_x.get(), layout.num_y.get())?;
     let out = PyBytes::new_with(py, dimensions.rgb_len(), |buf| {
         py.detach(|| decode::decode_rgb_into(blurhash, &dimensions, &layout, buf))
             .map_err(PyErr::from)

@@ -1,3 +1,5 @@
+//! Admitted cosine-axis construction and thread-local reuse for image transforms.
+
 use std::cell::RefCell;
 use std::f32::consts::PI;
 use std::rc::Rc;
@@ -28,7 +30,10 @@ fn allocation_fits<T>(len: usize, components: usize) -> bool {
 
 pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
-    let mut out = vec![0.0_f32; len.saturating_mul(components)];
+    let elements = len
+        .checked_mul(components)
+        .expect("cosine axis storage was admitted");
+    let mut out = vec![0.0_f32; elements];
     for (p, row) in out.chunks_exact_mut(components).enumerate() {
         let p_f = p as f32;
         for (c, slot) in row.iter_mut().enumerate() {
@@ -85,15 +90,15 @@ pub(crate) fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
         let blocks = components.div_ceil(LANES);
         let len_f = len as f32;
 
-        let mut out = Vec::with_capacity(len.wrapping_mul(blocks));
+        let mut out = Vec::with_capacity(
+            len.checked_mul(blocks)
+                .expect("cosine vector storage was admitted"),
+        );
         for p in 0..len {
             let p_f = p as f32;
-            for block in 0..blocks {
-                let start = block.wrapping_mul(LANES);
-                let lanes = components.wrapping_sub(start).min(LANES);
+            for start in (0..components).step_by(LANES) {
                 let mut v = [0.0_f32; LANES];
-                for (lane, slot) in v.iter_mut().enumerate().take(lanes) {
-                    let c = start.wrapping_add(lane);
+                for (c, slot) in (start..components).zip(&mut v) {
                     let cosine = (PI * p_f * (c as f32) / len_f).cos();
                     *slot = cosine;
                 }

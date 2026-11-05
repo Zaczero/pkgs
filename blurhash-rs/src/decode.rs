@@ -1,4 +1,7 @@
+//! BlurHash field admission, component decoding and RGB reconstruction.
+
 use std::hint::unlikely;
+use std::num::NonZeroUsize;
 use std::simd::num::SimdFloat as _;
 
 use crate::color::{
@@ -22,14 +25,16 @@ const AC_DECODE_SCALE: [f32; AC_QUANT_LEVELS] = {
         } else {
             scaled * scaled
         };
-        quant = quant.wrapping_add(1);
+        quant = quant
+            .checked_add(1)
+            .expect("quantization table cursor fits usize");
     }
     table
 };
 
 pub(crate) struct DecodeLayout {
-    pub(crate) num_x: usize,
-    pub(crate) num_y: usize,
+    pub(crate) num_x: NonZeroUsize,
+    pub(crate) num_y: NonZeroUsize,
     num_components: usize,
     max_value: f32,
     punch: f64,
@@ -117,10 +122,26 @@ pub(crate) fn decode_layout(bytes: &[u8], punch: f64) -> Result<DecodeLayout, Bl
         return Err(BlurhashError::BlurhashMalformed { index: 0 });
     };
     let size_flag = size_flag as usize;
-    let num_y = (size_flag / MAX_COMPONENTS).wrapping_add(1);
-    let num_x = (size_flag % MAX_COMPONENTS).wrapping_add(1);
-    let num_components = num_x.wrapping_mul(num_y);
-    let expected_len = 2_usize.wrapping_mul(num_components).wrapping_add(4);
+    let num_y = NonZeroUsize::new(
+        (size_flag / MAX_COMPONENTS)
+            .checked_add(1)
+            .expect("base83 size fits usize"),
+    )
+    .expect("component count is positive");
+    let num_x = NonZeroUsize::new(
+        (size_flag % MAX_COMPONENTS)
+            .checked_add(1)
+            .expect("base83 size fits usize"),
+    )
+    .expect("component count is positive");
+    let num_components = num_x
+        .get()
+        .checked_mul(num_y.get())
+        .expect("base83 component grid fits usize");
+    let expected_len = num_components
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(4))
+        .expect("base83 field count fits usize");
 
     if unlikely(bytes.len() != expected_len) {
         return Err(BlurhashError::BlurhashLengthMismatch {
@@ -187,9 +208,12 @@ fn decode_component_vectors(
         srgb::srgb_u8_to_linear((dc_value & 255) as u8),
     );
 
-    let blocks = layout.num_x.div_ceil(LANES);
+    let blocks = layout.num_x.get().div_ceil(LANES);
     for idx in 1..layout.num_components {
-        let start = idx.wrapping_mul(2).wrapping_add(4);
+        let start = idx
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(4))
+            .expect("component offset fits admitted hash");
         let Some(value_bytes) = bytes
             .get(start..)
             .and_then(|suffix| suffix.first_chunk::<2>())
@@ -207,18 +231,11 @@ fn decode_component_vectors(
         let quant_g = ((value / AC_QUANT_LEVELS_U32) % AC_QUANT_LEVELS_U32) as usize;
         let quant_b = (value % AC_QUANT_LEVELS_U32) as usize;
 
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "the decoded X component count is in 1..=9"
-        )]
         let i = idx % layout.num_x;
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "the decoded X component count is in 1..=9"
-        )]
         let slot = (idx / layout.num_x)
-            .wrapping_mul(blocks)
-            .wrapping_add(i / LANES);
+            .checked_mul(blocks)
+            .and_then(|base| base.checked_add(i / LANES))
+            .expect("component slot fits admitted grid");
         let lane = i % LANES;
 
         let (r, g, b) = (
@@ -260,7 +277,7 @@ fn render_pixels<const SCALE_AC: bool>(
     colors: &ComponentVectors,
     dc: [f32; 3],
 ) {
-    let blocks = layout.num_x.div_ceil(LANES);
+    let blocks = layout.num_x.get().div_ceil(LANES);
     match blocks {
         1 => {
             render_pixels_with_blocks::<1, SCALE_AC>(width, height, out_pixels, layout, colors, dc);
@@ -283,10 +300,10 @@ fn render_pixels_with_blocks<const BLOCKS: usize, const SCALE_AC: bool>(
     colors: &ComponentVectors,
     dc: [f32; 3],
 ) {
-    debug_assert_eq!(layout.num_x.div_ceil(LANES), BLOCKS);
+    debug_assert_eq!(layout.num_x.get().div_ceil(LANES), BLOCKS);
 
-    let cos_y = cos::cos_axis_cached(height, layout.num_y);
-    let cos_x_simd = cos::cos_axis_simd_cached(width, layout.num_x);
+    let cos_y = cos::cos_axis_cached(height, layout.num_y.get());
+    let cos_x_simd = cos::cos_axis_simd_cached(width, layout.num_x.get());
     let (cos_x_pixels, []) = cos_x_simd.as_chunks::<BLOCKS>() else {
         unreachable!("cosine cache rows are generated with the selected block count")
     };
@@ -297,15 +314,19 @@ fn render_pixels_with_blocks<const BLOCKS: usize, const SCALE_AC: bool>(
     //
     //   pixel[x,y] = sum_i cos_x[x,i] * (sum_j colors[i,j] * cos_y[y,j])
     for (cos_y_row, out_row) in cos_y
-        .chunks_exact(layout.num_y)
-        .zip(out_pixels.chunks_exact_mut(width.wrapping_mul(3)))
+        .chunks_exact(layout.num_y.get())
+        .zip(out_pixels.chunks_exact_mut(width.checked_mul(3).expect("RGB row size was admitted")))
         .take(height)
     {
         let mut row = row_vectors();
         for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
             let cos_y_vector = V4::splat(cos_y_value);
-            let base = j.wrapping_mul(BLOCKS);
-            let end = base.wrapping_add(BLOCKS);
+            let base = j
+                .checked_mul(BLOCKS)
+                .expect("component row offset fits grid");
+            let end = base
+                .checked_add(BLOCKS)
+                .expect("component row end fits grid");
             #[expect(
                 clippy::arithmetic_side_effects,
                 reason = "this accumulates the separable BlurHash cosine basis"

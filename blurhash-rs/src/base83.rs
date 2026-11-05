@@ -18,7 +18,7 @@ const DECODE: [u8; 256] = {
             unreachable!()
         };
         *slot = i as u8;
-        i = i.wrapping_add(1);
+        i = i.checked_add(1).expect("alphabet cursor fits usize");
     }
     table
 };
@@ -46,7 +46,7 @@ pub(crate) fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<
     let mut value = 0_u32;
     for &b in bytes {
         let digit = u32::from(decode_byte(b)?);
-        value = value.wrapping_mul(83).wrapping_add(digit);
+        value = value.checked_mul(83)?.checked_add(digit)?;
     }
     Some(value)
 }
