@@ -14,6 +14,8 @@ packs:
     - codeql/python-queries:codeql-suites/python-security-extended.qls
     - codeql/python-queries:Resources/FileNotAlwaysClosed.ql
     - codeql/python-queries:Variables/MultiplyDefined.ql
+  rust:
+    - codeql/rust-queries:codeql-suites/rust-security-extended.qls
 
 paths-ignore:
   - .github/codeql/python/test
