@@ -1041,7 +1041,7 @@ class Config:
     )
     pid: Path | None = _option(
         default=None,
-        doc='Write the server process PID to this file.',
+        doc='Write the server process PID to this file. On POSIX, only its owner may write it; the process umask may further restrict access.',
         env_parse=Path,
         converter=_optional_path,
         cli_type=Path,

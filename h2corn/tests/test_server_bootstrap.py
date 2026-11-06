@@ -1601,6 +1601,26 @@ def test_expected_retirement_does_not_count_as_a_worker_failure() -> None:
     assert not supervisor.failure_times
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file permissions')
+@pytest.mark.parametrize(('umask', 'mode'), [(0, 0o644), (0o077, 0o600)])
+def test_pidfile_limits_write_access_independently_of_umask(
+    tmp_path: Path,
+    umask: int,
+    mode: int,
+) -> None:
+    from h2corn import _server
+
+    pid_path = tmp_path / 'h2corn.pid'
+    previous_umask = os.umask(umask)
+    try:
+        with _server._pidfile(Config(pid=pid_path)):
+            assert pid_path.stat().st_mode & 0o777 == mode
+            assert pid_path.read_text() == f'{os.getpid()}\n'
+    finally:
+        os.umask(previous_umask)
+    assert not pid_path.exists()
+
+
 def test_pidfile_writes_and_cleans_up_regular_file(tmp_path: Path) -> None:
     from h2corn import _server
 

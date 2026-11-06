@@ -167,7 +167,7 @@ def _pidfile(config: Config):
             | getattr(os, 'O_CLOEXEC', 0)
             | getattr(os, 'O_NOFOLLOW', 0)
         ),
-        0o666,
+        0o644,
     )
 
     try:
