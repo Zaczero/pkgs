@@ -1,3 +1,5 @@
+//! Read-only vector buffer metadata and its exactly-once release.
+
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 
@@ -13,7 +15,10 @@ struct TypedBufferBacking {
 ///
 /// # Safety
 /// `view` must be a valid buffer-request pointer and `data`/`count`/
-/// `itemsize` must describe the owner's live storage.
+/// `itemsize`/`format` must describe the owner's initialized contiguous storage.
+/// The owner must keep that storage at the same address and prevent mutation
+/// until every exported view is released. Its release callback must call
+/// [`release_typed_view`] exactly once for each successful acquisition.
 pub(crate) unsafe fn fill_typed_view(
     view: *mut ffi::Py_buffer,
     flags: c_int,
@@ -73,7 +78,9 @@ pub(crate) unsafe fn fill_typed_view(
 }
 
 /// # Safety
-/// `view` must have been filled by [`fill_typed_view`].
+/// `view` must be a live, successful view filled by [`fill_typed_view`] and
+/// must not have been released already. CPython retains its owner reference
+/// until this callback completes.
 pub(crate) unsafe fn release_typed_view(view: *mut ffi::Py_buffer) {
     // SAFETY: `internal` is exactly the raw allocation made by
     // `fill_typed_view` (or null); `format` is a `&'static CStr` and is never

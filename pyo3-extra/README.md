@@ -43,20 +43,13 @@ Use PyO3's `intern!` directly for individual key lookups. `cached_string!` and
 caches contain only declared literals, never request values or dynamic schemas.
 These static caches follow PyO3's single-interpreter extension model.
 
-## Protocols and buffers
+## Protocol helpers
 
-- `iter` distinguishes absent protocols from exceptions raised by providers,
-  preserves one-shot iteration, and supplies signal-aware collectors. Lengths
-  reserve storage; only an explicit exact count or maximum bounds consumption.
+- `iter::optional_len` distinguishes absent length from exceptions raised by
+  length providers. Acquire the iterator first; use the length to reserve
+  storage without limiting consumption.
 - `protocol` admits and invokes Python's integer-index protocol without replacing
   provider exceptions with application-specific errors.
-- `buffer` acquires PyO3 buffer handles, checks dimensions and stride arithmetic,
-  and captures one-byte buffers. `with_bytes` borrows immutable Python bytes and
-  copies other exporters before invoking its callback. Exporters must remain
-  quiescent during capture; acquisition alone does not synchronize their writes.
-- `buffer::export` owns the metadata and release mechanics for contiguous,
-  read-only typed exports. Its unsafe contract requires stable, immutable
-  owner-backed storage for the entire export lifetime.
 - `types` supplies sequence-pattern initialization and concise module registration.
 
 Domain-specific validation, error messages and conversion policies belong to
