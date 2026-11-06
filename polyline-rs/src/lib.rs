@@ -47,13 +47,12 @@ fn encode<const LATLON: bool>(
 ) -> PyResult<Vec<Char>> {
     let scale =
         precision_scale(precision).ok_or(PolylineError::PrecisionOutOfRange { precision })?;
-    let capacity = coordinates
-        .len()
-        .ok()
+    let iter = coordinates.try_iter()?;
+    let capacity = pyo3_extra::iter::optional_len(coordinates)?
         .and_then(|n| n.checked_mul(12))
         .unwrap_or(0);
     let mut encoder = Encoder::new(&scale, capacity);
-    for (index, coord) in coordinates.try_iter()?.enumerate() {
+    for (index, coord) in iter.enumerate() {
         encoder.push::<LATLON>(extract_coord_pair(&coord?, index)?, index)?;
     }
     Ok(encoder.finish())

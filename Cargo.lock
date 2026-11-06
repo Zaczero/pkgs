@@ -1330,6 +1330,7 @@ name = "polyline_rs"
 version = "2.0.0"
 dependencies = [
  "pyo3",
+ "pyo3-extra",
  "thiserror",
 ]
 

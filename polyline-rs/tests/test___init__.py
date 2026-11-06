@@ -70,6 +70,38 @@ def test_encode_decode(coords, precision, expected):
     )
 
 
+@pytest.mark.parametrize('encode', [encode_latlon, encode_lonlat])
+def test_encode_preserves_length_provider_errors(encode):
+    sentinel = ValueError('length provider sentinel')
+
+    class Coordinates:
+        def __iter__(self):
+            return iter([(0.0, 0.0)])
+
+        def __len__(self):
+            raise sentinel
+
+    with pytest.raises(ValueError, match='length provider sentinel') as caught:
+        encode(Coordinates())
+    assert caught.value is sentinel
+
+
+@pytest.mark.parametrize('encode', [encode_latlon, encode_lonlat])
+def test_encode_acquires_iterator_before_querying_length(encode):
+    sentinel = TypeError('iterator provider sentinel')
+
+    class Coordinates:
+        def __iter__(self):
+            raise sentinel
+
+        def __len__(self):
+            raise AssertionError('length must not precede iterator admission')
+
+    with pytest.raises(TypeError) as caught:
+        encode(Coordinates())
+    assert caught.value is sentinel
+
+
 def test_encode_accepts_extra_tuple_values_and_subclass_iterators():
     class CustomTuple(tuple):
         __slots__ = ()
