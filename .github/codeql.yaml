@@ -1,4 +1,4 @@
-name: First-party semantic analysis
+name: Workspace semantic analysis
 
 disable-default-queries: true
 
@@ -19,13 +19,17 @@ packs:
 
 paths-ignore:
   - .github/codeql/python/test
-  - vendor
   - "**/.cache"
-  - "**/.venv"
+  - "**/.git"
+  - "**/.hatch"
+  - "**/.pyodide_build"
+  - "**/.uv-cache"
+  - "**/.venv*"
   - "**/__pycache__"
   - "**/dist"
   - "**/node_modules"
   - "**/site"
+  - "**/spec"
   - "**/target"
   - "**/target-*"
   - h2corn/examples/grpc/gen
