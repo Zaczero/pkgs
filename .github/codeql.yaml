@@ -1,0 +1,25 @@
+name: First-party semantic analysis
+
+disable-default-queries: true
+
+packs:
+  actions:
+    - codeql/actions-queries:codeql-suites/actions-security-and-quality.qls
+  javascript:
+    - codeql/javascript-queries:codeql-suites/javascript-security-and-quality.qls
+  python:
+    - codeql/python-queries:codeql-suites/python-security-extended.qls
+    - codeql/python-queries:Resources/FileNotAlwaysClosed.ql
+    - codeql/python-queries:Variables/MultiplyDefined.ql
+
+paths-ignore:
+  - vendor
+  - "**/.cache"
+  - "**/.venv"
+  - "**/__pycache__"
+  - "**/dist"
+  - "**/node_modules"
+  - "**/site"
+  - "**/target"
+  - "**/target-*"
+  - h2corn/examples/grpc/gen
