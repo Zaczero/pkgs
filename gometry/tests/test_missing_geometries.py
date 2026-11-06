@@ -1665,8 +1665,6 @@ def test_bulk_missing_rows_do_not_panic_streaming_line_or_polygon(loader) -> Non
     line = gm.LineString([(0, 0), (1, 1)])
     point = gm.Point(2, 2)
     polygon = gm.Polygon([(0, 0), (1, 0), (0, 1), (0, 0)])
-    values = [line, None, point]
-    polygon_values = [polygon, None, point]
     if loader is gm.from_wkb:
         values = [line.to_wkb(), None, point.to_wkb()]
         polygon_values = [polygon.to_wkb(), None, point.to_wkb()]

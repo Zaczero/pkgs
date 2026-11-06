@@ -827,10 +827,7 @@ def verify_admitted_runtime(
     native_inputs = source['native_source_inputs_sha256']
     expected_target = build['target']
     expected_raw_arch = build.get('raw_target_arch') or expected_target.split('-', 1)[0]
-    profile = build['profile']
-    target_policy = admission.target_policy
     distribution = admission.distribution
-    version = admission.distribution_version
 
     resident_modules = _resident_gometry_modules()
     if resident_modules:

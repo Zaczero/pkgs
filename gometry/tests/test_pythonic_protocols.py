@@ -867,8 +867,6 @@ def test_crs_equality_is_stored_definition_and_hashable() -> None:
     assert {crs: 'stored definition'}[gm.CRS('EPSG:4326')] == 'stored definition'
     assert crs != 4326
     assert crs != 'EPSG:4326'
-    assert crs != 4326
-    assert crs != 'EPSG:4326'
     assert crs != gm.CRS('OGC:CRS84')
     assert crs.same_as('OGC:CRS84', mode='ignore_axis_order')
 

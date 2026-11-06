@@ -1191,7 +1191,7 @@ def inspect_wheel_members(wheel: ZipFile) -> dict[str, Any]:
         expected_digest = expected_size = ''
         algorithm = ''
         record_hasher = None
-        if name not in signatures and name != record_name:
+        if name not in signatures:
             encoded_hash, expected_size = record_rows[name]
             if (
                 not isinstance(expected_size, str)

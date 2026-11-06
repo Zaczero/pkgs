@@ -155,7 +155,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise
     except BrokenPipeError:
         if not sys.stdout.closed:
-            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            with open(os.devnull, 'w') as sink:
+                os.dup2(sink.fileno(), sys.stdout.fileno())
         return 0
     except (
         AssertionError,
