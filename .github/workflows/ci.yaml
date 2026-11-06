@@ -202,7 +202,6 @@ jobs:
             echo "PYO3_PYTHON=$(command -v python)"
             echo 'CODEQL_EXTRACTOR_RUST_OPTION_CARGO_FEATURES=["default"]'
             echo 'CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES=["-test"]'
-            echo 'CODEQL_EXTRACTOR_RUST_OPTION_EXTRACT_DEPENDENCIES_AS_SOURCE=true'
           } >> "$GITHUB_ENV"
 
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
