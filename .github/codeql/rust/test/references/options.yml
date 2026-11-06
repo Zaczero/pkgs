@@ -1,0 +1,5 @@
+qltest_cargo_check: true
+cargo_features: []
+extract_dependencies_as_source: false
+qltest_dependencies:
+  - pyo3 = { version = "=0.30.1", default-features = false }

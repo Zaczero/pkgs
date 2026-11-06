@@ -1,0 +1,7 @@
+name: zaczero/pkgs-rust-queries
+version: 0.0.0
+extractor: rust
+dependencies:
+  codeql/rust-all: "*"
+defaultSuite:
+  - query: NewReferenceBorrowed.ql

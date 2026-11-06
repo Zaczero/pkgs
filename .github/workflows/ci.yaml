@@ -216,6 +216,12 @@ jobs:
           CODEQL: ${{ steps.codeql.outputs.codeql-path }}
         run: '"$CODEQL" test run .github/codeql/python/test'
 
+      - name: Test Rust queries
+        if: matrix.language == 'rust'
+        env:
+          CODEQL: ${{ steps.codeql.outputs.codeql-path }}
+        run: '"$CODEQL" test run .github/codeql/rust/test'
+
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         id: analyze
         with:

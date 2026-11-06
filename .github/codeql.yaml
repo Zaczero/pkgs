@@ -4,6 +4,7 @@ disable-default-queries: true
 
 queries:
   - uses: ./.github/codeql/python
+  - uses: ./.github/codeql/rust
 
 packs:
   actions:
@@ -18,7 +19,7 @@ packs:
     - codeql/rust-queries:codeql-suites/rust-security-extended.qls
 
 paths-ignore:
-  - .github/codeql/python/test
+  - .github/codeql/**/test
   - "**/.cache"
   - "**/.git"
   - "**/.hatch"
