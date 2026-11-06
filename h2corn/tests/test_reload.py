@@ -594,6 +594,50 @@ def test_inotify_ignores_excluded_topology_and_forces_full_resync_on_overflow(
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process groups')
+@pytest.mark.timeout(HANG_BOUND)
+@pytest.mark.parametrize('graceful_timeout', [0, 0.01])
+def test_reload_child_stop_reaps_a_sigterm_resistant_leader(
+    tmp_path: Path,
+    graceful_timeout: float,
+) -> None:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            '-c',
+            'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+            'print("ready", flush=True); signal.pause()',
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        process_group=0,
+    )
+    pycache_dir = tmp_path / 'pycache'
+    pycache_dir.mkdir()
+    read_fd, write_fd = os.pipe()
+    child = reload_module._ReloadChild(process, pycache_dir, write_fd)
+    try:
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(HANG_BOUND), 'reload child did not become ready'
+        assert process.stdout.readline() == 'ready\n'
+        child.stop(graceful_timeout)
+        assert process.returncode == -signal.SIGKILL
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+        assert os.read(read_fd, 1) == b''
+        assert not pycache_dir.exists()
+    finally:
+        process.kill()
+        process.wait()
+        if child.liveness_write_fd is not None:
+            os.close(child.liveness_write_fd)
+        os.close(read_fd)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process groups')
 def test_reload_child_stop_waits_for_and_kills_the_whole_process_group(
     tmp_path: Path,
 ) -> None:

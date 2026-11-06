@@ -920,6 +920,8 @@ class _ReloadChild:
                         break
                     time.sleep(min(remaining, 0.01))
                 while group_exists():
+                    # Reap the leader so its zombie cannot keep the group alive.
+                    self.process.poll()
                     signal_tree(signal.SIGKILL)
                     time.sleep(0.001)
         finally:
