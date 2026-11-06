@@ -1728,12 +1728,11 @@ def validate_wheel_native_target(
                 f'{label} wheel tag understates its GLIBC requirement: '
                 f'{max(required_versions)} > {min(floors)}'
             )
-    elif family == 'linux-musl':
-        if any(
-            not platform_tag.startswith(('musllinux_1_1_', 'musllinux_1_2_'))
-            for platform_tag in platform_tags
-        ):
-            raise AssertionError(f'{label} has an unknown musllinux floor')
+    elif family == 'linux-musl' and any(
+        not platform_tag.startswith(('musllinux_1_1_', 'musllinux_1_2_'))
+        for platform_tag in platform_tags
+    ):
+        raise AssertionError(f'{label} has an unknown musllinux floor')
 
 
 def _platform_matches(identifier: str, wheel_platform: str) -> bool:

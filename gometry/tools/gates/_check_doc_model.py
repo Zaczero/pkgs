@@ -1698,9 +1698,10 @@ def collect_errors() -> list[str]:
                         )
             elif not isinstance(native, griffe.Function):
                 errors.append(f'{name}: missing native function provenance')
-        elif isinstance(public, griffe.Class):
-            if provenance_error := _class_provenance_error(name, public, inventory):
-                errors.append(provenance_error)
+        elif isinstance(public, griffe.Class) and (
+            provenance_error := _class_provenance_error(name, public, inventory)
+        ):
+            errors.append(provenance_error)
 
     model_overloads: set[str] = set()
     for function in _functions(pkg, set()):
