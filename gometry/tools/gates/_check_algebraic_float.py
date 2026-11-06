@@ -1,10 +1,10 @@
-"""Algebraic-float placement gate: ``.algebraic_*`` only in whitelisted fns.
+"""Algebraic-float placement gate for approved measurement owners.
 
 Nightly ``algebraic_{add,sub,mul}`` reassociate float ops (vectorize reductions)
 but CHANGE results. Policy: SAFE only in MEASUREMENT/aggregation (area/centroid
 magnitude); FORBIDDEN in anything feeding a topology/orientation DECISION.
 This gate scans Rust syntax trees, including test bodies and recovered macro
-items, for ``.algebraic_`` uses outside the two measurement kernels that own
+items, for ``.algebraic_`` uses outside the measurement kernels that own
 them, and forbids raw signed-area branching in topology modules.
 
 Usage::
@@ -41,19 +41,14 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[2]
 _DECISION_NAMES = ('area', 'shoelace', 'reduce_sum', 'column_sum')
-WHITELIST = frozenset({
-    'centroid_ring_sums',
-    'column_mean',
-    'column_mean2',
-    'column_sum',
-    'lineal_centroid_column_sums',
-    'lineal_centroid_scalar_algebraic',
-    'lineal_centroid_segment_contrib',
-    'open_cycle_magnitude_columns',
-    'open_point_cycle_magnitude',
-    'open_xy_cycle_magnitude',
-    'shoelace_measure_columns',
-    'shoelace_shifted',
+MEASUREMENT_OWNERS = frozenset({
+    ('src/geometry/access/reduce.rs', 'centroid_ring_sums'),
+    ('src/geometry/access/reduce.rs', 'column_sum'),
+    ('src/geometry/area/shoelace.rs', 'shoelace_shifted'),
+    ('src/geometry/area/tests/reference/simd.rs', 'shoelace_shifted'),
+    ('src/geometry/derived/centroid/line.rs', 'lineal_centroid_column_sums'),
+    ('src/geometry/derived/centroid/line.rs', 'lineal_centroid_scalar_algebraic'),
+    ('src/geometry/derived/centroid/line.rs', 'lineal_centroid_segment_contrib'),
 })
 MEASUREMENT_FILES = frozenset({'src/geometry/area.rs'})
 DECISION_MODULES = frozenset({
@@ -91,15 +86,26 @@ def _last_name(node: Node | None) -> str:
 
 
 def _walk(
-    node: Node, enclosing_fn: str | None = None
+    node: Node,
+    enclosing_fn: str | None = None,
+    scope: tuple[str, ...] = (),
 ) -> Iterator[tuple[Node, str | None]]:
+    if node.type in {'mod_item', 'trait_item'}:
+        scope = (*scope, _text(node.child_by_field_name('name')))
+        enclosing_fn = None
+    elif node.type == 'impl_item':
+        target = _text(node.child_by_field_name('type'))
+        trait = _text(node.child_by_field_name('trait'))
+        scope = (*scope, f'impl {trait} for {target}' if trait else f'impl {target}')
+        enclosing_fn = None
     if node.type == 'function_item':
         name = _last_name(node.child_by_field_name('name'))
         if name:
-            enclosing_fn = name
+            scope = (*scope, name)
+            enclosing_fn = '::'.join(scope)
     yield node, enclosing_fn
     for child in node.children:
-        yield from _walk(child, enclosing_fn)
+        yield from _walk(child, enclosing_fn, scope)
 
 
 def _source_roots(source: RustSource) -> Iterator[Node]:
@@ -177,22 +183,28 @@ def collect_algebraic_errors(
 ) -> tuple[list[str], int, int]:
     errors: list[str] = []
     total_uses = 0
-    whitelisted_fns: set[str] = set()
+    measurement_owners: set[tuple[str, str]] = set()
     for source in iter_sources(rust_source_config(src_root), scope='all'):
-        uses: list[tuple[int, str | None]] = []
+        uses: list[tuple[int, str | None, bool]] = []
         for root in _source_roots(source):
             for node, fn_name in _walk(root):
                 if _algebraic_member(node):
-                    uses.append((node.start_point[0] + 1, fn_name))
+                    # Recovered macro items lack their invocation's lexical
+                    # scope. All approved owners are ordinary source functions.
+                    approved = (
+                        root == source.tree.root_node
+                        and (source.label, fn_name) in MEASUREMENT_OWNERS
+                    )
+                    uses.append((node.start_point[0] + 1, fn_name, approved))
         total_uses += len(uses)
-        for line, fn_name in sorted(uses, key=operator.itemgetter(0)):
+        for line, fn_name, approved in sorted(uses, key=operator.itemgetter(0)):
             if fn_name is None:
                 errors.append(f'{source.label}:{line}:<unknown>: no enclosing fn')
-            elif fn_name in WHITELIST:
-                whitelisted_fns.add(fn_name)
+            elif approved:
+                measurement_owners.add((source.label, fn_name))
             else:
                 errors.append(f'{source.label}:{line}:{fn_name}')
-    return (errors, total_uses, len(whitelisted_fns))
+    return (errors, total_uses, len(measurement_owners))
 
 
 def is_test_source(rel: str) -> bool:
@@ -238,7 +250,7 @@ def main() -> int:
         print(f'  {error}', file=sys.stderr)
     if not errors:
         print(
-            f'algebraic-float placement OK ({total_uses} uses in {fn_count} whitelisted fns); decision surface clean'
+            f'algebraic-float placement OK ({total_uses} uses in {fn_count} approved owners); decision surface clean'
         )
     print(f'\nTOTAL VIOLATIONS: {len(errors)}')
     return 1 if errors else 0

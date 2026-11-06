@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from tests._support import load_tool
 
 if TYPE_CHECKING:
@@ -61,6 +63,79 @@ fn forbidden() {
     assert errors == ['src/predicates/fixture.rs:5:forbidden']
     assert total_uses == 1
     assert whitelisted_functions == 0
+
+
+@pytest.mark.parametrize(
+    ('relative', 'source', 'owner', 'approved'),
+    [
+        (
+            'geometry/access/reduce.rs',
+            'fn column_sum() { left.algebraic_add(right); }',
+            'column_sum',
+            True,
+        ),
+        (
+            'geometry/area/shoelace.rs',
+            'fn shoelace_shifted() { left.algebraic_add(right); }',
+            'shoelace_shifted',
+            True,
+        ),
+        (
+            'geometry/area/tests/reference/simd.rs',
+            'fn shoelace_shifted() { left.algebraic_add(right); }',
+            'shoelace_shifted',
+            True,
+        ),
+        (
+            'predicates/fixture.rs',
+            'fn column_sum() { left.algebraic_add(right); }',
+            'column_sum',
+            False,
+        ),
+        (
+            'geometry/access/reduce.rs',
+            'mod topology { fn column_sum() { left.algebraic_add(right); } }',
+            'topology::column_sum',
+            False,
+        ),
+        (
+            'geometry/access/reduce.rs',
+            'impl Topology { fn column_sum() { left.algebraic_add(right); } }',
+            'impl Topology::column_sum',
+            False,
+        ),
+        (
+            'geometry/access/reduce.rs',
+            'fn topology() { fn column_sum() { left.algebraic_add(right); } }',
+            'topology::column_sum',
+            False,
+        ),
+        (
+            'geometry/access/reduce.rs',
+            'wrapped! { fn column_sum() { left.algebraic_add(right); } }',
+            'column_sum',
+            False,
+        ),
+    ],
+)
+def test_algebraic_gate_binds_exemptions_to_the_measurement_owner(
+    tmp_path: Path,
+    relative: str,
+    source: str,
+    owner: str,
+    approved: bool,
+):
+    gate = load_tool('_check_algebraic_float')
+    src_root = tmp_path / 'src'
+    path = src_root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+
+    errors, uses, owners = gate.collect_algebraic_errors(src_root)
+
+    assert errors == ([] if approved else [f'src/{relative}:1:{owner}'])
+    assert uses == 1
+    assert owners == int(approved)
 
 
 def test_decision_surface_gate_ignores_literal_text(tmp_path: Path):
