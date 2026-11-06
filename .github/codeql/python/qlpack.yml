@@ -1,0 +1,7 @@
+name: zaczero/pkgs-python-queries
+version: 0.0.0
+extractor: python
+dependencies:
+  codeql/python-all: "*"
+defaultSuite:
+  - query: RawHostnameConnection.ql

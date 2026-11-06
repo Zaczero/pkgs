@@ -181,13 +181,32 @@ jobs:
           persist-credentials: false
 
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        id: codeql
         with:
           languages: ${{ matrix.language }}
           config-file: ./.github/codeql.yaml
 
+      - name: Test Python queries
+        if: matrix.language == 'python'
+        env:
+          CODEQL: ${{ steps.codeql.outputs.codeql-path }}
+        run: '"$CODEQL" test run .github/codeql/python/test'
+
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        id: analyze
         with:
           category: /language:${{ matrix.language }}
+
+      - name: Check CodeQL results
+        env:
+          SARIF_RESULTS: ${{ steps.analyze.outputs.sarif-output }}
+        run: |
+          if ! jq --slurp --exit-status \
+            'all(.[].runs[].results[]?; .ruleId | startswith("pkgs/") | not)' \
+            "$SARIF_RESULTS"/*.sarif; then
+            echo "::error::CodeQL found a correctness issue."
+            exit 1
+          fi
 
   check-workspace:
     name: Rust fmt / audit

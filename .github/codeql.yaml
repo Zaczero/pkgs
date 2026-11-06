@@ -2,6 +2,9 @@ name: First-party semantic analysis
 
 disable-default-queries: true
 
+queries:
+  - uses: ./.github/codeql/python
+
 packs:
   actions:
     - codeql/actions-queries:codeql-suites/actions-security-and-quality.qls
@@ -13,6 +16,7 @@ packs:
     - codeql/python-queries:Variables/MultiplyDefined.ql
 
 paths-ignore:
+  - .github/codeql/python/test
   - vendor
   - "**/.cache"
   - "**/.venv"
