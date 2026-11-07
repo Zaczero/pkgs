@@ -1,7 +1,7 @@
 """Expose the nested package to the native query-test extractor."""
 
+from httpx_secure import ApplicationConnector, _AddressPolicy
 from httpx_secure._network import _ProtectedBackend
-from httpx_secure import _AddressPolicy, ApplicationConnector
 
 
 async def exercise(backend, policy, host, port, mode):
