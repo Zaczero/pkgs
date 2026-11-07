@@ -33,7 +33,14 @@ fn hex_token(id: u64) -> String {
 ///
 /// Index with an integer for an `H3Vertex`; slice or mask for another
 /// `H3VertexArray`. The id column is exposed as read-only ``uint64`` data.
-#[pyclass(name = "H3VertexArray", module = "gometry", frozen, sequence, weakref)]
+#[pyclass(
+    name = "H3VertexArray",
+    module = "gometry",
+    frozen,
+    sequence,
+    weakref,
+    freelist = 4
+)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 pub(crate) struct PyH3VertexArray {
@@ -46,7 +53,8 @@ pub(crate) struct PyH3VertexArray {
     name = "H3VertexArrayIterator",
     module = "gometry",
     frozen,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(super) struct PyH3VertexArrayIter {
     source: PyH3VertexArray,
@@ -57,7 +65,14 @@ pub(super) struct PyH3VertexArrayIter {
 ///
 /// Index with an integer for an `H3Edge`; slice or mask for another
 /// `H3EdgeArray`. The id column is exposed as read-only ``uint64`` data.
-#[pyclass(name = "H3EdgeArray", module = "gometry", frozen, sequence, weakref)]
+#[pyclass(
+    name = "H3EdgeArray",
+    module = "gometry",
+    frozen,
+    sequence,
+    weakref,
+    freelist = 4
+)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]
 pub(crate) struct PyH3EdgeArray {
@@ -70,7 +85,8 @@ pub(crate) struct PyH3EdgeArray {
     name = "H3EdgeArrayIterator",
     module = "gometry",
     frozen,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(super) struct PyH3EdgeArrayIter {
     source: PyH3EdgeArray,

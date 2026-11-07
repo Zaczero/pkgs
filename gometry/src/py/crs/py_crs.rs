@@ -23,7 +23,14 @@ use crate::py::sizeof::python_sizeof;
 /// equivalence, including axis-order-only differences, is the explicit
 /// ``same_as(..., mode='ignore_axis_order')`` query. Equal ``CRS`` values are
 /// hashable and can be used as mapping keys.
-#[pyclass(name = "CRS", frozen, immutable_type, weakref, module = "gometry")]
+#[pyclass(
+    name = "CRS",
+    frozen,
+    immutable_type,
+    weakref,
+    module = "gometry",
+    freelist = 4
+)]
 pub struct PyCrs {
     pub(crate) definition: Crs,
     /// Shared with the process-wide CRS info cache — store the `Arc`, never

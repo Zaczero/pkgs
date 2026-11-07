@@ -10,7 +10,12 @@ use crate::py::sizeof::python_sizeof;
 /// Lazy ascending-handle iterator over the live range directory. Mutation
 /// invalidates iteration, matching mapping iterator semantics and keeping
 /// ``__length_hint__`` exact.
-#[pyclass(name = "SpatialIndexIterator", module = "gometry", immutable_type)]
+#[pyclass(
+    name = "SpatialIndexIterator",
+    module = "gometry",
+    immutable_type,
+    freelist = 4
+)]
 pub(crate) struct PySpatialIndexIter {
     pub(super) source: Py<PySpatialIndex>,
     pub(super) next_handle: usize,

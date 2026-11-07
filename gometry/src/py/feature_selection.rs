@@ -71,7 +71,12 @@ impl RowContainer for FeatureSelection {
     }
 }
 
-#[pyclass(name = "_FeatureIterator", module = "gometry._lib", immutable_type)]
+#[pyclass(
+    name = "_FeatureIterator",
+    module = "gometry._lib",
+    immutable_type,
+    freelist = 4
+)]
 pub(crate) struct FeatureIterator {
     source: Option<FeatureSelection>,
     factory: Option<Py<PyAny>>,

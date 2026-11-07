@@ -181,7 +181,13 @@ pub(crate) struct OwnedArrowArray {
 ///
 /// Values retain their Arrow type and can be converted to a Python value or
 /// detached from the parent Arrow storage.
-#[pyclass(name = "ArrowValue", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "ArrowValue",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 pub(crate) struct ArrowValue {
     pub(super) schema: Arc<AdmittedArrowSchema>,
     pub(super) data: ArrayData,

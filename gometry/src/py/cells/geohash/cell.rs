@@ -21,7 +21,13 @@ use crate::py::errors::{ParseError, tag_parse_format};
 /// ``cell.token``, ``cell.polygon``, ``cell.center``) and hierarchy moves
 /// (``parent``/``children``/``neighbors``). Geohash tokens are the public
 /// identity — text, not integers. Convert via ``GeohashCell(...)``.
-#[pyclass(name = "GeohashCell", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "GeohashCell",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PyGeohashCell {
     pub(crate) cell: Geohash,

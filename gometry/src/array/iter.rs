@@ -8,7 +8,8 @@ use crate::py::row::RowIterState;
     name = "GeometryArrayIterator",
     module = "gometry",
     frozen,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub struct PyGeometryArrayIter {
     pub(crate) source: PyGeometryArray,

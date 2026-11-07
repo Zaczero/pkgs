@@ -83,16 +83,13 @@ impl HeapSize for PyGeometry {
 macro_rules! geometry_leaf {
     ($ident:ident, $name:literal, $doc:literal) => {
         #[doc = $doc]
-        // No freelist: PyO3 0.28's freelist takes a lock for free-threaded
-        // safety, and A/B release benchmarks (2k-element array iteration,
-        // grid_disk cell fan-outs) show it costs 0-20% rather than saving —
-        // the plain allocator wins.
         #[pyclass(
             name = $name,
             module = "gometry",
             extends = PyGeometry,
             frozen,
-            immutable_type
+            immutable_type,
+            freelist = 8
         )]
         pub(crate) struct $ident;
     };
@@ -266,7 +263,13 @@ impl From<PyGeometry> for Typed {
 /// their immediate members. Scalar indexing and iteration materialize one
 /// typed geometry at a time via ``part_at``; slice indexing may still build a
 /// list up front.
-#[pyclass(name = "GeometryParts", module = "gometry", frozen, sequence)]
+#[pyclass(
+    name = "GeometryParts",
+    module = "gometry",
+    frozen,
+    sequence,
+    freelist = 4
+)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 pub(crate) struct PyGeometryParts {
     geometry: PyGeometry,
@@ -571,7 +574,8 @@ impl PyGeometryParts {
     name = "GeometryPartsIterator",
     module = "gometry",
     frozen,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(crate) struct PyGeometryPartsIter {
     source: PyGeometryParts,

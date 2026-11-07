@@ -124,7 +124,13 @@ impl BulkElement for CircleOutput {
 /// ellipsoidal solution; other geographic circles use a local projection.
 /// ``to_polygon`` realizes the retained disk without repeating its optimization;
 /// polygon resolution does not change its center or radius.
-#[pyclass(name = "Circle", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "Circle",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 #[derive(Clone)]
 pub(crate) struct PyCircle {
     disk: Arc<FramedCircle>,
@@ -284,7 +290,14 @@ impl PyCircle {
 /// missing rows from empty circles. Scalar indexing returns Circle or None;
 /// slices, integer gathers, and boolean masks retain the circle solutions
 /// without repeating their optimization.
-#[pyclass(name = "CircleArray", module = "gometry", frozen, sequence, generic)]
+#[pyclass(
+    name = "CircleArray",
+    module = "gometry",
+    frozen,
+    sequence,
+    generic,
+    freelist = 4
+)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone)]
 pub(crate) struct PyCircleArray {
@@ -718,7 +731,8 @@ impl PyCircleArray {
     module = "gometry",
     frozen,
     immutable_type,
-    generic
+    generic,
+    freelist = 4
 )]
 pub(crate) struct PyCircleArrayIter {
     array: PyCircleArray,

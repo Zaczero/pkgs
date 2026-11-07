@@ -6,7 +6,13 @@ use crate::py::cells::PyCellArray;
 use crate::py::row::RowIterState;
 
 /// Lazy iterator over a `CellArray`'s typed cells (both directions).
-#[pyclass(name = "CellArrayIterator", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "CellArrayIterator",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 4
+)]
 pub(crate) struct PyCellArrayIter {
     source: PyCellArray,
     state: RowIterState,

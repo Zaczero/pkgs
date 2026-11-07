@@ -58,7 +58,8 @@ use crate::{
     frozen,
     sequence,
     generic,
-    weakref
+    weakref,
+    freelist = 4
 )]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone, Debug)]

@@ -135,7 +135,14 @@ enum GroupsValues {
 /// The values payload keeps its actual type (int64, float64, geometry array, or cell
 /// array). A contiguous values window may share backing; offsets for a window
 /// starting after row zero are rebased, and counts are materialized.
-#[pyclass(name = "Groups", module = "gometry", frozen, sequence, generic)]
+#[pyclass(
+    name = "Groups",
+    module = "gometry",
+    frozen,
+    sequence,
+    generic,
+    freelist = 4
+)]
 #[cfg_attr(not(Py_3_14), pyo3(immutable_type))]
 #[derive(Clone)]
 pub struct Groups {

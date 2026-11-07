@@ -3,7 +3,13 @@
 use crate::py::vectors::{Groups, RowIterState, pyclass};
 
 /// Lazy row iterator for [`Groups`].
-#[pyclass(name = "GroupsIterator", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "GroupsIterator",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 4
+)]
 pub(crate) struct GroupsIter {
     source: Groups,
     state: RowIterState,

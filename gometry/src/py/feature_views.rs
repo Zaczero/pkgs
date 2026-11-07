@@ -85,7 +85,8 @@ fn mapping_view(slf: &Bound<'_, FeaturePropertyMapping>, name: &str) -> PyResult
 #[pyclass(
     name = "_FeaturePropertyMapping",
     module = "gometry._lib",
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(crate) struct FeaturePropertyMapping {
     values: Option<Py<PyDict>>,
@@ -190,7 +191,8 @@ impl FeaturePropertyMapping {
     name = "_FeaturePropertyRows",
     module = "gometry._lib",
     sequence,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(crate) struct FeaturePropertyRows {
     data: Option<PropertyData>,
@@ -1426,7 +1428,8 @@ impl FeaturePropertyRows {
     name = "_FeaturePropertyColumn",
     module = "gometry._lib",
     sequence,
-    immutable_type
+    immutable_type,
+    freelist = 4
 )]
 pub(crate) struct FeaturePropertyColumn {
     rows: Option<Py<FeaturePropertyRows>>,

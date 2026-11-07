@@ -21,7 +21,13 @@ pub(super) struct TiledCell {
 /// (``parent``/``children``), and grid traversal (``grid_disk``,
 /// ``grid_ring``, ``grid_path``, ``grid_distance``). Convert via
 /// ``H3Cell(...)``, and back with ``int(cell)``.
-#[pyclass(name = "H3Cell", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "H3Cell",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PyH3Cell {
     pub(crate) cell: CellIndex,
@@ -48,7 +54,13 @@ pub(super) fn h3_cell_array(cells: impl IntoIterator<Item = CellIndex>) -> PyCel
 /// ----------
 /// value : H3Vertex, int, or str
 ///     An existing vertex, its 64-bit id, or its token.
-#[pyclass(name = "H3Vertex", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "H3Vertex",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PyH3Vertex {
     pub(super) vertex: VertexIndex,
@@ -63,7 +75,13 @@ pub(super) struct PyH3Vertex {
 /// ----------
 /// value : H3Edge, int, or str
 ///     An existing edge, its 64-bit id, or its token.
-#[pyclass(name = "H3Edge", module = "gometry", frozen, immutable_type)]
+#[pyclass(
+    name = "H3Edge",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    freelist = 8
+)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PyH3Edge {
     pub(super) edge: DirectedEdgeIndex,
