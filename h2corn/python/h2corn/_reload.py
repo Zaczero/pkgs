@@ -1,3 +1,5 @@
+"""Filesystem notifications, change coalescing and child lifetimes for CLI reload."""
+
 from __future__ import annotations
 
 import ctypes
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
         """
 
         ident: int
+        fflags: int
 
     class _Kqueue(Protocol):
         def fileno(self) -> int: ...
@@ -118,6 +121,7 @@ _RELOAD_COALESCE_DELAY = 0.2
 # before any application import and watches the read end for EOF.
 _RELOAD_LIVENESS_ENV = '_H2CORN_RELOAD_LIVENESS_FD'
 _INOTIFY_EVENT = struct.Struct('iIII')
+_INOTIFY_ATTRIB = 0x0000_0004
 _INOTIFY_DIR_REBUILD_MASK = (
     0x0000_0040  # IN_MOVED_FROM
     | 0x0000_0080  # IN_MOVED_TO
@@ -134,7 +138,7 @@ _INOTIFY_IGNORED = 0x0000_8000
 _INOTIFY_ISDIR = 0x4000_0000
 _INOTIFY_MASK = (
     0x0000_0002  # IN_MODIFY
-    | 0x0000_0004  # IN_ATTRIB
+    | _INOTIFY_ATTRIB
     | 0x0000_0008  # IN_CLOSE_WRITE
     | 0x0000_0040  # IN_MOVED_FROM
     | 0x0000_0080  # IN_MOVED_TO
@@ -149,18 +153,21 @@ _INOTIFY_MASK = (
 class _ReloadEvents:
     """Filesystem facts preserved from one or more notifier reads.
 
-    Paths are enough to restart for ordinary file changes. A directory change
-    is deliberately different: only that subtree needs a snapshot refresh and
-    watch synchronisation. Queue overflow loses provenance, so it is the one
-    condition that rebuilds every watch and conservatively restarts.
+    Content events force a restart even when mtime is unchanged. Metadata
+    events need a timestamp comparison to distinguish source edits from access
+    time updates. Directory changes need a subtree refresh and watch
+    synchronisation. Queue overflow loses provenance, so it rebuilds every
+    watch and conservatively restarts.
     """
 
     paths: set[Path] = field(default_factory=set[Path])
+    metadata_paths: set[Path] = field(default_factory=set[Path])
     rescan_directories: set[Path] = field(default_factory=set[Path])
     full_resync: bool = False
 
     def merge(self, other: _ReloadEvents) -> None:
         self.paths.update(other.paths)
+        self.metadata_paths.update(other.metadata_paths)
         self.rescan_directories.update(other.rescan_directories)
         self.full_resync |= other.full_resync
 
@@ -402,12 +409,20 @@ def _rescan_file_snapshot(
     return tuple(sorted(changed))
 
 
-def _refresh_direct_paths(snapshot: dict[Path, int], paths: set[Path]) -> None:
+def _refresh_direct_paths(snapshot: dict[Path, int], paths: set[Path]) -> set[Path]:
+    changed: set[Path] = set()
     for path in paths:
+        previous = snapshot.get(path)
         try:
-            snapshot[path] = path.stat().st_mtime_ns
+            current = path.stat().st_mtime_ns
         except OSError:
+            current = None
             snapshot.pop(path, None)
+        else:
+            snapshot[path] = current
+        if previous != current:
+            changed.add(path)
+    return changed
 
 
 def _apply_reload_events(
@@ -432,6 +447,9 @@ def _apply_reload_events(
         return changed_paths
 
     notifier.rescan(events.rescan_directories)
+    changed_paths = _refresh_direct_paths(
+        snapshot, events.paths | events.metadata_paths
+    )
     rescanned_paths = _rescan_file_snapshot(
         snapshot,
         events.rescan_directories,
@@ -439,8 +457,8 @@ def _apply_reload_events(
         include_patterns,
         exclude_patterns,
     )
-    _refresh_direct_paths(snapshot, events.paths)
-    return tuple(sorted(set(rescanned_paths) | events.paths))
+    # A content write remains authoritative even when its writer restores mtime.
+    return tuple(sorted(changed_paths | set(rescanned_paths) | events.paths))
 
 
 def _inotify_needs_rebuild(mask: int):
@@ -567,7 +585,10 @@ class _InotifyNotifier:
                     self._include_patterns,
                     self._exclude_patterns,
                 ):
-                    events.paths.add(path)
+                    if mask == _INOTIFY_ATTRIB:
+                        events.metadata_paths.add(path)
+                    else:
+                        events.paths.add(path)
                 if mask & _INOTIFY_SELF_REBUILD_MASK:
                     events.rescan_directories.add(directory.parent)
                     if mask & _INOTIFY_IGNORED:
@@ -705,6 +726,8 @@ class _KqueueNotifier:
                     events.full_resync = True
                 elif fd in self._directory_fds:
                     events.rescan_directories.add(path)
+                elif event.fflags == self._select.KQ_NOTE_ATTRIB:
+                    events.metadata_paths.add(path)
                 else:
                     events.paths.add(path)
         return events

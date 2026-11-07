@@ -2970,7 +2970,7 @@ async def test_reload_coalesces_bursty_writes_into_one_restart(
     assert (
         sum(b'Reload change detected:' in line for line in stderr_lines)
         + sum(b'Reload changes detected:' in line for line in stderr_lines)
-    ) == 1
+    ) == 1, b''.join(stderr_lines).decode(errors='replace')
 
 
 async def test_reuse_port_allows_overlapping_server_generations(tmp_path: Path) -> None:

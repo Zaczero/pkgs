@@ -329,8 +329,13 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
     class Notifier:
         def __init__(self) -> None:
             self.events = iter((
-                reload_module._ReloadEvents(paths={Path('one.py')}),
-                reload_module._ReloadEvents(rescan_directories={Path('package')}),
+                reload_module._ReloadEvents(
+                    paths={Path('one.py')}, metadata_paths={Path('two.py')}
+                ),
+                reload_module._ReloadEvents(
+                    metadata_paths={Path('three.py')},
+                    rescan_directories={Path('package')},
+                ),
             ))
 
         def consume(self):
@@ -364,6 +369,7 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
     )
     assert stop is False
     assert events.paths == {Path('one.py')}
+    assert events.metadata_paths == {Path('two.py'), Path('three.py')}
     assert events.rescan_directories == {Path('package')}
     assert timeouts == pytest.approx([0.2, 0.2, 0.2])
 
@@ -384,6 +390,56 @@ def test_reload_events_extend_quiet_deadline(monkeypatch: pytest.MonkeyPatch) ->
         set(),
         [7],
     )
+
+
+@pytest.mark.skipif(
+    sys.platform not in {'linux', 'darwin'},
+    reason='reload requires inotify or kqueue',
+)
+@pytest.mark.parametrize(
+    ('change', 'restarts'),
+    [('atime', False), ('mtime', True), ('preserved-mtime-write', True)],
+)
+def test_native_reload_distinguishes_metadata_from_source_edits(
+    tmp_path: Path,
+    change: str,
+    restarts: bool,
+) -> None:
+    app = tmp_path / 'app.py'
+    app.write_text('before')
+    roots = (tmp_path,)
+    snapshot = _watch_file_snapshot(roots, ('*.py',), ())
+    original = app.stat()
+    notifier = reload_module._create_notifier(roots, ('*.py',), ())
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(notifier.fileno(), selectors.EVENT_READ)
+            match change:
+                case 'atime':
+                    os.utime(
+                        app,
+                        ns=(original.st_atime_ns + 1_000_000_000, original.st_mtime_ns),
+                    )
+                case 'mtime':
+                    os.utime(
+                        app,
+                        ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000),
+                    )
+                case 'preserved-mtime-write':
+                    app.write_text('after!')
+                    os.utime(app, ns=(original.st_atime_ns, original.st_mtime_ns))
+                case _:
+                    raise AssertionError(f'unknown change: {change}')
+            assert selector.select(HANG_BOUND), 'filesystem change was not reported'
+            events = notifier.consume()
+            assert events.paths or events.metadata_paths
+            changed = reload_module._apply_reload_events(
+                notifier, events, snapshot, roots, ('*.py',), ()
+            )
+            assert changed == ((app,) if restarts else ())
+            assert snapshot == _watch_file_snapshot(roots, ('*.py',), ())
+    finally:
+        notifier.close()
 
 
 @pytest.mark.skipif(
