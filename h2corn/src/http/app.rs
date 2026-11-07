@@ -12,8 +12,8 @@ use crate::app_call::AppCallArgs;
 use crate::bridge::RequestInputShared;
 use crate::error::H2CornError;
 pub(crate) use crate::http::app::buffered::{
-    AdmittedHttpOutboundEvent, HttpSendBuffer, HttpSendDisposition, HttpSendState, HttpSendWaiter,
-    outbound_charge,
+    AdmittedHttpOutboundEvent, FinishedRegistration, HttpSendBuffer, HttpSendDisposition,
+    HttpSendState, HttpSendWaiter, outbound_charge,
 };
 use crate::http::response::{
     HttpResponseTransport, ResponseActions, ResponseController, apply_admitted_http_event,

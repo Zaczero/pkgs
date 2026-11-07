@@ -4,7 +4,6 @@
 //! their `call_soon_threadsafe` wakeups: resolution happens in the pump,
 //! which invokes the stored done-callbacks directly.
 
-use std::any::Any;
 use std::fmt::{self, Formatter};
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +18,7 @@ use pyo3::types::{PyDict, PyTraceback, PyType};
 use smallvec::SmallVec;
 use tokio::task::AbortHandle;
 
+use crate::http::app::FinishedRegistration;
 use crate::pyloop::Shard;
 
 /// Builds a future's result under the GIL on the loop thread.
@@ -63,7 +63,7 @@ type Callbacks = SmallVec<[(Py<PyAny>, Py<PyAny>); 1]>;
 
 enum Cancellation {
     Task(AbortHandle),
-    Registration(Box<dyn Any + Send + pyo3::marker::Ungil>),
+    Registration(FinishedRegistration),
 }
 
 impl Cancellation {
@@ -136,14 +136,15 @@ impl RustFuture {
         }
     }
 
-    /// Keep a removable waiter registered for the lifetime of this future.
-    /// Its ownership must not contain strong Python references: traversal
-    /// cannot report edges hidden behind this native guard.
-    pub(crate) fn set_registration(&self, registration: impl Any + Send + pyo3::marker::Ungil) {
+    /// Keep the request-finish observer registered until completion or cancellation.
+    ///
+    /// The registration owns only a weak native reference, so it adds no Python
+    /// edges that this future's GC traversal would need to report.
+    pub(crate) fn set_finished_registration(&self, registration: FinishedRegistration) {
         let mut state = self.state.lock();
         if let FutureState::Pending { cancellation, .. } = &mut *state {
             debug_assert!(cancellation.is_none(), "future waiter is installed once");
-            *cancellation = Some(Cancellation::Registration(Box::new(registration)));
+            *cancellation = Some(Cancellation::Registration(registration));
             return;
         }
         drop(state);

@@ -88,19 +88,27 @@ impl ResponseByteBudget {
 #[derive(Debug)]
 pub(crate) struct ResponseBytePermit {
     permits: Arc<Semaphore>,
-    /// Credit still held.
-    remaining: u32,
-    /// The body is longer than the whole connection capacity, so its charge
-    /// was clamped and no longer tracks its bytes.
-    oversized: bool,
+    credit: RetainedCredit,
+}
+
+/// The unit in which this body can return its admission credit.
+#[derive(Debug)]
+enum RetainedCredit {
+    /// One credit per unwritten byte, including zero after the final write.
+    WrittenBytes { remaining: u32 },
+    /// A clamped charge has no per-byte meaning and stays held until drop.
+    WholeBody { charge: u32 },
 }
 
 impl ResponseBytePermit {
     fn new(permits: Arc<Semaphore>, charge: u32, len: usize) -> Self {
         Self {
             permits,
-            remaining: charge,
-            oversized: usize::try_from(charge).is_ok_and(|charge| charge < len),
+            credit: if usize::try_from(charge).is_ok_and(|charge| charge < len) {
+                RetainedCredit::WholeBody { charge }
+            } else {
+                RetainedCredit::WrittenBytes { remaining: charge }
+            },
         }
     }
 
@@ -120,21 +128,26 @@ impl ResponseBytePermit {
     /// deliberately with no arithmetic on the length, so a response measured in
     /// hundreds of gigabytes is bounded exactly like any other.
     pub(crate) fn release_written(&mut self, len: usize) {
-        if self.oversized {
-            return;
+        match &mut self.credit {
+            RetainedCredit::WrittenBytes { remaining } => {
+                let released = u32::try_from(len).unwrap_or(u32::MAX).min(*remaining);
+                *remaining = remaining
+                    .checked_sub(released)
+                    .expect("released credit was bounded by retained charge");
+                self.permits.add_permits(released as usize);
+            },
+            RetainedCredit::WholeBody { .. } => {},
         }
-        let released = u32::try_from(len).unwrap_or(u32::MAX).min(self.remaining);
-        self.remaining = self
-            .remaining
-            .checked_sub(released)
-            .expect("released credit was bounded by retained charge");
-        self.permits.add_permits(released as usize);
     }
 }
 
 impl Drop for ResponseBytePermit {
     fn drop(&mut self) {
-        self.permits.add_permits(self.remaining as usize);
+        let credit = match self.credit {
+            RetainedCredit::WrittenBytes { remaining } => remaining,
+            RetainedCredit::WholeBody { charge } => charge,
+        };
+        self.permits.add_permits(credit as usize);
     }
 }
 

@@ -616,7 +616,7 @@ fn disconnect_when_finished<'py>(
         }
     });
     if let Some(registration) = registration {
-        fut.get().set_registration(registration);
+        fut.get().set_finished_registration(registration);
     }
     Ok(fut.into_bound(py).into_any())
 }
