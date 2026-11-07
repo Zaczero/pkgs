@@ -122,13 +122,22 @@ class _DeniedAddress:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _AdmittedEndpoint:
+    """The validated numeric destination and the connection parameters it admits."""
+
+    address: str
+    port: int
+    local_address: str | None
+
+
 class _DNSCache:
     __slots__ = ('_cache', '_max_size', '_ttl')
 
     def __init__(self, max_size: int, ttl: float) -> None:
         self._cache: OrderedDict[
             _CacheKey,
-            tuple[float, str | _DeniedAddress],
+            tuple[float, _AdmittedEndpoint | _DeniedAddress],
         ] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl
@@ -137,7 +146,7 @@ class _DNSCache:
         self,
         key: _CacheKey,
         /,
-    ) -> str | _DeniedAddress | None:
+    ) -> _AdmittedEndpoint | _DeniedAddress | None:
         cached_value = self._cache.get(key)
         if cached_value is None:
             return None
@@ -155,7 +164,7 @@ class _DNSCache:
     def put(
         self,
         key: _CacheKey,
-        value: str | _DeniedAddress,
+        value: _AdmittedEndpoint | _DeniedAddress,
         /,
     ) -> None:
         current_time = monotonic()
@@ -231,7 +240,8 @@ class _AddressPolicy:
         ip_str: str,
         port: int,
         hostname: str,
-    ) -> None:
+        local_address: str | None,
+    ) -> _AdmittedEndpoint:
         try:
             ip_addr = ip_address(ip_str)
         except ValueError as e:
@@ -267,13 +277,14 @@ class _AddressPolicy:
                     ip_addr=ip_addr,
                     port=port,
                 )
+        return _AdmittedEndpoint(ip_str, port, local_address)
 
     async def admit(
         self,
         hostname: str,
         port: int,
         local_address: str | None,
-    ) -> str:
+    ) -> _AdmittedEndpoint:
         cache_key = (hostname, port, local_address)
         result = self._cache.get(cache_key)
         if result is not None:
@@ -295,14 +306,14 @@ class _AddressPolicy:
             ip_str = await self._resolve(hostname, port, local_address)
 
             try:
-                await self._validate(ip_str, port, hostname)
+                endpoint = await self._validate(ip_str, port, hostname, local_address)
             except SSRFProtectionError as e:
                 denial = _DeniedAddress.from_exception(e)
                 self._cache.put(cache_key, denial)
                 raise denial.exception() from None
 
-            self._cache.put(cache_key, ip_str)
-            return ip_str
+            self._cache.put(cache_key, endpoint)
+            return endpoint
 
 
 def httpx_ssrf_protection(

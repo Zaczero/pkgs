@@ -77,7 +77,10 @@ async def test_global_literal_policy_needs_no_resolution(address):
         custom_validator=None,
         happy_eyeballs_delay=0.25,
     )
-    assert await policy.admit(address, 443, None) == address
+    endpoint = await policy.admit(address, 443, None)
+    assert endpoint.address == address
+    assert endpoint.port == 443
+    assert endpoint.local_address is None
 
 
 async def test_cached_denials_are_fresh_and_bound_to_current_request():

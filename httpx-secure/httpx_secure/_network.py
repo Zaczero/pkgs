@@ -70,15 +70,15 @@ class _ProtectedBackend(httpcore.AsyncNetworkBackend):
         socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
     ) -> httpcore.AsyncNetworkStream:
         with move_on_after(timeout) as scope:
-            address = await self._policy.admit(host, port, local_address)
+            endpoint = await self._policy.admit(host, port, local_address)
             remaining = (
                 None if timeout is None else max(0.0, scope.deadline - current_time())
             )
             stream = await self._backend.connect_tcp(
-                address,
-                port,
+                endpoint.address,
+                endpoint.port,
                 timeout=remaining,
-                local_address=local_address,
+                local_address=endpoint.local_address,
                 socket_options=socket_options,
             )
             return _ProtectedStream(stream)
