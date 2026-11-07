@@ -1,8 +1,7 @@
-//! Design-1 owned Arrow admission: move shells → snapshot → release → decode only owned.
+//! Move producer Arrow shells, snapshot selected buffers, then decode owned data.
 //!
-//! No `ArrowSchemaPtr` / `ArrowArrayPtr` / `ValidatedArrowArray` / `ImportedCapsules`
-//! and no producer-backed `Send`/`Sync` buffer wrappers. Intermediate shells are
-//! non-`Send` RAII (`MovedArrowShell`); only owned trees escape admission.
+//! Intermediate shells remain non-`Send` RAII owners; only native-owned trees
+//! escape admission and enter detached decoding.
 use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
@@ -68,12 +67,7 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
             ));
         }
         // SAFETY: caller guarantees a live base structure for the move.
-        let moved = unsafe { move_arrow_shell(source) };
-        if moved.is_null() {
-            return Err(PyTypeError::new_err("Arrow move produced a null shell"));
-        }
-        // SAFETY: move_arrow_shell returns a non-null owned allocation.
-        let ptr = unsafe { NonNull::new_unchecked(moved) };
+        let ptr = unsafe { move_arrow_shell(source) };
         Ok(Self {
             ptr,
             _not_send_sync: PhantomData,
@@ -101,7 +95,7 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
 impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
     fn drop(&mut self) {
         // SAFETY: unique ownership of the moved shell.
-        unsafe { drop_moved_arrow(self.ptr.as_ptr()) }
+        unsafe { drop_moved_arrow(self.ptr) }
     }
 }
 
@@ -112,14 +106,14 @@ impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
 ///
 /// `source` must be a live producer-owned base structure. The caller takes
 /// ownership of the returned shell and must pass it to `drop_moved_arrow`.
-unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *mut T {
+unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> NonNull<T> {
     // SAFETY: the caller guarantees a live base structure. A bytewise copy is
     // the Arrow-specified move operation; nulling source release leaves its
     // capsule-owned shell inert.
     unsafe {
         let moved = Box::new(ptr::read(source));
         *T::release_slot(source) = None;
-        Box::into_raw(moved)
+        NonNull::from(Box::leak(moved))
     }
 }
 
@@ -129,7 +123,8 @@ unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *mut T {
 /// # Safety
 ///
 /// `shell` must be owned exactly once by this consumer.
-unsafe fn drop_moved_arrow<T: ArrowReleaseSlot>(shell: *mut T) {
+unsafe fn drop_moved_arrow<T: ArrowReleaseSlot>(shell: NonNull<T>) {
+    let shell = shell.as_ptr();
     // SAFETY: the caller transfers the single moved-shell allocation here.
     // Arrow requires the producer release callback to receive the LIVE structure
     // (with `release` still non-null) and mark it released itself. Clearing the

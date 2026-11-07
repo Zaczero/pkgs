@@ -1,7 +1,4 @@
-"""Round-13 L1 - demonstrated FFI/unsafe blocker regressions (B1-B6).
-
-Each case drives the shipped public path that the audit reproduction targeted.
-"""
+"""Ownership, callbacks and layout admission at Python/native boundaries."""
 
 from __future__ import annotations
 
@@ -64,12 +61,12 @@ def _poison_on_array_release(
     the producer release; therefore the flag is set before ``from_arrow``
     returns, and decode must match the pre-poison values.
 
-    Returns ``(provider, flag_list)`` where ``flag_list[0]`` becomes True inside
-    the release callback (before from_arrow returns).
+    Returns ``(provider, observations)``. The first observation records that
+    release ran; the second records whether it received a live release slot.
     """
     import ctypes
 
-    flag = [False]
+    flag = [False, False]
     # Pull the raw ArrowArray* from the capsule and install a wrapping release.
     PyCapsule_GetPointer = ctypes.pythonapi.PyCapsule_GetPointer
     PyCapsule_GetPointer.restype = ctypes.c_void_p
@@ -99,6 +96,7 @@ def _poison_on_array_release(
 
     @RELEASE_T
     def wrapped_release(ptr: int) -> None:
+        flag[1] = ArrowArray.from_address(ptr).release is not None
         # Poison while gometry still holds the moved shell's producer buffers
         # only if it has NOT yet snapshotted — under correct design-1 the
         # snapshot is already owned, so poison here is post-snapshot.
@@ -417,23 +415,17 @@ def test_stream_import_peak_tracks_one_batch_not_full_stream() -> None:
         assert streamed.__sizeof__() <= streamed_one.__sizeof__() * 2 + 4096
 
 
-def test_b4_release_callback_sees_live_release_slot() -> None:
-    """Producer release callback path must complete cleanly on capsule drop.
-
-    Consumes a moved Arrow capsule and drops the decoded array, exercising
-    ``drop_moved_arrow``. An external observing probe (lane verification) is
-    the protocol-slot regression; this suite pin covers the call path without
-    optional shared-library paths.
-    """
+def test_array_release_callback_receives_live_shell() -> None:
+    """A moved shell remains live until its producer release callback runs."""
     source = gm.GeometryArray([gm.Point(1, 2)])
     schema_capsule, array_capsule = source.__arrow_c_array__()
 
-    class Provider:
-        def __arrow_c_array__(self, requested_schema=None):
-            return schema_capsule, array_capsule
-
-    decoded = arrow_geometries(Provider())
+    provider, observations = _poison_on_array_release(
+        schema_capsule, array_capsule, lambda: None
+    )
+    decoded = arrow_geometries(provider)
     assert decoded[0] == gm.Point(1, 2)
+    assert observations == [True, True]
     del decoded
     gc.collect()
 

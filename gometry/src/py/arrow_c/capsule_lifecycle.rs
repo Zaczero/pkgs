@@ -1,18 +1,19 @@
+//! Publish native Arrow owners as capsules and reclaim their shells after transfer.
+
 use std::ptr;
 
 use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::{
     ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
     GometryArrowSchema, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult,
-    PyTuple, Python, SchemaNode, StreamPrivate, array_capsule_destructor, array_capsule_name,
-    c_char, ffi, release_array, release_schema, release_stream, schema_capsule_destructor,
-    schema_capsule_name, stream_capsule_destructor, stream_capsule_name, stream_get_last_error,
-    stream_get_next, stream_get_schema,
+    PyTuple, Python, SchemaNode, StreamPrivate, array_capsule_name, c_char, ffi, release_array,
+    release_schema, release_stream, schema_capsule_name, stream_capsule_name,
+    stream_get_last_error, stream_get_next, stream_get_schema, used_array_capsule_name,
+    used_schema_capsule_name, used_stream_capsule_name,
 };
 use crate::py::{arrow, arrow_c};
 
 pub(crate) type ArrowReleaseCallback<T> = unsafe extern "C" fn(*mut T);
-pub(crate) type CapsuleDestructor = unsafe extern "C" fn(*mut ffi::PyObject);
 
 pub(crate) trait ArrowReleaseSlot: Sized {
     /// Return the address of the Arrow release callback slot.
@@ -45,21 +46,40 @@ impl ArrowReleaseSlot for ArrowArrayStream {
     }
 }
 
-pub(crate) fn owned_capsule<T>(
-    py: Python<'_>,
-    value: Box<T>,
-    name: *const c_char,
-    destructor: CapsuleDestructor,
-    release_on_error: ArrowReleaseCallback<T>,
-) -> PyResult<Py<PyAny>> {
+/// Associate each native shell with its capsule names and payload destructor.
+trait CapsuleShell: ArrowReleaseSlot {
+    const NAME: *const c_char;
+    const USED_NAME: *const c_char;
+    const RELEASE: ArrowReleaseCallback<Self>;
+}
+
+impl CapsuleShell for ArrowSchema {
+    const NAME: *const c_char = schema_capsule_name();
+    const USED_NAME: *const c_char = used_schema_capsule_name();
+    const RELEASE: ArrowReleaseCallback<Self> = release_schema;
+}
+
+impl CapsuleShell for ArrowArray {
+    const NAME: *const c_char = array_capsule_name();
+    const USED_NAME: *const c_char = used_array_capsule_name();
+    const RELEASE: ArrowReleaseCallback<Self> = release_array;
+}
+
+impl CapsuleShell for ArrowArrayStream {
+    const NAME: *const c_char = stream_capsule_name();
+    const USED_NAME: *const c_char = used_stream_capsule_name();
+    const RELEASE: ArrowReleaseCallback<Self> = release_stream;
+}
+
+fn owned_capsule<T: CapsuleShell>(py: Python<'_>, value: Box<T>) -> PyResult<Py<PyAny>> {
     let ptr = Box::into_raw(value);
     // SAFETY: `ptr` is a boxed Arrow C Data Interface shell; the capsule owns
-    // the shell on success and the provided destructor releases it.
-    let capsule = unsafe { ffi::PyCapsule_New(ptr.cast(), name, Some(destructor)) };
+    // the shell on success. Its type selects matching names and destruction.
+    let capsule = unsafe { ffi::PyCapsule_New(ptr.cast(), T::NAME, Some(capsule_destructor::<T>)) };
     if capsule.is_null() {
         // SAFETY: PyCapsule_New failed, so ownership never left this function.
         unsafe {
-            release_on_error(ptr);
+            (T::RELEASE)(ptr);
             drop(Box::from_raw(ptr));
         }
         return Err(PyErr::fetch(py));
@@ -72,24 +92,19 @@ pub(crate) fn owned_capsule<T>(
 ///
 /// # Safety
 ///
-/// `capsule` must be a live Python capsule whose pointer under `name` or
-/// `used_name` came from `Box::into_raw::<T>`. The caller must have sole
+/// `capsule` must be a live Python capsule created by `owned_capsule::<T>`.
+/// The caller must have sole
 /// ownership of that shell, and no borrow of the shell or its released tree
 /// may remain live.
-pub(crate) unsafe fn capsule_destructor<T>(
-    capsule: *mut ffi::PyObject,
-    name: *const c_char,
-    used_name: *const c_char,
-    release: ArrowReleaseCallback<T>,
-) {
-    // SAFETY: callers pass the exact capsule names for `T`; moved capsules may
+unsafe extern "C" fn capsule_destructor<T: CapsuleShell>(capsule: *mut ffi::PyObject) {
+    // SAFETY: the shell type selects its exact capsule names; moved capsules may
     // use the `used_*` name but still leave the shell box owned here.
     unsafe {
-        let ptr = capsule_destructor_pointer::<T>(capsule, name, used_name);
+        let ptr = capsule_destructor_pointer::<T>(capsule);
         if ptr.is_null() {
             return;
         }
-        release(ptr);
+        (T::RELEASE)(ptr);
         drop(Box::from_raw(ptr));
     }
 }
@@ -101,20 +116,16 @@ pub(crate) unsafe fn capsule_destructor<T>(
 /// `capsule` must be null or a live Python object that may safely be passed to
 /// the CPython capsule API. A non-null returned pointer remains owned by the
 /// capsule and may only be consumed by the capsule's destructor.
-pub(crate) unsafe fn capsule_destructor_pointer<T>(
-    capsule: *mut ffi::PyObject,
-    name: *const c_char,
-    used_name: *const c_char,
-) -> *mut T {
+unsafe fn capsule_destructor_pointer<T: CapsuleShell>(capsule: *mut ffi::PyObject) -> *mut T {
     // SAFETY: `PyCapsule_IsValid` checks the name without setting an exception.
     // Consumers may rename a moved capsule to `used_arrow_*`; we still own and
     // drop the boxed struct shell, but its release slot should already be NULL.
     unsafe {
-        if ffi::PyCapsule_IsValid(capsule, name) != 0 {
-            return ffi::PyCapsule_GetPointer(capsule, name).cast();
+        if ffi::PyCapsule_IsValid(capsule, T::NAME) != 0 {
+            return ffi::PyCapsule_GetPointer(capsule, T::NAME).cast();
         }
-        if ffi::PyCapsule_IsValid(capsule, used_name) != 0 {
-            return ffi::PyCapsule_GetPointer(capsule, used_name).cast();
+        if ffi::PyCapsule_IsValid(capsule, T::USED_NAME) != 0 {
+            return ffi::PyCapsule_GetPointer(capsule, T::USED_NAME).cast();
         }
     }
     ptr::null_mut()
@@ -315,13 +326,7 @@ pub(crate) fn array_to_stream_capsule(
 }
 
 pub(crate) fn schema_capsule(py: Python<'_>, schema: GometryArrowSchema) -> PyResult<Py<PyAny>> {
-    owned_capsule(
-        py,
-        schema.into_box(),
-        schema_capsule_name(),
-        schema_capsule_destructor,
-        release_schema,
-    )
+    owned_capsule(py, schema.into_box())
 }
 
 pub(crate) fn array_capsules(py: Python<'_>, export: ExportedArray) -> PyResult<Py<PyAny>> {
@@ -354,13 +359,7 @@ pub(crate) fn pyarrow_array_from_export(
 }
 
 pub(crate) fn array_capsule(py: Python<'_>, array: GometryArrowArray) -> PyResult<Py<PyAny>> {
-    owned_capsule(
-        py,
-        array.into_box(),
-        array_capsule_name(),
-        array_capsule_destructor,
-        release_array,
-    )
+    owned_capsule(py, array.into_box())
 }
 
 pub(crate) fn stream_from_export(export: ExportedArray) -> ArrowArrayStream {
@@ -382,11 +381,5 @@ pub(crate) fn stream_from_export(export: ExportedArray) -> ArrowArrayStream {
 
 pub(crate) fn stream_capsule(py: Python<'_>, export: ExportedArray) -> PyResult<Py<PyAny>> {
     let stream = Box::new(stream_from_export(export));
-    owned_capsule(
-        py,
-        stream,
-        stream_capsule_name(),
-        stream_capsule_destructor,
-        release_stream,
-    )
+    owned_capsule(py, stream)
 }

@@ -6,9 +6,7 @@ use libc::{EINVAL, ENOMEM};
 
 use crate::py::arrow_c::{
     ArrayPrivate, ArrowArray, ArrowArrayStream, ArrowReleaseSlot, ArrowSchema, SchemaPrivate,
-    StreamPrivate, array_capsule_name, c_char, c_int, c_void, capsule_destructor, empty_array, ffi,
-    schema_capsule_name, stream_capsule_name, used_array_capsule_name, used_schema_capsule_name,
-    used_stream_capsule_name,
+    StreamPrivate, c_char, c_int, c_void, empty_array,
 };
 
 #[cfg(test)]
@@ -239,59 +237,5 @@ pub(crate) unsafe extern "C" fn stream_get_last_error(
             return ptr::null();
         }
         (*private).last_error.as_ptr()
-    }
-}
-
-/// CPython destructor for a gometry-owned Arrow schema capsule.
-///
-/// # Safety
-/// `capsule` must be the live capsule supplied by CPython to its registered
-/// destructor, and this callback must run at most once for that ownership.
-pub(crate) unsafe extern "C" fn schema_capsule_destructor(capsule: *mut ffi::PyObject) {
-    // SAFETY: the capsule was created with this exact name and owns a boxed
-    // `ArrowSchema`. If a consumer already released it, `release` is `None`.
-    unsafe {
-        capsule_destructor::<ArrowSchema>(
-            capsule,
-            schema_capsule_name(),
-            used_schema_capsule_name(),
-            release_schema,
-        );
-    }
-}
-
-/// CPython destructor for a gometry-owned Arrow array capsule.
-///
-/// # Safety
-/// `capsule` must be the live capsule supplied by CPython to its registered
-/// destructor, and this callback must run at most once for that ownership.
-pub(crate) unsafe extern "C" fn array_capsule_destructor(capsule: *mut ffi::PyObject) {
-    // SAFETY: same ownership shape as `schema_capsule_destructor`, for
-    // `ArrowArray`.
-    unsafe {
-        capsule_destructor::<ArrowArray>(
-            capsule,
-            array_capsule_name(),
-            used_array_capsule_name(),
-            release_array,
-        );
-    }
-}
-
-/// CPython destructor for a gometry-owned Arrow stream capsule.
-///
-/// # Safety
-/// `capsule` must be the live capsule supplied by CPython to its registered
-/// destructor, and this callback must run at most once for that ownership.
-pub(crate) unsafe extern "C" fn stream_capsule_destructor(capsule: *mut ffi::PyObject) {
-    // SAFETY: same ownership shape as `schema_capsule_destructor`, for
-    // `ArrowArrayStream`.
-    unsafe {
-        capsule_destructor::<ArrowArrayStream>(
-            capsule,
-            stream_capsule_name(),
-            used_stream_capsule_name(),
-            release_stream,
-        );
     }
 }

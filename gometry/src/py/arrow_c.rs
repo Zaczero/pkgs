@@ -371,8 +371,8 @@ pub(crate) use build::{
 };
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_capsules_with_schema, array_to_array_capsules, array_to_schema_capsule,
-    array_to_stream_capsule, capsule_destructor, geometry_to_array_capsules,
-    geometry_to_schema_capsule, geometry_to_stream_capsule, pyarrow_array_from_export,
+    array_to_stream_capsule, geometry_to_array_capsules, geometry_to_schema_capsule,
+    geometry_to_stream_capsule, pyarrow_array_from_export,
 };
 pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
 #[cfg(test)]
@@ -391,8 +391,7 @@ pub(crate) use native::capture::{
 pub(crate) use native::decode::{NativeDecodedBatch, NativeDecodedStorage};
 pub(crate) use native::{NativeArrowBatch, NativeArrowClassification, NativeArrowImportError};
 pub(crate) use release::{
-    array_capsule_destructor, release_array, release_schema, release_stream,
-    schema_capsule_destructor, stream_capsule_destructor, stream_get_last_error, stream_get_next,
+    release_array, release_schema, release_stream, stream_get_last_error, stream_get_next,
     stream_get_schema,
 };
 #[cfg(test)]

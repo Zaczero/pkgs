@@ -418,6 +418,7 @@ fn requested_schema_metadata_compares_contents_independently_of_order() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn release_callbacks_are_idempotent_for_native_exports() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
@@ -452,6 +453,31 @@ fn release_callbacks_are_idempotent_for_native_exports() {
         frame::Frame::None,
     );
     release_twice(exported(&polygon));
+}
+
+#[test]
+fn moved_native_array_retains_tree_after_source_drop() {
+    let _test_lock = NATIVE_SIGNAL_STREAM_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    NATIVE_SIGNAL_ARRAY_RELEASES.store(0, Ordering::Relaxed);
+    let coords = crate::geometry::CoordSeq::try_from_points(&[
+        Point::new_raw_xy(1.0, 2.0),
+        Point::new_raw_xy(3.0, 4.0),
+    ])
+    .expect("test coordinates");
+    let mut source = coordinate_array(&coords).expect("native coordinate array");
+    source.as_mut().release = Some(counted_array_release);
+    // SAFETY: this uniquely owned native array is live and retains its tree.
+    let moved = unsafe { MovedArrowShell::take(source.as_mut()) }.expect("move native array");
+    assert!(source.as_mut().release.is_none());
+    drop(source);
+    drop(coords);
+    assert_eq!(NATIVE_SIGNAL_ARRAY_RELEASES.load(Ordering::Relaxed), 0);
+    // SAFETY: the moved owner retains both its separate shell and payload tree.
+    assert_eq!(unsafe { (*moved.as_ptr()).length }, 2);
+    drop(moved);
+    assert_eq!(NATIVE_SIGNAL_ARRAY_RELEASES.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -559,6 +585,7 @@ fn schema_snapshot_node_count(snapshot: &SchemaSnapshot) -> usize {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot execute CPython FFI")]
 fn stream_export_release_is_idempotent_after_batch_move() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
