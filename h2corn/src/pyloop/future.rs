@@ -92,7 +92,7 @@ enum FutureState {
 
 /// Duck future returned by slow-path `receive()`/`send()` and awaited by the
 /// app task. Created pending; resolved exclusively by the pump.
-#[pyclass(frozen, weakref, name = "_RustFuture")]
+#[pyclass(frozen, weakref, name = "_RustFuture", freelist = 64)]
 pub(crate) struct RustFuture {
     state: Mutex<FutureState>,
     blocking: AtomicBool,

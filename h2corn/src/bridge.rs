@@ -699,7 +699,7 @@ impl<'py> AsgiMessage<'py> {
     }
 }
 
-#[pyclass(name = "_ReadyAwaitable")]
+#[pyclass(name = "_ReadyAwaitable", freelist = 32)]
 struct ReadyAwaitable {
     result: Option<Py<PyAny>>,
 }

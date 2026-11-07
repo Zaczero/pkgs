@@ -34,7 +34,7 @@ pub(super) struct Pump {
 /// runtime owner it holds — releases at callback time, even if this
 /// callback object itself stays reachable afterwards (e.g. retained by a
 /// cancelled Task's reference cycle until a GC pass).
-#[pyclass(frozen, name = "_TaskDone")]
+#[pyclass(frozen, name = "_TaskDone", freelist = 64)]
 struct TaskDone {
     slot: Mutex<Option<DoneSlot>>,
 }

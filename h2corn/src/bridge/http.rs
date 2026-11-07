@@ -282,7 +282,7 @@ impl EventSource for HttpReceiveState {
     }
 }
 
-#[pyclass(frozen, name = "_HttpReceive")]
+#[pyclass(frozen, name = "_HttpReceive", freelist = 64)]
 pub(crate) struct PyHttpReceive {
     shard: WeakShard,
     kind: HttpReceiveKind,
@@ -534,7 +534,7 @@ impl PyHttpReceive {
     }
 }
 
-#[pyclass(frozen, name = "_HttpSend")]
+#[pyclass(frozen, name = "_HttpSend", freelist = 64)]
 pub(crate) struct PyHttpSend {
     shard: WeakShard,
     state: HttpSendState,
