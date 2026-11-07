@@ -415,11 +415,10 @@ def _refresh_direct_paths(snapshot: dict[Path, int], paths: set[Path]) -> set[Pa
         previous = snapshot.get(path)
         try:
             current = path.stat().st_mtime_ns
+            snapshot[path] = current
         except OSError:
             current = None
             snapshot.pop(path, None)
-        else:
-            snapshot[path] = current
         if previous != current:
             changed.add(path)
     return changed
