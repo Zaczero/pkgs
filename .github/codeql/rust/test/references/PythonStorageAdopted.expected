@@ -1,0 +1,2 @@
+| test.rs:346:14:346:89 | ...::from_raw_parts(...) | This Rust constructor adopts Python-owned storage lent by $@ as though it were a transferred Rust allocation. | test.rs:345:28:345:64 | ...::PyBytes_AsString(...) | this object data accessor |
+| test.rs:351:14:351:92 | ...::from_raw_parts(...) | This Rust constructor adopts Python-owned storage lent by $@ as though it were a transferred Rust allocation. | test.rs:350:28:350:64 | ...::PyBytes_AsString(...) | this object data accessor |

@@ -1,0 +1,3 @@
+| test.rs:21:50:21:67 | ...::PyList_New(...) | This optional conversion treats failure of $@ as absence instead of consuming the pending Python exception. | test.rs:21:50:21:67 | ...::PyList_New(...) | this CPython call |
+| test.rs:277:47:277:64 | ...::PyList_New(...) | This optional conversion treats failure of $@ as absence instead of consuming the pending Python exception. | test.rs:277:47:277:64 | ...::PyList_New(...) | this CPython call |
+| test.rs:289:55:289:61 | pointer | This optional conversion treats failure of $@ as absence instead of consuming the pending Python exception. | test.rs:288:28:288:62 | ...::PyNumber_Index(...) | this CPython call |

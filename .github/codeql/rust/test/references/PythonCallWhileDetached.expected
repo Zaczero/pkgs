@@ -1,0 +1,2 @@
+| test.rs:305:14:305:31 | ...::PyList_New(...) | This Python object operation requires attachment, but it runs in $@. | test.rs:315:5:315:46 | py.detach(...) | this detached execution |
+| test.rs:310:18:310:35 | ...::PyList_New(...) | This Python object operation requires attachment, but it runs in $@. | test.rs:309:5:311:6 | py.detach(...) | this detached execution |

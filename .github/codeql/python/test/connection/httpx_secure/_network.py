@@ -24,7 +24,7 @@ class _ProtectedBackend:
         self._backend = backend
         self._policy = policy
 
-    async def connect_tcp(self, host, port, mode):
+    async def connect_tcp(self, host, port, mode, alternative=None):
         if mode == 'direct':
             return await self._backend.connect_tcp(host, port)
         if mode == 'alias':
@@ -47,6 +47,23 @@ class _ProtectedBackend:
         if mode == 'admitted':
             address = await self._policy.admit(host, port, None)
             return await self._backend.connect_tcp(address, port)
+        if mode == 'literal-bypass':
+            return await self._backend.connect_tcp('127.0.0.1', port)
+        if mode == 'literal-fallback':
+            try:
+                address = await self._policy.admit(host, port, None)
+            except ValueError:
+                address = '127.0.0.1'
+            return await self._backend.connect_tcp(address, port)
+        if mode == 'input-fallback':
+            try:
+                address = await self._policy.admit(host, port, None)
+            except ValueError:
+                address = alternative
+            return await self._backend.connect_tcp(address, port)
+        if mode == 'admitted-endpoint':
+            endpoint = await self._policy.admit(host, port, None)
+            return await self._backend.connect_tcp(endpoint.address, endpoint.port)
         if mode == 'admitted-alias':
             policy = self._policy
             selected = await policy.admit(host, port, None)

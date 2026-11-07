@@ -4,4 +4,4 @@ extractor: rust
 dependencies:
   codeql/rust-all: "*"
 defaultSuite:
-  - query: NewReferenceBorrowed.ql
+  - import: contracts.qls

@@ -9,16 +9,16 @@ edges
 | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:40:52:40:55 | ControlFlowNode for host | provenance |  |
 | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:45:17:45:23 | ControlFlowNode for address | provenance |  |
 | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | provenance |  |
-| httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:64:45:64:48 | ControlFlowNode for host | provenance |  |
-| httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:69:56:69:59 | ControlFlowNode for host | provenance |  |
+| httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:81:45:81:48 | ControlFlowNode for host | provenance |  |
+| httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:86:56:86:59 | ControlFlowNode for host | provenance |  |
 | httpx_secure/_network.py:31:13:31:19 | ControlFlowNode for address | httpx_secure/_network.py:33:39:33:45 | ControlFlowNode for address | provenance |  |
 | httpx_secure/_network.py:35:46:35:49 | ControlFlowNode for host | httpx_secure/_network.py:14:25:14:31 | ControlFlowNode for address | provenance |  |
 | httpx_secure/_network.py:45:17:45:23 | ControlFlowNode for address | httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | provenance |  |
-| httpx_secure/_network.py:64:13:64:19 | ControlFlowNode for address | httpx_secure/_network.py:65:52:65:58 | ControlFlowNode for address | provenance |  |
-| httpx_secure/_network.py:64:29:64:61 | ControlFlowNode for Attribute() | httpx_secure/_network.py:64:13:64:19 | ControlFlowNode for address | provenance |  |
-| httpx_secure/_network.py:64:29:64:61 | ControlFlowNode for Attribute() | httpx_secure/_network.py:65:52:65:58 | ControlFlowNode for address | provenance |  |
-| httpx_secure/_network.py:64:45:64:48 | ControlFlowNode for host | httpx_secure/_network.py:7:27:7:30 | ControlFlowNode for host | provenance |  |
-| httpx_secure/_network.py:64:45:64:48 | ControlFlowNode for host | httpx_secure/_network.py:64:29:64:61 | ControlFlowNode for Attribute() | provenance |  |
+| httpx_secure/_network.py:81:13:81:19 | ControlFlowNode for address | httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | provenance |  |
+| httpx_secure/_network.py:81:29:81:61 | ControlFlowNode for Attribute() | httpx_secure/_network.py:81:13:81:19 | ControlFlowNode for address | provenance |  |
+| httpx_secure/_network.py:81:29:81:61 | ControlFlowNode for Attribute() | httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | provenance |  |
+| httpx_secure/_network.py:81:45:81:48 | ControlFlowNode for host | httpx_secure/_network.py:7:27:7:30 | ControlFlowNode for host | provenance |  |
+| httpx_secure/_network.py:81:45:81:48 | ControlFlowNode for host | httpx_secure/_network.py:81:29:81:61 | ControlFlowNode for Attribute() | provenance |  |
 nodes
 | httpx_secure/_network.py:7:27:7:30 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
 | httpx_secure/_network.py:8:16:8:19 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
@@ -33,13 +33,13 @@ nodes
 | httpx_secure/_network.py:40:52:40:55 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
 | httpx_secure/_network.py:45:17:45:23 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
 | httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
-| httpx_secure/_network.py:64:13:64:19 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
-| httpx_secure/_network.py:64:29:64:61 | ControlFlowNode for Attribute() | semmle.label | ControlFlowNode for Attribute() |
-| httpx_secure/_network.py:64:45:64:48 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
-| httpx_secure/_network.py:65:52:65:58 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
-| httpx_secure/_network.py:69:56:69:59 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
+| httpx_secure/_network.py:81:13:81:19 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
+| httpx_secure/_network.py:81:29:81:61 | ControlFlowNode for Attribute() | semmle.label | ControlFlowNode for Attribute() |
+| httpx_secure/_network.py:81:45:81:48 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
+| httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | semmle.label | ControlFlowNode for address |
+| httpx_secure/_network.py:86:56:86:59 | ControlFlowNode for host | semmle.label | ControlFlowNode for host |
 subpaths
-| httpx_secure/_network.py:64:45:64:48 | ControlFlowNode for host | httpx_secure/_network.py:7:27:7:30 | ControlFlowNode for host | httpx_secure/_network.py:8:16:8:19 | ControlFlowNode for host | httpx_secure/_network.py:64:29:64:61 | ControlFlowNode for Attribute() |
+| httpx_secure/_network.py:81:45:81:48 | ControlFlowNode for host | httpx_secure/_network.py:7:27:7:30 | ControlFlowNode for host | httpx_secure/_network.py:8:16:8:19 | ControlFlowNode for host | httpx_secure/_network.py:81:29:81:61 | ControlFlowNode for Attribute() |
 #select
 | httpx_secure/_network.py:15:38:15:44 | ControlFlowNode for address | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:15:38:15:44 | ControlFlowNode for address | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
 | httpx_secure/_network.py:29:52:29:55 | ControlFlowNode for host | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:29:52:29:55 | ControlFlowNode for host | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
@@ -47,5 +47,5 @@ subpaths
 | httpx_secure/_network.py:37:52:37:63 | ControlFlowNode for Attribute() | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:37:52:37:63 | ControlFlowNode for Attribute() | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
 | httpx_secure/_network.py:40:52:40:55 | ControlFlowNode for host | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:40:52:40:55 | ControlFlowNode for host | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
 | httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
-| httpx_secure/_network.py:65:52:65:58 | ControlFlowNode for address | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:65:52:65:58 | ControlFlowNode for address | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
-| httpx_secure/_network.py:69:56:69:59 | ControlFlowNode for host | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:69:56:69:59 | ControlFlowNode for host | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
+| httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |
+| httpx_secure/_network.py:86:56:86:59 | ControlFlowNode for host | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | httpx_secure/_network.py:86:56:86:59 | ControlFlowNode for host | The data-bearing connection uses this $@ instead of the policy's admitted address. | httpx_secure/_network.py:27:33:27:36 | ControlFlowNode for host | unadmitted hostname |

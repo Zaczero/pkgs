@@ -1,0 +1,22 @@
+edges
+| httpx_secure/__init__.py:7:23:7:28 | ControlFlowNode for stream | httpx_secure/__init__.py:8:11:8:16 | ControlFlowNode for stream | provenance |  |
+| httpx_secure/__init__.py:13:9:13:14 | ControlFlowNode for stream | httpx_secure/__init__.py:16:23:16:28 | ControlFlowNode for stream | provenance |  |
+| httpx_secure/__init__.py:13:9:13:14 | ControlFlowNode for stream | httpx_secure/__init__.py:18:35:18:40 | ControlFlowNode for stream | provenance |  |
+| httpx_secure/__init__.py:13:9:13:14 | ControlFlowNode for stream | httpx_secure/__init__.py:20:17:20:21 | ControlFlowNode for alias | provenance |  |
+| httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | httpx_secure/__init__.py:13:9:13:14 | ControlFlowNode for stream | provenance |  |
+| httpx_secure/__init__.py:18:35:18:40 | ControlFlowNode for stream | httpx_secure/__init__.py:7:23:7:28 | ControlFlowNode for stream | provenance |  |
+| httpx_secure/__init__.py:20:17:20:21 | ControlFlowNode for alias | httpx_secure/__init__.py:21:23:21:27 | ControlFlowNode for alias | provenance |  |
+nodes
+| httpx_secure/__init__.py:7:23:7:28 | ControlFlowNode for stream | semmle.label | ControlFlowNode for stream |
+| httpx_secure/__init__.py:8:11:8:16 | ControlFlowNode for stream | semmle.label | ControlFlowNode for stream |
+| httpx_secure/__init__.py:13:9:13:14 | ControlFlowNode for stream | semmle.label | ControlFlowNode for stream |
+| httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | semmle.label | ControlFlowNode for Await |
+| httpx_secure/__init__.py:16:23:16:28 | ControlFlowNode for stream | semmle.label | ControlFlowNode for stream |
+| httpx_secure/__init__.py:18:35:18:40 | ControlFlowNode for stream | semmle.label | ControlFlowNode for stream |
+| httpx_secure/__init__.py:20:17:20:21 | ControlFlowNode for alias | semmle.label | ControlFlowNode for alias |
+| httpx_secure/__init__.py:21:23:21:27 | ControlFlowNode for alias | semmle.label | ControlFlowNode for alias |
+subpaths
+#select
+| httpx_secure/__init__.py:8:11:8:16 | ControlFlowNode for stream | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | httpx_secure/__init__.py:8:11:8:16 | ControlFlowNode for stream | This operation sends data or starts a protocol on the $@ before destination admission. | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | address-selection probe |
+| httpx_secure/__init__.py:16:23:16:28 | ControlFlowNode for stream | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | httpx_secure/__init__.py:16:23:16:28 | ControlFlowNode for stream | This operation sends data or starts a protocol on the $@ before destination admission. | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | address-selection probe |
+| httpx_secure/__init__.py:21:23:21:27 | ControlFlowNode for alias | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | httpx_secure/__init__.py:21:23:21:27 | ControlFlowNode for alias | This operation sends data or starts a protocol on the $@ before destination admission. | httpx_secure/__init__.py:13:18:13:76 | ControlFlowNode for Await | address-selection probe |

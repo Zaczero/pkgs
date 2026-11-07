@@ -1,0 +1,11 @@
+- description: CPython and PyO3 correctness contracts
+- query: BorrowedReferenceOwned.ql
+- query: BorrowedReferenceStolen.ql
+- query: ConsumedPythonWriter.ql
+- query: IncompleteRustDependencies.ql
+- query: NewReferenceBorrowed.ql
+- query: PythonCallWhileDetached.ql
+- query: PythonEffectDuringTraversal.ql
+- query: PythonErrorAsAbsence.ql
+- query: PythonErrorAsBoolean.ql
+- query: PythonStorageAdopted.ql

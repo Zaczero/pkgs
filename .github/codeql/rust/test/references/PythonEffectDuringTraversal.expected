@@ -1,0 +1,1 @@
+| test.rs:305:14:305:31 | ...::PyList_New(...) | This operation changes Python state or executes Python while $@ is reporting GC edges. | test.rs:331:5:337:5 | fn __traverse__ | this traversal |

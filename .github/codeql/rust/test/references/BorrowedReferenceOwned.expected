@@ -1,0 +1,4 @@
+| test.rs:121:14:121:62 | ...::from_owned_ptr_or_err(...) | This owning constructor consumes the borrowed reference returned by $@ without acquiring a new reference. | test.rs:120:28:120:66 | ...::PyTuple_GetItem(...) | this pointer provider |
+| test.rs:127:14:127:78 | ...::from_owned_ptr_or_opt(...) | This owning constructor consumes the borrowed reference returned by $@ without acquiring a new reference. | test.rs:127:55:127:77 | item(...) | this pointer provider |
+| test.rs:151:14:151:62 | ...::from_owned_ptr(...) | This owning constructor consumes the borrowed reference returned by $@ without acquiring a new reference. | test.rs:151:48:151:61 | value.as_ptr() | this pointer provider |
+| test.rs:376:14:376:65 | ...::from_owned_ptr(...) | This owning constructor consumes the borrowed reference returned by $@ without acquiring a new reference. | test.rs:376:48:376:64 | retained.as_ptr() | this pointer provider |

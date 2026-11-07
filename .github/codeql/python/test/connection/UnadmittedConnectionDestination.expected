@@ -1,0 +1,11 @@
+| httpx_secure/_network.py:15:38:15:44 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:29:52:29:55 | ControlFlowNode for host | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:33:39:33:45 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:37:52:37:63 | ControlFlowNode for Attribute() | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:40:52:40:55 | ControlFlowNode for host | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:46:52:46:58 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:51:52:51:62 | ControlFlowNode for StringLiteral | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:57:52:57:58 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:63:52:63:58 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:82:52:82:58 | ControlFlowNode for address | This protected connection destination is not exclusively supplied by the address policy's admitted result. |
+| httpx_secure/_network.py:86:56:86:59 | ControlFlowNode for host | This protected connection destination is not exclusively supplied by the address policy's admitted result. |

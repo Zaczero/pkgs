@@ -1,0 +1,3 @@
+| test.rs:191:14:191:49 | ...::PyObject_IsTrue(...) | This nonzero test also accepts the negative error status returned by $@. | test.rs:191:14:191:49 | ...::PyObject_IsTrue(...) | this CPython call |
+| test.rs:196:5:196:10 | status | This nonzero test also accepts the negative error status returned by $@. | test.rs:195:27:195:62 | ...::PyObject_IsTrue(...) | this CPython call |
+| test.rs:225:8:225:13 | status | This nonzero test also accepts the negative error status returned by $@. | test.rs:221:27:221:62 | ...::PyObject_IsTrue(...) | this CPython call |

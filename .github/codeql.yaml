@@ -3,8 +3,8 @@ name: Workspace semantic analysis
 disable-default-queries: true
 
 queries:
-  - uses: ./.github/codeql/python
-  - uses: ./.github/codeql/rust
+  - uses: ./.github/codeql/python/contracts.qls
+  - uses: ./.github/codeql/rust/contracts.qls
 
 packs:
   actions:

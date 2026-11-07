@@ -1,0 +1,4 @@
+- description: HTTPX Secure connection contracts
+- query: ProbeApplicationData.ql
+- query: RawHostnameConnection.ql
+- query: UnadmittedConnectionDestination.ql

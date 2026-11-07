@@ -1,0 +1,3 @@
+| test.rs:155:14:155:66 | ...::PyList_SetItem(...) | This API consumes a reference, but $@ lends its reference without transferring ownership. | test.rs:155:52:155:65 | value.as_ptr() | this pointer provider |
+| test.rs:160:14:160:59 | ...::PyList_SetItem(...) | This API consumes a reference, but $@ lends its reference without transferring ownership. | test.rs:159:28:159:66 | ...::PyTuple_GetItem(...) | this pointer provider |
+| test.rs:175:14:175:88 | ...::PyModule_AddObject(...) | This API consumes a reference, but $@ lends its reference without transferring ownership. | test.rs:175:74:175:87 | value.as_ptr() | this pointer provider |
