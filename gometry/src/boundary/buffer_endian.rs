@@ -12,9 +12,6 @@ use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
 use pyo3::types::{PyBytes, PyMemoryView};
 
-#[cfg(Py_GIL_DISABLED)]
-use crate::py::vectors::Float64Buffer;
-
 /// Acquire an exporter only when it advertises the buffer protocol.
 ///
 /// This distinguishes an ordinary non-buffer value from an exporter whose
@@ -164,9 +161,7 @@ pub(crate) fn exporter_supports_direct_capture<T>(py: Python<'_>, buffer: &PyBuf
         // attribute supplied by an arbitrary exporter.
         loop {
             let owner_bound = owner.bind(py);
-            if owner_bound.is_exact_instance_of::<PyBytes>()
-                || owner_bound.is_exact_instance_of::<Float64Buffer>()
-            {
+            if owner_bound.is_exact_instance_of::<PyBytes>() {
                 return true;
             }
             if !owner_bound.is_exact_instance_of::<PyMemoryView>() {

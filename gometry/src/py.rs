@@ -2,7 +2,6 @@ mod methods;
 
 pub(crate) mod arrow;
 pub(crate) mod arrow_c;
-pub(crate) mod buffer;
 pub(crate) mod cells;
 pub(crate) mod circles;
 pub(crate) mod classes;

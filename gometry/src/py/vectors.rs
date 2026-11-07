@@ -1,27 +1,23 @@
-//! Bulk result containers and internal PEP-3118 buffer holders.
+//! Bulk result containers and shared ragged-row publication.
 //!
 //! Public numeric lanes return read-only NumPy ndarrays; [`Groups`] is the
 //! shared CSR ragged container (Arrow ListArray shape: flat `values` +
 //! `offsets`). Spatial-index match call sites use the `Int64` backing; geometry
 //! row groups use the `Geometry` backing; ragged cell rows (a cell array's
-//! `neighbors`/`children`) use the `Cells` backing. Internal `_Float64Buffer`
-//! / `_Int32Buffer` pyclasses move `Arc` column storage into pyarrow without a
-//! second byte copy on little-endian hosts.
+//! `neighbors`/`children`) use the `Cells` backing.
 
-use std::ffi::c_int;
 use std::ops::Range;
 use std::sync::Arc;
 
+use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PySequence};
-use pyo3::{IntoPyObjectExt as _, ffi};
 
 use crate::array::PyGeometryArray;
 use crate::boundary::coordinates::measure_storage_payload_bytes;
 use crate::geometry::Shape;
 use crate::geometry::storage::ValidityMask;
-use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::numpy::{
     ImmutableI64Owner, bool_array, false_bool_array, float64_array, frozen_i64_owner,
@@ -1495,111 +1491,6 @@ fn restore_group_missing(groups: Groups, missing: Option<&Bound<'_, PyAny>>) -> 
         ));
     }
     Ok(groups.with_row_missing(ValidityMask::from_vec(len, mask)))
-}
-
-/// Internal zero-copy buffer holder for `f64` coordinate columns (Arrow
-/// export). Not part of the public surface — constructed from Rust only
-/// and consumed through PEP-3118 (`pa.py_buffer`).
-#[pyclass(name = "_Float64Buffer", module = "gometry", frozen, immutable_type)]
-pub(crate) struct Float64Buffer {
-    storage: Arc<[f64]>,
-    range: Range<usize>,
-}
-
-impl Float64Buffer {
-    fn as_slice(&self) -> &[f64] {
-        self.storage
-            .get(self.range.clone())
-            .expect("float64 buffer range is bounded by its immutable storage")
-    }
-}
-
-#[pymethods]
-impl Float64Buffer {
-    fn __len__(&self) -> usize {
-        self.range.len()
-    }
-
-    /// # Safety
-    /// Buffer-protocol slot; `CPython` guarantees the view pointer.
-    unsafe fn __getbuffer__(
-        slf: Bound<'_, Self>,
-        view: *mut ffi::Py_buffer,
-        flags: c_int,
-    ) -> PyResult<()> {
-        let this = slf.get();
-        let slice = this.as_slice();
-        // SAFETY: the slice is the frozen pyclass's own storage; the owner
-        // handle passed in keeps it alive for the view.
-        unsafe {
-            fill_typed_view(
-                view,
-                flags,
-                slice.as_ptr().cast(),
-                slice.len(),
-                std::mem::size_of::<f64>(),
-                c"d",
-                slf.into_any(),
-                "gometry vectors are read-only",
-            )
-        }
-    }
-
-    /// # Safety
-    /// Buffer-protocol slot paired with `__getbuffer__`.
-    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
-        // SAFETY: paired slot — the view came from `__getbuffer__`.
-        unsafe { release_typed_view(view) }
-    }
-}
-
-/// Internal zero-copy buffer holder for `i32` columns (Arrow list
-/// offsets). Not part of the public surface — constructed from Rust only
-/// and consumed through PEP-3118 (`pa.py_buffer`).
-#[pyclass(name = "_Int32Buffer", module = "gometry", frozen, immutable_type)]
-pub(crate) struct Int32Buffer {
-    storage: Arc<[i32]>,
-}
-
-impl Int32Buffer {
-    fn as_slice(&self) -> &[i32] {
-        &self.storage
-    }
-}
-
-#[pymethods]
-impl Int32Buffer {
-    /// # Safety
-    /// Buffer-protocol slot; `CPython` guarantees the view pointer.
-    unsafe fn __getbuffer__(
-        slf: Bound<'_, Self>,
-        view: *mut ffi::Py_buffer,
-        flags: c_int,
-    ) -> PyResult<()> {
-        let this = slf.get();
-        let slice = this.as_slice();
-        // SAFETY: the slice is the frozen pyclass's own storage; the owner
-        // handle passed in keeps it alive for the view.
-        unsafe {
-            fill_typed_view(
-                view,
-                flags,
-                slice.as_ptr().cast(),
-                slice.len(),
-                std::mem::size_of::<i32>(),
-                c"i",
-                slf.into_any(),
-                "gometry vectors are read-only",
-            )
-        }
-    }
-
-    /// # Safety
-    /// Buffer-protocol slot paired with `__getbuffer__`.
-    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
-        // SAFETY: paired slot — the view came from `__getbuffer__`.
-        unsafe { release_typed_view(view) }
-    }
 }
 
 /// Register the public result containers on the module.
