@@ -138,6 +138,19 @@ def test_decoded_points_do_not_prevent_collection_of_containing_cycles(decode):
 
 
 @pytest.mark.parametrize(
+    ('polyline', 'latitude'),
+    [
+        ('}~~~~~B?', 2_147_483_647.0),
+        ('~~~~~~B?', -2_147_483_648.0),
+    ],
+    ids=['maximum-wire-coordinate', 'minimum-wire-coordinate'],
+)
+def test_decode_accepts_full_signed_coordinate_range(polyline, latitude):
+    assert decode_latlon(polyline, 0) == [(latitude, 0.0)]
+    assert decode_lonlat(polyline, 0) == [(0.0, latitude)]
+
+
+@pytest.mark.parametrize(
     'polyline',
     [
         '\x01',
@@ -145,6 +158,8 @@ def test_decoded_points_do_not_prevent_collection_of_containing_cycles(decode):
         '~' * 8,
         '_',
         '?',
+        '}~~~~~B?A?',  # i32::MAX followed by a +1 coordinate delta.
+        '~~~~~~B?@?',  # i32::MIN followed by a -1 coordinate delta.
     ],
 )
 def test_decode_rejects_malformed_input(polyline):
