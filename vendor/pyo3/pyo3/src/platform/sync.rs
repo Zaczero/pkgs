@@ -44,7 +44,9 @@ impl Once {
         cfg_select! {
             wip_feature_std => self.0.is_completed(),
             feature = "parking_lot" => matches!(self.0.state(), parking_lot::OnceState::Done),
-            _ => compile_error!("Please enable at least one of the following features: std, parking_lot"),
+            _ => compile_error!(
+                "Please enable at least one of the following features: std, parking_lot"
+            ),
         }
     }
 }
@@ -106,7 +108,14 @@ pub mod nonpoison {
             self.inner.lock().unwrap_or_else(|e| e.into_inner())
         }
 
-        // TODO try_lock
+        #[cfg(any(PyPy, GraalPy, RustPython))]
+        pub fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> {
+            match self.inner.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(std::sync::TryLockError::Poisoned(err)) => Some(err.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            }
+        }
     }
 
     #[cfg(wip_feature_std)]

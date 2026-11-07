@@ -17,5 +17,8 @@ pyo3 = { workspace = true, default-features = false }
 [build-dependencies]
 pyo3-build-config.workspace = true
 
+[dev-dependencies]
+pyo3 = { workspace = true, features = ["macros"] }
+
 [lints]
 workspace = true

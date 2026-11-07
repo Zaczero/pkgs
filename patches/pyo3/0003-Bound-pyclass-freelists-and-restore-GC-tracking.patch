@@ -1,0 +1,950 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sat, 07 Nov 2026 06:08:26 +0000
+Subject: [PATCH] Bound pyclass freelists and restore GC tracking
+
+Keep destroyed allocations in bounded static storage and transfer them
+through a sealed ownership interface. Use the GIL for CPython cache access;
+free-threaded-compatible builds retain the native allocator hooks instead
+of contending on a class-wide cache.
+
+Honor the complete declared capacity and restore GC tracking only after
+the concrete Rust subtype and its bases have been initialized. Preserve
+the ordinary constructor path for classes without an active cache.
+---
+diff --git a/pyo3-macros-backend/src/pyclass.rs b/pyo3-macros-backend/src/pyclass.rs
+index 44855a25f..fb3b42156 100644
+--- a/pyo3-macros-backend/src/pyclass.rs
++++ b/pyo3-macros-backend/src/pyclass.rs
+@@ -4,11 +4,12 @@ use std::fmt::Debug;
+ use proc_macro2::{Ident, Span, TokenStream};
+ use quote::{ToTokens, format_ident, quote, quote_spanned};
+ use syn::ext::IdentExt;
+ use syn::parse::{Parse, ParseStream};
+ use syn::punctuated::Punctuated;
+-use syn::{ImplItemFn, Result, Token, parse_quote, parse_quote_spanned, spanned::Spanned};
++use syn::spanned::Spanned;
++use syn::{ImplItemFn, Result, Token, parse_quote, parse_quote_spanned};
+ 
+ use crate::PyFunctionOptions;
+ use crate::attributes::kw::frozen;
+ use crate::attributes::{
+     self, CrateAttribute, ExtendsAttribute, FreelistAttribute, ModuleAttribute, NameAttribute,
+@@ -226,11 +227,11 @@ impl PyClassPyO3Options {
+             PyClassPyO3Option::Freelist(freelist) => set_option!(freelist),
+             PyClassPyO3Option::Frozen(frozen) => set_option!(frozen),
+             PyClassPyO3Option::GetAll(get_all) => set_option!(get_all),
+             PyClassPyO3Option::ImmutableType(immutable_type) => {
+                 set_option!(immutable_type)
+-            }
++            },
+             PyClassPyO3Option::Hash(hash) => set_option!(hash),
+             PyClassPyO3Option::Mapping(mapping) => set_option!(mapping),
+             PyClassPyO3Option::Module(module) => set_option!(module),
+             PyClassPyO3Option::Name(name) => set_option!(name),
+             PyClassPyO3Option::Ord(ord) => set_option!(ord),
+@@ -247,18 +248,18 @@ impl PyClassPyO3Options {
+                 ensure_spanned!(
+                     self.from_py_object.is_none(),
+                     skip_from_py_object.span() => "`skip_from_py_object` and `from_py_object` are mutually exclusive"
+                 );
+                 set_option!(skip_from_py_object)
+-            }
++            },
+             PyClassPyO3Option::FromPyObject(from_py_object) => {
+                 ensure_spanned!(
+                     self.skip_from_py_object.is_none(),
+                     from_py_object.span() => "`skip_from_py_object` and `from_py_object` are mutually exclusive"
+                 );
+                 set_option!(from_py_object)
+-            }
++            },
+         }
+         Ok(())
+     }
+ }
+ 
+@@ -319,11 +320,11 @@ pub fn build_py_class(
+             if let Some(attr) = args.options.get_all {
+                 results.push(Err(syn::Error::new_spanned(attr, UNIT_GET)));
+             };
+ 
+             results
+-        }
++        },
+     }
+     .into_iter()
+     .try_combine_syn_errors()?;
+ 
+     if let Some(attr) = args.options.get_all {
+@@ -399,21 +400,21 @@ impl FieldPyO3Options {
+             match option {
+                 FieldPyO3Option::Get(kw) => {
+                     if options.get.replace(Annotated::Field(kw)).is_some() {
+                         return Err(syn::Error::new(kw.span(), UNIQUE_GET));
+                     }
+-                }
++                },
+                 FieldPyO3Option::Set(kw) => {
+                     if options.set.replace(Annotated::Field(kw)).is_some() {
+                         return Err(syn::Error::new(kw.span(), UNIQUE_SET));
+                     }
+-                }
++                },
+                 FieldPyO3Option::Name(name) => {
+                     if options.name.replace(name).is_some() {
+                         return Err(syn::Error::new(options.name.span(), UNIQUE_NAME));
+                     }
+-                }
++                },
+             }
+         }
+ 
+         Ok(options)
+     }
+@@ -688,11 +689,11 @@ impl<'a> PyClassComplexEnum<'a> {
+                         bail_spanned!(variant.span() => format!(
+                             "Unit variant `{ident}` is not yet supported in a complex enum\n\
+                             = help: change to an empty tuple variant instead: `{ident}()`\n\
+                             = note: the enum is complex because of non-unit variant `{witness}`",
+                             ident=ident, witness=witness))
+-                    }
++                    },
+                     Fields::Named(fields) => {
+                         let fields = fields
+                             .named
+                             .iter()
+                             .map(|field| PyClassEnumVariantNamedField {
+@@ -707,11 +708,11 @@ impl<'a> PyClassComplexEnum<'a> {
+                             ident,
+                             fields,
+                             options,
+                             attrs: variant.attrs.clone(),
+                         })
+-                    }
++                    },
+                     Fields::Unnamed(types) => {
+                         let fields = types
+                             .unnamed
+                             .iter()
+                             .map(|field| PyClassEnumVariantUnnamedField {
+@@ -725,11 +726,11 @@ impl<'a> PyClassComplexEnum<'a> {
+                             ident,
+                             fields,
+                             options,
+                             attrs: variant.attrs.clone(),
+                         })
+-                    }
++                    },
+                 };
+ 
+                 Ok(variant)
+             };
+ 
+@@ -947,19 +948,19 @@ fn implement_py_formatting(
+                 fn __pyo3__generated____str__(&self) -> #pyo3_path::impl_::alloc::string::String {
+                     #pyo3_path::impl_::alloc::format!(#fmt, #(#args, )*)
+                 }
+             };
+             fmt_impl
+-        }
++        },
+         None => {
+             let fmt_impl: syn::ImplItemFn = syn::parse_quote! {
+                 fn __pyo3__generated____str__(&self) -> #pyo3_path::impl_::alloc::string::String {
+                     #pyo3_path::impl_::alloc::format!("{}", &self)
+                 }
+             };
+             fmt_impl
+-        }
++        },
+     };
+     let fmt_slot = generate_protocol_slot(
+         ty,
+         &mut fmt_impl,
+         &__STR__,
+@@ -984,11 +985,11 @@ fn implement_pyclass_str(
+ ) -> (Option<ImplItemFn>, Option<MethodAndSlotDef>) {
+     match &options.str {
+         Some(option) => {
+             let (default_str, default_str_slot) = implement_py_formatting(ty, ctx, option);
+             (Some(default_str), Some(default_str_slot))
+-        }
++        },
+         _ => (None, None),
+     }
+ }
+ 
+ fn impl_enum(
+@@ -1003,14 +1004,14 @@ fn impl_enum(
+     }
+ 
+     match enum_ {
+         PyClassEnum::Simple(simple_enum) => {
+             impl_simple_enum(simple_enum, args, doc, methods_type, ctx)
+-        }
++        },
+         PyClassEnum::Complex(complex_enum) => {
+             impl_complex_enum(complex_enum, args, doc, methods_type, ctx)
+-        }
++        },
+     }
+ }
+ 
+ fn impl_simple_enum(
+     simple_enum: PyClassSimpleEnum<'_>,
+@@ -1383,14 +1384,14 @@ fn impl_complex_enum_variant_cls(
+     ctx: &Ctx,
+ ) -> Result<(TokenStream, Vec<MethodAndMethodDef>, Vec<MethodAndSlotDef>)> {
+     match variant {
+         PyClassEnumVariant::Struct(struct_variant) => {
+             impl_complex_enum_struct_variant_cls(enum_name, args, struct_variant, ctx)
+-        }
++        },
+         PyClassEnumVariant::Tuple(tuple_variant) => {
+             impl_complex_enum_tuple_variant_cls(enum_name, args, tuple_variant, ctx)
+-        }
++        },
+     }
+ }
+ 
+ fn impl_complex_enum_variant_match_args(
+     ctx @ Ctx { pyo3_path, .. }: &Ctx,
+@@ -1983,14 +1984,14 @@ fn complex_enum_variant_new<'a>(
+     ctx: &Ctx,
+ ) -> Result<MethodAndSlotDef> {
+     match variant {
+         PyClassEnumVariant::Struct(struct_variant) => {
+             complex_enum_struct_variant_new(cls, struct_variant, ctx)
+-        }
++        },
+         PyClassEnumVariant::Tuple(tuple_variant) => {
+             complex_enum_tuple_variant_new(cls, tuple_variant, ctx)
+-        }
++        },
+     }
+ }
+ 
+ fn complex_enum_struct_variant_new<'a>(
+     cls: &'a syn::Ident,
+@@ -2561,11 +2562,11 @@ fn pyclass_hash(
+                     is_returning_not_implemented_on_extraction_error: false,
+                 },
+                 ctx,
+             )?;
+             Ok((Some(hash_impl), Some(hash_slot)))
+-        }
++        },
+         None => Ok((None, None)),
+     }
+ }
+ 
+ fn pyclass_new_impl<'a>(
+@@ -2650,11 +2651,11 @@ fn pyclass_new_impl<'a>(
+                 ctx,
+             )
+             .unwrap();
+ 
+             Ok((Some(new_impl), Some(new_slot)))
+-        }
++        },
+         None => Ok((None, None)),
+     }
+ }
+ 
+ fn pyclass_class_getitem(
+@@ -2689,11 +2690,11 @@ fn pyclass_class_getitem(
+                 &spec,
+                 spec.get_doc(&class_getitem_impl.attrs).as_ref(),
+                 ctx,
+             )?;
+             Ok((Some(class_getitem_impl), Some(class_getitem_method)))
+-        }
++        },
+         None => Ok((None, None)),
+     }
+ }
+ 
+ /// Implements most traits used by `#[pyclass]`.
+@@ -2790,11 +2791,11 @@ impl<'a> PyClassImplsBuilder<'a> {
+         // docstring.
+         let raw_doc = match &self.doc {
+             Some(doc) => {
+                 let doc = doc.to_cstr_stream(ctx)?;
+                 Some(quote! { const RAW_DOC: &'static ::core::ffi::CStr = #doc; })
+-            }
++            },
+             None => None,
+         };
+ 
+         // All of these consts have defaults in the `PyClassImpl` trait definition; only emit
+         // them when they differ from the default, to keep the generated code small.
+@@ -2822,10 +2823,17 @@ impl<'a> PyClassImplsBuilder<'a> {
+             cls.span() => "a `#[pyclass]` cannot be both a `mapping` and a `sequence`"
+         );
+ 
+         let is_basetype = is_basetype.then(|| quote! { const IS_BASETYPE: bool = true; });
+         let is_subclass_const = is_subclass.then(|| quote! { const IS_SUBCLASS: bool = true; });
++        let has_freelist = self.attr.options.freelist.as_ref().map(|freelist| {
++            let capacity = &freelist.value;
++            quote! {
++                const HAS_FREELIST: bool =
++                    #pyo3_path::impl_::freelist::CACHE_ENABLED && const { #capacity } != 0;
++            }
++        });
+         let is_mapping = is_mapping.then(|| quote! { const IS_MAPPING: bool = true; });
+         let is_sequence = is_sequence.then(|| quote! { const IS_SEQUENCE: bool = true; });
+         let is_immutable_type =
+             is_immutable_type.then(|| quote! { const IS_IMMUTABLE_TYPE: bool = true; });
+ 
+@@ -2880,11 +2888,11 @@ impl<'a> PyClassImplsBuilder<'a> {
+                         )
+                     },
+                     Some(quote! { type Inventory = #inventory_class_name; }),
+                     Some(define_inventory_class(&inventory_class_name, ctx)),
+                 )
+-            }
++            },
+         };
+ 
+         let default_methods = self
+             .default_methods
+             .iter()
+@@ -2915,10 +2923,22 @@ impl<'a> PyClassImplsBuilder<'a> {
+             .default_slots
+             .iter()
+             .map(|slot| &slot.slot_def)
+             .collect::<Vec<_>>();
+         let freelist_slots = self.freelist_slots(ctx);
++        let intrinsic_slots = if let Some(freelist) = &self.attr.options.freelist {
++            let capacity = &freelist.value;
++            quote! {
++                if !#pyo3_path::impl_::freelist::CACHE_ENABLED || const { #capacity } == 0 {
++                    &[#(#default_slot_defs),*]
++                } else {
++                    &[#(#default_slot_defs),* #(#freelist_slots),*]
++                }
++            }
++        } else {
++            quote! { &[#(#default_slot_defs),*] }
++        };
+ 
+         // When there are no intrinsic items, point at a shared empty `PyClassItems` to keep the
+         // generated code small.
+         let items_iter = if default_method_defs.is_empty()
+             && default_slot_defs.is_empty()
+@@ -2935,11 +2955,11 @@ impl<'a> PyClassImplsBuilder<'a> {
+         } else {
+             quote! {
+                 fn items_iter() -> #pyo3_path::impl_::pyclass::PyClassItemsIter {
+                     static INTRINSIC_ITEMS: #pyo3_path::impl_::pyclass::PyClassItems = #pyo3_path::impl_::pyclass::PyClassItems {
+                         methods: &[#(#default_method_defs),*],
+-                        slots: &[#(#default_slot_defs),* #(#freelist_slots),*],
++                        slots: #intrinsic_slots,
+                     };
+                     #pyo3_path::impl_::pyclass::PyClassItemsIter::new(&INTRINSIC_ITEMS, #pymethods_items)
+                 }
+             }
+         };
+@@ -3053,10 +3073,11 @@ impl<'a> PyClassImplsBuilder<'a> {
+ 
+             impl #pyo3_path::impl_::pyclass::PyClassImpl for #cls {
+                 #module
+                 #is_basetype
+                 #is_subclass_const
++                #has_freelist
+                 #is_mapping
+                 #is_sequence
+                 #is_immutable_type
+ 
+                 type Layout = <Self::BaseNativeType as #pyo3_path::impl_::pyclass::PyClassBaseType>::Layout<Self>;
+@@ -3119,23 +3140,29 @@ impl<'a> PyClassImplsBuilder<'a> {
+ 
+     fn impl_freelist(&self, ctx: &Ctx) -> TokenStream {
+         let cls = self.cls_ident;
+         let Ctx { pyo3_path, .. } = ctx;
+ 
+-        self.attr.options.freelist.as_ref().map_or(quote! {}, |freelist| {
+-            let freelist = &freelist.value;
+-            quote! {
+-                impl #pyo3_path::impl_::pyclass::PyClassWithFreeList for #cls {
+-                    #[inline]
+-                    fn get_free_list(py: #pyo3_path::Python<'_>) -> impl ::core::ops::DerefMut<Target = #pyo3_path::impl_::freelist::PyObjectFreeList> {
+-                        static FREELIST: #pyo3_path::impl_::freelist::FreeList = #pyo3_path::impl_::freelist::FreeList::new();
+-                        const CAPACITY: usize = const { #freelist };
+-                        FREELIST.get(py, CAPACITY)
++        self.attr
++            .options
++            .freelist
++            .as_ref()
++            .map_or(quote! {}, |freelist| {
++                let freelist = &freelist.value;
++                quote! {
++                    impl #pyo3_path::impl_::pyclass::PyClassWithFreeList for #cls {
++                        type FreeList = #pyo3_path::impl_::freelist::FreeList<{ #freelist }>;
++
++                        #[inline]
++                        fn get_free_list() -> &'static Self::FreeList {
++                            static FREELIST: #pyo3_path::impl_::freelist::FreeList<{ #freelist }> =
++                                #pyo3_path::impl_::freelist::FreeList::new();
++                            &FREELIST
++                        }
+                     }
+                 }
+-            }
+-        })
++            })
+     }
+ 
+     fn freelist_slots(&self, ctx: &Ctx) -> Vec<TokenStream> {
+         let Ctx { pyo3_path, .. } = ctx;
+         let cls = self.cls_ident;
+diff --git a/guide/pyclass-parameters.md b/guide/pyclass-parameters.md
+index c3fc5c0a4..6be762061 100644
+--- a/guide/pyclass-parameters.md
++++ b/guide/pyclass-parameters.md
+@@ -6,11 +6,11 @@
+ | <span style="white-space: pre">`crate = "some::path"`</span>  | Path to import the `pyo3` crate, if it's not accessible at `::pyo3`. |
+ | `dict` | Gives instances of this class an empty `__dict__` to store custom attributes. |
+ | `eq` | Implements `__eq__` using the `PartialEq` implementation of the underlying Rust datatype. |
+ | `eq_int` | Implements `__eq__` using `__int__` for simple enums. |
+ | <span style="white-space: pre">`extends = BaseType`</span>  | Use a custom baseclass. Defaults to [`PyAny`][params-1] |
+-| <span style="white-space: pre">`freelist = N`</span> |  Implements a [free list][params-2] of size N. This can improve performance for types that are often created and deleted in quick succession. Profile your code to see whether `freelist` is right for you.  |
++| <span style="white-space: pre">`freelist = N`</span> | Caches up to N destroyed allocations in a [free list][params-2]. Profile construction and destruction in your workload before enabling it. |
+ | `from_py_object` | Implement `FromPyObject` for this pyclass. Requires the pyclass to be `Clone`. |
+ | <span style="white-space: pre">`frozen`</span> | Declares that your pyclass is immutable. It removes the borrow checker overhead when retrieving a shared reference to the Rust struct, but disables the ability to get a mutable reference. |
+ | `generic` | Implements runtime parametrization for the class following [PEP 560](https://peps.python.org/pep-0560/). |
+ | `get_all` | Generates getters for all fields of the pyclass. |
+ | `hash` | Implements `__hash__` using the `Hash` implementation of the underlying Rust datatype. *Requires `eq` and `frozen`* |
+@@ -39,12 +39,27 @@ struct MyClass {}
+ #[pyclass]
+ #[pyo3(name = "SomeName", subclass)]
+ struct MyClass {}
+ ```
+ 
++### Freelists
++
++`freelist = N` accepts a compile-time capacity expression. A zero capacity leaves
++the ordinary allocator hooks in place. Cached allocations do not retain their
++Rust values: fields are dropped normally and reconstructed on reuse, including
++Rust bases, dictionaries and weak-reference state.
++
++GIL-enabled CPython uses the GIL to protect the cache. Free-threaded-compatible
++builds, including abi3t, retain the ordinary allocator hooks: CPython's allocator
++already recycles allocations locally without a shared class-cache bottleneck.
++This choice is internal to PyO3; use the same `freelist = N` annotation for both
++builds. Allocation reuse is an optimization, not a promise that a later object
++will have the same address. Compare immediate reuse and bursts larger than the
++capacity in your workload.
++
+ [params-1]: https://docs.rs/pyo3/latest/pyo3/types/struct.PyAny.html
+-[params-2]: https://en.wikipedia.org/wiki/Free_list
++[params-2]: #freelists
+ [params-3]: https://doc.rust-lang.org/std/marker/trait.Send.html
+ [params-4]: https://doc.rust-lang.org/std/rc/struct.Rc.html
+ [params-5]: https://doc.rust-lang.org/std/sync/struct.Arc.html
+ [params-6]: https://docs.python.org/3/library/weakref.html
+ [params-constructor]: https://pyo3.rs/latest/class.html#complex-enums
+diff --git a/src/impl_/freelist.rs b/src/impl_/freelist.rs
+index 7ae5fe12e..452e87629 100644
+--- a/src/impl_/freelist.rs
++++ b/src/impl_/freelist.rs
+@@ -8,76 +8,217 @@
+ //!
+ //! [1]: https://en.wikipedia.org/wiki/Free_list
+ 
+ use crate::ffi;
+ use crate::marker::Python;
+-use crate::platform::prelude::*;
+-use crate::platform::sync::nonpoison::Mutex;
+-use crate::sync::{MutexExt, PyOnceLock};
+-
+-use core::ops::DerefMut;
+ use core::ptr::NonNull;
+ 
+-pub struct FreeList(PyOnceLock<Mutex<PyObjectFreeList>>);
++#[cfg(all(not(Py_GIL_DISABLED), any(PyPy, GraalPy, RustPython)))]
++use crate::platform::sync::nonpoison::Mutex as FreeListCell;
++#[cfg(not(any(Py_GIL_DISABLED, PyPy, GraalPy, RustPython)))]
++use core::cell::UnsafeCell as FreeListCell;
+ 
+-impl FreeList {
++/// Whether this ABI benefits from a class-wide cache.
++///
++/// Free-threaded CPython already recycles through its thread-local allocator.
++/// Avoid a second, shared synchronization point, including in abi3t builds.
++pub const CACHE_ENABLED: bool = !cfg!(Py_GIL_DISABLED);
++
++/// Bounded storage for destroyed allocations of one concrete Python class.
++///
++/// The initialized prefix owns the allocations; entries outside it are inert
++/// pointer bits. No Python calls, destructors or detachment occur during access.
++/// Like PyO3's static type objects, this cache belongs to its single supported
++/// interpreter.
++pub struct FreeList<const N: usize> {
++    #[cfg(not(Py_GIL_DISABLED))]
++    list: FreeListCell<PyObjectFreeList<N>>,
++}
++
++// SAFETY: on GIL-enabled CPython, every access requires an attached thread
++// holding the GIL, and the private leaf operations cannot release it or reenter.
++#[cfg(not(any(Py_GIL_DISABLED, PyPy, GraalPy, RustPython)))]
++unsafe impl<const N: usize> Sync for FreeList<N> {}
++
++impl<const N: usize> FreeList<N> {
+     #[expect(clippy::new_without_default, reason = "always called in const context")]
+     pub const fn new() -> Self {
+-        Self(PyOnceLock::new())
++        Self {
++            #[cfg(not(Py_GIL_DISABLED))]
++            list: FreeListCell::new(PyObjectFreeList::new()),
++        }
+     }
+ 
+-    pub fn get(
+-        &self,
+-        py: Python<'_>,
+-        capacity: usize,
+-    ) -> impl DerefMut<Target = PyObjectFreeList> + use<'_> {
+-        self.0
+-            .get_or_init(py, || Mutex::new(PyObjectFreeList::with_capacity(capacity)))
+-            .lock_py_attached(py)
++    #[cfg(not(Py_GIL_DISABLED))]
++    fn with<R>(&self, _py: Python<'_>, f: impl FnOnce(&mut PyObjectFreeList<N>) -> R) -> Option<R> {
++        cfg_select! {
++            any(PyPy, GraalPy, RustPython) => {
++                // A busy optimization must not make allocation or destruction wait.
++                self.list.try_lock().map(|mut list| f(&mut list))
++            }
++            _ => {
++                // SAFETY: the GIL excludes other accesses. The private callers
++                // only transfer pointer ownership; no reference can escape.
++                Some(f(unsafe { &mut *self.list.get() }))
++            }
++        }
+     }
+ }
+ 
+-/// A free allocation list for PyObject ffi pointers.
+-///
+-/// See [the parent module](crate::impl_::freelist) for more details.
+-pub struct PyObjectFreeList {
+-    entries: Box<[Option<NonNull<ffi::PyObject>>]>,
++/// Operations available to the generated per-class allocation hooks.
++pub trait FreeListStorage: crate::sealed::Sealed {
++    /// Transfer one destroyed allocation out of the cache, if available.
++    fn pop(&self, py: Python<'_>) -> Option<NonNull<ffi::PyObject>>;
++
++    /// Return the allocation if the cache is full or busy.
++    ///
++    /// # Safety
++    /// `ptr` must be an exclusively owned, destroyed, untracked allocation for
++    /// the class owning this cache. Success transfers ownership to the cache;
++    /// the caller must not access it until a later `pop` returns it.
++    unsafe fn try_insert(
++        &self,
++        py: Python<'_>,
++        ptr: NonNull<ffi::PyObject>,
++    ) -> Option<NonNull<ffi::PyObject>>;
++}
++
++impl<const N: usize> crate::sealed::Sealed for FreeList<N> {}
++
++impl<const N: usize> FreeListStorage for FreeList<N> {
++    fn pop(&self, py: Python<'_>) -> Option<NonNull<ffi::PyObject>> {
++        cfg_select! {
++            Py_GIL_DISABLED => {
++                let _ = py;
++                None
++            }
++            _ => {
++                if N == 0 {
++                    None
++                } else {
++                    self.with(py, |list| list.pop()).flatten()
++                }
++            }
++        }
++    }
++
++    unsafe fn try_insert(
++        &self,
++        py: Python<'_>,
++        ptr: NonNull<ffi::PyObject>,
++    ) -> Option<NonNull<ffi::PyObject>> {
++        cfg_select! {
++            Py_GIL_DISABLED => {
++                let _ = py;
++                Some(ptr)
++            }
++            _ => {
++                if N == 0 {
++                    Some(ptr)
++                } else {
++                    self.with(py, |list| list.insert(ptr)).unwrap_or(Some(ptr))
++                }
++            }
++        }
++    }
++}
++
++#[cfg(any(not(Py_GIL_DISABLED), test))]
++struct PyObjectFreeList<const N: usize> {
++    entries: [Option<NonNull<ffi::PyObject>>; N],
+     split: usize,
+ }
+ 
+-// safety: the pointers are never used internally and they are cleared when they are given out
+-unsafe impl Send for PyObjectFreeList {}
++// SAFETY: entries are never dereferenced here. Only the initialized prefix owns
++// allocations, and insertion/pop transfer that ownership under exclusive access.
++#[cfg(any(not(Py_GIL_DISABLED), test))]
++unsafe impl<const N: usize> Send for PyObjectFreeList<N> {}
+ 
+-impl PyObjectFreeList {
+-    /// Creates a new `PyObjectFreeList` instance with specified capacity.
+-    pub fn with_capacity(capacity: usize) -> PyObjectFreeList {
+-        let entries = vec![None; capacity].into_boxed_slice();
+-
+-        PyObjectFreeList { entries, split: 0 }
++#[cfg(any(not(Py_GIL_DISABLED), test))]
++impl<const N: usize> PyObjectFreeList<N> {
++    const fn new() -> Self {
++        Self {
++            entries: [None; N],
++            split: 0,
++        }
+     }
+ 
+-    /// Pops the first non empty item.
+-    pub fn pop(&mut self) -> Option<NonNull<ffi::PyObject>> {
++    fn pop(&mut self) -> Option<NonNull<ffi::PyObject>> {
+         let idx = self.split;
+         if idx == 0 {
+             None
+         } else {
+-            let val = self.entries[idx - 1]
+-                .take()
+-                .expect("PyObjectFreeList is corrupt");
+             self.split = idx - 1;
+-            Some(val)
++            // The prefix length is the ownership authority. Clearing the old
++            // slot would only duplicate that state and add a hot-path store.
++            self.entries[idx - 1]
+         }
+     }
+ 
+-    /// Inserts a value into the list. Returns `Some(val)` if the `PyObjectFreeList` is full.
+-    pub fn insert(&mut self, val: NonNull<ffi::PyObject>) -> Option<NonNull<ffi::PyObject>> {
+-        let next = self.split + 1;
+-        if next < self.entries.len() {
++    fn insert(&mut self, val: NonNull<ffi::PyObject>) -> Option<NonNull<ffi::PyObject>> {
++        if self.split < N {
+             self.entries[self.split] = Some(val);
+-            self.split = next;
++            self.split += 1;
+             None
+         } else {
+             Some(val)
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn check_capacity<const N: usize>() {
++        let mut allocations = [0_u8; 18];
++        let pointers = core::array::from_fn::<_, 18, _>(|i| {
++            NonNull::from(&mut allocations[i]).cast::<ffi::PyObject>()
++        });
++        let mut list = PyObjectFreeList::<N>::new();
++        for _ in 0..2 {
++            assert_eq!(list.pop(), None);
++            for &ptr in &pointers[..N] {
++                assert_eq!(list.insert(ptr), None, "capacity {N}");
++            }
++            assert_eq!(list.insert(pointers[N]), Some(pointers[N]));
++            for &ptr in pointers[..N].iter().rev() {
++                assert_eq!(list.pop(), Some(ptr));
++            }
++            assert_eq!(list.pop(), None);
++        }
++    }
++
++    #[test]
++    fn exact_capacity_and_lifo() {
++        check_capacity::<0>();
++        check_capacity::<1>();
++        check_capacity::<2>();
++        check_capacity::<17>();
++    }
++
++    #[test]
++    #[cfg(feature = "macros")]
++    #[cfg(all(not(Py_GIL_DISABLED), any(PyPy, GraalPy, RustPython)))]
++    #[cfg_attr(miri, ignore = "requires the CPython allocator")]
++    fn busy_cache_falls_back() {
++        use crate::impl_::pyclass::PyClassWithFreeList;
++
++        #[crate::pyclass(crate = "crate", freelist = 1)]
++        struct Cached;
++
++        Python::initialize();
++        Python::attach(|py| {
++            drop(crate::Bound::new(py, Cached).unwrap());
++            let cache = Cached::get_free_list();
++            let ptr = cache.pop(py).unwrap();
++            let guard = cache.list.lock();
++            assert_eq!(cache.pop(py), None);
++            // SAFETY: `ptr` was removed from this cache and remains owned here.
++            assert_eq!(unsafe { cache.try_insert(py, ptr) }, Some(ptr));
++            drop(guard);
++            assert_eq!(cache.pop(py), None);
++            // SAFETY: the unsuccessful insertion returned ownership of `ptr`.
++            assert_eq!(unsafe { cache.try_insert(py, ptr) }, None);
++        });
++    }
++}
+diff --git a/src/impl_/pyclass.rs b/src/impl_/pyclass.rs
+index a77235896..252f17736 100644
+--- a/src/impl_/pyclass.rs
++++ b/src/impl_/pyclass.rs
+@@ -10,21 +10,20 @@ use crate::{
+     exceptions::{PyAttributeError, PyNotImplementedError, PyRuntimeError},
+     ffi,
+     ffi_ptr_ext::FfiPtrExt,
+     gc::{PyTraverseError, PyVisit},
+     impl_::{
+-        freelist::PyObjectFreeList,
++        freelist::FreeListStorage,
+         pycell::{GetBorrowChecker, PyClassMutability, PyClassObjectBaseLayout},
+         pymethods::{PyGetterDef, PyMethodDefType},
+     },
+     internal::pyclass_init::PyObjectInit,
+     pycell::{PyBorrowError, impl_::PyClassObjectLayout},
+     pyclass::PyClassGuardError,
+     types::{PyBool, any::PyAnyMethods},
+ };
+ 
+-use core::ops::DerefMut;
+ use core::{
+     ffi::CStr,
+     ffi::{c_int, c_void},
+     marker::PhantomData,
+     ptr::{self, NonNull},
+@@ -217,10 +216,13 @@ pub trait PyClassImpl: Sized + 'static {
+     const IS_BASETYPE: bool = false;
+ 
+     /// #[pyclass(extends=...)]
+     const IS_SUBCLASS: bool = false;
+ 
++    /// Whether this class installs an allocation cache.
++    const HAS_FREELIST: bool = false;
++
+     /// #[pyclass(mapping)]
+     const IS_MAPPING: bool = false;
+ 
+     /// #[pyclass(sequence)]
+     const IS_SEQUENCE: bool = false;
+@@ -980,31 +982,30 @@ pub use generate_pyclass_richcompare_slot;
+ /// Implements a freelist.
+ ///
+ /// Do not implement this trait manually. Instead, use `#[pyclass(freelist = N)]`
+ /// on a Rust struct to implement it.
+ pub trait PyClassWithFreeList: PyClass + generic_pyclass::Sealed {
+-    fn get_free_list(py: Python<'_>) -> impl DerefMut<Target = PyObjectFreeList>;
++    type FreeList: FreeListStorage;
++
++    fn get_free_list() -> &'static Self::FreeList;
+ }
+ 
+ /// Implementation of tp_alloc for `freelist` classes.
+ ///
+ /// # Safety
+ /// - `subtype` must be a valid pointer to the type object of T or a subclass.
+ /// - The calling thread must be attached to the interpreter
+ pub unsafe extern "C" fn alloc_with_freelist<T: PyClassWithFreeList>(
+     subtype: *mut ffi::PyTypeObject,
+     nitems: ffi::Py_ssize_t,
+ ) -> *mut ffi::PyObject {
+     let py = unsafe { Python::assume_attached() };
+ 
+-    let self_type = T::type_object_raw(py);
+-    // If this type is a variable type or the subtype is not equal to this type, we cannot use the
+-    // freelist
+-    if nitems == 0 && ptr::eq(subtype, self_type) {
+-        let mut free_list = T::get_free_list(py);
+-        if let Some(obj) = free_list.pop() {
+-            drop(free_list);
++    // A non-base class cannot have subclasses, so its hook already proves the
++    // exact type. Base classes must still exclude larger subclass layouts.
++    if nitems == 0 && (!T::IS_BASETYPE || ptr::eq(subtype, T::type_object_raw(py))) {
++        if let Some(obj) = T::get_free_list().pop(py) {
+             unsafe { ffi::PyObject_Init(obj.as_ptr(), subtype) };
+             return obj.as_ptr() as _;
+         }
+     }
+ 
+@@ -1023,13 +1024,11 @@ pub unsafe extern "C" fn free_with_freelist<T: PyClassWithFreeList>(obj: *mut c_
+     unsafe {
+         debug_assert_eq!(
+             T::type_object_raw(Python::assume_attached()),
+             ffi::Py_TYPE(obj.as_ptr())
+         );
+-        let mut free_list = T::get_free_list(Python::assume_attached());
+-        if let Some(obj) = free_list.insert(obj) {
+-            drop(free_list);
++        if let Some(obj) = T::get_free_list().try_insert(Python::assume_attached(), obj) {
+             let ty = ffi::Py_TYPE(obj.as_ptr());
+ 
+             // Deduce appropriate inverse of PyType_GenericAlloc
+             let free = if ffi::PyType_IS_GC(ty) != 0 {
+                 ffi::PyObject_GC_Del
+diff --git a/src/internal/pyclass_init.rs b/src/internal/pyclass_init.rs
+index 0a4049a42..9d63228f5 100644
+--- a/src/internal/pyclass_init.rs
++++ b/src/internal/pyclass_init.rs
+@@ -170,11 +170,11 @@ where
+     unsafe fn init(
+         self,
+         cls: crate::Borrowed<'_, 'py, crate::types::PyType>,
+     ) -> PyResult<crate::Bound<'py, crate::PyAny>> {
+         // SAFETY: caller has guaranteed that `cls` is correct object
+-        unsafe { self.create_class_object_of_type(cls.py(), cls.as_type_ptr()) }
++        unsafe { self.create_class_object_of_type::<true>(cls.py(), cls.as_type_ptr()) }
+             .map(crate::Bound::into_any)
+     }
+ }
+ 
+ /// Analogous to `Into<PyClassInitializer<T>>`, but just an internal equivalent
+diff --git a/src/platform/sync.rs b/src/platform/sync.rs
+index 9b3fe2509..57b0bd3f8 100644
+--- a/src/platform/sync.rs
++++ b/src/platform/sync.rs
+@@ -42,11 +42,13 @@ impl Once {
+     #[inline(always)]
+     pub fn is_completed(&self) -> bool {
+         cfg_select! {
+             wip_feature_std => self.0.is_completed(),
+             feature = "parking_lot" => matches!(self.0.state(), parking_lot::OnceState::Done),
+-            _ => compile_error!("Please enable at least one of the following features: std, parking_lot"),
++            _ => compile_error!(
++                "Please enable at least one of the following features: std, parking_lot"
++            ),
+         }
+     }
+ }
+ 
+ impl sealed::Sealed for Once {}
+@@ -104,11 +106,18 @@ pub mod nonpoison {
+         #[inline(always)]
+         pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+             self.inner.lock().unwrap_or_else(|e| e.into_inner())
+         }
+ 
+-        // TODO try_lock
++        #[cfg(any(PyPy, GraalPy, RustPython))]
++        pub fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> {
++            match self.inner.try_lock() {
++                Ok(guard) => Some(guard),
++                Err(std::sync::TryLockError::Poisoned(err)) => Some(err.into_inner()),
++                Err(std::sync::TryLockError::WouldBlock) => None,
++            }
++        }
+     }
+ 
+     #[cfg(wip_feature_std)]
+     impl<T> From<T> for Mutex<T> {
+         #[inline(always)]
+diff --git a/src/pyclass_init.rs b/src/pyclass_init.rs
+index d4542cb74..ed4c4b488 100644
+--- a/src/pyclass_init.rs
++++ b/src/pyclass_init.rs
+@@ -134,18 +134,20 @@ impl<T: PyClass> PyClassInitializer<T> {
+     /// Creates a new class object and initializes it.
+     pub(crate) fn create_class_object(self, py: Python<'_>) -> PyResult<Bound<'_, T>>
+     where
+         T: PyClass,
+     {
+-        unsafe { self.create_class_object_of_type(py, T::type_object_raw(py)) }
++        unsafe { self.create_class_object_of_type::<true>(py, T::type_object_raw(py)) }
+     }
+ 
+     /// Creates a new class object and initializes it given a typeobject `subtype`.
+     ///
+     /// # Safety
+     /// `subtype` must be a valid pointer to the type object of T or a subclass.
+-    pub(crate) unsafe fn create_class_object_of_type(
++    /// When `COMPLETE` is false, the caller must finish the remaining Rust
++    /// subclass initializers before publishing the object or restoring GC tracking.
++    pub(crate) unsafe fn create_class_object_of_type<const COMPLETE: bool>(
+         self,
+         py: Python<'_>,
+         target_type: *mut crate::ffi::PyTypeObject,
+     ) -> PyResult<Bound<'_, T>>
+     where
+@@ -186,12 +188,20 @@ impl<T: PyClass> PyClassInitializer<T> {
+ 
+         // SAFETY: `contents` is a non-null pointer to the space allocated for our
+         // `PyClassObjectContents` (either statically in Rust or dynamically by Python)
+         unsafe { (*contents).write(new_contents) };
+ 
+-        // Safety: obj is a valid pointer to an object of type `target_type`, which` is a known
+-        // subclass of `T`
++        // Reused storage is untracked. Only the outermost initializer can
++        // restore tracking after all Rust bases and the complete subtype exist.
++        // SAFETY: the object is initialized; fresh/native allocations may
++        // already be tracked, while cache hits require tracking here.
++        if COMPLETE && T::HAS_FREELIST && unsafe { ffi::PyObject_GC_IsTracked(obj) } == 0 {
++            unsafe { ffi::PyObject_GC_Track(obj.cast()) };
++        }
++
++        // SAFETY: T and its Rust bases are initialized. A base initializer only
++        // transfers this temporary owner back to the enclosing initializer.
+         Ok(unsafe { obj.assume_owned(py).cast_into_unchecked() })
+     }
+ }
+ 
+ /// Whether the running interpreter may have eagerly created an instance dict for `T`
+@@ -204,35 +214,34 @@ impl<T: PyClass> PyClassInitializer<T> {
+ fn eagerly_created_dict_possible<T: PyClassImpl>(py: Python<'_>) -> bool {
+     if core::mem::size_of::<T::Dict>() == 0 {
+         return false;
+     }
+     cfg_select! {
+-        Py_LIMITED_API =>
+-        {
++        Py_LIMITED_API => {
+             use crate::sync::PyOnceLock;
+             static IS_PYTHON_3_11_OR_3_12: PyOnceLock<bool> = PyOnceLock::new();
+             *IS_PYTHON_3_11_OR_3_12.get_or_init(py, || {
+                 let version_info = py.version_info();
+                 matches!((version_info.major, version_info.minor), (3, 11) | (3, 12))
+             })
+         }
+-        not(Py_LIMITED_API) =>
+-        {
++        not(Py_LIMITED_API) => {
+             let _ = py;
+             cfg!(Py_3_11)
+         }
+     }
+ }
+ 
+ impl<T: PyClass> PyObjectInit<T> for PyClassInitializer<T> {
+     unsafe fn into_new_object(
+         self,
+         py: Python<'_>,
+         subtype: *mut PyTypeObject,
+     ) -> PyResult<*mut ffi::PyObject> {
++        // SAFETY: the enclosing initializer finishes the concrete Rust subtype.
+         unsafe {
+-            self.create_class_object_of_type(py, subtype)
++            self.create_class_object_of_type::<false>(py, subtype)
+                 .map(Bound::into_ptr)
+         }
+     }
+ }
+ 

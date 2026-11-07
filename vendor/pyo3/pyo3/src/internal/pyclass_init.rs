@@ -172,7 +172,7 @@ where
         cls: crate::Borrowed<'_, 'py, crate::types::PyType>,
     ) -> PyResult<crate::Bound<'py, crate::PyAny>> {
         // SAFETY: caller has guaranteed that `cls` is correct object
-        unsafe { self.create_class_object_of_type(cls.py(), cls.as_type_ptr()) }
+        unsafe { self.create_class_object_of_type::<true>(cls.py(), cls.as_type_ptr()) }
             .map(crate::Bound::into_any)
     }
 }

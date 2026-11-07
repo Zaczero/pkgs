@@ -6,7 +6,8 @@ use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{ImplItemFn, Result, Token, parse_quote, parse_quote_spanned, spanned::Spanned};
+use syn::spanned::Spanned;
+use syn::{ImplItemFn, Result, Token, parse_quote, parse_quote_spanned};
 
 use crate::PyFunctionOptions;
 use crate::attributes::kw::frozen;
@@ -228,7 +229,7 @@ impl PyClassPyO3Options {
             PyClassPyO3Option::GetAll(get_all) => set_option!(get_all),
             PyClassPyO3Option::ImmutableType(immutable_type) => {
                 set_option!(immutable_type)
-            }
+            },
             PyClassPyO3Option::Hash(hash) => set_option!(hash),
             PyClassPyO3Option::Mapping(mapping) => set_option!(mapping),
             PyClassPyO3Option::Module(module) => set_option!(module),
@@ -249,14 +250,14 @@ impl PyClassPyO3Options {
                     skip_from_py_object.span() => "`skip_from_py_object` and `from_py_object` are mutually exclusive"
                 );
                 set_option!(skip_from_py_object)
-            }
+            },
             PyClassPyO3Option::FromPyObject(from_py_object) => {
                 ensure_spanned!(
                     self.skip_from_py_object.is_none(),
                     from_py_object.span() => "`skip_from_py_object` and `from_py_object` are mutually exclusive"
                 );
                 set_option!(from_py_object)
-            }
+            },
         }
         Ok(())
     }
@@ -321,7 +322,7 @@ pub fn build_py_class(
             };
 
             results
-        }
+        },
     }
     .into_iter()
     .try_combine_syn_errors()?;
@@ -401,17 +402,17 @@ impl FieldPyO3Options {
                     if options.get.replace(Annotated::Field(kw)).is_some() {
                         return Err(syn::Error::new(kw.span(), UNIQUE_GET));
                     }
-                }
+                },
                 FieldPyO3Option::Set(kw) => {
                     if options.set.replace(Annotated::Field(kw)).is_some() {
                         return Err(syn::Error::new(kw.span(), UNIQUE_SET));
                     }
-                }
+                },
                 FieldPyO3Option::Name(name) => {
                     if options.name.replace(name).is_some() {
                         return Err(syn::Error::new(options.name.span(), UNIQUE_NAME));
                     }
-                }
+                },
             }
         }
 
@@ -690,7 +691,7 @@ impl<'a> PyClassComplexEnum<'a> {
                             = help: change to an empty tuple variant instead: `{ident}()`\n\
                             = note: the enum is complex because of non-unit variant `{witness}`",
                             ident=ident, witness=witness))
-                    }
+                    },
                     Fields::Named(fields) => {
                         let fields = fields
                             .named
@@ -709,7 +710,7 @@ impl<'a> PyClassComplexEnum<'a> {
                             options,
                             attrs: variant.attrs.clone(),
                         })
-                    }
+                    },
                     Fields::Unnamed(types) => {
                         let fields = types
                             .unnamed
@@ -727,7 +728,7 @@ impl<'a> PyClassComplexEnum<'a> {
                             options,
                             attrs: variant.attrs.clone(),
                         })
-                    }
+                    },
                 };
 
                 Ok(variant)
@@ -949,7 +950,7 @@ fn implement_py_formatting(
                 }
             };
             fmt_impl
-        }
+        },
         None => {
             let fmt_impl: syn::ImplItemFn = syn::parse_quote! {
                 fn __pyo3__generated____str__(&self) -> #pyo3_path::impl_::alloc::string::String {
@@ -957,7 +958,7 @@ fn implement_py_formatting(
                 }
             };
             fmt_impl
-        }
+        },
     };
     let fmt_slot = generate_protocol_slot(
         ty,
@@ -986,7 +987,7 @@ fn implement_pyclass_str(
         Some(option) => {
             let (default_str, default_str_slot) = implement_py_formatting(ty, ctx, option);
             (Some(default_str), Some(default_str_slot))
-        }
+        },
         _ => (None, None),
     }
 }
@@ -1005,10 +1006,10 @@ fn impl_enum(
     match enum_ {
         PyClassEnum::Simple(simple_enum) => {
             impl_simple_enum(simple_enum, args, doc, methods_type, ctx)
-        }
+        },
         PyClassEnum::Complex(complex_enum) => {
             impl_complex_enum(complex_enum, args, doc, methods_type, ctx)
-        }
+        },
     }
 }
 
@@ -1385,10 +1386,10 @@ fn impl_complex_enum_variant_cls(
     match variant {
         PyClassEnumVariant::Struct(struct_variant) => {
             impl_complex_enum_struct_variant_cls(enum_name, args, struct_variant, ctx)
-        }
+        },
         PyClassEnumVariant::Tuple(tuple_variant) => {
             impl_complex_enum_tuple_variant_cls(enum_name, args, tuple_variant, ctx)
-        }
+        },
     }
 }
 
@@ -1985,10 +1986,10 @@ fn complex_enum_variant_new<'a>(
     match variant {
         PyClassEnumVariant::Struct(struct_variant) => {
             complex_enum_struct_variant_new(cls, struct_variant, ctx)
-        }
+        },
         PyClassEnumVariant::Tuple(tuple_variant) => {
             complex_enum_tuple_variant_new(cls, tuple_variant, ctx)
-        }
+        },
     }
 }
 
@@ -2563,7 +2564,7 @@ fn pyclass_hash(
                 ctx,
             )?;
             Ok((Some(hash_impl), Some(hash_slot)))
-        }
+        },
         None => Ok((None, None)),
     }
 }
@@ -2652,7 +2653,7 @@ fn pyclass_new_impl<'a>(
             .unwrap();
 
             Ok((Some(new_impl), Some(new_slot)))
-        }
+        },
         None => Ok((None, None)),
     }
 }
@@ -2691,7 +2692,7 @@ fn pyclass_class_getitem(
                 ctx,
             )?;
             Ok((Some(class_getitem_impl), Some(class_getitem_method)))
-        }
+        },
         None => Ok((None, None)),
     }
 }
@@ -2792,7 +2793,7 @@ impl<'a> PyClassImplsBuilder<'a> {
             Some(doc) => {
                 let doc = doc.to_cstr_stream(ctx)?;
                 Some(quote! { const RAW_DOC: &'static ::core::ffi::CStr = #doc; })
-            }
+            },
             None => None,
         };
 
@@ -2824,6 +2825,13 @@ impl<'a> PyClassImplsBuilder<'a> {
 
         let is_basetype = is_basetype.then(|| quote! { const IS_BASETYPE: bool = true; });
         let is_subclass_const = is_subclass.then(|| quote! { const IS_SUBCLASS: bool = true; });
+        let has_freelist = self.attr.options.freelist.as_ref().map(|freelist| {
+            let capacity = &freelist.value;
+            quote! {
+                const HAS_FREELIST: bool =
+                    #pyo3_path::impl_::freelist::CACHE_ENABLED && const { #capacity } != 0;
+            }
+        });
         let is_mapping = is_mapping.then(|| quote! { const IS_MAPPING: bool = true; });
         let is_sequence = is_sequence.then(|| quote! { const IS_SEQUENCE: bool = true; });
         let is_immutable_type =
@@ -2882,7 +2890,7 @@ impl<'a> PyClassImplsBuilder<'a> {
                     Some(quote! { type Inventory = #inventory_class_name; }),
                     Some(define_inventory_class(&inventory_class_name, ctx)),
                 )
-            }
+            },
         };
 
         let default_methods = self
@@ -2917,6 +2925,18 @@ impl<'a> PyClassImplsBuilder<'a> {
             .map(|slot| &slot.slot_def)
             .collect::<Vec<_>>();
         let freelist_slots = self.freelist_slots(ctx);
+        let intrinsic_slots = if let Some(freelist) = &self.attr.options.freelist {
+            let capacity = &freelist.value;
+            quote! {
+                if !#pyo3_path::impl_::freelist::CACHE_ENABLED || const { #capacity } == 0 {
+                    &[#(#default_slot_defs),*]
+                } else {
+                    &[#(#default_slot_defs),* #(#freelist_slots),*]
+                }
+            }
+        } else {
+            quote! { &[#(#default_slot_defs),*] }
+        };
 
         // When there are no intrinsic items, point at a shared empty `PyClassItems` to keep the
         // generated code small.
@@ -2937,7 +2957,7 @@ impl<'a> PyClassImplsBuilder<'a> {
                 fn items_iter() -> #pyo3_path::impl_::pyclass::PyClassItemsIter {
                     static INTRINSIC_ITEMS: #pyo3_path::impl_::pyclass::PyClassItems = #pyo3_path::impl_::pyclass::PyClassItems {
                         methods: &[#(#default_method_defs),*],
-                        slots: &[#(#default_slot_defs),* #(#freelist_slots),*],
+                        slots: #intrinsic_slots,
                     };
                     #pyo3_path::impl_::pyclass::PyClassItemsIter::new(&INTRINSIC_ITEMS, #pymethods_items)
                 }
@@ -3055,6 +3075,7 @@ impl<'a> PyClassImplsBuilder<'a> {
                 #module
                 #is_basetype
                 #is_subclass_const
+                #has_freelist
                 #is_mapping
                 #is_sequence
                 #is_immutable_type
@@ -3121,19 +3142,25 @@ impl<'a> PyClassImplsBuilder<'a> {
         let cls = self.cls_ident;
         let Ctx { pyo3_path, .. } = ctx;
 
-        self.attr.options.freelist.as_ref().map_or(quote! {}, |freelist| {
-            let freelist = &freelist.value;
-            quote! {
-                impl #pyo3_path::impl_::pyclass::PyClassWithFreeList for #cls {
-                    #[inline]
-                    fn get_free_list(py: #pyo3_path::Python<'_>) -> impl ::core::ops::DerefMut<Target = #pyo3_path::impl_::freelist::PyObjectFreeList> {
-                        static FREELIST: #pyo3_path::impl_::freelist::FreeList = #pyo3_path::impl_::freelist::FreeList::new();
-                        const CAPACITY: usize = const { #freelist };
-                        FREELIST.get(py, CAPACITY)
+        self.attr
+            .options
+            .freelist
+            .as_ref()
+            .map_or(quote! {}, |freelist| {
+                let freelist = &freelist.value;
+                quote! {
+                    impl #pyo3_path::impl_::pyclass::PyClassWithFreeList for #cls {
+                        type FreeList = #pyo3_path::impl_::freelist::FreeList<{ #freelist }>;
+
+                        #[inline]
+                        fn get_free_list() -> &'static Self::FreeList {
+                            static FREELIST: #pyo3_path::impl_::freelist::FreeList<{ #freelist }> =
+                                #pyo3_path::impl_::freelist::FreeList::new();
+                            &FREELIST
+                        }
                     }
                 }
-            }
-        })
+            })
     }
 
     fn freelist_slots(&self, ctx: &Ctx) -> Vec<TokenStream> {

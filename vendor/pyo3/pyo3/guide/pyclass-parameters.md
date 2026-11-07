@@ -8,7 +8,7 @@
 | `eq` | Implements `__eq__` using the `PartialEq` implementation of the underlying Rust datatype. |
 | `eq_int` | Implements `__eq__` using `__int__` for simple enums. |
 | <span style="white-space: pre">`extends = BaseType`</span>  | Use a custom baseclass. Defaults to [`PyAny`][params-1] |
-| <span style="white-space: pre">`freelist = N`</span> |  Implements a [free list][params-2] of size N. This can improve performance for types that are often created and deleted in quick succession. Profile your code to see whether `freelist` is right for you.  |
+| <span style="white-space: pre">`freelist = N`</span> | Caches up to N destroyed allocations in a [free list][params-2]. Profile construction and destruction in your workload before enabling it. |
 | `from_py_object` | Implement `FromPyObject` for this pyclass. Requires the pyclass to be `Clone`. |
 | <span style="white-space: pre">`frozen`</span> | Declares that your pyclass is immutable. It removes the borrow checker overhead when retrieving a shared reference to the Rust struct, but disables the ability to get a mutable reference. |
 | `generic` | Implements runtime parametrization for the class following [PEP 560](https://peps.python.org/pep-0560/). |
@@ -41,8 +41,23 @@ struct MyClass {}
 struct MyClass {}
 ```
 
+### Freelists
+
+`freelist = N` accepts a compile-time capacity expression. A zero capacity leaves
+the ordinary allocator hooks in place. Cached allocations do not retain their
+Rust values: fields are dropped normally and reconstructed on reuse, including
+Rust bases, dictionaries and weak-reference state.
+
+GIL-enabled CPython uses the GIL to protect the cache. Free-threaded-compatible
+builds, including abi3t, retain the ordinary allocator hooks: CPython's allocator
+already recycles allocations locally without a shared class-cache bottleneck.
+This choice is internal to PyO3; use the same `freelist = N` annotation for both
+builds. Allocation reuse is an optimization, not a promise that a later object
+will have the same address. Compare immediate reuse and bursts larger than the
+capacity in your workload.
+
 [params-1]: https://docs.rs/pyo3/latest/pyo3/types/struct.PyAny.html
-[params-2]: https://en.wikipedia.org/wiki/Free_list
+[params-2]: #freelists
 [params-3]: https://doc.rust-lang.org/std/marker/trait.Send.html
 [params-4]: https://doc.rust-lang.org/std/rc/struct.Rc.html
 [params-5]: https://doc.rust-lang.org/std/sync/struct.Arc.html

@@ -12,7 +12,7 @@ use crate::{
     ffi_ptr_ext::FfiPtrExt,
     gc::{PyTraverseError, PyVisit},
     impl_::{
-        freelist::PyObjectFreeList,
+        freelist::FreeListStorage,
         pycell::{GetBorrowChecker, PyClassMutability, PyClassObjectBaseLayout},
         pymethods::{PyGetterDef, PyMethodDefType},
     },
@@ -22,7 +22,6 @@ use crate::{
     types::{PyBool, any::PyAnyMethods},
 };
 
-use core::ops::DerefMut;
 use core::{
     ffi::CStr,
     ffi::{c_int, c_void},
@@ -218,6 +217,9 @@ pub trait PyClassImpl: Sized + 'static {
 
     /// #[pyclass(extends=...)]
     const IS_SUBCLASS: bool = false;
+
+    /// Whether this class installs an allocation cache.
+    const HAS_FREELIST: bool = false;
 
     /// #[pyclass(mapping)]
     const IS_MAPPING: bool = false;
@@ -982,7 +984,9 @@ pub use generate_pyclass_richcompare_slot;
 /// Do not implement this trait manually. Instead, use `#[pyclass(freelist = N)]`
 /// on a Rust struct to implement it.
 pub trait PyClassWithFreeList: PyClass + generic_pyclass::Sealed {
-    fn get_free_list(py: Python<'_>) -> impl DerefMut<Target = PyObjectFreeList>;
+    type FreeList: FreeListStorage;
+
+    fn get_free_list() -> &'static Self::FreeList;
 }
 
 /// Implementation of tp_alloc for `freelist` classes.
@@ -996,13 +1000,10 @@ pub unsafe extern "C" fn alloc_with_freelist<T: PyClassWithFreeList>(
 ) -> *mut ffi::PyObject {
     let py = unsafe { Python::assume_attached() };
 
-    let self_type = T::type_object_raw(py);
-    // If this type is a variable type or the subtype is not equal to this type, we cannot use the
-    // freelist
-    if nitems == 0 && ptr::eq(subtype, self_type) {
-        let mut free_list = T::get_free_list(py);
-        if let Some(obj) = free_list.pop() {
-            drop(free_list);
+    // A non-base class cannot have subclasses, so its hook already proves the
+    // exact type. Base classes must still exclude larger subclass layouts.
+    if nitems == 0 && (!T::IS_BASETYPE || ptr::eq(subtype, T::type_object_raw(py))) {
+        if let Some(obj) = T::get_free_list().pop(py) {
             unsafe { ffi::PyObject_Init(obj.as_ptr(), subtype) };
             return obj.as_ptr() as _;
         }
@@ -1025,9 +1026,7 @@ pub unsafe extern "C" fn free_with_freelist<T: PyClassWithFreeList>(obj: *mut c_
             T::type_object_raw(Python::assume_attached()),
             ffi::Py_TYPE(obj.as_ptr())
         );
-        let mut free_list = T::get_free_list(Python::assume_attached());
-        if let Some(obj) = free_list.insert(obj) {
-            drop(free_list);
+        if let Some(obj) = T::get_free_list().try_insert(Python::assume_attached(), obj) {
             let ty = ffi::Py_TYPE(obj.as_ptr());
 
             // Deduce appropriate inverse of PyType_GenericAlloc

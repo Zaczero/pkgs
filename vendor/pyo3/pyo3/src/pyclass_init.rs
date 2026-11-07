@@ -136,14 +136,16 @@ impl<T: PyClass> PyClassInitializer<T> {
     where
         T: PyClass,
     {
-        unsafe { self.create_class_object_of_type(py, T::type_object_raw(py)) }
+        unsafe { self.create_class_object_of_type::<true>(py, T::type_object_raw(py)) }
     }
 
     /// Creates a new class object and initializes it given a typeobject `subtype`.
     ///
     /// # Safety
     /// `subtype` must be a valid pointer to the type object of T or a subclass.
-    pub(crate) unsafe fn create_class_object_of_type(
+    /// When `COMPLETE` is false, the caller must finish the remaining Rust
+    /// subclass initializers before publishing the object or restoring GC tracking.
+    pub(crate) unsafe fn create_class_object_of_type<const COMPLETE: bool>(
         self,
         py: Python<'_>,
         target_type: *mut crate::ffi::PyTypeObject,
@@ -188,8 +190,16 @@ impl<T: PyClass> PyClassInitializer<T> {
         // `PyClassObjectContents` (either statically in Rust or dynamically by Python)
         unsafe { (*contents).write(new_contents) };
 
-        // Safety: obj is a valid pointer to an object of type `target_type`, which` is a known
-        // subclass of `T`
+        // Reused storage is untracked. Only the outermost initializer can
+        // restore tracking after all Rust bases and the complete subtype exist.
+        // SAFETY: the object is initialized; fresh/native allocations may
+        // already be tracked, while cache hits require tracking here.
+        if COMPLETE && T::HAS_FREELIST && unsafe { ffi::PyObject_GC_IsTracked(obj) } == 0 {
+            unsafe { ffi::PyObject_GC_Track(obj.cast()) };
+        }
+
+        // SAFETY: T and its Rust bases are initialized. A base initializer only
+        // transfers this temporary owner back to the enclosing initializer.
         Ok(unsafe { obj.assume_owned(py).cast_into_unchecked() })
     }
 }
@@ -206,8 +216,7 @@ fn eagerly_created_dict_possible<T: PyClassImpl>(py: Python<'_>) -> bool {
         return false;
     }
     cfg_select! {
-        Py_LIMITED_API =>
-        {
+        Py_LIMITED_API => {
             use crate::sync::PyOnceLock;
             static IS_PYTHON_3_11_OR_3_12: PyOnceLock<bool> = PyOnceLock::new();
             *IS_PYTHON_3_11_OR_3_12.get_or_init(py, || {
@@ -215,8 +224,7 @@ fn eagerly_created_dict_possible<T: PyClassImpl>(py: Python<'_>) -> bool {
                 matches!((version_info.major, version_info.minor), (3, 11) | (3, 12))
             })
         }
-        not(Py_LIMITED_API) =>
-        {
+        not(Py_LIMITED_API) => {
             let _ = py;
             cfg!(Py_3_11)
         }
@@ -229,8 +237,9 @@ impl<T: PyClass> PyObjectInit<T> for PyClassInitializer<T> {
         py: Python<'_>,
         subtype: *mut PyTypeObject,
     ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: the enclosing initializer finishes the concrete Rust subtype.
         unsafe {
-            self.create_class_object_of_type(py, subtype)
+            self.create_class_object_of_type::<false>(py, subtype)
                 .map(Bound::into_ptr)
         }
     }
