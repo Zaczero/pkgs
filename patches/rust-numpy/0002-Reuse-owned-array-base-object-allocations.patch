@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kamil Monicz <kamil@monicz.dev>
+Date: Sat, 07 Nov 2026 06:08:26 +0000
+Subject: [PATCH] Reuse owned-array base object allocations
+
+Cache a small number of destroyed PySliceContainer allocations on
+GIL-enabled builds. The Rust buffer destructor still runs before the shell
+is retained, and every subsequent initializer supplies a new pointer,
+length, capacity and destructor.
+
+Use PyO3's backend selection so free-threaded-compatible builds retain
+their native allocation path.
+---
+diff --git a/src/slice_container.rs b/src/slice_container.rs
+index 991dbe931..bb57b6cce 100644
+--- a/src/slice_container.rs
++++ b/src/slice_container.rs
+@@ -2,11 +2,11 @@ use std::{mem, ptr};
+ 
+ use ndarray::{ArrayBase, Dimension, OwnedRepr};
+ use pyo3::pyclass;
+ 
+ /// Utility type to safely store `Box<[_]>` or `Vec<_>` on the Python heap
+-#[pyclass(frozen)]
++#[pyclass(frozen, freelist = 8)]
+ #[derive(Debug)]
+ pub(crate) struct PySliceContainer {
+     pub(crate) ptr: *mut u8,
+     pub(crate) len: usize,
+     cap: usize,

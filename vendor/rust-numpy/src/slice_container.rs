@@ -4,7 +4,7 @@ use ndarray::{ArrayBase, Dimension, OwnedRepr};
 use pyo3::pyclass;
 
 /// Utility type to safely store `Box<[_]>` or `Vec<_>` on the Python heap
-#[pyclass(frozen)]
+#[pyclass(frozen, freelist = 8)]
 #[derive(Debug)]
 pub(crate) struct PySliceContainer {
     pub(crate) ptr: *mut u8,
