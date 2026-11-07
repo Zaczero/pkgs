@@ -17,6 +17,14 @@ from tests._support import (
 )
 
 
+def _collect_cycles() -> None:
+    """Collect cycles made unreachable by earlier finalization passes."""
+    # Match CPython's test.support.gc_collect, including its CPython cycle case:
+    # https://github.com/python/cpython/blob/v3.14.0/Lib/test/support/__init__.py
+    for _ in range(3):
+        gc.collect()
+
+
 @pytest.mark.parametrize('protocol', ['http', 'websocket'])
 @pytest.mark.parametrize('callback', ['receive', 'send'])
 def test_retained_request_callback_does_not_keep_closed_loop_alive(protocol, callback):
@@ -86,7 +94,7 @@ def test_retained_request_callback_does_not_keep_closed_loop_alive(protocol, cal
     with asyncio.Runner() as runner:
         loop_ref = runner.run(serve_once())
     del runner
-    gc.collect()
+    _collect_cycles()
     assert loop_ref() is None
 
 
@@ -158,5 +166,5 @@ def test_retained_callbacks_do_not_keep_secondary_loops_alive():
     with asyncio.Runner() as runner:
         loop_refs = runner.run(serve_once())
     del runner
-    gc.collect()
+    _collect_cycles()
     assert all(ref() is None for ref in loop_refs)
